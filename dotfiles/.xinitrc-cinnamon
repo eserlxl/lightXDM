@@ -9,6 +9,7 @@ fi
 
 export DESKTOP_SESSION=cinnamon
 export XDG_CURRENT_DESKTOP=X-Cinnamon
+export XDG_SESSION_TYPE=x11
 
 [[ -f ~/.Xresources ]] && xrdb -merge ~/.Xresources
 [[ -f ~/.xprofile ]] && source ~/.xprofile

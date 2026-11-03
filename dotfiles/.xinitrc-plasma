@@ -9,6 +9,7 @@ fi
 
 export DESKTOP_SESSION=plasma
 export XDG_CURRENT_DESKTOP=KDE
+export XDG_SESSION_TYPE=x11
 
 [[ -f ~/.Xresources ]] && xrdb -merge ~/.Xresources
 [[ -f ~/.xprofile ]] && source ~/.xprofile

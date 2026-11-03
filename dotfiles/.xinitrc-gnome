@@ -9,6 +9,8 @@ fi
 
 export DESKTOP_SESSION=gnome
 export XDG_CURRENT_DESKTOP=GNOME
+export XDG_SESSION_TYPE=x11
+export GDK_BACKEND=x11
 
 [[ -f ~/.Xresources ]] && xrdb -merge ~/.Xresources
 [[ -f ~/.xprofile ]] && source ~/.xprofile
