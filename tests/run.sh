@@ -1524,4 +1524,106 @@ for de_id in "" i3; do
   fi
 done
 
+# Case 44: copy_dotfiles and uninstall.sh preserve post-install user edits in <file>.lightxdm-edited without overwriting existing ones
+reinstall_edit_home="$TMP_DIR/home_reinstall_edited"
+mkdir -p "$reinstall_edit_home"
+echo "# skel bash_profile" >"$reinstall_edit_home/.bash_profile"
+echo "# orig xinitrc" >"$reinstall_edit_home/.xinitrc"
+(
+  export HOME="$reinstall_edit_home"
+  export USER="${USER:-testuser}"
+  copy_dotfiles "plasma" 2>/dev/null
+)
+echo "# post-install bash edit 1" >>"$reinstall_edit_home/.bash_profile"
+echo "# post-install xinit edit 1" >>"$reinstall_edit_home/.xinitrc"
+expected_bash_edit1="$(cat "$reinstall_edit_home/.bash_profile")"
+expected_xinit_edit1="$(cat "$reinstall_edit_home/.xinitrc")"
+(
+  export HOME="$reinstall_edit_home"
+  export USER="${USER:-testuser}"
+  copy_dotfiles "xfce" 2>/dev/null
+)
+# Also verify matching the backup does not create a spurious .lightxdm-edited copy, while a new edit does without clobbering the first
+cp "$reinstall_edit_home/.bash_profile.lightxdm.bak" "$reinstall_edit_home/.bash_profile"
+(
+  export HOME="$reinstall_edit_home"
+  export USER="${USER:-testuser}"
+  copy_dotfiles "gnome" 2>/dev/null
+)
+no_dup_after_bak_match=0
+if [[ ! -e "$reinstall_edit_home/.bash_profile.lightxdm-edited.1" ]]; then
+  no_dup_after_bak_match=1
+fi
+echo "# post-install bash edit 2" >"$reinstall_edit_home/.bash_profile"
+echo "# post-install xinit edit 2" >"$reinstall_edit_home/.xinitrc"
+(
+  export HOME="$reinstall_edit_home"
+  export USER="${USER:-testuser}"
+  copy_dotfiles "i3" 2>/dev/null
+)
+if [[ "$(cat "$reinstall_edit_home/.bash_profile.lightxdm.bak")" == "# skel bash_profile" ]] &&
+  [[ "$(cat "$reinstall_edit_home/.xinitrc.lightxdm.bak")" == "# orig xinitrc" ]] &&
+  [[ -f "$reinstall_edit_home/.bash_profile.lightxdm-edited" && "$(cat "$reinstall_edit_home/.bash_profile.lightxdm-edited")" == "$expected_bash_edit1" ]] &&
+  [[ -f "$reinstall_edit_home/.xinitrc.lightxdm-edited" && "$(cat "$reinstall_edit_home/.xinitrc.lightxdm-edited")" == "$expected_xinit_edit1" ]] &&
+  [[ $no_dup_after_bak_match -eq 1 ]] &&
+  [[ -f "$reinstall_edit_home/.bash_profile.lightxdm-edited.1" && "$(cat "$reinstall_edit_home/.bash_profile.lightxdm-edited.1")" == "# post-install bash edit 2" ]] &&
+  [[ -f "$reinstall_edit_home/.xinitrc.lightxdm-edited.1" && "$(cat "$reinstall_edit_home/.xinitrc.lightxdm-edited.1")" == "# post-install xinit edit 2" ]] &&
+  [[ "$(sha256sum < "$reinstall_edit_home/.bash_profile")" == "$(sha256sum < "$REPO_ROOT/dotfiles/.bash_profile")" ]] &&
+  [[ "$(sha256sum < "$reinstall_edit_home/.xinitrc")" == "$(sha256sum < "$REPO_ROOT/dotfiles/.xinitrc-i3")" ]]; then
+  pass "copy_dotfiles saves post-install edits to .lightxdm-edited without clobbering backups or prior saved edits"
+else
+  fail "copy_dotfiles post-install edits preservation"
+fi
+
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh saves post-install edits to .lightxdm-edited before restoring backup (unshare -r unavailable)"
+else
+  uninstall_edit_home="$TMP_DIR/home_uninstall_edited"
+  mkdir -p "$uninstall_edit_home"
+  echo "# skel bash_profile" >"$uninstall_edit_home/.bash_profile"
+  echo "# orig xinitrc" >"$uninstall_edit_home/.xinitrc"
+  (
+    export HOME="$uninstall_edit_home"
+    export USER="${USER:-testuser}"
+    copy_dotfiles "plasma" 2>/dev/null
+  )
+  echo "# uninstall bash edit 1" >>"$uninstall_edit_home/.bash_profile"
+  echo "# uninstall xinit edit 1" >>"$uninstall_edit_home/.xinitrc"
+  u_bash_edit1="$(cat "$uninstall_edit_home/.bash_profile")"
+  u_xinit_edit1="$(cat "$uninstall_edit_home/.xinitrc")"
+  set +e
+  out_u_edit1="$(TARGET_HOME="$uninstall_edit_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status_u_edit1=$?
+  set -e
+
+  (
+    export HOME="$uninstall_edit_home"
+    export USER="${USER:-testuser}"
+    copy_dotfiles "xfce" 2>/dev/null
+  )
+  echo "# uninstall bash edit 2" >"$uninstall_edit_home/.bash_profile"
+  echo "# uninstall xinit edit 2" >"$uninstall_edit_home/.xinitrc"
+  set +e
+  out_u_edit2="$(TARGET_HOME="$uninstall_edit_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status_u_edit2=$?
+  set -e
+
+  if [[ $status_u_edit1 -eq 0 && $status_u_edit2 -eq 0 ]] &&
+    [[ "$out_u_edit1" == *"$uninstall_edit_home/.bash_profile.lightxdm-edited"* ]] &&
+    [[ "$out_u_edit1" == *"$uninstall_edit_home/.xinitrc.lightxdm-edited"* ]] &&
+    [[ "$out_u_edit2" == *"$uninstall_edit_home/.bash_profile.lightxdm-edited.1"* ]] &&
+    [[ "$out_u_edit2" == *"$uninstall_edit_home/.xinitrc.lightxdm-edited.1"* ]] &&
+    [[ "$(cat "$uninstall_edit_home/.bash_profile")" == "# skel bash_profile" ]] &&
+    [[ "$(cat "$uninstall_edit_home/.xinitrc")" == "# orig xinitrc" ]] &&
+    [[ ! -e "$uninstall_edit_home/.bash_profile.lightxdm.bak" && ! -e "$uninstall_edit_home/.xinitrc.lightxdm.bak" ]] &&
+    [[ -f "$uninstall_edit_home/.bash_profile.lightxdm-edited" && "$(cat "$uninstall_edit_home/.bash_profile.lightxdm-edited")" == "$u_bash_edit1" ]] &&
+    [[ -f "$uninstall_edit_home/.xinitrc.lightxdm-edited" && "$(cat "$uninstall_edit_home/.xinitrc.lightxdm-edited")" == "$u_xinit_edit1" ]] &&
+    [[ -f "$uninstall_edit_home/.bash_profile.lightxdm-edited.1" && "$(cat "$uninstall_edit_home/.bash_profile.lightxdm-edited.1")" == "# uninstall bash edit 2" ]] &&
+    [[ -f "$uninstall_edit_home/.xinitrc.lightxdm-edited.1" && "$(cat "$uninstall_edit_home/.xinitrc.lightxdm-edited.1")" == "# uninstall xinit edit 2" ]]; then
+    pass "uninstall.sh saves post-install edits to .lightxdm-edited without overwriting existing ones before restoring backup"
+  else
+    fail "uninstall.sh post-install edits preservation (s1=$status_u_edit1:$out_u_edit1 | s2=$status_u_edit2:$out_u_edit2)"
+  fi
+fi
+
 exit "$failures"

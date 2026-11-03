@@ -131,6 +131,52 @@ install_packages() {
   sudo pacman -S --needed --noconfirm "${base_pkgs[@]}" "${pkgs[@]}"
 }
 
+# Back up a pre-existing dotfile once, or save post-install user edits before overwriting
+preserve_dotfile() {
+  local target="$1"
+  shift
+  if [[ ! -e "$target" && ! -L "$target" ]]; then
+    return 0
+  fi
+
+  local tmpl target_sum=""
+  if [[ -f "$target" && ! -L "$target" ]]; then
+    target_sum="$(sha256sum < "$target")"
+    for tmpl in "$@"; do
+      if [[ -f "$tmpl" && "$target_sum" == "$(sha256sum < "$tmpl")" ]]; then
+        return 0
+      fi
+    done
+  fi
+
+  local backup="${target}.lightxdm.bak"
+  if [[ ! -e "$backup" && ! -L "$backup" ]]; then
+    log "Backing up $target to $backup"
+    cp -P "$target" "$backup"
+    return 0
+  fi
+
+  if [[ -L "$target" && -L "$backup" ]]; then
+    if [[ "$(readlink "$target")" == "$(readlink "$backup")" ]]; then
+      return 0
+    fi
+  elif [[ -f "$target" && ! -L "$target" && -f "$backup" && ! -L "$backup" ]]; then
+    if [[ "$target_sum" == "$(sha256sum < "$backup")" ]]; then
+      return 0
+    fi
+  fi
+
+  local edited="${target}.lightxdm-edited" n=1
+  if [[ -e "$edited" || -L "$edited" ]]; then
+    while [[ -e "${edited}.${n}" || -L "${edited}.${n}" ]]; do
+      n=$((n + 1))
+    done
+    edited="${edited}.${n}"
+  fi
+  log "Saving edited $target to $edited"
+  cp -P "$target" "$edited"
+}
+
 # Copy dotfiles to the user's home directory
 copy_dotfiles() {
   local de
@@ -139,17 +185,7 @@ copy_dotfiles() {
   user_home=$HOME
 
   log "Copying dotfiles to $user_home..."
-  if [[ ( -e "$user_home/.bash_profile" || -L "$user_home/.bash_profile" ) && ! -e "$user_home/.bash_profile.lightxdm.bak" && ! -L "$user_home/.bash_profile.lightxdm.bak" ]]; then
-    local matches_bash_template=0
-    if [[ -f "$user_home/.bash_profile" && ! -L "$user_home/.bash_profile" && -f "$SCRIPT_DIR/dotfiles/.bash_profile" ]] &&
-      [[ "$(sha256sum < "$user_home/.bash_profile")" == "$(sha256sum < "$SCRIPT_DIR/dotfiles/.bash_profile")" ]]; then
-      matches_bash_template=1
-    fi
-    if [[ $matches_bash_template -eq 0 ]]; then
-      log "Backing up $user_home/.bash_profile to $user_home/.bash_profile.lightxdm.bak"
-      cp -P "$user_home/.bash_profile" "$user_home/.bash_profile.lightxdm.bak"
-    fi
-  fi
+  preserve_dotfile "$user_home/.bash_profile" "$SCRIPT_DIR/dotfiles/.bash_profile"
   install -Dm644 "$SCRIPT_DIR/dotfiles/.bash_profile" "$user_home/.bash_profile"
 
   if [[ "$de" == "plasma" ]]; then
@@ -160,23 +196,7 @@ copy_dotfiles() {
 
   local xinitrc_template="$SCRIPT_DIR/dotfiles/.xinitrc-$de"
   if [[ -f "$xinitrc_template" ]]; then
-    if [[ ( -e "$user_home/.xinitrc" || -L "$user_home/.xinitrc" ) && ! -e "$user_home/.xinitrc.lightxdm.bak" && ! -L "$user_home/.xinitrc.lightxdm.bak" ]]; then
-      local matches_xinit_template=0 tmpl
-      if [[ -f "$user_home/.xinitrc" && ! -L "$user_home/.xinitrc" ]]; then
-        local existing_sum
-        existing_sum="$(sha256sum < "$user_home/.xinitrc")"
-        for tmpl in "$SCRIPT_DIR"/dotfiles/.xinitrc-*; do
-          if [[ -f "$tmpl" && "$existing_sum" == "$(sha256sum < "$tmpl")" ]]; then
-            matches_xinit_template=1
-            break
-          fi
-        done
-      fi
-      if [[ $matches_xinit_template -eq 0 ]]; then
-        log "Backing up $user_home/.xinitrc to $user_home/.xinitrc.lightxdm.bak"
-        cp -P "$user_home/.xinitrc" "$user_home/.xinitrc.lightxdm.bak"
-      fi
-    fi
+    preserve_dotfile "$user_home/.xinitrc" "$SCRIPT_DIR"/dotfiles/.xinitrc-*
     install -Dm755 "$xinitrc_template" "$user_home/.xinitrc"
   else
     log "No .xinitrc template for $de. Please create $xinitrc_template for proper session startup."

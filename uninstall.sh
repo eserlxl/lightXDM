@@ -74,27 +74,45 @@ files_match() {
   [[ "$(sha256sum < "$1")" == "$(sha256sum < "$2")" ]]
 }
 
+matches_lightxdm_template() {
+  local dotfile="$1"
+  local path="$TARGET_HOME/$dotfile"
+  if [[ ! -f "$path" || -L "$path" ]]; then
+    return 1
+  fi
+  if [[ "$dotfile" == ".bash_profile" ]]; then
+    if [[ -f "$SCRIPT_DIR/dotfiles/.bash_profile" ]] && files_match "$path" "$SCRIPT_DIR/dotfiles/.bash_profile"; then
+      return 0
+    fi
+    return 1
+  fi
+  local tmpl
+  for tmpl in "$SCRIPT_DIR"/dotfiles/.xinitrc-*; do
+    if [[ -f "$tmpl" ]] && files_match "$path" "$tmpl"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 for dotfile in .bash_profile .xinitrc; do
   if [[ -f "$TARGET_HOME/${dotfile}.lightxdm.bak" || -L "$TARGET_HOME/${dotfile}.lightxdm.bak" ]]; then
+    if [[ -e "$TARGET_HOME/$dotfile" || -L "$TARGET_HOME/$dotfile" ]] && ! matches_lightxdm_template "$dotfile"; then
+      edited_dest="$TARGET_HOME/${dotfile}.lightxdm-edited"
+      if [[ -e "$edited_dest" || -L "$edited_dest" ]]; then
+        n=1
+        while [[ -e "${edited_dest}.${n}" || -L "${edited_dest}.${n}" ]]; do
+          n=$((n + 1))
+        done
+        edited_dest="${edited_dest}.${n}"
+      fi
+      echo "Saving edited $TARGET_HOME/$dotfile to $edited_dest..."
+      mv "$TARGET_HOME/$dotfile" "$edited_dest"
+    fi
     echo "Restoring $TARGET_HOME/$dotfile from backup..."
     mv "$TARGET_HOME/${dotfile}.lightxdm.bak" "$TARGET_HOME/$dotfile"
   elif [[ -f "$TARGET_HOME/$dotfile" ]]; then
-    matches_template=0
-    if [[ ! -L "$TARGET_HOME/$dotfile" ]]; then
-      if [[ "$dotfile" == ".bash_profile" ]]; then
-        if [[ -f "$SCRIPT_DIR/dotfiles/.bash_profile" ]] && files_match "$TARGET_HOME/$dotfile" "$SCRIPT_DIR/dotfiles/.bash_profile"; then
-          matches_template=1
-        fi
-      else
-        for tmpl in "$SCRIPT_DIR"/dotfiles/.xinitrc-*; do
-          if [[ -f "$tmpl" ]] && files_match "$TARGET_HOME/$dotfile" "$tmpl"; then
-            matches_template=1
-            break
-          fi
-        done
-      fi
-    fi
-    if [[ $matches_template -eq 0 ]]; then
+    if ! matches_lightxdm_template "$dotfile"; then
       echo "Keeping $TARGET_HOME/$dotfile (not an unmodified lightXDM template)."
     else
       echo "Removing $TARGET_HOME/$dotfile..."
