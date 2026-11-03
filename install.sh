@@ -153,7 +153,7 @@ copy_dotfiles() {
       log "Backing up $user_home/.xinitrc to $user_home/.xinitrc.lightxdm.bak"
       cp "$user_home/.xinitrc" "$user_home/.xinitrc.lightxdm.bak"
     fi
-    sudo install -Dm644 "$xinitrc_template" "$user_home/.xinitrc"
+    sudo install -Dm755 "$xinitrc_template" "$user_home/.xinitrc"
     sudo chown "$USER:$(id -gn "$USER")" "$user_home/.xinitrc"
   else
     log "No .xinitrc template for $de. Please create $xinitrc_template for proper session startup."
