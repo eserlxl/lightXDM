@@ -21,4 +21,9 @@ if [[ -f ~/.gpg-agent-gnome ]]; then
   source ~/.gpg-agent-gnome
 fi
 
+# LXDE does not update the activation environment itself.
+if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+  dbus-update-activation-environment --systemd XDG_CURRENT_DESKTOP DESKTOP_SESSION XDG_SESSION_TYPE ${SSH_AUTH_SOCK:+SSH_AUTH_SOCK}
+fi
+
 exec startlxde
