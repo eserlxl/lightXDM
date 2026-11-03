@@ -39,4 +39,25 @@ else
   echo "No Polkit rule found; skipping."
 fi
 
+# Restore or remove user dotfiles
+if [[ -z "${TARGET_HOME:-}" && -n "${SUDO_USER:-}" ]]; then
+  TARGET_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+fi
+
+if [[ -n "${TARGET_HOME:-}" ]]; then
+  for dotfile in .bash_profile .xinitrc; do
+    if [[ -f "$TARGET_HOME/${dotfile}.lightxdm.bak" ]]; then
+      echo "Restoring $TARGET_HOME/$dotfile from backup..."
+      mv "$TARGET_HOME/${dotfile}.lightxdm.bak" "$TARGET_HOME/$dotfile"
+    elif [[ -f "$TARGET_HOME/$dotfile" ]]; then
+      # Rename instead of deleting: the user may have edited it since install.
+      echo "Moving $TARGET_HOME/$dotfile to $TARGET_HOME/${dotfile}.lightxdm-removed..."
+      mv "$TARGET_HOME/$dotfile" "$TARGET_HOME/${dotfile}.lightxdm-removed"
+    fi
+  done
+  rm -f "$TARGET_HOME/.gpg-agent-kwallet" "$TARGET_HOME/.gpg-agent-gnome"
+else
+  echo "SUDO_USER is not set; skipping dotfile restore."
+fi
+
 echo "Uninstall complete. Changes will take effect at the next login or reboot."

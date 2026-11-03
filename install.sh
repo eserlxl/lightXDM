@@ -131,6 +131,10 @@ copy_dotfiles() {
   user_home=$HOME
 
   log "Copying dotfiles to $user_home..."
+  if [[ -f "$user_home/.bash_profile" && ! -e "$user_home/.bash_profile.lightxdm.bak" ]]; then
+    log "Backing up $user_home/.bash_profile to $user_home/.bash_profile.lightxdm.bak"
+    cp "$user_home/.bash_profile" "$user_home/.bash_profile.lightxdm.bak"
+  fi
   sudo install -Dm644 "dotfiles/.bash_profile" "$user_home/.bash_profile"
   sudo chown "$USER:$(id -gn "$USER")" "$user_home/.bash_profile"
 
@@ -144,6 +148,10 @@ copy_dotfiles() {
 
   local xinitrc_template="dotfiles/.xinitrc-$de"
   if [[ -f "$xinitrc_template" ]]; then
+    if [[ -f "$user_home/.xinitrc" && ! -e "$user_home/.xinitrc.lightxdm.bak" ]]; then
+      log "Backing up $user_home/.xinitrc to $user_home/.xinitrc.lightxdm.bak"
+      cp "$user_home/.xinitrc" "$user_home/.xinitrc.lightxdm.bak"
+    fi
     sudo install -Dm644 "$xinitrc_template" "$user_home/.xinitrc"
     sudo chown "$USER:$(id -gn "$USER")" "$user_home/.xinitrc"
   else

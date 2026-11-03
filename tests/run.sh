@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # tests/run.sh: Behavior test harness for lightXDM scripts
+# Test cases change HOME/USER inside subshells on purpose, to keep each case isolated.
+# shellcheck disable=SC2030,SC2031
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -39,7 +41,12 @@ else
 fi
 EOF
 
-chmod +x "$STUB_BIN/sudo" "$STUB_BIN/pacman" "$STUB_BIN/systemctl" "$STUB_BIN/id"
+cat >"$STUB_BIN/chown" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+
+chmod +x "$STUB_BIN/sudo" "$STUB_BIN/pacman" "$STUB_BIN/systemctl" "$STUB_BIN/id" "$STUB_BIN/chown"
 export PATH="$STUB_BIN:$PATH"
 export STUB_LOG="$TMP_DIR/stub.log"
 export LOGIN_FILE="$TMP_DIR/login"
@@ -410,6 +417,66 @@ if [[ $status -eq 0 && "$restored_login" == "$stock_login" && -z "$log_content" 
   pass "uninstall.sh skips missing files cleanly"
 else
   fail "uninstall.sh idempotent rerun (status=$status, output=$output, restored=$restored_login, log=$log_content)"
+fi
+
+# Case 20: copy_dotfiles backs up pre-existing .bash_profile and .xinitrc once, and uninstall.sh restores them and removes gpg-agent files
+temp_home="$TMP_DIR/home_with_dotfiles"
+mkdir -p "$temp_home"
+echo "# user original bash_profile" >"$temp_home/.bash_profile"
+echo "# user original xinitrc" >"$temp_home/.xinitrc"
+(
+  export HOME="$temp_home"
+  export USER="${USER:-testuser}"
+  copy_dotfiles "plasma" 2>/dev/null
+  copy_dotfiles "gnome" 2>/dev/null
+)
+bash_bak=""
+xinit_bak=""
+if [[ -f "$temp_home/.bash_profile.lightxdm.bak" ]]; then
+  bash_bak="$(cat "$temp_home/.bash_profile.lightxdm.bak")"
+fi
+if [[ -f "$temp_home/.xinitrc.lightxdm.bak" ]]; then
+  xinit_bak="$(cat "$temp_home/.xinitrc.lightxdm.bak")"
+fi
+if [[ "$bash_bak" == "# user original bash_profile" && "$xinit_bak" == "# user original xinitrc" ]] &&
+  [[ -f "$temp_home/.gpg-agent-kwallet" && -f "$temp_home/.gpg-agent-gnome" ]] &&
+  ! grep -Fq "# user original bash_profile" "$temp_home/.bash_profile"; then
+  pass "copy_dotfiles backs up existing .bash_profile and .xinitrc once without overwriting on second install"
+else
+  fail "copy_dotfiles backup once (bash_bak=$bash_bak, xinit_bak=$xinit_bak)"
+fi
+
+set +e
+output="$(TARGET_HOME="$temp_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+status=$?
+set -e
+restored_bash="$(cat "$temp_home/.bash_profile")"
+restored_xinit="$(cat "$temp_home/.xinitrc")"
+if [[ $status -eq 0 && "$restored_bash" == "# user original bash_profile" && "$restored_xinit" == "# user original xinitrc" ]] &&
+  [[ ! -e "$temp_home/.bash_profile.lightxdm.bak" && ! -e "$temp_home/.xinitrc.lightxdm.bak" ]] &&
+  [[ ! -e "$temp_home/.gpg-agent-kwallet" && ! -e "$temp_home/.gpg-agent-gnome" ]]; then
+  pass "uninstall.sh restores .bash_profile and .xinitrc from backup and removes gpg-agent files"
+else
+  fail "uninstall.sh dotfile restore (status=$status, output=$output, bash=$restored_bash, xinit=$restored_xinit)"
+fi
+
+# Case 21: uninstall.sh removes lightXDM dotfiles when no prior backup existed
+temp_home_fresh="$TMP_DIR/home_fresh"
+mkdir -p "$temp_home_fresh"
+(
+  export HOME="$temp_home_fresh"
+  export USER="${USER:-testuser}"
+  copy_dotfiles "plasma" 2>/dev/null
+)
+set +e
+output="$(TARGET_HOME="$temp_home_fresh" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+status=$?
+set -e
+if [[ $status -eq 0 && ! -e "$temp_home_fresh/.bash_profile" && ! -e "$temp_home_fresh/.xinitrc" && ! -e "$temp_home_fresh/.gpg-agent-kwallet" ]] &&
+  [[ -f "$temp_home_fresh/.bash_profile.lightxdm-removed" && -f "$temp_home_fresh/.xinitrc.lightxdm-removed" ]]; then
+  pass "uninstall.sh removes installed dotfiles when no backup exists"
+else
+  fail "uninstall.sh fresh dotfile removal (status=$status, output=$output)"
 fi
 
 exit "$failures"
