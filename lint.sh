@@ -10,6 +10,7 @@ scripts=(
   uninstall.sh
   lint.sh
   tests/run.sh
+  tests/docker-arch.sh
   dotfiles/.bash_profile
   dotfiles/.gpg-agent-gnome
   dotfiles/.gpg-agent-kwallet
