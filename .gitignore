@@ -18,3 +18,4 @@
 # Temporary files
 *.tmp 
 .planwright/
+.qb/
