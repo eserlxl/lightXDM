@@ -2099,4 +2099,116 @@ else
   fi
 fi
 
+# Case 52: gpg-agent helper edits survive reinstall and uninstall without overwriting saved copies
+gpg_reinstall_home="$TMP_DIR/home_gpg_reinstall"
+mkdir -p "$gpg_reinstall_home"
+echo "# pre-existing gnome helper" >"$gpg_reinstall_home/.gpg-agent-gnome"
+(
+  export HOME="$gpg_reinstall_home"
+  export USER="${USER:-testuser}"
+  copy_dotfiles "plasma" 2>/dev/null
+  copy_dotfiles "plasma" 2>/dev/null
+  copy_dotfiles "gnome" 2>/dev/null
+  copy_dotfiles "gnome" 2>/dev/null
+)
+unmodified_kwallet_clean=0
+if [[ ! -e "$gpg_reinstall_home/.gpg-agent-kwallet.lightxdm.bak" && ! -e "$gpg_reinstall_home/.gpg-agent-kwallet.lightxdm-edited" ]]; then
+  unmodified_kwallet_clean=1
+fi
+echo "# kwallet edit 1" >>"$gpg_reinstall_home/.gpg-agent-kwallet"
+echo "# gnome edit 1" >>"$gpg_reinstall_home/.gpg-agent-gnome"
+expected_kw_edit1="$(cat "$gpg_reinstall_home/.gpg-agent-kwallet")"
+expected_gn_edit1="$(cat "$gpg_reinstall_home/.gpg-agent-gnome")"
+(
+  export HOME="$gpg_reinstall_home"
+  export USER="${USER:-testuser}"
+  copy_dotfiles "plasma" 2>/dev/null
+  copy_dotfiles "gnome" 2>/dev/null
+)
+echo "# kwallet edit 2" >"$gpg_reinstall_home/.gpg-agent-kwallet"
+echo "# gnome edit 2" >"$gpg_reinstall_home/.gpg-agent-gnome"
+(
+  export HOME="$gpg_reinstall_home"
+  export USER="${USER:-testuser}"
+  copy_dotfiles "plasma" 2>/dev/null
+  copy_dotfiles "gnome" 2>/dev/null
+)
+if [[ $unmodified_kwallet_clean -eq 1 ]] &&
+  [[ -f "$gpg_reinstall_home/.gpg-agent-kwallet.lightxdm.bak" && "$(cat "$gpg_reinstall_home/.gpg-agent-kwallet.lightxdm.bak")" == "$expected_kw_edit1" ]] &&
+  [[ -f "$gpg_reinstall_home/.gpg-agent-kwallet.lightxdm-edited" && "$(cat "$gpg_reinstall_home/.gpg-agent-kwallet.lightxdm-edited")" == "# kwallet edit 2" ]] &&
+  [[ -f "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm.bak" && "$(cat "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm.bak")" == "# pre-existing gnome helper" ]] &&
+  [[ -f "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm-edited" && "$(cat "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm-edited")" == "$expected_gn_edit1" ]] &&
+  [[ -f "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm-edited.1" && "$(cat "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm-edited.1")" == "# gnome edit 2" ]] &&
+  cmp -s "$REPO_ROOT/dotfiles/.gpg-agent-kwallet" "$gpg_reinstall_home/.gpg-agent-kwallet" &&
+  cmp -s "$REPO_ROOT/dotfiles/.gpg-agent-gnome" "$gpg_reinstall_home/.gpg-agent-gnome"; then
+  pass "copy_dotfiles preserves edited gpg-agent helpers across reinstalls without overwriting backups or prior edits"
+else
+  fail "copy_dotfiles edited gpg-agent helper preservation"
+fi
+
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh preserves edited gpg-agent helpers and restores .lightxdm.bak (unshare -r unavailable)"
+else
+  gpg_uninstall_dir="$TMP_DIR/gpg_uninstall"
+  gpg_u_home="$gpg_uninstall_dir/home_edited"
+  gpg_bak_home="$gpg_uninstall_dir/home_bak"
+  mkdir -p "$gpg_u_home" "$gpg_bak_home"
+
+  (
+    export HOME="$gpg_u_home"
+    export USER="${USER:-testuser}"
+    copy_dotfiles "plasma" 2>/dev/null
+    copy_dotfiles "gnome" 2>/dev/null
+  )
+  echo "# gnome uninstall edit 1" >>"$gpg_u_home/.gpg-agent-gnome"
+  expected_u_gn1="$(cat "$gpg_u_home/.gpg-agent-gnome")"
+  set +e
+  out_gpg_u1="$(env TARGET_HOME="$gpg_u_home" LOGIN_FILE="$gpg_uninstall_dir/login" AUTOLOGIN_DROPIN="$gpg_uninstall_dir/autologin" OVERRIDE_FILE="$gpg_uninstall_dir/override" DM_STATE_FILE="$gpg_uninstall_dir/state" POLKIT_RULE="$gpg_uninstall_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  st_gpg_u1=$?
+  set -e
+
+  (
+    export HOME="$gpg_u_home"
+    export USER="${USER:-testuser}"
+    copy_dotfiles "gnome" 2>/dev/null
+  )
+  echo "# gnome uninstall edit 2" >"$gpg_u_home/.gpg-agent-gnome"
+  set +e
+  out_gpg_u2="$(env TARGET_HOME="$gpg_u_home" LOGIN_FILE="$gpg_uninstall_dir/login" AUTOLOGIN_DROPIN="$gpg_uninstall_dir/autologin" OVERRIDE_FILE="$gpg_uninstall_dir/override" DM_STATE_FILE="$gpg_uninstall_dir/state" POLKIT_RULE="$gpg_uninstall_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  st_gpg_u2=$?
+  set -e
+
+  echo "# orig kwallet helper" >"$gpg_bak_home/.gpg-agent-kwallet"
+  echo "# orig gnome helper" >"$gpg_bak_home/.gpg-agent-gnome"
+  (
+    export HOME="$gpg_bak_home"
+    export USER="${USER:-testuser}"
+    copy_dotfiles "plasma" 2>/dev/null
+    copy_dotfiles "gnome" 2>/dev/null
+  )
+  echo "# post-install kwallet edit" >"$gpg_bak_home/.gpg-agent-kwallet"
+  set +e
+  out_gpg_bak="$(env TARGET_HOME="$gpg_bak_home" LOGIN_FILE="$gpg_uninstall_dir/login" AUTOLOGIN_DROPIN="$gpg_uninstall_dir/autologin" OVERRIDE_FILE="$gpg_uninstall_dir/override" DM_STATE_FILE="$gpg_uninstall_dir/state" POLKIT_RULE="$gpg_uninstall_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  st_gpg_bak=$?
+  set -e
+
+  if [[ $st_gpg_u1 -eq 0 && $st_gpg_u2 -eq 0 && $st_gpg_bak -eq 0 ]] &&
+    [[ ! -e "$gpg_u_home/.gpg-agent-kwallet" && ! -e "$gpg_u_home/.gpg-agent-kwallet.lightxdm-edited" ]] &&
+    [[ ! -e "$gpg_u_home/.gpg-agent-gnome" ]] &&
+    [[ -f "$gpg_u_home/.gpg-agent-gnome.lightxdm-edited" && "$(cat "$gpg_u_home/.gpg-agent-gnome.lightxdm-edited")" == "$expected_u_gn1" ]] &&
+    [[ -f "$gpg_u_home/.gpg-agent-gnome.lightxdm-edited.1" && "$(cat "$gpg_u_home/.gpg-agent-gnome.lightxdm-edited.1")" == "# gnome uninstall edit 2" ]] &&
+    [[ "$out_gpg_u1" == *"$gpg_u_home/.gpg-agent-gnome.lightxdm-edited"* ]] &&
+    [[ "$out_gpg_u2" == *"$gpg_u_home/.gpg-agent-gnome.lightxdm-edited.1"* ]] &&
+    [[ "$(cat "$gpg_bak_home/.gpg-agent-kwallet")" == "# orig kwallet helper" ]] &&
+    [[ "$(cat "$gpg_bak_home/.gpg-agent-gnome")" == "# orig gnome helper" ]] &&
+    [[ ! -e "$gpg_bak_home/.gpg-agent-kwallet.lightxdm.bak" && ! -e "$gpg_bak_home/.gpg-agent-gnome.lightxdm.bak" ]] &&
+    [[ -f "$gpg_bak_home/.gpg-agent-kwallet.lightxdm-edited" && "$(cat "$gpg_bak_home/.gpg-agent-kwallet.lightxdm-edited")" == "# post-install kwallet edit" ]] &&
+    [[ ! -e "$gpg_bak_home/.gpg-agent-gnome.lightxdm-edited" ]] &&
+    [[ "$out_gpg_bak" == *"$gpg_bak_home/.gpg-agent-kwallet.lightxdm-edited"* ]]; then
+    pass "uninstall.sh saves edited gpg-agent helpers to .lightxdm-edited without overwriting and restores .lightxdm.bak"
+  else
+    fail "uninstall.sh edited gpg-agent helper preservation (u1=$st_gpg_u1:$out_gpg_u1 | u2=$st_gpg_u2:$out_gpg_u2 | bak=$st_gpg_bak:$out_gpg_bak)"
+  fi
+fi
+
 exit "$failures"

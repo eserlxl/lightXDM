@@ -130,12 +130,14 @@ matches_lightxdm_template() {
   if [[ ! -f "$path" || -L "$path" ]]; then
     return 1
   fi
-  if [[ "$dotfile" == ".bash_profile" ]]; then
-    if [[ -f "$SCRIPT_DIR/dotfiles/.bash_profile" ]] && files_match "$path" "$SCRIPT_DIR/dotfiles/.bash_profile"; then
-      return 0
-    fi
-    return 1
-  fi
+  case "$dotfile" in
+    .bash_profile | .gpg-agent-gnome | .gpg-agent-kwallet)
+      if [[ -f "$SCRIPT_DIR/dotfiles/$dotfile" ]] && files_match "$path" "$SCRIPT_DIR/dotfiles/$dotfile"; then
+        return 0
+      fi
+      return 1
+      ;;
+  esac
   local tmpl
   for tmpl in "$SCRIPT_DIR"/dotfiles/.xinitrc-*; do
     if [[ -f "$tmpl" ]] && files_match "$path" "$tmpl"; then
@@ -145,19 +147,23 @@ matches_lightxdm_template() {
   return 1
 }
 
+save_edited_dotfile() {
+  local src="$1"
+  local edited_dest="${src}.lightxdm-edited" n=1
+  if [[ -e "$edited_dest" || -L "$edited_dest" ]]; then
+    while [[ -e "${edited_dest}.${n}" || -L "${edited_dest}.${n}" ]]; do
+      n=$((n + 1))
+    done
+    edited_dest="${edited_dest}.${n}"
+  fi
+  echo "Saving edited $src to $edited_dest..."
+  mv -- "$src" "$edited_dest"
+}
+
 for dotfile in .bash_profile .xinitrc; do
   if [[ -f "$TARGET_HOME/${dotfile}.lightxdm.bak" || -L "$TARGET_HOME/${dotfile}.lightxdm.bak" ]]; then
     if [[ -e "$TARGET_HOME/$dotfile" || -L "$TARGET_HOME/$dotfile" ]] && ! matches_lightxdm_template "$dotfile"; then
-      edited_dest="$TARGET_HOME/${dotfile}.lightxdm-edited"
-      if [[ -e "$edited_dest" || -L "$edited_dest" ]]; then
-        n=1
-        while [[ -e "${edited_dest}.${n}" || -L "${edited_dest}.${n}" ]]; do
-          n=$((n + 1))
-        done
-        edited_dest="${edited_dest}.${n}"
-      fi
-      echo "Saving edited $TARGET_HOME/$dotfile to $edited_dest..."
-      mv "$TARGET_HOME/$dotfile" "$edited_dest"
+      save_edited_dotfile "$TARGET_HOME/$dotfile"
     fi
     echo "Restoring $TARGET_HOME/$dotfile from backup..."
     mv "$TARGET_HOME/${dotfile}.lightxdm.bak" "$TARGET_HOME/$dotfile"
@@ -170,7 +176,20 @@ for dotfile in .bash_profile .xinitrc; do
     fi
   fi
 done
-rm -f "$TARGET_HOME/.gpg-agent-kwallet" "$TARGET_HOME/.gpg-agent-gnome"
+
+for helper in .gpg-agent-kwallet .gpg-agent-gnome; do
+  if [[ -e "$TARGET_HOME/$helper" || -L "$TARGET_HOME/$helper" ]]; then
+    if matches_lightxdm_template "$helper"; then
+      rm -f "$TARGET_HOME/$helper"
+    else
+      save_edited_dotfile "$TARGET_HOME/$helper"
+    fi
+  fi
+  if [[ -e "$TARGET_HOME/${helper}.lightxdm.bak" || -L "$TARGET_HOME/${helper}.lightxdm.bak" ]]; then
+    echo "Restoring $TARGET_HOME/$helper from backup..."
+    mv -- "$TARGET_HOME/${helper}.lightxdm.bak" "$TARGET_HOME/$helper"
+  fi
+done
 
 # Re-enable only display managers disabled by the installer
 if [[ -f "$DM_STATE_FILE" ]]; then
