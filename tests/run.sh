@@ -849,4 +849,98 @@ for padded in "08:budgie" "09:i3"; do
   fi
 done
 
+# Case 30: uninstall.sh preserves restored originals on second run, keeps edited/foreign dotfiles, and never overwrites .lightxdm-removed
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh preserves restored/edited dotfiles and existing .lightxdm-removed (unshare -r unavailable)"
+else
+  twice_home="$TMP_DIR/home_uninstall_twice"
+  mkdir -p "$twice_home"
+  echo "# user original bash_profile" >"$twice_home/.bash_profile"
+  echo "# user original xinitrc" >"$twice_home/.xinitrc"
+  (
+    export HOME="$twice_home"
+    export USER="${USER:-testuser}"
+    copy_dotfiles "plasma" 2>/dev/null
+  )
+  set +e
+  output1="$(TARGET_HOME="$twice_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status1=$?
+  output2="$(TARGET_HOME="$twice_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status2=$?
+  set -e
+  twice_bash=""
+  twice_xinit=""
+  if [[ -f "$twice_home/.bash_profile" ]]; then
+    twice_bash="$(cat "$twice_home/.bash_profile")"
+  fi
+  if [[ -f "$twice_home/.xinitrc" ]]; then
+    twice_xinit="$(cat "$twice_home/.xinitrc")"
+  fi
+  if [[ $status1 -eq 0 && $status2 -eq 0 ]] &&
+    [[ "$twice_bash" == "# user original bash_profile" && "$twice_xinit" == "# user original xinitrc" ]] &&
+    [[ ! -e "$twice_home/.bash_profile.lightxdm-removed" && ! -e "$twice_home/.xinitrc.lightxdm-removed" ]] &&
+    [[ "$output2" == *"Keeping $twice_home/.bash_profile"* && "$output2" == *"Keeping $twice_home/.xinitrc"* ]]; then
+    pass "uninstall.sh leaves restored .bash_profile and .xinitrc in place on second run"
+  else
+    fail "uninstall.sh second run (s1=$status1, s2=$status2, bash=$twice_bash, xinit=$twice_xinit, out1=$output1, out2=$output2)"
+  fi
+
+  edited_home="$TMP_DIR/home_edited_dotfiles"
+  mkdir -p "$edited_home"
+  (
+    export HOME="$edited_home"
+    export USER="${USER:-testuser}"
+    copy_dotfiles "i3" 2>/dev/null
+  )
+  echo "# user customization" >>"$edited_home/.bash_profile"
+  echo "exec openbox-session" >"$edited_home/.xinitrc"
+  expected_edited_bash="$(cat "$edited_home/.bash_profile")"
+  set +e
+  output="$(TARGET_HOME="$edited_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  actual_edited_bash=""
+  actual_foreign_xinit=""
+  if [[ -f "$edited_home/.bash_profile" ]]; then
+    actual_edited_bash="$(cat "$edited_home/.bash_profile")"
+  fi
+  if [[ -f "$edited_home/.xinitrc" ]]; then
+    actual_foreign_xinit="$(cat "$edited_home/.xinitrc")"
+  fi
+  if [[ $status -eq 0 && "$actual_edited_bash" == "$expected_edited_bash" && "$actual_foreign_xinit" == "exec openbox-session" ]] &&
+    [[ ! -e "$edited_home/.bash_profile.lightxdm-removed" && ! -e "$edited_home/.xinitrc.lightxdm-removed" ]] &&
+    [[ "$output" == *"Keeping $edited_home/.bash_profile"* && "$output" == *"Keeping $edited_home/.xinitrc"* ]]; then
+    pass "uninstall.sh never moves user-edited or foreign dotfiles"
+  else
+    fail "uninstall.sh edited/foreign dotfiles (status=$status, output=$output)"
+  fi
+
+  removed_home="$TMP_DIR/home_existing_removed"
+  mkdir -p "$removed_home"
+  echo "# previous removed bash_profile" >"$removed_home/.bash_profile.lightxdm-removed"
+  echo "# previous removed xinitrc" >"$removed_home/.xinitrc.lightxdm-removed"
+  (
+    export HOME="$removed_home"
+    export USER="${USER:-testuser}"
+    copy_dotfiles "xfce" 2>/dev/null
+  )
+  set +e
+  output="$(TARGET_HOME="$removed_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  prev_bash=""
+  prev_xinit=""
+  if [[ -f "$removed_home/.bash_profile.lightxdm-removed" ]]; then
+    prev_bash="$(cat "$removed_home/.bash_profile.lightxdm-removed")"
+  fi
+  if [[ -f "$removed_home/.xinitrc.lightxdm-removed" ]]; then
+    prev_xinit="$(cat "$removed_home/.xinitrc.lightxdm-removed")"
+  fi
+  if [[ $status -eq 0 && "$prev_bash" == "# previous removed bash_profile" && "$prev_xinit" == "# previous removed xinitrc" ]]; then
+    pass "uninstall.sh never overwrites existing .lightxdm-removed files"
+  else
+    fail "uninstall.sh existing .lightxdm-removed (status=$status, bash=$prev_bash, xinit=$prev_xinit, output=$output)"
+  fi
+fi
+
 exit "$failures"

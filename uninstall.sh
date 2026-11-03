@@ -7,6 +7,7 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
 BACKUP_FILE="${LOGIN_FILE}.lightxdm.bak"
 
@@ -50,9 +51,27 @@ if [[ -n "${TARGET_HOME:-}" ]]; then
       echo "Restoring $TARGET_HOME/$dotfile from backup..."
       mv "$TARGET_HOME/${dotfile}.lightxdm.bak" "$TARGET_HOME/$dotfile"
     elif [[ -f "$TARGET_HOME/$dotfile" ]]; then
-      # Rename instead of deleting: the user may have edited it since install.
-      echo "Moving $TARGET_HOME/$dotfile to $TARGET_HOME/${dotfile}.lightxdm-removed..."
-      mv "$TARGET_HOME/$dotfile" "$TARGET_HOME/${dotfile}.lightxdm-removed"
+      matches_template=0
+      if [[ "$dotfile" == ".bash_profile" ]]; then
+        if [[ -f "$SCRIPT_DIR/dotfiles/.bash_profile" ]] && cmp -s "$TARGET_HOME/$dotfile" "$SCRIPT_DIR/dotfiles/.bash_profile"; then
+          matches_template=1
+        fi
+      else
+        for tmpl in "$SCRIPT_DIR"/dotfiles/.xinitrc-*; do
+          if [[ -f "$tmpl" ]] && cmp -s "$TARGET_HOME/$dotfile" "$tmpl"; then
+            matches_template=1
+            break
+          fi
+        done
+      fi
+      if [[ $matches_template -eq 0 ]]; then
+        echo "Keeping $TARGET_HOME/$dotfile (not an unmodified lightXDM template)."
+      elif [[ -e "$TARGET_HOME/${dotfile}.lightxdm-removed" || -L "$TARGET_HOME/${dotfile}.lightxdm-removed" ]]; then
+        echo "Skipping move of $TARGET_HOME/$dotfile; $TARGET_HOME/${dotfile}.lightxdm-removed already exists."
+      else
+        echo "Moving $TARGET_HOME/$dotfile to $TARGET_HOME/${dotfile}.lightxdm-removed..."
+        mv "$TARGET_HOME/$dotfile" "$TARGET_HOME/${dotfile}.lightxdm-removed"
+      fi
     fi
   done
   rm -f "$TARGET_HOME/.gpg-agent-kwallet" "$TARGET_HOME/.gpg-agent-gnome"
