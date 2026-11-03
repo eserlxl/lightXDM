@@ -1502,4 +1502,26 @@ else
   fail "main --de missing arg (status=$status, log=$log_content, output=$output)"
 fi
 
+# Case 43: main --no-packages skips packages and runs every other setup step, with or without --de
+for de_id in "" i3; do
+  no_packages_args=(--no-packages)
+  if [[ -n "$de_id" ]]; then
+    no_packages_args+=(--de "$de_id")
+  fi
+  : >"$STUB_LOG"
+  set +e
+  output="$(run_main_with_stubs "$sudo_pw_dir" "${no_packages_args[@]}" 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -eq 0 && "$output" == *"Skipping package installation (--no-packages)."* &&
+    "$log_content" != *"install_packages"* && "$log_content" == *"sudo -v"* &&
+    "$log_content" == *"copy_dotfiles i3"* && "$log_content" == *"configure_pam i3"* &&
+    "$log_content" == *"install_polkit_rule"* && "$log_content" == *"disable_display_managers"* ]]; then
+    pass "main ${no_packages_args[*]} skips packages and runs all other setup steps"
+  else
+    fail "main ${no_packages_args[*]} (status=$status, log=$log_content, output=$output)"
+  fi
+done
+
 exit "$failures"

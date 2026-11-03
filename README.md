@@ -29,6 +29,8 @@ cd lightXDM
 bash install.sh
 # Or select a desktop explicitly (skips detection and prompt):
 # bash install.sh --de i3
+# Or configure an existing desktop without installing packages:
+# bash install.sh --no-packages --de i3
 ```
 
 > **Important:**
@@ -42,6 +44,7 @@ bash install.sh
   - polkit-kde-agent for KDE Plasma
   - lxqt-policykit for LXQt
   - polkit-gnome for all other supported DEs.
+- Pass `--no-packages` (optionally with `--de <id>`) to skip all package installation when you already have the required packages. Dotfiles, PAM, Polkit and display manager setup still run.
 - Copies dotfiles to your home, including the correct `.xinitrc-<de>` for your DE.
 - Appends PAM lines to `/etc/pam.d/login` (after a one-time backup at `/etc/pam.d/login.lightxdm.bak`, which `uninstall.sh` restores) for KWallet (`pam_kwallet5.so` on Plasma) or GNOME Keyring (`pam_gnome_keyring.so` on every other supported desktop) auto-unlock.
 - Configures Polkit for passwordless power-off, reboot, suspend, and hibernate for local active `wheel` users, while USB mounting uses `udisks2` defaults.

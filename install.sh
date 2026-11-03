@@ -271,13 +271,18 @@ disable_display_managers() {
 
 main() {
   local de=""
-  local usage="Usage: bash $0 [-h|--help] [--de <id>]"
+  local no_packages=0
+  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--no-packages]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -h | --help)
         echo "$usage"
         exit 0
+        ;;
+      --no-packages)
+        no_packages=1
+        shift
         ;;
       --de)
         if [[ $# -lt 2 ]]; then
@@ -332,7 +337,11 @@ main() {
     fi
   fi
 
-  install_packages "$de"
+  if [[ $no_packages -eq 1 ]]; then
+    log "Skipping package installation (--no-packages)."
+  else
+    install_packages "$de"
+  fi
   copy_dotfiles "$de"
   configure_pam "$de"
   install_polkit_rule
