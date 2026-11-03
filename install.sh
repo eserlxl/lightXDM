@@ -6,6 +6,7 @@ set -e
 # --- Configuration ---
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly DM_LIST=(sddm lightdm gdm lxdm)
+readonly DISPLAY_MANAGER_LINK="${DISPLAY_MANAGER_LINK:-/etc/systemd/system/display-manager.service}"
 readonly LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
 readonly POLKIT_RULE_SRC="$SCRIPT_DIR/polkit/49-nopasswd.rules"
 readonly POLKIT_RULE_DEST="${POLKIT_RULE_DEST:-/etc/polkit-1/rules.d/49-nopasswd.rules}"
@@ -240,6 +241,7 @@ install_polkit_rule() {
 # Disable any installed display managers
 disable_display_managers() {
   log "Disabling any installed display managers..."
+  local dm dm_unit
   local disabled_dms=()
   for dm in "${DM_LIST[@]}"; do
     if systemctl list-unit-files | grep -q "${dm}.service"; then
@@ -249,6 +251,14 @@ disable_display_managers() {
       fi
     fi
   done
+  if [[ -L "$DISPLAY_MANAGER_LINK" ]] && dm_unit="$(readlink -f "$DISPLAY_MANAGER_LINK")"; then
+    dm_unit="${dm_unit##*/}"
+    dm="${dm_unit%.service}"
+    if [[ " ${disabled_dms[*]} " != *" $dm "* ]] && systemctl is-enabled --quiet "$dm_unit"; then
+      sudo systemctl disable "$dm_unit"
+      disabled_dms+=("$dm")
+    fi
+  fi
   if [[ ${#disabled_dms[@]} -gt 0 ]]; then
     log "Disabled display manager(s): ${disabled_dms[*]}"
     log "Your current session will not be interrupted."

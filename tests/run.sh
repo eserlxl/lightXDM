@@ -54,6 +54,7 @@ chmod +x "$STUB_BIN/sudo" "$STUB_BIN/pacman" "$STUB_BIN/systemctl" "$STUB_BIN/id
 export PATH="$STUB_BIN:$PATH"
 export STUB_LOG="$TMP_DIR/stub.log"
 export LOGIN_FILE="$TMP_DIR/login"
+export DISPLAY_MANAGER_LINK="$TMP_DIR/display-manager.service"
 
 # shellcheck source=install.sh disable=SC1091
 source "$REPO_ROOT/install.sh"
@@ -1421,6 +1422,38 @@ if grep -Eq '^auth[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so$' "$LOGI
   pass "configure_pam adds both lines when module appears only in trailing # comments"
 else
   fail "configure_pam trailing # comment mention (content=$trailing_comment_after)"
+fi
+
+# Case 41: disable_display_managers disables an enabled DM behind display-manager.service
+dm_stub_dir="$TMP_DIR/dm_bin"
+mkdir -p "$dm_stub_dir"
+: >"$TMP_DIR/greetd.service"
+ln -s "$TMP_DIR/greetd.service" "$DISPLAY_MANAGER_LINK"
+cat >"$dm_stub_dir/systemctl" <<'EOF'
+#!/usr/bin/env bash
+echo "systemctl $*" >>"$STUB_LOG"
+case "$1" in
+  list-unit-files) echo "greetd.service enabled" ;;
+  is-enabled) [[ "$3" == "greetd.service" ]] ;;
+  disable) exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$dm_stub_dir/systemctl"
+: >"$STUB_LOG"
+set +e
+output="$(
+  export PATH="$dm_stub_dir:$PATH"
+  disable_display_managers 2>&1
+)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 0 ]] && grep -Fxq 'systemctl disable greetd.service' "$STUB_LOG" &&
+  [[ "$output" == *"Disabled display manager(s): greetd"* ]]; then
+  pass "disable_display_managers disables greetd through display-manager.service"
+else
+  fail "disable_display_managers alias (status=$status, log=$log_content, output=$output)"
 fi
 
 exit "$failures"
