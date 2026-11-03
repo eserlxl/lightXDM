@@ -222,11 +222,18 @@ done
 
 # Re-enable only display managers disabled by the installer
 if [[ -f "$DM_STATE_FILE" ]]; then
+  failed=()
   while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
     [[ -n "$dm_unit" ]] || continue
-    systemctl enable "$dm_unit"
+    systemctl enable "$dm_unit" || failed+=("$dm_unit")
   done < "$DM_STATE_FILE"
-  rm -f "$DM_STATE_FILE"
+  if [[ ${#failed[@]} -eq 0 ]]; then
+    rm -f "$DM_STATE_FILE"
+  else
+    echo "Failed to re-enable display manager(s): ${failed[*]}" >&2
+    printf '%s\n' "${failed[@]}" > "$DM_STATE_FILE"
+    exit 1
+  fi
 fi
 # install.sh creates the state directory even when it disables nothing.
 rmdir --ignore-fail-on-non-empty "$(dirname -- "$DM_STATE_FILE")" 2>/dev/null || true

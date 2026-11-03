@@ -31,6 +31,9 @@ EOF
 cat >"$STUB_BIN/systemctl" <<'EOF'
 #!/usr/bin/env bash
 echo "systemctl $*" >>"${STUB_LOG:-/dev/null}"
+if [[ "${1:-}" == "enable" && "${2:-}" == "${STUB_SYSTEMCTL_FAIL_UNIT:-}" ]]; then
+  exit 1
+fi
 exit "${STUB_SYSTEMCTL_EXIT:-0}"
 EOF
 
@@ -1607,13 +1610,29 @@ else
     fail "uninstall.sh failed enable (status=$status, output=$output)"
   fi
 
+  # Case 41c: a missing first unit does not prevent restoring the remaining units
+  : >"$STUB_LOG"
+  set +e
+  output="$(env STUB_SYSTEMCTL_FAIL_UNIT=sddm.service TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" AUTOLOGIN_DROPIN="$TMP_DIR/dm_autologin" OVERRIDE_FILE="$TMP_DIR/dm_override" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -ne 0 && -f "$DM_STATE_FILE" ]] &&
+    [[ "$(cat "$DM_STATE_FILE")" == 'sddm.service' ]] &&
+    [[ "$log_content" == $'systemctl enable sddm.service\nsystemctl enable greetd.service' ]] &&
+    [[ "$output" == *"Failed to re-enable display manager(s): sddm.service"* ]]; then
+    pass "uninstall.sh restores later display managers and keeps only failed units"
+  else
+    fail "uninstall.sh partial display manager restore (status=$status, log=$log_content, output=$output)"
+  fi
+
   : >"$STUB_LOG"
   set +e
   output="$(env TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" AUTOLOGIN_DROPIN="$TMP_DIR/dm_autologin" OVERRIDE_FILE="$TMP_DIR/dm_override" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
-  if [[ $status -eq 0 && ! -e "$DM_STATE_FILE" && "$log_content" == $'systemctl enable sddm.service\nsystemctl enable greetd.service' ]]; then
+  if [[ $status -eq 0 && ! -e "$DM_STATE_FILE" && "$log_content" == 'systemctl enable sddm.service' ]]; then
     pass "uninstall.sh enables only recorded display managers and removes state"
   else
     fail "uninstall.sh display manager restore (status=$status, log=$log_content, output=$output)"
