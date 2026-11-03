@@ -221,15 +221,23 @@ chmod +x "$sudo_pw_dir/sudo"
 # shellcheck disable=SC2317,SC2329  # overrides are called indirectly through main
 run_main_with_stubs() (
   export PATH="$1:$PATH"
+  shift
   export USER="${USER:-testuser}"
   unset SUDO_USER
-  detect_de() { echo "i3"; }
+  detect_de() {
+    echo "detect_de" >>"$STUB_LOG"
+    echo "${STUB_DETECTED_DE:-i3}"
+  }
+  prompt_de_selection() {
+    echo "prompt_de_selection" >>"$STUB_LOG"
+    return 1
+  }
   install_packages() { echo "install_packages $1" >>"$STUB_LOG"; }
   copy_dotfiles() { echo "copy_dotfiles $1" >>"$STUB_LOG"; }
   configure_pam() { echo "configure_pam $1" >>"$STUB_LOG"; }
   install_polkit_rule() { echo "install_polkit_rule" >>"$STUB_LOG"; }
   disable_display_managers() { echo "disable_display_managers" >>"$STUB_LOG"; }
-  main
+  main "$@"
 )
 
 : >"$STUB_LOG"
@@ -1454,6 +1462,44 @@ if [[ $status -eq 0 ]] && grep -Fxq 'systemctl disable greetd.service' "$STUB_LO
   pass "disable_display_managers disables greetd through display-manager.service"
 else
   fail "disable_display_managers alias (status=$status, log=$log_content, output=$output)"
+fi
+
+# Case 42: main --de <id> overrides detect_de/prompt_de_selection and rejects invalid or missing ids
+: >"$STUB_LOG"
+set +e
+output="$(STUB_DETECTED_DE=plasma run_main_with_stubs "$sudo_pw_dir" --de i3 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 0 && "$log_content" == *"install_packages i3"* && "$log_content" == *"copy_dotfiles i3"* && "$log_content" == *"configure_pam i3"* ]] &&
+  [[ "$log_content" != *"detect_de"* && "$log_content" != *"prompt_de_selection"* && "$log_content" != *"plasma"* ]]; then
+  pass "main --de i3 configures i3 and skips detect_de even when plasma would be detected"
+else
+  fail "main --de i3 override (status=$status, log=$log_content, output=$output)"
+fi
+
+: >"$STUB_LOG"
+set +e
+output="$(run_main_with_stubs "$sudo_pw_dir" --de bogus 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 1 && "$output" == *"plasma gnome xfce lxqt lxde mate cinnamon budgie i3"* && -z "$log_content" ]]; then
+  pass "main --de bogus prints valid ids and exits 1"
+else
+  fail "main --de bogus (status=$status, log=$log_content, output=$output)"
+fi
+
+: >"$STUB_LOG"
+set +e
+output="$(run_main_with_stubs "$sudo_pw_dir" --de 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 1 && "$output" == *"Usage:"* && -z "$log_content" ]]; then
+  pass "main --de without id prints usage and exits 1"
+else
+  fail "main --de missing arg (status=$status, log=$log_content, output=$output)"
 fi
 
 exit "$failures"

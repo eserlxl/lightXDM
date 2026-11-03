@@ -270,14 +270,38 @@ disable_display_managers() {
 # --- Main ---
 
 main() {
-  if [[ $# -gt 0 ]]; then
-    if [[ $# -eq 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
-      echo "Usage: bash $0 [-h|--help]"
-      exit 0
-    fi
-    echo "Usage: bash $0 [-h|--help]" >&2
-    exit 1
-  fi
+  local de=""
+  local usage="Usage: bash $0 [-h|--help] [--de <id>]"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h | --help)
+        echo "$usage"
+        exit 0
+        ;;
+      --de)
+        if [[ $# -lt 2 ]]; then
+          log "Missing argument for --de (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
+          echo "$usage" >&2
+          exit 1
+        fi
+        case "$2" in
+          plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3)
+            de="$2"
+            ;;
+          *)
+            log "Unsupported desktop environment: $2 (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
+            exit 1
+            ;;
+        esac
+        shift 2
+        ;;
+      *)
+        echo "$usage" >&2
+        exit 1
+        ;;
+    esac
+  done
 
   check_root
 
@@ -298,13 +322,14 @@ main() {
     exit 1
   fi
 
-  local de
-  de=$(detect_de)
+  if [[ -z "$de" ]]; then
+    de=$(detect_de)
 
-  if [[ "$de" == "unknown" ]]; then
-    de=$(prompt_de_selection) || exit 0
-  else
-    log "Detected desktop environment: $de"
+    if [[ "$de" == "unknown" ]]; then
+      de=$(prompt_de_selection) || exit 0
+    else
+      log "Detected desktop environment: $de"
+    fi
   fi
 
   install_packages "$de"

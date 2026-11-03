@@ -27,6 +27,8 @@ cd ~
 git clone https://github.com/eserlxl/lightXDM.git
 cd lightXDM
 bash install.sh
+# Or select a desktop explicitly (skips detection and prompt):
+# bash install.sh --de i3
 ```
 
 > **Important:**
@@ -34,8 +36,8 @@ bash install.sh
 > - Your user **must be in the `wheel` group** and have working `sudo` privileges. If not, see the error messages for instructions on how to add your user to the `wheel` group and configure `sudo`.
 > - If you run `sudo bash install.sh` or run as root, the script will exit with an error.
 
-- **Detects your installed DE** (Plasma, GNOME, XFCE, LXQt, LXDE, MATE, Cinnamon, Budgie, or i3).
-- If no DE is found, it **prompts you to choose one** to install.
+- **Detects your installed DE** (Plasma, GNOME, XFCE, LXQt, LXDE, MATE, Cinnamon, Budgie, or i3), or pass `--de <id>` (`plasma`, `gnome`, `xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, `budgie`, or `i3`) to configure a specific desktop explicitly.
+- If no DE is found (and `--de` is not passed), it **prompts you to choose one** to install.
 - Installs the minimal required packages for your chosen DE, including the correct polkit agent:
   - polkit-kde-agent for KDE Plasma
   - lxqt-policykit for LXQt
