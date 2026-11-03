@@ -7,6 +7,6 @@ export PATH="$HOME/.local/bin:$PATH"
 [[ -f ~/.bashrc ]] && . ~/.bashrc
 
 # Start X only from an interactive tty1 login shell, if not already inside X
-if [[ $- == *i* && -z $DISPLAY && $(tty) == /dev/tty1 ]]; then
+if [[ $- == *i* && -z $DISPLAY && $(tty) == /dev/tty1 ]] && command -v startx >/dev/null 2>&1; then
     exec startx
 fi
