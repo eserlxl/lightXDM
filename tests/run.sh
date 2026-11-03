@@ -1356,4 +1356,71 @@ for spaced in " 1" "+1"; do
   fi
 done
 
+# Case 38: configure_pam appends only the missing line when only auth or only session is present
+rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+write_stock_login
+echo "auth       optional   pam_gnome_keyring.so" >>"$LOGIN_FILE"
+auth_only_before="$(cat "$LOGIN_FILE")"
+configure_pam "gnome" 2>/dev/null
+auth_only_after="$(cat "$LOGIN_FILE")"
+if [[ -f "${LOGIN_FILE}.lightxdm.bak" && "$(cat "${LOGIN_FILE}.lightxdm.bak")" == "$auth_only_before" ]] &&
+  [[ "$(grep -Ec '^[[:space:]]*-?auth[[:space:]].*pam_gnome_keyring\.so' "$LOGIN_FILE")" -eq 1 ]] &&
+  grep -Eq '^session[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so auto_start$' "$LOGIN_FILE" &&
+  [[ "$(grep -c 'pam_gnome_keyring\.so' "$LOGIN_FILE")" -eq 2 ]]; then
+  pass "configure_pam adds only session line when auth line already exists"
+else
+  fail "configure_pam auth-only file (content=$auth_only_after)"
+fi
+
+rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+write_stock_login
+echo "session    optional   pam_kwallet5.so force_run" >>"$LOGIN_FILE"
+session_only_before="$(cat "$LOGIN_FILE")"
+configure_pam "plasma" 2>/dev/null
+session_only_after="$(cat "$LOGIN_FILE")"
+if [[ -f "${LOGIN_FILE}.lightxdm.bak" && "$(cat "${LOGIN_FILE}.lightxdm.bak")" == "$session_only_before" ]] &&
+  grep -Eq '^auth[[:space:]]+optional[[:space:]]+pam_kwallet5\.so$' "$LOGIN_FILE" &&
+  [[ "$(grep -Ec '^[[:space:]]*-?session[[:space:]].*pam_kwallet5\.so' "$LOGIN_FILE")" -eq 1 ]] &&
+  [[ "$(grep -c 'pam_kwallet5\.so' "$LOGIN_FILE")" -eq 2 ]]; then
+  pass "configure_pam adds only auth line when session line already exists"
+else
+  fail "configure_pam session-only file (content=$session_only_after)"
+fi
+
+# Case 39: configure_pam treats -auth and -session lines as configured and adds nothing
+rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+write_stock_login
+cat >>"$LOGIN_FILE" <<'EOF'
+-auth      optional     pam_gnome_keyring.so
+-session   optional     pam_gnome_keyring.so auto_start
+EOF
+dash_before="$(cat "$LOGIN_FILE")"
+configure_pam "gnome" 2>/dev/null
+dash_after="$(cat "$LOGIN_FILE")"
+if [[ "$dash_after" == "$dash_before" && ! -e "${LOGIN_FILE}.lightxdm.bak" ]]; then
+  pass "configure_pam adds nothing when -auth and -session lines already exist"
+else
+  fail "configure_pam -auth/-session file (content=$dash_after)"
+fi
+
+# Case 40: configure_pam adds both lines when module is only mentioned in trailing # comments
+rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+cat >"$LOGIN_FILE" <<'EOF'
+#%PAM-1.0
+
+auth       requisite    pam_nologin.so
+auth       include      system-local-login # pam_gnome_keyring.so
+account    include      system-local-login
+session    include      system-local-login # pam_gnome_keyring.so auto_start
+password   include      system-local-login
+EOF
+configure_pam "gnome" 2>/dev/null
+trailing_comment_after="$(cat "$LOGIN_FILE")"
+if grep -Eq '^auth[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so$' "$LOGIN_FILE" &&
+  grep -Eq '^session[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so auto_start$' "$LOGIN_FILE"; then
+  pass "configure_pam adds both lines when module appears only in trailing # comments"
+else
+  fail "configure_pam trailing # comment mention (content=$trailing_comment_after)"
+fi
+
 exit "$failures"

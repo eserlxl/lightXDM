@@ -205,7 +205,16 @@ configure_pam() {
       ;;
   esac
 
-  if ! grep -Eq "^[[:space:]]*(auth|session)[[:space:]].*${module//./\\.}" "$LOGIN_FILE"; then
+  local module_re="${module//./\\.}"
+  local lines_to_add=()
+  if ! grep -Eq "^[[:space:]]*-?auth[[:space:]][^#]*${module_re}" "$LOGIN_FILE"; then
+    lines_to_add+=("$auth_line")
+  fi
+  if ! grep -Eq "^[[:space:]]*-?session[[:space:]][^#]*${module_re}" "$LOGIN_FILE"; then
+    lines_to_add+=("$session_line")
+  fi
+
+  if [[ ${#lines_to_add[@]} -gt 0 ]]; then
     local backup_file
     backup_file="${LOGIN_FILE}.lightxdm.bak"
     if [[ ! -e "$backup_file" ]]; then
@@ -215,7 +224,7 @@ configure_pam() {
     if [[ -s "$LOGIN_FILE" && -n "$(tail -c 1 "$LOGIN_FILE")" ]]; then
       printf '\n' | sudo tee -a "$LOGIN_FILE" > /dev/null
     fi
-    printf '%s\n%s\n' "$auth_line" "$session_line" | sudo tee -a "$LOGIN_FILE" > /dev/null
+    printf '%s\n' "${lines_to_add[@]}" | sudo tee -a "$LOGIN_FILE" > /dev/null
     log "Configured $module in $LOGIN_FILE."
   else
     log "PAM configuration for $module already exists. Skipping."
