@@ -136,7 +136,15 @@ install_packages() {
 preserve_dotfile() {
   local target="$1"
   shift
+  local backup="${target}.lightxdm.bak"
+  local absent="${target}.lightxdm.absent"
   if [[ ! -e "$target" && ! -L "$target" ]]; then
+    if [[ ! -e "$backup" && ! -L "$backup" && ! -e "$absent" && ! -L "$absent" ]]; then
+      if [[ "$absent" == */* && ! -d "${absent%/*}" ]]; then
+        mkdir -p -- "${absent%/*}"
+      fi
+      : > "$absent"
+    fi
     return 0
   fi
 
@@ -150,20 +158,21 @@ preserve_dotfile() {
     done
   fi
 
-  local backup="${target}.lightxdm.bak"
-  if [[ ! -e "$backup" && ! -L "$backup" ]]; then
-    log "Backing up $target to $backup"
-    cp -P "$target" "$backup"
-    return 0
-  fi
-
-  if [[ -L "$target" && -L "$backup" ]]; then
-    if [[ "$(readlink "$target")" == "$(readlink "$backup")" ]]; then
+  if [[ ! -e "$absent" && ! -L "$absent" ]]; then
+    if [[ ! -e "$backup" && ! -L "$backup" ]]; then
+      log "Backing up $target to $backup"
+      cp -P "$target" "$backup"
       return 0
     fi
-  elif [[ -f "$target" && ! -L "$target" && -f "$backup" && ! -L "$backup" ]]; then
-    if [[ "$target_sum" == "$(sha256sum < "$backup")" ]]; then
-      return 0
+
+    if [[ -L "$target" && -L "$backup" ]]; then
+      if [[ "$(readlink "$target")" == "$(readlink "$backup")" ]]; then
+        return 0
+      fi
+    elif [[ -f "$target" && ! -L "$target" && -f "$backup" && ! -L "$backup" ]]; then
+      if [[ "$target_sum" == "$(sha256sum < "$backup")" ]]; then
+        return 0
+      fi
     fi
   fi
 

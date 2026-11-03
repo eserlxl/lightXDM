@@ -169,6 +169,17 @@ for dotfile in .bash_profile .xinitrc; do
     fi
     echo "Restoring $TARGET_HOME/$dotfile from backup..."
     mv "$TARGET_HOME/${dotfile}.lightxdm.bak" "$TARGET_HOME/$dotfile"
+    rm -f -- "$TARGET_HOME/${dotfile}.lightxdm.absent"
+  elif [[ -e "$TARGET_HOME/${dotfile}.lightxdm.absent" || -L "$TARGET_HOME/${dotfile}.lightxdm.absent" ]]; then
+    if [[ -e "$TARGET_HOME/$dotfile" || -L "$TARGET_HOME/$dotfile" ]]; then
+      if matches_lightxdm_template "$dotfile"; then
+        echo "Removing $TARGET_HOME/$dotfile..."
+        rm -f "$TARGET_HOME/$dotfile"
+      else
+        save_edited_dotfile "$TARGET_HOME/$dotfile"
+      fi
+    fi
+    rm -f -- "$TARGET_HOME/${dotfile}.lightxdm.absent"
   elif [[ -f "$TARGET_HOME/$dotfile" ]]; then
     if ! matches_lightxdm_template "$dotfile"; then
       echo "Keeping $TARGET_HOME/$dotfile (not an unmodified lightXDM template)."
@@ -180,18 +191,32 @@ for dotfile in .bash_profile .xinitrc; do
 done
 
 for helper in .gpg-agent-kwallet .gpg-agent-gnome; do
-  if [[ -e "$TARGET_HOME/$helper" || -L "$TARGET_HOME/$helper" ]]; then
+  if [[ -e "$TARGET_HOME/${helper}.lightxdm.bak" || -L "$TARGET_HOME/${helper}.lightxdm.bak" ]]; then
+    if [[ -e "$TARGET_HOME/$helper" || -L "$TARGET_HOME/$helper" ]]; then
+      if matches_lightxdm_template "$helper"; then
+        rm -f "$TARGET_HOME/$helper"
+      else
+        save_edited_dotfile "$TARGET_HOME/$helper"
+      fi
+    fi
+    echo "Restoring $TARGET_HOME/$helper from backup..."
+    mv -- "$TARGET_HOME/${helper}.lightxdm.bak" "$TARGET_HOME/$helper"
+    rm -f -- "$TARGET_HOME/${helper}.lightxdm.absent"
+  elif [[ -e "$TARGET_HOME/${helper}.lightxdm.absent" || -L "$TARGET_HOME/${helper}.lightxdm.absent" ]]; then
+    if [[ -e "$TARGET_HOME/$helper" || -L "$TARGET_HOME/$helper" ]]; then
+      if matches_lightxdm_template "$helper"; then
+        rm -f "$TARGET_HOME/$helper"
+      else
+        save_edited_dotfile "$TARGET_HOME/$helper"
+      fi
+    fi
+    rm -f -- "$TARGET_HOME/${helper}.lightxdm.absent"
+  elif [[ -e "$TARGET_HOME/$helper" || -L "$TARGET_HOME/$helper" ]]; then
     if matches_lightxdm_template "$helper"; then
       rm -f "$TARGET_HOME/$helper"
-    elif [[ -e "$TARGET_HOME/${helper}.lightxdm.bak" || -L "$TARGET_HOME/${helper}.lightxdm.bak" ]]; then
-      save_edited_dotfile "$TARGET_HOME/$helper"
     else
       echo "Keeping $TARGET_HOME/$helper (not an unmodified lightXDM template)."
     fi
-  fi
-  if [[ -e "$TARGET_HOME/${helper}.lightxdm.bak" || -L "$TARGET_HOME/${helper}.lightxdm.bak" ]]; then
-    echo "Restoring $TARGET_HOME/$helper from backup..."
-    mv -- "$TARGET_HOME/${helper}.lightxdm.bak" "$TARGET_HOME/$helper"
   fi
 done
 

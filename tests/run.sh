@@ -973,11 +973,7 @@ else
 
   edited_home="$TMP_DIR/home_edited_dotfiles"
   mkdir -p "$edited_home"
-  (
-    export HOME="$edited_home"
-    export USER="${USER:-testuser}"
-    copy_dotfiles "i3" 2>/dev/null
-  )
+  cp "$REPO_ROOT/dotfiles/.bash_profile" "$edited_home/.bash_profile"
   echo "# user customization" >>"$edited_home/.bash_profile"
   echo "exec openbox-session" >"$edited_home/.xinitrc"
   expected_edited_bash="$(cat "$edited_home/.bash_profile")"
@@ -2171,8 +2167,9 @@ echo "# gnome edit 2" >"$gpg_reinstall_home/.gpg-agent-gnome"
   copy_dotfiles "gnome" 2>/dev/null
 )
 if [[ $unmodified_kwallet_clean -eq 1 ]] &&
-  [[ -f "$gpg_reinstall_home/.gpg-agent-kwallet.lightxdm.bak" && "$(cat "$gpg_reinstall_home/.gpg-agent-kwallet.lightxdm.bak")" == "$expected_kw_edit1" ]] &&
-  [[ -f "$gpg_reinstall_home/.gpg-agent-kwallet.lightxdm-edited" && "$(cat "$gpg_reinstall_home/.gpg-agent-kwallet.lightxdm-edited")" == "# kwallet edit 2" ]] &&
+  [[ ! -e "$gpg_reinstall_home/.gpg-agent-kwallet.lightxdm.bak" && -f "$gpg_reinstall_home/.gpg-agent-kwallet.lightxdm.absent" ]] &&
+  [[ -f "$gpg_reinstall_home/.gpg-agent-kwallet.lightxdm-edited" && "$(cat "$gpg_reinstall_home/.gpg-agent-kwallet.lightxdm-edited")" == "$expected_kw_edit1" ]] &&
+  [[ -f "$gpg_reinstall_home/.gpg-agent-kwallet.lightxdm-edited.1" && "$(cat "$gpg_reinstall_home/.gpg-agent-kwallet.lightxdm-edited.1")" == "# kwallet edit 2" ]] &&
   [[ -f "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm.bak" && "$(cat "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm.bak")" == "# pre-existing gnome helper" ]] &&
   [[ -f "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm-edited" && "$(cat "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm-edited")" == "$expected_gn_edit1" ]] &&
   [[ -f "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm-edited.1" && "$(cat "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm-edited.1")" == "# gnome edit 2" ]] &&
@@ -2195,8 +2192,8 @@ else
     export HOME="$gpg_u_home"
     export USER="${USER:-testuser}"
     copy_dotfiles "plasma" 2>/dev/null
-    copy_dotfiles "gnome" 2>/dev/null
   )
+  cp "$REPO_ROOT/dotfiles/.gpg-agent-gnome" "$gpg_u_home/.gpg-agent-gnome"
   echo "# gnome uninstall edit 1" >>"$gpg_u_home/.gpg-agent-gnome"
   expected_u_gn1="$(cat "$gpg_u_home/.gpg-agent-gnome")"
   set +e
@@ -2256,6 +2253,92 @@ else
     pass "uninstall.sh saves helper edits before restoring backups and keeps restored helpers after two runs"
   else
     fail "uninstall.sh edited gpg-agent helper preservation (u1=$st_gpg_u1:$out_gpg_u1 | u2=$st_gpg_u2:$out_gpg_u2 | bak=$st_gpg_bak:$out_gpg_bak | twice=$st_gpg_bak_twice:$out_gpg_bak_twice)"
+  fi
+fi
+
+# Case 53: fresh home -> install -> edit -> reinstall -> uninstall leaves no dotfiles and saves edits
+absent_dir="$TMP_DIR/absent_dotfile"
+absent_home1="$absent_dir/home_reinstall"
+absent_home2="$absent_dir/home_edit_before_uninstall"
+mkdir -p "$absent_home1" "$absent_home2"
+
+(
+  export HOME="$absent_home1"
+  export USER="${USER:-testuser}"
+  copy_dotfiles "plasma" 2>/dev/null
+)
+absent_markers_ok=0
+if [[ -f "$absent_home1/.bash_profile.lightxdm.absent" && ! -s "$absent_home1/.bash_profile.lightxdm.absent" ]] &&
+  [[ -f "$absent_home1/.xinitrc.lightxdm.absent" && ! -s "$absent_home1/.xinitrc.lightxdm.absent" ]] &&
+  [[ -f "$absent_home1/.gpg-agent-kwallet.lightxdm.absent" && ! -s "$absent_home1/.gpg-agent-kwallet.lightxdm.absent" ]]; then
+  absent_markers_ok=1
+fi
+echo "# fresh home bash edit" >>"$absent_home1/.bash_profile"
+echo "# fresh home xinit edit" >>"$absent_home1/.xinitrc"
+expected_absent_bash="$(cat "$absent_home1/.bash_profile")"
+expected_absent_xinit="$(cat "$absent_home1/.xinitrc")"
+(
+  export HOME="$absent_home1"
+  export USER="${USER:-testuser}"
+  copy_dotfiles "plasma" 2>/dev/null
+)
+if [[ $absent_markers_ok -eq 1 ]] &&
+  [[ ! -e "$absent_home1/.bash_profile.lightxdm.bak" && ! -e "$absent_home1/.xinitrc.lightxdm.bak" ]] &&
+  [[ -f "$absent_home1/.bash_profile.lightxdm.absent" && -f "$absent_home1/.xinitrc.lightxdm.absent" ]] &&
+  [[ -f "$absent_home1/.bash_profile.lightxdm-edited" && "$(cat "$absent_home1/.bash_profile.lightxdm-edited")" == "$expected_absent_bash" ]] &&
+  [[ -f "$absent_home1/.xinitrc.lightxdm-edited" && "$(cat "$absent_home1/.xinitrc.lightxdm-edited")" == "$expected_absent_xinit" ]]; then
+  pass "copy_dotfiles records .lightxdm.absent on fresh home and saves edits to .lightxdm-edited on reinstall"
+else
+  fail "copy_dotfiles .lightxdm.absent reinstall handling"
+fi
+
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh removes fresh-home dotfiles and saves edits when .lightxdm.absent exists (unshare -r unavailable)"
+else
+  set +e
+  out_abs1="$(env TARGET_HOME="$absent_home1" LOGIN_FILE="$absent_dir/login" AUTOLOGIN_DROPIN="$absent_dir/autologin" OVERRIDE_FILE="$absent_dir/override" DM_STATE_FILE="$absent_dir/state" POLKIT_RULE="$absent_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  st_abs1=$?
+  set -e
+
+  (
+    export HOME="$absent_home2"
+    export USER="${USER:-testuser}"
+    copy_dotfiles "i3" 2>/dev/null
+  )
+  echo "# edit before reinstall" >>"$absent_home2/.bash_profile"
+  expected_abs2_edit1="$(cat "$absent_home2/.bash_profile")"
+  (
+    export HOME="$absent_home2"
+    export USER="${USER:-testuser}"
+    copy_dotfiles "i3" 2>/dev/null
+  )
+  echo "# edit after reinstall" >>"$absent_home2/.bash_profile"
+  echo "# xinit edit without reinstall" >>"$absent_home2/.xinitrc"
+  echo "# gnome helper edit without reinstall" >>"$absent_home2/.gpg-agent-gnome"
+  expected_abs2_edit2="$(cat "$absent_home2/.bash_profile")"
+  expected_abs2_xinit="$(cat "$absent_home2/.xinitrc")"
+  expected_abs2_gn="$(cat "$absent_home2/.gpg-agent-gnome")"
+  set +e
+  out_abs2="$(env TARGET_HOME="$absent_home2" LOGIN_FILE="$absent_dir/login" AUTOLOGIN_DROPIN="$absent_dir/autologin" OVERRIDE_FILE="$absent_dir/override" DM_STATE_FILE="$absent_dir/state" POLKIT_RULE="$absent_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  st_abs2=$?
+  set -e
+
+  if [[ $st_abs1 -eq 0 && $st_abs2 -eq 0 ]] &&
+    [[ ! -e "$absent_home1/.bash_profile" && ! -L "$absent_home1/.bash_profile" ]] &&
+    [[ ! -e "$absent_home1/.xinitrc" && ! -L "$absent_home1/.xinitrc" ]] &&
+    [[ ! -e "$absent_home1/.gpg-agent-kwallet" && ! -L "$absent_home1/.gpg-agent-kwallet" ]] &&
+    [[ ! -e "$absent_home1/.bash_profile.lightxdm.absent" && ! -e "$absent_home1/.xinitrc.lightxdm.absent" && ! -e "$absent_home1/.gpg-agent-kwallet.lightxdm.absent" ]] &&
+    [[ -f "$absent_home1/.bash_profile.lightxdm-edited" && "$(cat "$absent_home1/.bash_profile.lightxdm-edited")" == "$expected_absent_bash" ]] &&
+    [[ -f "$absent_home1/.xinitrc.lightxdm-edited" && "$(cat "$absent_home1/.xinitrc.lightxdm-edited")" == "$expected_absent_xinit" ]] &&
+    [[ ! -e "$absent_home2/.bash_profile" && ! -e "$absent_home2/.xinitrc" && ! -e "$absent_home2/.gpg-agent-gnome" ]] &&
+    [[ ! -e "$absent_home2/.bash_profile.lightxdm.absent" && ! -e "$absent_home2/.xinitrc.lightxdm.absent" && ! -e "$absent_home2/.gpg-agent-gnome.lightxdm.absent" ]] &&
+    [[ -f "$absent_home2/.bash_profile.lightxdm-edited" && "$(cat "$absent_home2/.bash_profile.lightxdm-edited")" == "$expected_abs2_edit1" ]] &&
+    [[ -f "$absent_home2/.bash_profile.lightxdm-edited.1" && "$(cat "$absent_home2/.bash_profile.lightxdm-edited.1")" == "$expected_abs2_edit2" ]] &&
+    [[ -f "$absent_home2/.xinitrc.lightxdm-edited" && "$(cat "$absent_home2/.xinitrc.lightxdm-edited")" == "$expected_abs2_xinit" ]] &&
+    [[ -f "$absent_home2/.gpg-agent-gnome.lightxdm-edited" && "$(cat "$absent_home2/.gpg-agent-gnome.lightxdm-edited")" == "$expected_abs2_gn" ]]; then
+    pass "fresh home -> install -> edit -> reinstall -> uninstall leaves no dotfiles and saves edits"
+  else
+    fail "uninstall.sh .lightxdm.absent handling (s1=$st_abs1:$out_abs1 | s2=$st_abs2:$out_abs2)"
   fi
 fi
 
