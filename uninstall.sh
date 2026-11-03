@@ -116,9 +116,11 @@ POLKIT_RULE="${POLKIT_RULE:-/etc/polkit-1/rules.d/49-nopasswd.rules}"
 if [[ -e "${POLKIT_RULE}.lightxdm.bak" || -L "${POLKIT_RULE}.lightxdm.bak" ]]; then
   echo "Restoring $POLKIT_RULE from backup..."
   mv -- "${POLKIT_RULE}.lightxdm.bak" "$POLKIT_RULE"
-elif [ -f "$POLKIT_RULE" ]; then
+elif [[ -f "$POLKIT_RULE" && ! -L "$POLKIT_RULE" ]] && files_match "$POLKIT_RULE" "$SCRIPT_DIR/polkit/49-nopasswd.rules"; then
   echo "Removing Polkit rule..."
   rm -f "$POLKIT_RULE"
+elif [[ -e "$POLKIT_RULE" || -L "$POLKIT_RULE" ]]; then
+  echo "Keeping $POLKIT_RULE (not an unmodified lightXDM rule)."
 else
   echo "No Polkit rule found; skipping."
 fi
@@ -181,8 +183,10 @@ for helper in .gpg-agent-kwallet .gpg-agent-gnome; do
   if [[ -e "$TARGET_HOME/$helper" || -L "$TARGET_HOME/$helper" ]]; then
     if matches_lightxdm_template "$helper"; then
       rm -f "$TARGET_HOME/$helper"
-    else
+    elif [[ -e "$TARGET_HOME/${helper}.lightxdm.bak" || -L "$TARGET_HOME/${helper}.lightxdm.bak" ]]; then
       save_edited_dotfile "$TARGET_HOME/$helper"
+    else
+      echo "Keeping $TARGET_HOME/$helper (not an unmodified lightXDM template)."
     fi
   fi
   if [[ -e "$TARGET_HOME/${helper}.lightxdm.bak" || -L "$TARGET_HOME/${helper}.lightxdm.bak" ]]; then

@@ -263,7 +263,7 @@ install_polkit_rule() {
     ! sudo test -e "$backup" && ! sudo test -L "$backup" &&
     [[ "$(sudo sha256sum -- "$POLKIT_RULE_DEST" | cut -d' ' -f1)" != "$(sha256sum -- "$POLKIT_RULE_SRC" | cut -d' ' -f1)" ]]; then
     log "Backing up $POLKIT_RULE_DEST to $backup"
-    sudo cp -p -- "$POLKIT_RULE_DEST" "$backup"
+    sudo cp -pP -- "$POLKIT_RULE_DEST" "$backup"
   fi
   sudo install -Dm644 "$POLKIT_RULE_SRC" "$POLKIT_RULE_DEST"
 }

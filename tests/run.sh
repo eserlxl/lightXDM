@@ -483,6 +483,7 @@ else
   stock_login_hash="$(sha256sum < "$LOGIN_FILE")"
   configure_pam "plasma" 2>/dev/null
   configure_pam "gnome" 2>/dev/null
+  cp "$POLKIT_RULE_SRC" "$uninstall_polkit"
   : >"$STUB_LOG"
   set +e
   output="$(TARGET_HOME="$uninstall_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
@@ -1298,7 +1299,8 @@ EOF
   set -e
   log_content="$(cat "$STUB_LOG")"
   if [[ $status_sudo -eq 0 && "$(cat "$LOGIN_FILE")" == "$stock_login" && ! -e "${LOGIN_FILE}.lightxdm.bak" ]] &&
-    [[ ! -e "$refuse_autologin" && ! -e "$refuse_override" && ! -e "$refuse_polkit" && "$log_content" == *"systemctl daemon-reload"* ]] &&
+    [[ ! -e "$refuse_autologin" && ! -e "$refuse_override" && "$log_content" == *"systemctl daemon-reload"* ]] &&
+    [[ -f "$refuse_polkit" && "$(cat "$refuse_polkit")" == "// rule" && "$output_sudo" == *"Keeping $refuse_polkit"* ]] &&
     [[ "$(cat "$sudo_user_home/.bash_profile")" == "# original bash_profile" && ! -e "$sudo_user_home/.bash_profile.lightxdm.bak" ]] &&
     [[ ! -e "$sudo_user_home/.xinitrc" && ! -e "$sudo_user_home/.xinitrc.lightxdm-removed" && ! -e "$sudo_user_home/.gpg-agent-kwallet" ]]; then
     pass "uninstall.sh resolves TARGET_HOME from SUDO_USER and completes full uninstall"
@@ -2044,7 +2046,7 @@ install_polkit_rule 2>/dev/null
 install_polkit_rule 2>/dev/null
 if [[ -f "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
   [[ "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm.bak")" == "$polkit_original_hash" ]] &&
-  cmp -s "$POLKIT_RULE_SRC" "$POLKIT_RULE_DEST"; then
+  [[ "$(sha256sum < "$POLKIT_RULE_SRC")" == "$(sha256sum < "$POLKIT_RULE_DEST")" ]]; then
   pass "install_polkit_rule backs up a foreign rule and installs the shipped rule"
 else
   fail "install_polkit_rule foreign rule backup"
@@ -2064,23 +2066,27 @@ mkdir -p "$polkit_test_dir/home"
 if [[ $can_unshare -eq 0 ]]; then
   skip "uninstall.sh restores the original Polkit rule (unshare -r unavailable)"
 else
-  set +e
-  output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" AUTOLOGIN_DROPIN="$polkit_test_dir/autologin" OVERRIDE_FILE="$polkit_test_dir/override" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
-  status=$?
-  set -e
-  if [[ $status -eq 0 && -f "$POLKIT_RULE_DEST" && ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
-    [[ "$(sha256sum < "$POLKIT_RULE_DEST")" == "$polkit_original_hash" ]]; then
-    pass "uninstall.sh restores the original Polkit rule and removes the backup"
-  else
-    fail "uninstall.sh Polkit restore (status=$status, output=$output)"
-  fi
+  for polkit_run in 1 2; do
+    set +e
+    output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" AUTOLOGIN_DROPIN="$polkit_test_dir/autologin" OVERRIDE_FILE="$polkit_test_dir/override" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+    status=$?
+    set -e
+    if [[ $status -eq 0 && -f "$POLKIT_RULE_DEST" && ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
+      [[ "$(sha256sum < "$POLKIT_RULE_DEST")" == "$polkit_original_hash" ]] &&
+      [[ $polkit_run -eq 1 || "$output" == *"Keeping $POLKIT_RULE_DEST"* ]]; then
+      pass "uninstall.sh keeps the original Polkit rule after run $polkit_run"
+    else
+      fail "uninstall.sh Polkit restore (run=$polkit_run, status=$status, output=$output)"
+    fi
+  done
 fi
 
 # Case 51: without a prior Polkit rule, install creates no backup and uninstall removes it
 rm -f "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak"
 install_polkit_rule 2>/dev/null
 install_polkit_rule 2>/dev/null
-if [[ ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" ]] && cmp -s "$POLKIT_RULE_SRC" "$POLKIT_RULE_DEST"; then
+if [[ ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
+  [[ "$(sha256sum < "$POLKIT_RULE_SRC")" == "$(sha256sum < "$POLKIT_RULE_DEST")" ]]; then
   pass "install_polkit_rule creates no backup for a fresh or identical rule"
 else
   fail "install_polkit_rule fresh install or identical rule"
@@ -2097,6 +2103,37 @@ else
   else
     fail "uninstall.sh fresh Polkit removal (status=$status, output=$output)"
   fi
+fi
+
+# Case 51b: a foreign Polkit symlink survives install/uninstall and a repeated uninstall
+rm -f "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak"
+printf '// administrator symlink rule\n' >"$polkit_test_dir/original.rules"
+polkit_link_hash="$(sha256sum < "$polkit_test_dir/original.rules")"
+ln -s "$polkit_test_dir/original.rules" "$POLKIT_RULE_DEST"
+install_polkit_rule 2>/dev/null
+if [[ -L "${POLKIT_RULE_DEST}.lightxdm.bak" && ! -L "$POLKIT_RULE_DEST" ]] &&
+  [[ "$(readlink "${POLKIT_RULE_DEST}.lightxdm.bak")" == "$polkit_test_dir/original.rules" ]] &&
+  [[ "$(sha256sum < "$polkit_test_dir/original.rules")" == "$polkit_link_hash" ]]; then
+  pass "install_polkit_rule preserves a foreign symlink in its backup"
+else
+  fail "install_polkit_rule foreign symlink backup"
+fi
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh restores a foreign Polkit symlink (unshare -r unavailable)"
+else
+  for polkit_run in 1 2; do
+    set +e
+    output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" AUTOLOGIN_DROPIN="$polkit_test_dir/autologin" OVERRIDE_FILE="$polkit_test_dir/override" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+    status=$?
+    set -e
+    if [[ $status -eq 0 && -L "$POLKIT_RULE_DEST" && ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" && ! -L "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
+      [[ "$(readlink "$POLKIT_RULE_DEST")" == "$polkit_test_dir/original.rules" ]] &&
+      [[ "$(sha256sum < "$POLKIT_RULE_DEST")" == "$polkit_link_hash" ]]; then
+      pass "uninstall.sh keeps the original Polkit symlink after run $polkit_run"
+    else
+      fail "uninstall.sh Polkit symlink restore (run=$polkit_run, status=$status, output=$output)"
+    fi
+  done
 fi
 
 # Case 52: gpg-agent helper edits survive reinstall and uninstall without overwriting saved copies
@@ -2139,8 +2176,8 @@ if [[ $unmodified_kwallet_clean -eq 1 ]] &&
   [[ -f "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm.bak" && "$(cat "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm.bak")" == "# pre-existing gnome helper" ]] &&
   [[ -f "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm-edited" && "$(cat "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm-edited")" == "$expected_gn_edit1" ]] &&
   [[ -f "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm-edited.1" && "$(cat "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm-edited.1")" == "# gnome edit 2" ]] &&
-  cmp -s "$REPO_ROOT/dotfiles/.gpg-agent-kwallet" "$gpg_reinstall_home/.gpg-agent-kwallet" &&
-  cmp -s "$REPO_ROOT/dotfiles/.gpg-agent-gnome" "$gpg_reinstall_home/.gpg-agent-gnome"; then
+  [[ "$(sha256sum < "$REPO_ROOT/dotfiles/.gpg-agent-kwallet")" == "$(sha256sum < "$gpg_reinstall_home/.gpg-agent-kwallet")" ]] &&
+  [[ "$(sha256sum < "$REPO_ROOT/dotfiles/.gpg-agent-gnome")" == "$(sha256sum < "$gpg_reinstall_home/.gpg-agent-gnome")" ]]; then
   pass "copy_dotfiles preserves edited gpg-agent helpers across reinstalls without overwriting backups or prior edits"
 else
   fail "copy_dotfiles edited gpg-agent helper preservation"
@@ -2166,6 +2203,14 @@ else
   out_gpg_u1="$(env TARGET_HOME="$gpg_u_home" LOGIN_FILE="$gpg_uninstall_dir/login" AUTOLOGIN_DROPIN="$gpg_uninstall_dir/autologin" OVERRIDE_FILE="$gpg_uninstall_dir/override" DM_STATE_FILE="$gpg_uninstall_dir/state" POLKIT_RULE="$gpg_uninstall_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   st_gpg_u1=$?
   set -e
+  if [[ $st_gpg_u1 -eq 0 && -f "$gpg_u_home/.gpg-agent-gnome" ]] &&
+    [[ "$(cat "$gpg_u_home/.gpg-agent-gnome")" == "$expected_u_gn1" ]] &&
+    [[ ! -e "$gpg_u_home/.gpg-agent-gnome.lightxdm-edited" ]] &&
+    [[ "$out_gpg_u1" == *"Keeping $gpg_u_home/.gpg-agent-gnome"* ]]; then
+    pass "uninstall.sh keeps an edited helper without a backup in place"
+  else
+    fail "uninstall.sh helper without backup (status=$st_gpg_u1, output=$out_gpg_u1)"
+  fi
 
   (
     export HOME="$gpg_u_home"
@@ -2190,24 +2235,27 @@ else
   set +e
   out_gpg_bak="$(env TARGET_HOME="$gpg_bak_home" LOGIN_FILE="$gpg_uninstall_dir/login" AUTOLOGIN_DROPIN="$gpg_uninstall_dir/autologin" OVERRIDE_FILE="$gpg_uninstall_dir/override" DM_STATE_FILE="$gpg_uninstall_dir/state" POLKIT_RULE="$gpg_uninstall_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   st_gpg_bak=$?
+  out_gpg_bak_twice="$(env TARGET_HOME="$gpg_bak_home" LOGIN_FILE="$gpg_uninstall_dir/login" AUTOLOGIN_DROPIN="$gpg_uninstall_dir/autologin" OVERRIDE_FILE="$gpg_uninstall_dir/override" DM_STATE_FILE="$gpg_uninstall_dir/state" POLKIT_RULE="$gpg_uninstall_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  st_gpg_bak_twice=$?
   set -e
 
-  if [[ $st_gpg_u1 -eq 0 && $st_gpg_u2 -eq 0 && $st_gpg_bak -eq 0 ]] &&
+  if [[ $st_gpg_u1 -eq 0 && $st_gpg_u2 -eq 0 && $st_gpg_bak -eq 0 && $st_gpg_bak_twice -eq 0 ]] &&
     [[ ! -e "$gpg_u_home/.gpg-agent-kwallet" && ! -e "$gpg_u_home/.gpg-agent-kwallet.lightxdm-edited" ]] &&
-    [[ ! -e "$gpg_u_home/.gpg-agent-gnome" ]] &&
-    [[ -f "$gpg_u_home/.gpg-agent-gnome.lightxdm-edited" && "$(cat "$gpg_u_home/.gpg-agent-gnome.lightxdm-edited")" == "$expected_u_gn1" ]] &&
-    [[ -f "$gpg_u_home/.gpg-agent-gnome.lightxdm-edited.1" && "$(cat "$gpg_u_home/.gpg-agent-gnome.lightxdm-edited.1")" == "# gnome uninstall edit 2" ]] &&
-    [[ "$out_gpg_u1" == *"$gpg_u_home/.gpg-agent-gnome.lightxdm-edited"* ]] &&
-    [[ "$out_gpg_u2" == *"$gpg_u_home/.gpg-agent-gnome.lightxdm-edited.1"* ]] &&
+    [[ -f "$gpg_u_home/.gpg-agent-gnome" && "$(cat "$gpg_u_home/.gpg-agent-gnome")" == "$expected_u_gn1" ]] &&
+    [[ -f "$gpg_u_home/.gpg-agent-gnome.lightxdm-edited" && "$(cat "$gpg_u_home/.gpg-agent-gnome.lightxdm-edited")" == "# gnome uninstall edit 2" ]] &&
+    [[ ! -e "$gpg_u_home/.gpg-agent-gnome.lightxdm-edited.1" ]] &&
+    [[ "$out_gpg_u2" == *"$gpg_u_home/.gpg-agent-gnome.lightxdm-edited"* ]] &&
     [[ "$(cat "$gpg_bak_home/.gpg-agent-kwallet")" == "# orig kwallet helper" ]] &&
     [[ "$(cat "$gpg_bak_home/.gpg-agent-gnome")" == "# orig gnome helper" ]] &&
     [[ ! -e "$gpg_bak_home/.gpg-agent-kwallet.lightxdm.bak" && ! -e "$gpg_bak_home/.gpg-agent-gnome.lightxdm.bak" ]] &&
     [[ -f "$gpg_bak_home/.gpg-agent-kwallet.lightxdm-edited" && "$(cat "$gpg_bak_home/.gpg-agent-kwallet.lightxdm-edited")" == "# post-install kwallet edit" ]] &&
+    [[ ! -e "$gpg_bak_home/.gpg-agent-kwallet.lightxdm-edited.1" ]] &&
     [[ ! -e "$gpg_bak_home/.gpg-agent-gnome.lightxdm-edited" ]] &&
-    [[ "$out_gpg_bak" == *"$gpg_bak_home/.gpg-agent-kwallet.lightxdm-edited"* ]]; then
-    pass "uninstall.sh saves edited gpg-agent helpers to .lightxdm-edited without overwriting and restores .lightxdm.bak"
+    [[ "$out_gpg_bak" == *"$gpg_bak_home/.gpg-agent-kwallet.lightxdm-edited"* ]] &&
+    [[ "$out_gpg_bak_twice" == *"Keeping $gpg_bak_home/.gpg-agent-kwallet"* && "$out_gpg_bak_twice" == *"Keeping $gpg_bak_home/.gpg-agent-gnome"* ]]; then
+    pass "uninstall.sh saves helper edits before restoring backups and keeps restored helpers after two runs"
   else
-    fail "uninstall.sh edited gpg-agent helper preservation (u1=$st_gpg_u1:$out_gpg_u1 | u2=$st_gpg_u2:$out_gpg_u2 | bak=$st_gpg_bak:$out_gpg_bak)"
+    fail "uninstall.sh edited gpg-agent helper preservation (u1=$st_gpg_u1:$out_gpg_u1 | u2=$st_gpg_u2:$out_gpg_u2 | bak=$st_gpg_bak:$out_gpg_bak | twice=$st_gpg_bak_twice:$out_gpg_bak_twice)"
   fi
 fi
 
