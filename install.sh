@@ -36,7 +36,7 @@ detect_de() {
     gnome-shell:gnome
     xfce4-session:xfce
     lxqt-session:lxqt
-    lxde-session:lxde
+    lxde-common:lxde
     mate-session-manager:mate
     cinnamon:cinnamon
     budgie-desktop:budgie
