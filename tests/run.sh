@@ -1816,4 +1816,61 @@ else
   fi
 fi
 
+# Case 47: main warns when login shell is not bash (zsh, fish) and leaves bash output unchanged
+zsh_stub_dir="$TMP_DIR/getent_zsh"
+mkdir -p "$zsh_stub_dir"
+cat >"$zsh_stub_dir/getent" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "passwd" && "${2:-}" == "testuser" ]]; then
+  echo "testuser:x:1000:1000::/home/testuser:/usr/bin/zsh"
+  exit 0
+fi
+exit 2
+EOF
+chmod +x "$zsh_stub_dir/getent"
+
+fish_stub_dir="$TMP_DIR/getent_fish"
+mkdir -p "$fish_stub_dir"
+cat >"$fish_stub_dir/getent" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "passwd" && "${2:-}" == "testuser" ]]; then
+  echo "testuser:x:1000:1000::/home/testuser:/usr/bin/fish"
+  exit 0
+fi
+exit 2
+EOF
+chmod +x "$fish_stub_dir/getent"
+
+bash_stub_dir="$TMP_DIR/getent_bash"
+mkdir -p "$bash_stub_dir"
+cat >"$bash_stub_dir/getent" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "passwd" && "${2:-}" == "testuser" ]]; then
+  echo "testuser:x:1000:1000::/home/testuser:/usr/bin/bash"
+  exit 0
+fi
+exit 2
+EOF
+chmod +x "$bash_stub_dir/getent"
+
+set +e
+out_zsh="$(USER=testuser run_main_with_stubs "$zsh_stub_dir:$sudo_pw_dir" --no-packages --de i3 2>&1)"
+status_zsh=$?
+out_fish="$(USER=testuser run_main_with_stubs "$fish_stub_dir:$sudo_pw_dir" --no-packages --de i3 2>&1)"
+status_fish=$?
+out_bash="$(USER=testuser run_main_with_stubs "$bash_stub_dir:$sudo_pw_dir" --no-packages --de i3 2>&1)"
+status_bash=$?
+set -e
+
+if [[ $status_zsh -eq 0 && "$out_zsh" == *"WARNING:"* && "$out_zsh" == *'~/.zprofile'* &&
+  "$out_zsh" != *"will auto-start on TTY1"* && "$out_zsh" != *"No need to run 'startx'"* &&
+  $status_fish -eq 0 && "$out_fish" == *"WARNING:"* && "$out_fish" == *'~/.config/fish/config.fish'* &&
+  "$out_fish" != *"will auto-start on TTY1"* && "$out_fish" != *"No need to run 'startx'"* &&
+  $status_bash -eq 0 && "$out_bash" != *"WARNING:"* &&
+  "$out_bash" == *"- i3 will auto-start on TTY1 for testuser"* && "$out_bash" == *"No need to run 'startx'."* ]]; then
+  pass "main warns for non-bash login shells (zsh, fish) and keeps bash closing message unchanged"
+else
+  fail "main login shell check (zsh=$status_zsh:$out_zsh | fish=$status_fish:$out_fish | bash=$status_bash:$out_bash)"
+fi
+
 exit "$failures"

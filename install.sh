@@ -377,11 +377,28 @@ main() {
     install_packages "$de"
   fi
   copy_dotfiles "$de"
+  local login_shell shell_profile=""
+  login_shell="$(getent passwd "$real_user" | cut -d: -f7 || true)"
+  if [[ -n "$login_shell" && "$login_shell" != *bash ]]; then
+    case "$login_shell" in
+      *zsh)
+        shell_profile=".zprofile"
+        ;;
+      *fish)
+        shell_profile=".config/fish/config.fish"
+        ;;
+      *)
+        shell_profile=".profile"
+        ;;
+    esac
+    log "WARNING: Login shell for $real_user is $login_shell, which does not read ~/.bash_profile. Add the TTY1 startx block to ~/$shell_profile."
+  fi
   configure_pam "$de"
   install_polkit_rule
   disable_display_managers
 
-  cat <<EOF
+  if [[ -z "$shell_profile" ]]; then
+    cat <<EOF
 
 lightXDM install complete!
 - $de will auto-start on TTY1 for $real_user
@@ -390,6 +407,17 @@ lightXDM install complete!
 
 On next boot, after logging in, your desktop environment will start automatically on TTY1. No need to run 'startx'.
 EOF
+  else
+    cat <<EOF
+
+lightXDM install complete!
+- $de is configured in ~/.xinitrc for $real_user (auto-start requires ~/$shell_profile)
+- Auto-unlock and Polkit rules are set
+- Add the TTY1 startx block to ~/$shell_profile, then reboot or log out to test
+
+Your login shell ($login_shell) does not read ~/.bash_profile, so $de will not auto-start on TTY1 until you add a startx block to ~/$shell_profile (or run 'startx' manually).
+EOF
+  fi
 }
 
 # Run only when executed directly, so tests can source the functions.
