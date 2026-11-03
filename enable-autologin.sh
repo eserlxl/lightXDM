@@ -4,11 +4,23 @@ set -e
 
 OVERRIDE_DIR="${OVERRIDE_DIR:-/etc/systemd/system/getty@tty1.service.d}"
 OVERRIDE_FILE="$OVERRIDE_DIR/lightxdm-autologin.conf"
+LEGACY_OVERRIDE_FILE="$OVERRIDE_DIR/override.conf"
 LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
 
 usage() {
   echo "Usage: sudo bash $0 <username> | --disable"
   exit 1
+}
+
+is_legacy_autologin_override() {
+  local file="$1"
+  if [[ ! -f "$file" || -L "$file" ]]; then
+    return 1
+  fi
+  local lines=()
+  local exec_re='^ExecStart=-/usr/bin/agetty --autologin [^-[:space:]:][^[:space:]:]* --noclear %I [$]TERM$'
+  mapfile -t lines < "$file"
+  [[ ${#lines[@]} -eq 3 && "${lines[0]}" == "[Service]" && "${lines[1]}" == "ExecStart=" && "${lines[2]}" =~ $exec_re ]]
 }
 
 main() {
@@ -28,6 +40,14 @@ main() {
   if [[ "$1" == "--disable" ]]; then
     echo "Disabling TTY1 autologin..."
     rm -f "$OVERRIDE_FILE"
+    if [[ -f "$LEGACY_OVERRIDE_FILE" || -L "$LEGACY_OVERRIDE_FILE" ]]; then
+      if is_legacy_autologin_override "$LEGACY_OVERRIDE_FILE"; then
+        echo "Removing legacy autologin override..."
+        rm -f "$LEGACY_OVERRIDE_FILE"
+      else
+        echo "Keeping $LEGACY_OVERRIDE_FILE (not written by lightXDM)."
+      fi
+    fi
     systemctl daemon-reload
     echo "Autologin disabled. Change will take effect at the next login or reboot."
     exit 0

@@ -2369,4 +2369,87 @@ else
   fi
 fi
 
+# Case 54: enable-autologin.sh --disable removes legacy lightXDM override.conf and keeps foreign override.conf with a message
+if [[ $can_unshare -eq 0 ]]; then
+  skip "enable-autologin.sh --disable legacy vs foreign override.conf handling (unshare -r unavailable)"
+else
+  dis_legacy_dir="$TMP_DIR/disable_legacy_override"
+  mkdir -p "$dis_legacy_dir/getty.d"
+  dis_override="$dis_legacy_dir/getty.d/override.conf"
+  dis_dropin="$dis_legacy_dir/getty.d/lightxdm-autologin.conf"
+
+  cat >"$dis_override" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/usr/bin/agetty --autologin legacyuser --noclear %I $TERM
+EOF
+  : >"$STUB_LOG"
+  set +e
+  out_dis_legacy="$(env OVERRIDE_DIR="$dis_legacy_dir/getty.d" LOGIN_FILE="$dis_legacy_dir/login" unshare -r bash "$REPO_ROOT/enable-autologin.sh" --disable 2>&1)"
+  st_dis_legacy=$?
+  set -e
+  log_dis_legacy="$(cat "$STUB_LOG")"
+
+  cat >"$dis_override" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/usr/bin/agetty --autologin legacyuser --noclear %I $TERM
+EOF
+  env OVERRIDE_DIR="$dis_legacy_dir/getty.d" LOGIN_FILE="$dis_legacy_dir/login" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$real_test_user" >/dev/null 2>&1
+  : >"$STUB_LOG"
+  set +e
+  out_dis_both_legacy="$(env OVERRIDE_DIR="$dis_legacy_dir/getty.d" LOGIN_FILE="$dis_legacy_dir/login" unshare -r bash "$REPO_ROOT/enable-autologin.sh" --disable 2>&1)"
+  st_dis_both_legacy=$?
+  set -e
+  log_dis_both_legacy="$(cat "$STUB_LOG")"
+
+  if [[ $st_dis_legacy -eq 0 && ! -e "$dis_override" && "$out_dis_legacy" != *"Keeping"* && "$log_dis_legacy" == *"systemctl daemon-reload"* ]] &&
+    [[ $st_dis_both_legacy -eq 0 && ! -e "$dis_dropin" && ! -e "$dis_override" && "$log_dis_both_legacy" == *"systemctl daemon-reload"* ]]; then
+    pass "enable-autologin.sh --disable removes legacy lightXDM override.conf"
+  else
+    fail "enable-autologin.sh --disable legacy override.conf (solo=$st_dis_legacy:$out_dis_legacy [$log_dis_legacy] | both=$st_dis_both_legacy:$out_dis_both_legacy [$log_dis_both_legacy])"
+  fi
+
+  cat >"$dis_override" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/usr/bin/agetty --autologin customuser --noclear %I $TERM
+TTYVTDisallocate=no
+EOF
+  near_hash="$(sha256sum < "$dis_override")"
+  env OVERRIDE_DIR="$dis_legacy_dir/getty.d" LOGIN_FILE="$dis_legacy_dir/login" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$real_test_user" >/dev/null 2>&1
+  : >"$STUB_LOG"
+  set +e
+  out_dis_near="$(env OVERRIDE_DIR="$dis_legacy_dir/getty.d" LOGIN_FILE="$dis_legacy_dir/login" unshare -r bash "$REPO_ROOT/enable-autologin.sh" --disable 2>&1)"
+  st_dis_near=$?
+  set -e
+  log_dis_near="$(cat "$STUB_LOG")"
+  near_kept=0
+  if [[ ! -e "$dis_dropin" && -f "$dis_override" && ! -L "$dis_override" && "$(sha256sum < "$dis_override")" == "$near_hash" ]]; then
+    near_kept=1
+  fi
+
+  rm -f "$dis_override"
+  cat >"$dis_legacy_dir/linked-legacy.conf" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/usr/bin/agetty --autologin legacyuser --noclear %I $TERM
+EOF
+  link_target_hash="$(sha256sum < "$dis_legacy_dir/linked-legacy.conf")"
+  ln -s "$dis_legacy_dir/linked-legacy.conf" "$dis_override"
+  set +e
+  out_dis_link="$(env OVERRIDE_DIR="$dis_legacy_dir/getty.d" LOGIN_FILE="$dis_legacy_dir/login" unshare -r bash "$REPO_ROOT/enable-autologin.sh" --disable 2>&1)"
+  st_dis_link=$?
+  set -e
+
+  if [[ $st_dis_near -eq 0 && $near_kept -eq 1 ]] &&
+    [[ "$out_dis_near" == *"Keeping $dis_override"* && "$log_dis_near" == *"systemctl daemon-reload"* ]] &&
+    [[ $st_dis_link -eq 0 && -L "$dis_override" && "$(sha256sum < "$dis_legacy_dir/linked-legacy.conf")" == "$link_target_hash" ]] &&
+    [[ "$out_dis_link" == *"Keeping $dis_override"* ]]; then
+    pass "enable-autologin.sh --disable keeps foreign override.conf untouched and reports it"
+  else
+    fail "enable-autologin.sh --disable foreign override.conf (near=$st_dis_near:$out_dis_near [$log_dis_near] | link=$st_dis_link:$out_dis_link)"
+  fi
+fi
+
 exit "$failures"
