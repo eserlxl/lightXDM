@@ -91,7 +91,7 @@ install_packages() {
       pkgs=(plasma-desktop konsole dolphin kwallet-pam polkit-kde-agent)
       ;;
     gnome)
-      pkgs=(gnome gnome-terminal gnome-keyring polkit-gnome)
+      pkgs=(gnome-shell gnome-session gnome-control-center nautilus gnome-terminal gnome-keyring polkit-gnome)
       ;;
     xfce)
       pkgs=(xfce4 xfce4-session xfce4-terminal gnome-keyring polkit-gnome)
@@ -100,7 +100,7 @@ install_packages() {
       pkgs=(lxqt xdg-utils lxterminal gnome-keyring lxqt-policykit)
       ;;
     lxde)
-      pkgs=(lxde gnome-keyring polkit-gnome)
+      pkgs=(lxde-common lxsession lxpanel openbox pcmanfm lxterminal gnome-keyring polkit-gnome)
       ;;
     mate)
       pkgs=(mate mate-terminal gnome-keyring polkit-gnome)

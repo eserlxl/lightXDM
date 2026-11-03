@@ -1184,4 +1184,22 @@ EOF
   fi
 fi
 
+# Case 35: install_packages for gnome and lxde installs minimal session packages without gdm, lxdm, or bare group names
+: >"$STUB_LOG"
+set +e
+out_gnome="$(install_packages "gnome" 2>&1)"
+status_gnome=$?
+out_lxde="$(install_packages "lxde" 2>&1)"
+status_lxde=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status_gnome -eq 0 && $status_lxde -eq 0 ]] &&
+  [[ "$log_content" == *"gnome-shell gnome-session gnome-control-center nautilus gnome-terminal gnome-keyring polkit-gnome"* ]] &&
+  [[ "$log_content" == *"lxde-common lxsession lxpanel openbox pcmanfm lxterminal gnome-keyring polkit-gnome"* ]] &&
+  ! grep -Eq '(^|[[:space:]])(gdm|lxdm|gnome|lxde)([[:space:]]|$)' "$STUB_LOG"; then
+  pass "install_packages for gnome and lxde avoids display managers and bare group names"
+else
+  fail "install_packages gnome/lxde minimal packages (s_gnome=$status_gnome:$out_gnome | s_lxde=$status_lxde:$out_lxde | log=$log_content)"
+fi
+
 exit "$failures"
