@@ -42,6 +42,7 @@ EOF
 chmod +x "$STUB_BIN/sudo" "$STUB_BIN/pacman" "$STUB_BIN/systemctl" "$STUB_BIN/id"
 export PATH="$STUB_BIN:$PATH"
 export STUB_LOG="$TMP_DIR/stub.log"
+export LOGIN_FILE="$TMP_DIR/login"
 
 # shellcheck source=install.sh disable=SC1091
 source "$REPO_ROOT/install.sh"
@@ -115,6 +116,52 @@ if [[ $status -ne 0 && -z "$output" ]]; then
   pass "prompt_de_selection returns non-zero on EOF"
 else
   fail "prompt_de_selection EOF (status=$status, output=$output)"
+fi
+
+write_stock_login() {
+  cat >"$LOGIN_FILE" <<'EOF'
+#%PAM-1.0
+
+auth       requisite    pam_nologin.so
+auth       include      system-local-login
+account    include      system-local-login
+session    include      system-local-login
+password   include      system-local-login
+EOF
+}
+
+# Case 6: configure_pam appends KWallet lines once on stock Arch login and is idempotent
+write_stock_login
+configure_pam "plasma" 2>/dev/null
+first_run="$(cat "$LOGIN_FILE")"
+configure_pam "plasma" 2>/dev/null
+second_run="$(cat "$LOGIN_FILE")"
+if [[ "$first_run" == "$second_run" ]] &&
+  grep -Eq '^auth[[:space:]]+optional[[:space:]]+pam_kwallet5\.so$' "$LOGIN_FILE" &&
+  grep -Eq '^session[[:space:]]+optional[[:space:]]+pam_kwallet5\.so force_run$' "$LOGIN_FILE" &&
+  [[ "$(grep -c 'pam_kwallet5\.so' "$LOGIN_FILE")" -eq 2 ]] &&
+  [[ "$(grep -c 'system-local-login' "$LOGIN_FILE")" -eq 4 ]] &&
+  [[ ! -e "${LOGIN_FILE}.orig" && ! -e "${LOGIN_FILE}.rej" ]]; then
+  pass "configure_pam configures KWallet idempotently on stock Arch login"
+else
+  fail "configure_pam KWallet (content=$second_run)"
+fi
+
+# Case 7: configure_pam appends GNOME Keyring lines (no auto_start on auth) idempotently
+write_stock_login
+configure_pam "gnome" 2>/dev/null
+first_run="$(cat "$LOGIN_FILE")"
+configure_pam "gnome" 2>/dev/null
+second_run="$(cat "$LOGIN_FILE")"
+if [[ "$first_run" == "$second_run" ]] &&
+  grep -Eq '^auth[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so$' "$LOGIN_FILE" &&
+  grep -Eq '^session[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so auto_start$' "$LOGIN_FILE" &&
+  [[ "$(grep -c 'pam_gnome_keyring\.so' "$LOGIN_FILE")" -eq 2 ]] &&
+  [[ "$(grep -c 'system-local-login' "$LOGIN_FILE")" -eq 4 ]] &&
+  [[ ! -e "${LOGIN_FILE}.orig" && ! -e "${LOGIN_FILE}.rej" ]]; then
+  pass "configure_pam configures GNOME Keyring idempotently on stock Arch login"
+else
+  fail "configure_pam GNOME Keyring (content=$second_run)"
 fi
 
 exit "$failures"

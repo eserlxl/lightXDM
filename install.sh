@@ -5,11 +5,9 @@ set -e
 
 # --- Configuration ---
 readonly DM_LIST=(sddm lightdm gdm lxdm)
-readonly LOGIN_FILE="/etc/pam.d/login"
+readonly LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
 readonly POLKIT_RULE_SRC="polkit/49-nopasswd.rules"
 readonly POLKIT_RULE_DEST="/etc/polkit-1/rules.d/49-nopasswd.rules"
-readonly PAM_KWALLET_PATCH_FILE="pam/login-pam-kwallet.patch"
-readonly PAM_GNOME_KEYRING_PATCH_FILE="pam/login-pam-gnome-keyring.patch"
 
 # --- Functions ---
 
@@ -85,7 +83,7 @@ install_packages() {
   local de
   de=$1
   local pkgs=()
-  local base_pkgs=(xorg-server xorg-xinit udisks2 polkit gvfs gvfs-mtp gvfs-gphoto2 gvfs-afc patch)
+  local base_pkgs=(xorg-server xorg-xinit udisks2 polkit gvfs gvfs-mtp gvfs-gphoto2 gvfs-afc)
 
   case "$de" in
     plasma)
@@ -159,52 +157,32 @@ configure_pam() {
   de=$1
 
   log "Configuring PAM for $de..."
-  local backup_file
-  backup_file="${LOGIN_FILE}.lightxde.bak.$(date +%s)"
-  if [[ "$de" == "plasma" ]]; then
-    if ! grep -q "pam_kwallet5.so" "$LOGIN_FILE"; then
-      log "Backing up $LOGIN_FILE to $backup_file"
-      sudo cp "$LOGIN_FILE" "$backup_file"
-      patch_output=""
-      patch_status=0
-      if ! patch_output=$(sudo patch "$LOGIN_FILE" "$PAM_KWALLET_PATCH_FILE" 2>&1); then
-        patch_status=$?
-      fi
-      if [ $patch_status -eq 0 ]; then
-        log "PAM patched successfully."
-      else
-        log "Patching failed! Output was:\n$patch_output"
-        log "Restoring original $LOGIN_FILE. Attempting manual fallback."
-        sudo cp "$backup_file" "$LOGIN_FILE"
-        echo "auth       optional   pam_kwallet5.so" | sudo tee -a "$LOGIN_FILE" > /dev/null
-        echo "session    optional   pam_kwallet5.so force_run" | sudo tee -a "$LOGIN_FILE" > /dev/null
-        log "[WARN] Patch failed, pam_kwallet5.so lines were appended manually to $LOGIN_FILE. Please verify manually."
-      fi
-    else
-      log "PAM configuration for KWallet already exists. Skipping."
-    fi
-  elif [[ "$de" == "gnome" ]]; then
-    if ! grep -q "pam_gnome_keyring.so" "$LOGIN_FILE"; then
-      log "Backing up $LOGIN_FILE to $backup_file"
-      sudo cp "$LOGIN_FILE" "$backup_file"
-      patch_output=""
-      patch_status=0
-      if ! patch_output=$(sudo patch "$LOGIN_FILE" "$PAM_GNOME_KEYRING_PATCH_FILE" 2>&1); then
-        patch_status=$?
-      fi
-      if [ $patch_status -eq 0 ]; then
-        log "PAM patched successfully."
-      else
-        log "Patching failed! Output was:\n$patch_output"
-        log "Restoring original $LOGIN_FILE. Attempting manual fallback."
-        sudo cp "$backup_file" "$LOGIN_FILE"
-        echo "auth       optional   pam_gnome_keyring.so auto_start" | sudo tee -a "$LOGIN_FILE" > /dev/null
-        echo "session    optional   pam_gnome_keyring.so auto_start" | sudo tee -a "$LOGIN_FILE" > /dev/null
-        log "[WARN] Patch failed, pam_gnome_keyring.so lines were appended manually to $LOGIN_FILE. Please verify manually."
-      fi
-    else
-      log "PAM configuration for GNOME Keyring already exists. Skipping."
-    fi
+  local module auth_line session_line
+  case "$de" in
+    plasma)
+      module="pam_kwallet5.so"
+      auth_line="auth       optional   pam_kwallet5.so"
+      session_line="session    optional   pam_kwallet5.so force_run"
+      ;;
+    gnome)
+      module="pam_gnome_keyring.so"
+      auth_line="auth       optional   pam_gnome_keyring.so"
+      session_line="session    optional   pam_gnome_keyring.so auto_start"
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  if ! grep -q "$module" "$LOGIN_FILE"; then
+    local backup_file
+    backup_file="${LOGIN_FILE}.lightxde.bak.$(date +%s)"
+    log "Backing up $LOGIN_FILE to $backup_file"
+    sudo cp "$LOGIN_FILE" "$backup_file"
+    printf '%s\n%s\n' "$auth_line" "$session_line" | sudo tee -a "$LOGIN_FILE" > /dev/null
+    log "Configured $module in $LOGIN_FILE."
+  else
+    log "PAM configuration for $module already exists. Skipping."
   fi
 }
 
