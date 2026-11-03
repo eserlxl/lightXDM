@@ -4,10 +4,11 @@
 set -e
 
 # --- Configuration ---
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly DM_LIST=(sddm lightdm gdm lxdm)
 readonly LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
-readonly POLKIT_RULE_SRC="polkit/49-nopasswd.rules"
-readonly POLKIT_RULE_DEST="/etc/polkit-1/rules.d/49-nopasswd.rules"
+readonly POLKIT_RULE_SRC="$SCRIPT_DIR/polkit/49-nopasswd.rules"
+readonly POLKIT_RULE_DEST="${POLKIT_RULE_DEST:-/etc/polkit-1/rules.d/49-nopasswd.rules}"
 
 # --- Functions ---
 
@@ -135,18 +136,18 @@ copy_dotfiles() {
     log "Backing up $user_home/.bash_profile to $user_home/.bash_profile.lightxdm.bak"
     cp "$user_home/.bash_profile" "$user_home/.bash_profile.lightxdm.bak"
   fi
-  sudo install -Dm644 "dotfiles/.bash_profile" "$user_home/.bash_profile"
+  sudo install -Dm644 "$SCRIPT_DIR/dotfiles/.bash_profile" "$user_home/.bash_profile"
   sudo chown "$USER:$(id -gn "$USER")" "$user_home/.bash_profile"
 
   if [[ "$de" == "plasma" ]]; then
-    sudo install -Dm744 "dotfiles/.gpg-agent-kwallet" "$user_home/.gpg-agent-kwallet"
+    sudo install -Dm744 "$SCRIPT_DIR/dotfiles/.gpg-agent-kwallet" "$user_home/.gpg-agent-kwallet"
     sudo chown "$USER:$(id -gn "$USER")" "$user_home/.gpg-agent-kwallet"
   else
-    sudo install -Dm744 "dotfiles/.gpg-agent-gnome" "$user_home/.gpg-agent-gnome"
+    sudo install -Dm744 "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome" "$user_home/.gpg-agent-gnome"
     sudo chown "$USER:$(id -gn "$USER")" "$user_home/.gpg-agent-gnome"
   fi
 
-  local xinitrc_template="dotfiles/.xinitrc-$de"
+  local xinitrc_template="$SCRIPT_DIR/dotfiles/.xinitrc-$de"
   if [[ -f "$xinitrc_template" ]]; then
     if [[ -f "$user_home/.xinitrc" && ! -e "$user_home/.xinitrc.lightxdm.bak" ]]; then
       log "Backing up $user_home/.xinitrc to $user_home/.xinitrc.lightxdm.bak"
