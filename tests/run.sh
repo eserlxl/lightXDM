@@ -526,4 +526,94 @@ for gpg_dotfile in .gpg-agent-gnome .gpg-agent-kwallet; do
   fi
 done
 
+# Case 23: detect_de matches exact installed package via pacman -Qq and ignores description substrings
+detect_stub_dir="$TMP_DIR/pacman_i3_nemo"
+mkdir -p "$detect_stub_dir"
+cat >"$detect_stub_dir/pacman" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-Qq" ]]; then
+  case "${2:-}" in
+    i3-wm | nemo)
+      echo "$2"
+      exit 0
+      ;;
+    *)
+      exit 1
+      ;;
+  esac
+elif [[ "${1:-}" == "-Qs" ]]; then
+  case "${2:-}" in
+    *cinnamon* | *nemo* | *i3*)
+      echo "local/nemo 6.0.0"
+      echo "    Cinnamon file manager"
+      exit 0
+      ;;
+    *)
+      exit 1
+      ;;
+  esac
+fi
+exit 1
+EOF
+chmod +x "$detect_stub_dir/pacman"
+
+set +e
+output="$(
+  set -e
+  export PATH="$detect_stub_dir:$PATH"
+  detect_de
+)"
+status=$?
+set -e
+if [[ $status -eq 0 && "$output" == "i3" ]]; then
+  pass "detect_de detects i3 with i3-wm and nemo installed"
+else
+  fail "detect_de with i3-wm and nemo (status=$status, output=$output)"
+fi
+
+# Case 24: detect_de returns unknown when only unrelated packages (nemo) are installed
+nemo_stub_dir="$TMP_DIR/pacman_nemo_only"
+mkdir -p "$nemo_stub_dir"
+cat >"$nemo_stub_dir/pacman" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-Qq" ]]; then
+  case "${2:-}" in
+    nemo)
+      echo "$2"
+      exit 0
+      ;;
+    *)
+      exit 1
+      ;;
+  esac
+elif [[ "${1:-}" == "-Qs" ]]; then
+  case "${2:-}" in
+    *cinnamon* | *nemo*)
+      echo "local/nemo 6.0.0"
+      echo "    Cinnamon file manager"
+      exit 0
+      ;;
+    *)
+      exit 1
+      ;;
+  esac
+fi
+exit 1
+EOF
+chmod +x "$nemo_stub_dir/pacman"
+
+set +e
+output="$(
+  set -e
+  export PATH="$nemo_stub_dir:$PATH"
+  detect_de
+)"
+status=$?
+set -e
+if [[ $status -eq 0 && "$output" == "unknown" ]]; then
+  pass "detect_de returns unknown when only nemo is installed"
+else
+  fail "detect_de with only nemo (status=$status, output=$output)"
+fi
+
 exit "$failures"

@@ -30,27 +30,27 @@ check_root() {
 
 # Detect the installed desktop environment
 detect_de() {
-  if pacman -Qs plasma-desktop >/dev/null; then
-    echo "plasma"
-  elif pacman -Qs gnome-shell >/dev/null; then
-    echo "gnome"
-  elif pacman -Qs xfce4-session >/dev/null; then
-    echo "xfce"
-  elif pacman -Qs lxqt-session >/dev/null; then
-    echo "lxqt"
-  elif pacman -Qs lxde-session >/dev/null; then
-    echo "lxde"
-  elif pacman -Qs mate-session-manager >/dev/null; then
-    echo "mate"
-  elif pacman -Qs cinnamon >/dev/null; then
-    echo "cinnamon"
-  elif pacman -Qs budgie-desktop >/dev/null; then
-    echo "budgie"
-  elif pacman -Qs i3-wm >/dev/null; then
-    echo "i3"
-  else
-    echo "unknown"
-  fi
+  local pair pkg de
+  local pairs=(
+    plasma-desktop:plasma
+    gnome-shell:gnome
+    xfce4-session:xfce
+    lxqt-session:lxqt
+    lxde-session:lxde
+    mate-session-manager:mate
+    cinnamon:cinnamon
+    budgie-desktop:budgie
+    i3-wm:i3
+  )
+  for pair in "${pairs[@]}"; do
+    pkg="${pair%%:*}"
+    de="${pair#*:}"
+    if pacman -Qq "$pkg" >/dev/null 2>&1; then
+      echo "$de"
+      return 0
+    fi
+  done
+  echo "unknown"
 }
 
 # Prompt user to select a DE
