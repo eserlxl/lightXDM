@@ -36,7 +36,7 @@ if [[ ! -d "$TARGET_HOME" ]]; then
   exit 1
 fi
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
 BACKUP_FILE="${LOGIN_FILE}.lightxdm.bak"
 

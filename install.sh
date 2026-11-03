@@ -4,7 +4,7 @@
 set -e
 
 # --- Configuration ---
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly DM_LIST=(sddm lightdm gdm lxdm)
 readonly DISPLAY_MANAGER_LINK="${DISPLAY_MANAGER_LINK:-/etc/systemd/system/display-manager.service}"
 readonly LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
@@ -332,9 +332,9 @@ main() {
 
   # --- Wheel group and sudoers check ---
   local real_user
-  real_user="$USER"
+  real_user="${USER:-$(id -un)}"
 
-  if ! id -nG "$real_user" | grep -qw wheel; then
+  if ! id -nG "$real_user" | tr ' ' '\n' | grep -qx wheel; then
     log "ERROR: User '$real_user' is not in the 'wheel' group. Sudo and polkit rules will not work."
     log "Add the user to the wheel group and re-login: sudo usermod -aG wheel $real_user"
     exit 1
@@ -376,7 +376,7 @@ main() {
   cat <<EOF
 
 lightXDM install complete!
-- $de will auto-start on TTY1 for $USER
+- $de will auto-start on TTY1 for $real_user
 - Auto-unlock and Polkit rules are set
 - Reboot or log out to test
 

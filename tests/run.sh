@@ -1646,4 +1646,113 @@ else
   fi
 fi
 
+# Case 45: main requires exact wheel membership (rejecting wheel-dev) and falls back to id -un when USER is unset
+id_wheel_dev_dir="$TMP_DIR/id_wheel_dev"
+mkdir -p "$id_wheel_dev_dir"
+cat >"$id_wheel_dev_dir/id" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-un" ]]; then
+  echo "devuser"
+elif [[ "${1:-}" == "-nG" ]]; then
+  echo "users wheel-dev adm"
+else
+  echo "1000"
+fi
+EOF
+chmod +x "$id_wheel_dev_dir/id"
+
+: >"$STUB_LOG"
+set +e
+output="$(run_main_with_stubs "$id_wheel_dev_dir:$sudo_pw_dir" --no-packages --de i3 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 1 && "$output" == *"is not in the 'wheel' group"* && -z "$log_content" ]]; then
+  pass "main rejects non-exact wheel-dev group membership"
+else
+  fail "main wheel-dev group check (status=$status, log=$log_content, output=$output)"
+fi
+
+id_unset_user_dir="$TMP_DIR/id_unset_user"
+mkdir -p "$id_unset_user_dir"
+cat >"$id_unset_user_dir/id" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-un" ]]; then
+  echo "wheeluser"
+elif [[ "${1:-}" == "-nG" ]]; then
+  if [[ "${2:-}" == "wheeluser" ]]; then
+    echo "users wheel"
+    exit 0
+  fi
+  exit 1
+else
+  echo "1000"
+fi
+EOF
+chmod +x "$id_unset_user_dir/id"
+
+: >"$STUB_LOG"
+set +e
+output="$(
+  exec 2>&1
+  export PATH="$id_unset_user_dir:$sudo_pw_dir:$PATH"
+  unset USER SUDO_USER
+  # shellcheck disable=SC2317,SC2329
+  copy_dotfiles() { echo "copy_dotfiles $1" >>"$STUB_LOG"; }
+  # shellcheck disable=SC2317,SC2329
+  configure_pam() { echo "configure_pam $1" >>"$STUB_LOG"; }
+  # shellcheck disable=SC2317,SC2329
+  install_polkit_rule() { echo "install_polkit_rule" >>"$STUB_LOG"; }
+  # shellcheck disable=SC2317,SC2329
+  disable_display_managers() { echo "disable_display_managers" >>"$STUB_LOG"; }
+  main --no-packages --de i3
+)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 0 && "$log_content" == *"sudo -v"* && "$log_content" == *"copy_dotfiles i3"* && "$output" == *"for wheeluser"* ]]; then
+  pass "main succeeds with USER unset when id -un resolves a wheel member"
+else
+  fail "main with USER unset (status=$status, log=$log_content, output=$output)"
+fi
+
+# Case 46: CDPATH=. yields a single-line SCRIPT_DIR when sourcing install.sh and running uninstall.sh
+ln -s "$REPO_ROOT" "$TMP_DIR/relrepo"
+cdpath_home="$TMP_DIR/home_cdpath"
+mkdir -p "$cdpath_home"
+set +e
+cdpath_script_dir="$(
+  cd "$TMP_DIR"
+  export CDPATH=.
+  export HOME="$cdpath_home"
+  # shellcheck disable=SC2016
+  bash -c 'source relrepo/install.sh && copy_dotfiles i3 2>/dev/null && printf "%s" "$SCRIPT_DIR"'
+)"
+cdpath_status=$?
+set -e
+if [[ $cdpath_status -eq 0 && "$cdpath_script_dir" == "$TMP_DIR/relrepo" && "$cdpath_script_dir" != *$'\n'* ]] &&
+  [[ -f "$cdpath_home/.bash_profile" && -f "$cdpath_home/.xinitrc" ]]; then
+  pass "CDPATH=. yields single-line SCRIPT_DIR and working copy_dotfiles when sourcing install.sh"
+else
+  fail "CDPATH=. with install.sh (status=$cdpath_status, SCRIPT_DIR=$cdpath_script_dir)"
+fi
+
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh ignores CDPATH=. when resolving SCRIPT_DIR (unshare -r unavailable)"
+else
+  set +e
+  cdpath_u_out="$(
+    cd "$TMP_DIR"
+    export CDPATH=.
+    TARGET_HOME="$cdpath_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash relrepo/uninstall.sh 2>&1
+  )"
+  cdpath_u_status=$?
+  set -e
+  if [[ $cdpath_u_status -eq 0 && ! -e "$cdpath_home/.bash_profile" && ! -e "$cdpath_home/.xinitrc" ]]; then
+    pass "uninstall.sh ignores CDPATH=. when resolving SCRIPT_DIR"
+  else
+    fail "CDPATH=. with uninstall.sh (status=$cdpath_u_status, output=$cdpath_u_out)"
+  fi
+fi
+
 exit "$failures"
