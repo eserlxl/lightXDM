@@ -688,7 +688,7 @@ for gpg_dotfile in .gpg-agent-gnome .gpg-agent-kwallet; do
     export HOME="$gpg_home"
     export PATH="$STUB_BIN:$PATH"
     export SSH_AUTH_SOCK="/tmp/sentinel-ssh.sock"
-    unset GPG_TTY
+    unset GPG_TTY GNUPGHOME
     # shellcheck disable=SC1090
     source "$REPO_ROOT/dotfiles/$gpg_dotfile"
     printf '%s|%s\n' "$SSH_AUTH_SOCK" "${GPG_TTY-<unset>}"
@@ -699,16 +699,45 @@ for gpg_dotfile in .gpg-agent-gnome .gpg-agent-kwallet; do
     export HOME="$gpg_home"
     export PATH="$STUB_BIN:$PATH"
     export SSH_AUTH_SOCK="/tmp/sentinel-ssh.sock"
+    unset GPG_TTY GNUPGHOME
+    # shellcheck disable=SC1090
+    source "$REPO_ROOT/dotfiles/$gpg_dotfile"
+    printf '%s|%s\n' "$SSH_AUTH_SOCK" "${GPG_TTY-<unset>}"
+  )"
+
+  echo "  enable-ssh-support" >"$gpg_home/.gnupg/gpg-agent.conf"
+  indented_out="$(
+    export HOME="$gpg_home"
+    export PATH="$STUB_BIN:$PATH"
+    export SSH_AUTH_SOCK="/tmp/sentinel-ssh.sock"
+    unset GPG_TTY GNUPGHOME
+    # shellcheck disable=SC1090
+    source "$REPO_ROOT/dotfiles/$gpg_dotfile"
+    printf '%s|%s\n' "$SSH_AUTH_SOCK" "${GPG_TTY-<unset>}"
+  )"
+
+  rm -f "$gpg_home/.gnupg/gpg-agent.conf"
+  mkdir -p "$gpg_home/custom-gnupg"
+  echo "enable-ssh-support" >"$gpg_home/custom-gnupg/gpg-agent.conf"
+  gnupghome_out="$(
+    export HOME="$gpg_home"
+    export GNUPGHOME="$gpg_home/custom-gnupg"
+    export PATH="$STUB_BIN:$PATH"
+    export SSH_AUTH_SOCK="/tmp/sentinel-ssh.sock"
     unset GPG_TTY
     # shellcheck disable=SC1090
     source "$REPO_ROOT/dotfiles/$gpg_dotfile"
     printf '%s|%s\n' "$SSH_AUTH_SOCK" "${GPG_TTY-<unset>}"
   )"
 
-  if [[ "$without_out" == "/tmp/sentinel-ssh.sock|<unset>" && "$with_out" == "/run/user/1000/gnupg/S.gpg-agent.ssh|<unset>" ]]; then
-    pass "$gpg_dotfile respects enable-ssh-support and does not export GPG_TTY"
+  expected_gpg_out="/run/user/1000/gnupg/S.gpg-agent.ssh|<unset>"
+  if [[ "$without_out" == "/tmp/sentinel-ssh.sock|<unset>" &&
+    "$with_out" == "$expected_gpg_out" &&
+    "$indented_out" == "$expected_gpg_out" &&
+    "$gnupghome_out" == "$expected_gpg_out" ]]; then
+    pass "$gpg_dotfile respects enable-ssh-support (including indented and custom GNUPGHOME) and does not export GPG_TTY"
   else
-    fail "$gpg_dotfile (without=$without_out, with=$with_out)"
+    fail "$gpg_dotfile (without=$without_out, with=$with_out, indented=$indented_out, gnupghome=$gnupghome_out)"
   fi
 done
 

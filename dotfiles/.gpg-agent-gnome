@@ -9,7 +9,7 @@
 gpg-connect-agent /bye
 
 # Point SSH_AUTH_SOCK at gpg-agent when enable-ssh-support is set and refresh its tty
-if grep -qs '^enable-ssh-support' ~/.gnupg/gpg-agent.conf; then
+if grep -Eqs '^[[:space:]]*enable-ssh-support([[:space:]#]|$)' "${GNUPGHOME:-$HOME/.gnupg}/gpg-agent.conf"; then
   export SSH_AUTH_SOCK=$(gpgconf --list-dirs agent-ssh-socket)
 fi
 gpg-connect-agent updatestartuptty /bye >/dev/null
