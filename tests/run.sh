@@ -54,6 +54,7 @@ chmod +x "$STUB_BIN/sudo" "$STUB_BIN/pacman" "$STUB_BIN/systemctl" "$STUB_BIN/id
 export PATH="$STUB_BIN:$PATH"
 export STUB_LOG="$TMP_DIR/stub.log"
 export LOGIN_FILE="$TMP_DIR/login"
+export POLKIT_RULE_DEST="$TMP_DIR/49-nopasswd.rules"
 export DISPLAY_MANAGER_LINK="$TMP_DIR/display-manager.service"
 export DM_STATE_FILE="$TMP_DIR/lightxdm/disabled-display-managers"
 
@@ -2033,6 +2034,68 @@ EOF
     pass "uninstall.sh removes legacy lightXDM-written override.conf"
   else
     fail "uninstall.sh legacy override.conf cleanup (status=$st_u_legacy, output=$out_u_legacy, log=$log_u_legacy)"
+  fi
+fi
+
+# Case 50: Polkit install backs up foreign rules once and uninstall restores them
+printf '// administrator rule\n' >"$POLKIT_RULE_DEST"
+polkit_original_hash="$(sha256sum < "$POLKIT_RULE_DEST")"
+install_polkit_rule 2>/dev/null
+install_polkit_rule 2>/dev/null
+if [[ -f "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
+  [[ "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm.bak")" == "$polkit_original_hash" ]] &&
+  cmp -s "$POLKIT_RULE_SRC" "$POLKIT_RULE_DEST"; then
+  pass "install_polkit_rule backs up a foreign rule and installs the shipped rule"
+else
+  fail "install_polkit_rule foreign rule backup"
+fi
+
+printf '// later administrator edit\n' >"$POLKIT_RULE_DEST"
+install_polkit_rule 2>/dev/null
+if [[ -f "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
+  [[ "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm.bak")" == "$polkit_original_hash" ]]; then
+  pass "install_polkit_rule preserves an existing backup on reinstall"
+else
+  fail "install_polkit_rule overwrote the original backup"
+fi
+
+polkit_test_dir="$TMP_DIR/polkit_uninstall"
+mkdir -p "$polkit_test_dir/home"
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh restores the original Polkit rule (unshare -r unavailable)"
+else
+  set +e
+  output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" AUTOLOGIN_DROPIN="$polkit_test_dir/autologin" OVERRIDE_FILE="$polkit_test_dir/override" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && -f "$POLKIT_RULE_DEST" && ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
+    [[ "$(sha256sum < "$POLKIT_RULE_DEST")" == "$polkit_original_hash" ]]; then
+    pass "uninstall.sh restores the original Polkit rule and removes the backup"
+  else
+    fail "uninstall.sh Polkit restore (status=$status, output=$output)"
+  fi
+fi
+
+# Case 51: without a prior Polkit rule, install creates no backup and uninstall removes it
+rm -f "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak"
+install_polkit_rule 2>/dev/null
+install_polkit_rule 2>/dev/null
+if [[ ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" ]] && cmp -s "$POLKIT_RULE_SRC" "$POLKIT_RULE_DEST"; then
+  pass "install_polkit_rule creates no backup for a fresh or identical rule"
+else
+  fail "install_polkit_rule fresh install or identical rule"
+fi
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh removes Polkit rule without a prior rule (unshare -r unavailable)"
+else
+  set +e
+  output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" AUTOLOGIN_DROPIN="$polkit_test_dir/autologin" OVERRIDE_FILE="$polkit_test_dir/override" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && ! -e "$POLKIT_RULE_DEST" && ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" ]]; then
+    pass "uninstall.sh removes Polkit rule without a prior rule"
+  else
+    fail "uninstall.sh fresh Polkit removal (status=$status, output=$output)"
   fi
 fi
 

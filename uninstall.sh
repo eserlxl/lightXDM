@@ -111,9 +111,12 @@ elif [[ ! -f "$OVERRIDE_FILE" && ! -L "$OVERRIDE_FILE" ]]; then
   echo "No autologin drop-in found; skipping."
 fi
 
-# Remove Polkit rule
+# Restore the original Polkit rule or remove the installed rule
 POLKIT_RULE="${POLKIT_RULE:-/etc/polkit-1/rules.d/49-nopasswd.rules}"
-if [ -f "$POLKIT_RULE" ]; then
+if [[ -e "${POLKIT_RULE}.lightxdm.bak" || -L "${POLKIT_RULE}.lightxdm.bak" ]]; then
+  echo "Restoring $POLKIT_RULE from backup..."
+  mv -- "${POLKIT_RULE}.lightxdm.bak" "$POLKIT_RULE"
+elif [ -f "$POLKIT_RULE" ]; then
   echo "Removing Polkit rule..."
   rm -f "$POLKIT_RULE"
 else
