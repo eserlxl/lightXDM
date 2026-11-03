@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC1090
 # ~/.bash_profile
 
 export PATH="$HOME/.local/bin:$PATH"
