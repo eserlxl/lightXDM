@@ -176,9 +176,11 @@ configure_pam() {
 
   if ! grep -q "$module" "$LOGIN_FILE"; then
     local backup_file
-    backup_file="${LOGIN_FILE}.lightxde.bak.$(date +%s)"
-    log "Backing up $LOGIN_FILE to $backup_file"
-    sudo cp "$LOGIN_FILE" "$backup_file"
+    backup_file="${LOGIN_FILE}.lightxdm.bak"
+    if [[ ! -e "$backup_file" ]]; then
+      log "Backing up $LOGIN_FILE to $backup_file"
+      sudo cp "$LOGIN_FILE" "$backup_file"
+    fi
     printf '%s\n%s\n' "$auth_line" "$session_line" | sudo tee -a "$LOGIN_FILE" > /dev/null
     log "Configured $module in $LOGIN_FILE."
   else

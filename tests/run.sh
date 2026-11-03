@@ -339,4 +339,77 @@ else
   fail "enable-autologin.sh valid user (status=$status, output=$output, content=$override_content, log=$log_content)"
 fi
 
+# Case 16: configure_pam creates LOGIN_FILE.lightxdm.bak once and preserves it across reruns
+rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+write_stock_login
+stock_login="$(cat "$LOGIN_FILE")"
+configure_pam "plasma" 2>/dev/null
+configure_pam "plasma" 2>/dev/null
+configure_pam "gnome" 2>/dev/null
+backup_content=""
+if [[ -f "${LOGIN_FILE}.lightxdm.bak" ]]; then
+  backup_content="$(cat "${LOGIN_FILE}.lightxdm.bak")"
+fi
+if [[ -f "${LOGIN_FILE}.lightxdm.bak" && "$backup_content" == "$stock_login" ]] &&
+  grep -q 'pam_kwallet5\.so' "$LOGIN_FILE" &&
+  grep -q 'pam_gnome_keyring\.so' "$LOGIN_FILE" &&
+  ! compgen -G "${LOGIN_FILE}.lightxde.bak*" >/dev/null; then
+  pass "configure_pam creates login.lightxdm.bak once and keeps pristine backup on reruns"
+else
+  fail "configure_pam backup-once (backup=$backup_content)"
+fi
+
+# Case 17: uninstall.sh exits 1 with a message when run without root
+uninstall_dir="$TMP_DIR/uninstall"
+rm -rf "$uninstall_dir"
+mkdir -p "$uninstall_dir"
+uninstall_override="$uninstall_dir/override.conf"
+uninstall_polkit="$uninstall_dir/49-nopasswd.rules"
+echo "[Service]" >"$uninstall_override"
+echo "// rule" >"$uninstall_polkit"
+: >"$STUB_LOG"
+set +e
+output="$(OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 1 && "$output" == *"Please run as root"* && -f "${LOGIN_FILE}.lightxdm.bak" && -f "$uninstall_override" && -f "$uninstall_polkit" && -z "$log_content" ]]; then
+  pass "uninstall.sh exits 1 with message when run without root"
+else
+  fail "uninstall.sh non-root check (status=$status, output=$output, log=$log_content)"
+fi
+
+# Case 18: install then uninstall restores LOGIN_FILE to pre-install content and removes backup, override, and polkit rule
+rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+write_stock_login
+stock_login="$(cat "$LOGIN_FILE")"
+configure_pam "plasma" 2>/dev/null
+configure_pam "gnome" 2>/dev/null
+: >"$STUB_LOG"
+set +e
+output="$(OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+restored_login="$(cat "$LOGIN_FILE")"
+if [[ $status -eq 0 && "$restored_login" == "$stock_login" && ! -e "${LOGIN_FILE}.lightxdm.bak" && ! -e "$uninstall_override" && ! -e "$uninstall_polkit" && "$log_content" == *"systemctl daemon-reload"* ]]; then
+  pass "uninstall.sh restores pre-install PAM login and removes backup, override, and polkit rule"
+else
+  fail "uninstall.sh restore (status=$status, output=$output, restored=$restored_login, log=$log_content)"
+fi
+
+# Case 19: uninstall.sh succeeds cleanly when backup, override, and polkit rule are absent
+: >"$STUB_LOG"
+set +e
+output="$(OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+restored_login="$(cat "$LOGIN_FILE")"
+if [[ $status -eq 0 && "$restored_login" == "$stock_login" && -z "$log_content" ]]; then
+  pass "uninstall.sh skips missing files cleanly"
+else
+  fail "uninstall.sh idempotent rerun (status=$status, output=$output, restored=$restored_login, log=$log_content)"
+fi
+
 exit "$failures"

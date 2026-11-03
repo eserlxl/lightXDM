@@ -2,16 +2,25 @@
 # uninstall.sh: Revert changes made by install scripts (PAM, autologin, Polkit)
 set -e
 
+if [[ $EUID -ne 0 ]]; then
+  echo "Please run as root (with sudo)."
+  exit 1
+fi
+
+LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
+BACKUP_FILE="${LOGIN_FILE}.lightxdm.bak"
+
 # Restore /etc/pam.d/login if backup exists
-if [ -f /etc/pam.d/login.backup ]; then
-  echo "Restoring /etc/pam.d/login from backup..."
-  cp /etc/pam.d/login.backup /etc/pam.d/login
+if [ -f "$BACKUP_FILE" ]; then
+  echo "Restoring $LOGIN_FILE from backup..."
+  cp "$BACKUP_FILE" "$LOGIN_FILE"
+  rm -f "$BACKUP_FILE"
 else
-  echo "No /etc/pam.d/login.backup found; skipping PAM restore."
+  echo "No $BACKUP_FILE found; skipping PAM restore."
 fi
 
 # Remove autologin override
-OVERRIDE_FILE="/etc/systemd/system/getty@tty1.service.d/override.conf"
+OVERRIDE_FILE="${OVERRIDE_FILE:-/etc/systemd/system/getty@tty1.service.d/override.conf}"
 if [ -f "$OVERRIDE_FILE" ]; then
   echo "Removing autologin override..."
   rm -f "$OVERRIDE_FILE"
@@ -22,7 +31,7 @@ else
 fi
 
 # Remove Polkit rule
-POLKIT_RULE="/etc/polkit-1/rules.d/49-nopasswd.rules"
+POLKIT_RULE="${POLKIT_RULE:-/etc/polkit-1/rules.d/49-nopasswd.rules}"
 if [ -f "$POLKIT_RULE" ]; then
   echo "Removing Polkit rule..."
   rm -f "$POLKIT_RULE"
