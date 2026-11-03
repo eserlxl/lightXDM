@@ -542,7 +542,7 @@ else
   status=$?
   set -e
   if [[ $status -eq 0 && ! -e "$temp_home_fresh/.bash_profile" && ! -e "$temp_home_fresh/.xinitrc" && ! -e "$temp_home_fresh/.gpg-agent-kwallet" ]] &&
-    [[ -f "$temp_home_fresh/.bash_profile.lightxdm-removed" && -f "$temp_home_fresh/.xinitrc.lightxdm-removed" ]]; then
+    [[ ! -e "$temp_home_fresh/.bash_profile.lightxdm-removed" && ! -e "$temp_home_fresh/.xinitrc.lightxdm-removed" ]]; then
     pass "uninstall.sh removes installed dotfiles when no backup exists"
   else
     fail "uninstall.sh fresh dotfile removal (status=$status, output=$output)"
@@ -936,7 +936,7 @@ else
   if [[ -f "$removed_home/.xinitrc.lightxdm-removed" ]]; then
     prev_xinit="$(cat "$removed_home/.xinitrc.lightxdm-removed")"
   fi
-  if [[ $status -eq 0 && "$prev_bash" == "# previous removed bash_profile" && "$prev_xinit" == "# previous removed xinitrc" ]]; then
+  if [[ $status -eq 0 && ! -e "$removed_home/.bash_profile" && ! -e "$removed_home/.xinitrc" && "$prev_bash" == "# previous removed bash_profile" && "$prev_xinit" == "# previous removed xinitrc" ]]; then
     pass "uninstall.sh never overwrites existing .lightxdm-removed files"
   else
     fail "uninstall.sh existing .lightxdm-removed (status=$status, bash=$prev_bash, xinit=$prev_xinit, output=$output)"
@@ -1063,9 +1063,9 @@ else
   fi
 fi
 
-# Case 33: uninstall.sh moves aside unmodified lightXDM dotfiles when cmp is absent from PATH
+# Case 33: uninstall.sh removes unmodified lightXDM dotfiles when cmp is absent from PATH
 if [[ $can_unshare -eq 0 ]]; then
-  skip "uninstall.sh moves aside unmodified dotfiles without cmp in PATH (unshare -r unavailable)"
+  skip "uninstall.sh removes unmodified dotfiles without cmp in PATH (unshare -r unavailable)"
 else
   no_cmp_bin="$TMP_DIR/no_cmp_bin"
   mkdir -p "$no_cmp_bin"
@@ -1087,9 +1087,9 @@ else
   status=$?
   set -e
   if [[ $status -eq 0 && ! -e "$no_cmp_home/.bash_profile" && ! -e "$no_cmp_home/.xinitrc" ]] &&
-    [[ -f "$no_cmp_home/.bash_profile.lightxdm-removed" && -f "$no_cmp_home/.xinitrc.lightxdm-removed" ]] &&
+    [[ ! -e "$no_cmp_home/.bash_profile.lightxdm-removed" && ! -e "$no_cmp_home/.xinitrc.lightxdm-removed" ]] &&
     [[ "$output" != *"command not found"* ]]; then
-    pass "uninstall.sh moves aside unmodified dotfiles without cmp in PATH"
+    pass "uninstall.sh removes unmodified dotfiles without cmp in PATH"
   else
     fail "uninstall.sh without cmp (status=$status, output=$output)"
   fi
@@ -1177,7 +1177,7 @@ EOF
   if [[ $status_sudo -eq 0 && "$(cat "$LOGIN_FILE")" == "$stock_login" && ! -e "${LOGIN_FILE}.lightxdm.bak" ]] &&
     [[ ! -e "$refuse_override" && ! -e "$refuse_polkit" && "$log_content" == *"systemctl daemon-reload"* ]] &&
     [[ "$(cat "$sudo_user_home/.bash_profile")" == "# original bash_profile" && ! -e "$sudo_user_home/.bash_profile.lightxdm.bak" ]] &&
-    [[ ! -e "$sudo_user_home/.xinitrc" && -f "$sudo_user_home/.xinitrc.lightxdm-removed" && ! -e "$sudo_user_home/.gpg-agent-kwallet" ]]; then
+    [[ ! -e "$sudo_user_home/.xinitrc" && ! -e "$sudo_user_home/.xinitrc.lightxdm-removed" && ! -e "$sudo_user_home/.gpg-agent-kwallet" ]]; then
     pass "uninstall.sh resolves TARGET_HOME from SUDO_USER and completes full uninstall"
   else
     fail "uninstall.sh SUDO_USER resolution (status=$status_sudo, output=$output_sudo, log=$log_content)"
@@ -1241,6 +1241,73 @@ else
     pass "uninstall.sh restores symlinked and dangling-symlink dotfiles with their original targets"
   else
     fail "uninstall.sh symlink dotfile restore (status=$status, output=$output)"
+  fi
+fi
+
+# Case 37: repeated install/uninstall cycles on an empty home leave no lightXDM dotfiles behind
+repeat_install_home="$TMP_DIR/home_repeat_install"
+mkdir -p "$repeat_install_home"
+(
+  export HOME="$repeat_install_home"
+  export USER="${USER:-testuser}"
+  copy_dotfiles "plasma" 2>/dev/null
+  copy_dotfiles "plasma" 2>/dev/null
+  copy_dotfiles "gnome" 2>/dev/null
+)
+if [[ ! -e "$repeat_install_home/.bash_profile.lightxdm.bak" && ! -L "$repeat_install_home/.bash_profile.lightxdm.bak" ]] &&
+  [[ ! -e "$repeat_install_home/.xinitrc.lightxdm.bak" && ! -L "$repeat_install_home/.xinitrc.lightxdm.bak" ]]; then
+  pass "copy_dotfiles skips backing up unmodified lightXDM templates on repeated installs"
+else
+  fail "copy_dotfiles backed up its own template on repeated installs"
+fi
+
+if [[ $can_unshare -eq 0 ]]; then
+  skip "repeated install/uninstall cycles leave no ~/.bash_profile or ~/.xinitrc (unshare -r unavailable)"
+else
+  set +e
+  output="$(TARGET_HOME="$repeat_install_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 ]] &&
+    [[ ! -e "$repeat_install_home/.bash_profile" && ! -L "$repeat_install_home/.bash_profile" ]] &&
+    [[ ! -e "$repeat_install_home/.xinitrc" && ! -L "$repeat_install_home/.xinitrc" ]] &&
+    [[ ! -e "$repeat_install_home/.bash_profile.lightxdm.bak" && ! -e "$repeat_install_home/.xinitrc.lightxdm.bak" ]] &&
+    [[ ! -e "$repeat_install_home/.bash_profile.lightxdm-removed" && ! -e "$repeat_install_home/.xinitrc.lightxdm-removed" ]] &&
+    [[ ! -e "$repeat_install_home/.gpg-agent-kwallet" && ! -e "$repeat_install_home/.gpg-agent-gnome" ]]; then
+    pass "install twice then uninstall on empty home leaves no ~/.bash_profile or ~/.xinitrc"
+  else
+    fail "install twice then uninstall (status=$status, output=$output)"
+  fi
+
+  cycle_home="$TMP_DIR/home_install_uninstall_twice"
+  mkdir -p "$cycle_home"
+  (
+    export HOME="$cycle_home"
+    export USER="${USER:-testuser}"
+    copy_dotfiles "plasma" 2>/dev/null
+  )
+  set +e
+  out_u1="$(TARGET_HOME="$cycle_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status_u1=$?
+  set -e
+  (
+    export HOME="$cycle_home"
+    export USER="${USER:-testuser}"
+    copy_dotfiles "plasma" 2>/dev/null
+  )
+  set +e
+  out_u2="$(TARGET_HOME="$cycle_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status_u2=$?
+  set -e
+  if [[ $status_u1 -eq 0 && $status_u2 -eq 0 ]] &&
+    [[ ! -e "$cycle_home/.bash_profile" && ! -L "$cycle_home/.bash_profile" ]] &&
+    [[ ! -e "$cycle_home/.xinitrc" && ! -L "$cycle_home/.xinitrc" ]] &&
+    [[ ! -e "$cycle_home/.bash_profile.lightxdm.bak" && ! -e "$cycle_home/.xinitrc.lightxdm.bak" ]] &&
+    [[ ! -e "$cycle_home/.bash_profile.lightxdm-removed" && ! -e "$cycle_home/.xinitrc.lightxdm-removed" ]] &&
+    [[ ! -e "$cycle_home/.gpg-agent-kwallet" && ! -e "$cycle_home/.gpg-agent-gnome" ]]; then
+    pass "install, uninstall, install, uninstall on empty home leaves no ~/.bash_profile or ~/.xinitrc"
+  else
+    fail "install/uninstall twice cycle (s1=$status_u1:$out_u1 | s2=$status_u2:$out_u2)"
   fi
 fi
 

@@ -133,8 +133,15 @@ copy_dotfiles() {
 
   log "Copying dotfiles to $user_home..."
   if [[ ( -e "$user_home/.bash_profile" || -L "$user_home/.bash_profile" ) && ! -e "$user_home/.bash_profile.lightxdm.bak" && ! -L "$user_home/.bash_profile.lightxdm.bak" ]]; then
-    log "Backing up $user_home/.bash_profile to $user_home/.bash_profile.lightxdm.bak"
-    cp -P "$user_home/.bash_profile" "$user_home/.bash_profile.lightxdm.bak"
+    local matches_bash_template=0
+    if [[ -f "$user_home/.bash_profile" && ! -L "$user_home/.bash_profile" && -f "$SCRIPT_DIR/dotfiles/.bash_profile" ]] &&
+      [[ "$(sha256sum < "$user_home/.bash_profile")" == "$(sha256sum < "$SCRIPT_DIR/dotfiles/.bash_profile")" ]]; then
+      matches_bash_template=1
+    fi
+    if [[ $matches_bash_template -eq 0 ]]; then
+      log "Backing up $user_home/.bash_profile to $user_home/.bash_profile.lightxdm.bak"
+      cp -P "$user_home/.bash_profile" "$user_home/.bash_profile.lightxdm.bak"
+    fi
   fi
   install -Dm644 "$SCRIPT_DIR/dotfiles/.bash_profile" "$user_home/.bash_profile"
 
@@ -147,8 +154,21 @@ copy_dotfiles() {
   local xinitrc_template="$SCRIPT_DIR/dotfiles/.xinitrc-$de"
   if [[ -f "$xinitrc_template" ]]; then
     if [[ ( -e "$user_home/.xinitrc" || -L "$user_home/.xinitrc" ) && ! -e "$user_home/.xinitrc.lightxdm.bak" && ! -L "$user_home/.xinitrc.lightxdm.bak" ]]; then
-      log "Backing up $user_home/.xinitrc to $user_home/.xinitrc.lightxdm.bak"
-      cp -P "$user_home/.xinitrc" "$user_home/.xinitrc.lightxdm.bak"
+      local matches_xinit_template=0 tmpl
+      if [[ -f "$user_home/.xinitrc" && ! -L "$user_home/.xinitrc" ]]; then
+        local existing_sum
+        existing_sum="$(sha256sum < "$user_home/.xinitrc")"
+        for tmpl in "$SCRIPT_DIR"/dotfiles/.xinitrc-*; do
+          if [[ -f "$tmpl" && "$existing_sum" == "$(sha256sum < "$tmpl")" ]]; then
+            matches_xinit_template=1
+            break
+          fi
+        done
+      fi
+      if [[ $matches_xinit_template -eq 0 ]]; then
+        log "Backing up $user_home/.xinitrc to $user_home/.xinitrc.lightxdm.bak"
+        cp -P "$user_home/.xinitrc" "$user_home/.xinitrc.lightxdm.bak"
+      fi
     fi
     install -Dm755 "$xinitrc_template" "$user_home/.xinitrc"
   else

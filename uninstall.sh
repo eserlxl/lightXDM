@@ -71,25 +71,25 @@ for dotfile in .bash_profile .xinitrc; do
     mv "$TARGET_HOME/${dotfile}.lightxdm.bak" "$TARGET_HOME/$dotfile"
   elif [[ -f "$TARGET_HOME/$dotfile" ]]; then
     matches_template=0
-    if [[ "$dotfile" == ".bash_profile" ]]; then
-      if [[ -f "$SCRIPT_DIR/dotfiles/.bash_profile" ]] && files_match "$TARGET_HOME/$dotfile" "$SCRIPT_DIR/dotfiles/.bash_profile"; then
-        matches_template=1
-      fi
-    else
-      for tmpl in "$SCRIPT_DIR"/dotfiles/.xinitrc-*; do
-        if [[ -f "$tmpl" ]] && files_match "$TARGET_HOME/$dotfile" "$tmpl"; then
+    if [[ ! -L "$TARGET_HOME/$dotfile" ]]; then
+      if [[ "$dotfile" == ".bash_profile" ]]; then
+        if [[ -f "$SCRIPT_DIR/dotfiles/.bash_profile" ]] && files_match "$TARGET_HOME/$dotfile" "$SCRIPT_DIR/dotfiles/.bash_profile"; then
           matches_template=1
-          break
         fi
-      done
+      else
+        for tmpl in "$SCRIPT_DIR"/dotfiles/.xinitrc-*; do
+          if [[ -f "$tmpl" ]] && files_match "$TARGET_HOME/$dotfile" "$tmpl"; then
+            matches_template=1
+            break
+          fi
+        done
+      fi
     fi
     if [[ $matches_template -eq 0 ]]; then
       echo "Keeping $TARGET_HOME/$dotfile (not an unmodified lightXDM template)."
-    elif [[ -e "$TARGET_HOME/${dotfile}.lightxdm-removed" || -L "$TARGET_HOME/${dotfile}.lightxdm-removed" ]]; then
-      echo "Skipping move of $TARGET_HOME/$dotfile; $TARGET_HOME/${dotfile}.lightxdm-removed already exists."
     else
-      echo "Moving $TARGET_HOME/$dotfile to $TARGET_HOME/${dotfile}.lightxdm-removed..."
-      mv "$TARGET_HOME/$dotfile" "$TARGET_HOME/${dotfile}.lightxdm-removed"
+      echo "Removing $TARGET_HOME/$dotfile..."
+      rm -f "$TARGET_HOME/$dotfile"
     fi
   fi
 done
