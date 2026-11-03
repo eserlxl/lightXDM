@@ -29,7 +29,7 @@ By default, `lightXDM` now installs a hybrid rule at:
 **Content:**
 
 ```js
-// Allow local, active wheel users on seat0 to shutdown/reboot/suspend without password
+// Allow local, active wheel users on seat0 to shutdown/reboot/suspend/hibernate without password
 polkit.addRule(function(action, subject) {
   if (
     subject.isInGroup("wheel") &&
@@ -37,12 +37,19 @@ polkit.addRule(function(action, subject) {
     subject.active &&
     subject.seat === "seat0"
   ) {
-    // Allow shutdown, reboot, suspend without password
-    if (
-      action.id === "org.freedesktop.login1.power-off" ||
-      action.id === "org.freedesktop.login1.reboot" ||
-      action.id === "org.freedesktop.login1.suspend"
-    ) {
+    // Allow shutdown, reboot, suspend and hibernate without password,
+    // also while other sessions are open (the -multiple-sessions variants)
+    var powerActions = [
+      "org.freedesktop.login1.power-off",
+      "org.freedesktop.login1.power-off-multiple-sessions",
+      "org.freedesktop.login1.reboot",
+      "org.freedesktop.login1.reboot-multiple-sessions",
+      "org.freedesktop.login1.suspend",
+      "org.freedesktop.login1.suspend-multiple-sessions",
+      "org.freedesktop.login1.hibernate",
+      "org.freedesktop.login1.hibernate-multiple-sessions"
+    ];
+    if (powerActions.indexOf(action.id) !== -1) {
       return polkit.Result.YES;
     }
   }
@@ -51,7 +58,7 @@ polkit.addRule(function(action, subject) {
 
 ### ✅ What this allows:
 
-* **Shutdown, reboot, suspend** from the GUI for local, active users in the `wheel` group (no password required)
+* **Shutdown, reboot, suspend, hibernate** from the GUI for local, active users in the `wheel` group (no password required), including while other sessions (SSH, another tty) are open
 * **Mounting removable drives** (`udisks2` defaults) and **power management** (`UPower` defaults) for active local users without overriding upstream policies
 
 ### ❌ What it doesn't allow:
@@ -125,7 +132,7 @@ These provide the necessary backend support for KDE to interact with Polkit.
 | Feature        | Enabled By                          |
 | -------------- | ----------------------------------- |
 | USB automount  | `udisks2` defaults + polkit agent   |
-| Reboot/Suspend | `login1` rule                       |
+| Reboot/Suspend/Hibernate | `login1` rule              |
 | Brightness     | `UPower` defaults                   |
 | GUI prompt     | `polkit-kde-authentication-agent-1` |
 

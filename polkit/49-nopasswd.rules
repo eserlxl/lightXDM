@@ -1,5 +1,5 @@
 // /etc/polkit-1/rules.d/49-nopasswd.rules for lightXDM
-// Hybrid rule: allow local, active wheel users on seat0 to shutdown/reboot/suspend without password
+// Hybrid rule: allow local, active wheel users on seat0 to shutdown/reboot/suspend/hibernate without password
 polkit.addRule(function(action, subject) {
   if (
     subject.isInGroup("wheel") &&
@@ -7,12 +7,19 @@ polkit.addRule(function(action, subject) {
     subject.active &&
     subject.seat === "seat0"
   ) {
-    // Allow shutdown, reboot, suspend without password
-    if (
-      action.id === "org.freedesktop.login1.power-off" ||
-      action.id === "org.freedesktop.login1.reboot" ||
-      action.id === "org.freedesktop.login1.suspend"
-    ) {
+    // Allow shutdown, reboot, suspend and hibernate without password,
+    // also while other sessions are open (the -multiple-sessions variants)
+    var powerActions = [
+      "org.freedesktop.login1.power-off",
+      "org.freedesktop.login1.power-off-multiple-sessions",
+      "org.freedesktop.login1.reboot",
+      "org.freedesktop.login1.reboot-multiple-sessions",
+      "org.freedesktop.login1.suspend",
+      "org.freedesktop.login1.suspend-multiple-sessions",
+      "org.freedesktop.login1.hibernate",
+      "org.freedesktop.login1.hibernate-multiple-sessions"
+    ];
+    if (powerActions.indexOf(action.id) !== -1) {
       return polkit.Result.YES;
     }
   }
