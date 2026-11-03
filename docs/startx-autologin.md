@@ -5,7 +5,7 @@ lightXDM provides a display-manager-free autologin experience by:
 - Using `.bash_profile` to auto-launch `startx` only on TTY1
 
 ## How it works
-- If you log in on TTY1, `.bash_profile` runs `startx` automatically.
+- If you log in on TTY1 (an interactive login shell), `.bash_profile` runs `startx` automatically. Non-interactive login shells such as `su - user -c cmd` on TTY1 run their command and do not start X.
 - No graphical login screen, no display manager needed.
 - You get a full desktop environment session with minimal RAM and boot time.
 
