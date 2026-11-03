@@ -30,7 +30,6 @@ By default, `lightXDM` now installs a hybrid rule at:
 
 ```js
 // Allow local, active wheel users on seat0 to shutdown/reboot/suspend without password
-// Require admin authentication for UDisks2 and UPower actions
 polkit.addRule(function(action, subject) {
   if (
     subject.isInGroup("wheel") &&
@@ -46,13 +45,6 @@ polkit.addRule(function(action, subject) {
     ) {
       return polkit.Result.YES;
     }
-    // Require admin authentication for UDisks2 and UPower actions
-    if (
-      action.id.match(/^org\.freedesktop\.udisks2\./) ||
-      action.id.match(/^org\.freedesktop\.upower\./)
-    ) {
-      return polkit.Result.AUTH_ADMIN_KEEP;
-    }
   }
 });
 ```
@@ -60,7 +52,7 @@ polkit.addRule(function(action, subject) {
 ### ✅ What this allows:
 
 * **Shutdown, reboot, suspend** from the GUI for local, active users in the `wheel` group (no password required)
-* **Mounting removable drives** (udisks2) and **power management** (upower) with admin authentication (password required, but session is remembered)
+* **Mounting removable drives** (`udisks2` defaults) and **power management** (`UPower` defaults) for active local users without overriding upstream policies
 
 ### ❌ What it doesn't allow:
 
@@ -130,9 +122,9 @@ These provide the necessary backend support for KDE to interact with Polkit.
 
 | Feature        | Enabled By                          |
 | -------------- | ----------------------------------- |
-| USB automount  | `udisks2` rule + polkit agent       |
+| USB automount  | `udisks2` defaults + polkit agent   |
 | Reboot/Suspend | `login1` rule                       |
-| Brightness     | `upower` rule                       |
+| Brightness     | `UPower` defaults                   |
 | GUI prompt     | `polkit-kde-authentication-agent-1` |
 
 Use the default secure rules for best safety, and only loosen them if you're fully aware of the consequences.
