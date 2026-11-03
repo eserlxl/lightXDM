@@ -16,7 +16,7 @@ if [ -f "$OVERRIDE_FILE" ]; then
   echo "Removing autologin override..."
   rm -f "$OVERRIDE_FILE"
   systemctl daemon-reload
-  systemctl restart getty@tty1
+  echo "Autologin override removed. Change will take effect at the next login or reboot."
 else
   echo "No autologin override found; skipping."
 fi
@@ -30,4 +30,4 @@ else
   echo "No Polkit rule found; skipping."
 fi
 
-echo "Uninstall complete. Some changes may require a reboot to fully revert." 
+echo "Uninstall complete. Changes will take effect at the next login or reboot."

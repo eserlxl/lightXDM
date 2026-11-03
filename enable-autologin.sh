@@ -28,8 +28,7 @@ main() {
     echo "Disabling TTY1 autologin..."
     rm -f "$OVERRIDE_FILE"
     systemctl daemon-reload
-    systemctl restart getty@tty1
-    echo "Autologin disabled."
+    echo "Autologin disabled. Change will take effect at the next login or reboot."
     exit 0
   fi
 
@@ -73,9 +72,8 @@ main() {
 ExecStart=
 ExecStart=-/usr/bin/agetty --autologin $target_user --noclear %I \$TERM" > "$OVERRIDE_FILE"
   systemctl daemon-reload
-  systemctl restart getty@tty1
 
-  echo "Autologin enabled for user $target_user on tty1."
+  echo "Autologin enabled for user $target_user on tty1. Change will take effect at the next login or reboot."
 }
 
 main "$@"
