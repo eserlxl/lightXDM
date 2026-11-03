@@ -18,12 +18,21 @@ fi
 
 if [[ -z "${TARGET_HOME:-}" && -n "${SUDO_USER:-}" && "$SUDO_USER" != -* ]]; then
   if passwd_entry="$(getent passwd "$SUDO_USER")"; then
-    IFS=: read -r _ _ _ _ _ TARGET_HOME _ <<<"$passwd_entry"
+    IFS=: read -r _ _ target_uid _ _ TARGET_HOME _ <<<"$passwd_entry"
+    if [[ "$target_uid" == "0" ]]; then
+      echo "Error: Refusing to uninstall for root. Run with sudo from your user account, or set TARGET_HOME." >&2
+      exit 1
+    fi
   fi
 fi
 
 if [[ -z "${TARGET_HOME:-}" ]]; then
   echo "Error: Could not determine target user home directory. Run with sudo from your user account, or set TARGET_HOME." >&2
+  exit 1
+fi
+
+if [[ ! -d "$TARGET_HOME" ]]; then
+  echo "Error: Target home directory does not exist: $TARGET_HOME" >&2
   exit 1
 fi
 

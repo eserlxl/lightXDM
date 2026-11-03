@@ -1157,13 +1157,45 @@ else
   mkdir -p "$getent_stub_dir"
   cat >"$getent_stub_dir/getent" <<EOF
 #!/usr/bin/env bash
-if [[ "\${1:-}" == "passwd" && "\${2:-}" == "stubuser" ]]; then
-  echo "stubuser:x:1000:1000::${sudo_user_home}:/bin/bash"
+if [[ "\${1:-}" == "passwd" && ( "\${2:-}" == "stubuser" || "\${2:-}" == "root" ) ]]; then
+  uid=1000
+  [[ "\$2" != "root" ]] || uid=0
+  echo "\$2:x:\$uid:1000::${sudo_user_home}:/bin/bash"
   exit 0
 fi
 exit 2
 EOF
   chmod +x "$getent_stub_dir/getent"
+
+  refuse_files=("$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak" "$refuse_override" "$refuse_polkit"
+    "$sudo_user_home/.bash_profile" "$sudo_user_home/.bash_profile.lightxdm.bak"
+    "$sudo_user_home/.xinitrc" "$sudo_user_home/.gpg-agent-kwallet")
+  before_refusal="$(sha256sum "${refuse_files[@]}")"
+  for bad_target in missing_home root; do
+    : >"$STUB_LOG"
+    expected_message="Target home directory does not exist"
+    set +e
+    if [[ "$bad_target" == "missing_home" ]]; then
+      output="$(TARGET_HOME="$refuse_dir/missing_home" OVERRIDE_FILE="$refuse_override" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+      status=$?
+    else
+      expected_message="Refusing to uninstall for root"
+      output="$(
+        unset TARGET_HOME
+        PATH="$getent_stub_dir:$PATH" SUDO_USER=root OVERRIDE_FILE="$refuse_override" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
+      )"
+      status=$?
+    fi
+    set -e
+    after_refusal="$(sha256sum "${refuse_files[@]}" 2>/dev/null || true)"
+    log_content="$(cat "$STUB_LOG")"
+    if [[ $status -eq 1 && "$output" == *"$expected_message"* && "$after_refusal" == "$before_refusal" ]] &&
+      [[ ! -e "$refuse_dir/missing_home" && -z "$log_content" ]]; then
+      pass "uninstall.sh refuses $bad_target without changing any files"
+    else
+      fail "uninstall.sh refuses $bad_target (status=$status, output=$output, log=$log_content)"
+    fi
+  done
 
   : >"$STUB_LOG"
   set +e
