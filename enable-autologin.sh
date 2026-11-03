@@ -89,6 +89,11 @@ main() {
   fi
 
   mkdir -p "$OVERRIDE_DIR"
+  # An older lightXDM override.conf sorts after our drop-in and would keep the previous user.
+  if is_legacy_autologin_override "$LEGACY_OVERRIDE_FILE"; then
+    echo "Removing legacy autologin override..."
+    rm -f "$LEGACY_OVERRIDE_FILE"
+  fi
   echo "[Service]
 ExecStart=
 ExecStart=-/usr/bin/agetty --autologin $target_user --noclear %I \$TERM" > "$OVERRIDE_FILE"

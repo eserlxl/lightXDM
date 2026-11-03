@@ -2525,4 +2525,22 @@ EOF
   fi
 fi
 
+# Enabling autologin replaces a legacy lightXDM override.conf for another user
+if [[ $can_unshare -eq 1 ]]; then
+  switch_dir="$TMP_DIR/autologin_switch"
+  mkdir -p "$switch_dir/getty.d"
+  # shellcheck disable=SC2016  # $TERM is a literal for systemd, not a shell expansion
+  printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin olduser --noclear %%I $TERM\n' >"$switch_dir/getty.d/override.conf"
+  set +e
+  output="$(env OVERRIDE_DIR="$switch_dir/getty.d" LOGIN_FILE="$switch_dir/login" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$(command -p id -un)" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && ! -e "$switch_dir/getty.d/override.conf" ]] &&
+    grep -q -- "--autologin $(command -p id -un) " "$switch_dir/getty.d/lightxdm-autologin.conf"; then
+    pass "enable-autologin.sh removes a legacy override.conf when switching users"
+  else
+    fail "enable-autologin.sh legacy override on enable (status=$status, output=$output)"
+  fi
+fi
+
 exit "$failures"
