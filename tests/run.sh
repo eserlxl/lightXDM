@@ -117,24 +117,24 @@ else
   fail "prompt_de_selection option 1 (status=$status, output=$output, PS3=${PS3-<unset>})"
 fi
 
-# Case 4: prompt_de_selection returns non-zero with empty stdout on Quit ("10")
+# Case 4: prompt_de_selection returns 2 with empty stdout on Quit ("10")
 set +e
 output="$(prompt_de_selection <<<"10" 2>/dev/null)"
 status=$?
 set -e
-if [[ $status -ne 0 && -z "$output" ]]; then
-  pass "prompt_de_selection returns non-zero on Quit"
+if [[ $status -eq 2 && -z "$output" ]]; then
+  pass "prompt_de_selection returns 2 on Quit"
 else
   fail "prompt_de_selection Quit (status=$status, output=$output)"
 fi
 
-# Case 5: prompt_de_selection returns non-zero with empty stdout on EOF
+# Case 5: prompt_de_selection returns 1 with empty stdout on EOF
 set +e
 output="$(prompt_de_selection </dev/null 2>/dev/null)"
 status=$?
 set -e
-if [[ $status -ne 0 && -z "$output" ]]; then
-  pass "prompt_de_selection returns non-zero on EOF"
+if [[ $status -eq 1 && -z "$output" ]]; then
+  pass "prompt_de_selection returns 1 on EOF"
 else
   fail "prompt_de_selection EOF (status=$status, output=$output)"
 fi
@@ -274,6 +274,26 @@ if [[ $status -eq 1 && "$output" == *"ERROR: Failed to authenticate with sudo. E
   pass "main exits 1 when sudo -v fails"
 else
   fail "main when sudo -v fails (status=$status, log=$log_content, output=$output)"
+fi
+
+# Case 10a: main fails with a message when the desktop menu reaches EOF
+: >"$STUB_LOG"
+set +e
+output="$(
+  exec 2>&1
+  export PATH="$sudo_pw_dir:$PATH"
+  export USER="${USER:-testuser}"
+  # shellcheck disable=SC2317,SC2329  # override is called indirectly through main
+  detect_de() { echo "unknown"; }
+  main </dev/null
+)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 1 && "$output" == *"No desktop environment was chosen. Exiting."* && "$log_content" == "sudo -v" ]]; then
+  pass "main exits 1 with a message on desktop menu EOF"
+else
+  fail "main desktop menu EOF (status=$status, output=$output, log=$log_content)"
 fi
 
 # Case 11: enable-autologin.sh --help and -h print usage and write nothing

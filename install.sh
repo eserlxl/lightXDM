@@ -66,7 +66,7 @@ prompt_de_selection() {
   select opt in "${options[@]}"; do
     case "$opt" in
       "Quit")
-        return 1
+        return 2
         ;;
       "")
         log "Invalid option $REPLY"
@@ -351,7 +351,13 @@ main() {
     de=$(detect_de)
 
     if [[ "$de" == "unknown" ]]; then
-      de=$(prompt_de_selection) || exit 0
+      de=$(prompt_de_selection) || {
+        if [[ $? -eq 2 ]]; then
+          exit 0
+        fi
+        log "No desktop environment was chosen. Exiting."
+        exit 1
+      }
     else
       log "Detected desktop environment: $de"
     fi
