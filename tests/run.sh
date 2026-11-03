@@ -1202,4 +1202,46 @@ else
   fail "install_packages gnome/lxde minimal packages (s_gnome=$status_gnome:$out_gnome | s_lxde=$status_lxde:$out_lxde | log=$log_content)"
 fi
 
+# Case 36: symlinked and dangling-symlink dotfiles survive copy_dotfiles and uninstall.sh as the same links
+symlink_home="$TMP_DIR/home_symlink_dotfiles"
+mkdir -p "$symlink_home/dotfiles"
+echo "# stow managed bash_profile" >"$symlink_home/dotfiles/bash_profile"
+ln -s "$symlink_home/dotfiles/bash_profile" "$symlink_home/.bash_profile"
+ln -s "$symlink_home/dotfiles/missing_xinitrc" "$symlink_home/.xinitrc"
+(
+  export HOME="$symlink_home"
+  export USER="${USER:-testuser}"
+  copy_dotfiles "plasma" 2>/dev/null
+  copy_dotfiles "gnome" 2>/dev/null
+)
+if [[ -L "$symlink_home/.bash_profile.lightxdm.bak" && "$(readlink "$symlink_home/.bash_profile.lightxdm.bak")" == "$symlink_home/dotfiles/bash_profile" ]] &&
+  [[ -L "$symlink_home/.xinitrc.lightxdm.bak" && "$(readlink "$symlink_home/.xinitrc.lightxdm.bak")" == "$symlink_home/dotfiles/missing_xinitrc" ]] &&
+  [[ -f "$symlink_home/.bash_profile" && ! -L "$symlink_home/.bash_profile" ]] &&
+  [[ -f "$symlink_home/.xinitrc" && ! -L "$symlink_home/.xinitrc" ]] &&
+  [[ "$(cat "$symlink_home/dotfiles/bash_profile")" == "# stow managed bash_profile" ]] &&
+  [[ ! -e "$symlink_home/dotfiles/missing_xinitrc" ]]; then
+  pass "copy_dotfiles backs up symlinked and dangling-symlink dotfiles as links without clobbering targets"
+else
+  fail "copy_dotfiles symlink backup"
+fi
+
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh restores symlinked and dangling-symlink dotfiles (unshare -r unavailable)"
+else
+  set +e
+  output="$(TARGET_HOME="$symlink_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 ]] &&
+    [[ -L "$symlink_home/.bash_profile" && "$(readlink "$symlink_home/.bash_profile")" == "$symlink_home/dotfiles/bash_profile" ]] &&
+    [[ "$(cat "$symlink_home/.bash_profile")" == "# stow managed bash_profile" ]] &&
+    [[ -L "$symlink_home/.xinitrc" && ! -e "$symlink_home/.xinitrc" && "$(readlink "$symlink_home/.xinitrc")" == "$symlink_home/dotfiles/missing_xinitrc" ]] &&
+    [[ ! -e "$symlink_home/.bash_profile.lightxdm.bak" && ! -L "$symlink_home/.bash_profile.lightxdm.bak" ]] &&
+    [[ ! -e "$symlink_home/.xinitrc.lightxdm.bak" && ! -L "$symlink_home/.xinitrc.lightxdm.bak" ]]; then
+    pass "uninstall.sh restores symlinked and dangling-symlink dotfiles with their original targets"
+  else
+    fail "uninstall.sh symlink dotfile restore (status=$status, output=$output)"
+  fi
+fi
+
 exit "$failures"

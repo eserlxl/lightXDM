@@ -66,7 +66,7 @@ files_match() {
 }
 
 for dotfile in .bash_profile .xinitrc; do
-  if [[ -f "$TARGET_HOME/${dotfile}.lightxdm.bak" ]]; then
+  if [[ -f "$TARGET_HOME/${dotfile}.lightxdm.bak" || -L "$TARGET_HOME/${dotfile}.lightxdm.bak" ]]; then
     echo "Restoring $TARGET_HOME/$dotfile from backup..."
     mv "$TARGET_HOME/${dotfile}.lightxdm.bak" "$TARGET_HOME/$dotfile"
   elif [[ -f "$TARGET_HOME/$dotfile" ]]; then
