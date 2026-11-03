@@ -88,13 +88,15 @@ polkit.addRule(function(action, subject) {
 
 ## ⚙ Manual Polkit Agent Startup
 
-Since we don't use a display manager, we manually start the polkit agent in `~/.xinitrc`:
+For sessions that do not start a polkit agent automatically (such as i3 and XFCE, since Arch's `polkit-gnome` ships no XDG autostart entry), `~/.xinitrc` starts `polkit-gnome`:
 
 ```bash
-/usr/lib/polkit-kde-authentication-agent-1 &
+if [ -x /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1 ]; then
+  /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1 &
+fi
 ```
 
-This line is essential to show GUI authentication dialogs when required.
+Desktop environments such as KDE Plasma, GNOME, LXQt, LXDE, MATE, Cinnamon, and Budgie start their own polkit agent automatically and do not require a manual launch in `~/.xinitrc`.
 
 ---
 
