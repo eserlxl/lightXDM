@@ -301,6 +301,33 @@ else
   fail "main desktop menu EOF (status=$status, output=$output, log=$log_content)"
 fi
 
+# Case 10b: a missing session template stops main before any installation step
+missing_template_dir="$TMP_DIR/missing_template"
+mkdir -p "$missing_template_dir"
+cp -r "$REPO_ROOT/dotfiles" "$REPO_ROOT/polkit" "$missing_template_dir/"
+rm "$missing_template_dir/dotfiles/.xinitrc-i3"
+for missing_template_mode in packages no-packages; do
+  missing_template_args=(--de i3)
+  if [[ "$missing_template_mode" == "no-packages" ]]; then
+    missing_template_args+=(--no-packages)
+  fi
+  : >"$STUB_LOG"
+  set +e
+  output="$(
+    # shellcheck disable=SC2034  # main uses SCRIPT_DIR from the sourced installer
+    SCRIPT_DIR="$missing_template_dir"
+    run_main_with_stubs "$sudo_pw_dir" "${missing_template_args[@]}" 2>&1
+  )"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -eq 1 && "$output" == *"No .xinitrc template for i3: $missing_template_dir/dotfiles/.xinitrc-i3"* && "$log_content" == "sudo -v" ]]; then
+    pass "main stops before installation when the session template is missing ($missing_template_mode)"
+  else
+    fail "main with missing session template ($missing_template_mode, status=$status, log=$log_content, output=$output)"
+  fi
+done
+
 # Case 11: enable-autologin.sh --help and -h print usage and write nothing
 autologin_dir="$TMP_DIR/autologin"
 if [[ $can_unshare -eq 0 ]]; then

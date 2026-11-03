@@ -212,6 +212,7 @@ copy_dotfiles() {
     install -Dm755 "$xinitrc_template" "$user_home/.xinitrc"
   else
     log "No .xinitrc template for $de. Please create $xinitrc_template for proper session startup."
+    return 1
   fi
 }
 
@@ -399,6 +400,11 @@ main() {
     else
       log "Detected desktop environment: $de"
     fi
+  fi
+
+  if [[ ! -f "$SCRIPT_DIR/dotfiles/.xinitrc-$de" ]]; then
+    log "No .xinitrc template for $de: $SCRIPT_DIR/dotfiles/.xinitrc-$de. Installation aborted."
+    exit 1
   fi
 
   if [[ $no_packages -eq 1 ]]; then
