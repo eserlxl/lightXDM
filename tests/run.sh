@@ -429,6 +429,33 @@ else
   fi
 fi
 
+# Case 15b: only later drop-ins with an active ExecStart setting warn about overriding autologin
+if [[ $can_unshare -eq 0 ]]; then
+  skip "enable-autologin.sh warns about later ExecStart drop-ins (unshare -r unavailable)"
+else
+  warning_dir="$TMP_DIR/autologin_warning"
+  mkdir -p "$warning_dir"
+  printf '[Service]\nExecStart=/usr/bin/agetty tty1\n' >"$warning_dir/00-earlier.conf"
+  for override_setting in '# ExecStart=/usr/bin/agetty tty1' '  ExecStart = /usr/bin/agetty tty1'; do
+    printf '[Service]\nTTYVTDisallocate=no\n%s\n' "$override_setting" >"$warning_dir/override.conf"
+    set +e
+    output="$(env OVERRIDE_DIR="$warning_dir" LOGIN_FILE="$warning_dir/login" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$real_test_user" 2>&1)"
+    status=$?
+    set -e
+    if [[ "$override_setting" == '#'* ]]; then
+      if [[ $status -eq 0 && "$output" != *"Warning:"* ]]; then
+        pass "enable-autologin.sh does not warn for earlier or commented ExecStart settings"
+      else
+        fail "enable-autologin.sh unexpected override warning (status=$status, output=$output)"
+      fi
+    elif [[ $status -eq 0 && "$output" == *"Warning: $warning_dir/override.conf overrides autologin"* && "$output" != *"Warning: $warning_dir/00-earlier.conf"* ]]; then
+      pass "enable-autologin.sh warns by name when a later drop-in overrides autologin"
+    else
+      fail "enable-autologin.sh missing override warning (status=$status, output=$output)"
+    fi
+  done
+fi
+
 # Case 16: configure_pam creates LOGIN_FILE.lightxdm.bak once and preserves it across reruns
 rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
 write_stock_login

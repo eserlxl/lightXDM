@@ -72,6 +72,13 @@ main() {
   echo "[Service]
 ExecStart=
 ExecStart=-/usr/bin/agetty --autologin $target_user --noclear %I \$TERM" > "$OVERRIDE_FILE"
+  local drop_in LC_ALL=C
+  for drop_in in "$OVERRIDE_DIR"/*.conf; do
+    if [[ -f "$drop_in" && "$drop_in" > "$OVERRIDE_FILE" ]] &&
+      grep -Eq '^[[:space:]]*ExecStart[[:space:]]*=' "$drop_in"; then
+      echo "Warning: $drop_in overrides autologin with a later ExecStart= setting."
+    fi
+  done
   systemctl daemon-reload
 
   echo "Autologin enabled for user $target_user on tty1. Change will take effect at the next login or reboot."
