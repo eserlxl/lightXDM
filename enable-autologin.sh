@@ -2,7 +2,7 @@
 # enable-autologin.sh: Enable or disable TTY1 autologin for a user using systemd override
 set -e
 
-OVERRIDE_DIR="/etc/systemd/system/getty@tty1.service.d"
+OVERRIDE_DIR="${OVERRIDE_DIR:-/etc/systemd/system/getty@tty1.service.d}"
 OVERRIDE_FILE="$OVERRIDE_DIR/override.conf"
 
 usage() {
@@ -10,37 +10,72 @@ usage() {
   exit 1
 }
 
-if [[ $EUID -ne 0 ]]; then
-  echo "Please run as root (with sudo)."
-  exit 1
-fi
+main() {
+  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+  fi
 
-if [[ "$1" == "--disable" ]]; then
-  echo "Disabling TTY1 autologin..."
-  rm -f "$OVERRIDE_FILE"
+  if [[ $EUID -ne 0 ]]; then
+    echo "Please run as root (with sudo)."
+    exit 1
+  fi
+
+  if [[ $# -ne 1 || -z "$1" ]]; then
+    usage
+  fi
+
+  if [[ "$1" == "--disable" ]]; then
+    echo "Disabling TTY1 autologin..."
+    rm -f "$OVERRIDE_FILE"
+    systemctl daemon-reload
+    systemctl restart getty@tty1
+    echo "Autologin disabled."
+    exit 0
+  fi
+
+  local target_user
+  target_user="$1"
+
+  if [[ "$target_user" == -* ]]; then
+    echo "Invalid username: '$target_user'."
+    exit 1
+  fi
+
+  local passwd_entry
+  if ! passwd_entry="$(getent passwd "$target_user")"; then
+    echo "User '$target_user' does not exist."
+    exit 1
+  fi
+  passwd_entry="$(printf '%s\n' "$passwd_entry" | head -n 1)"
+
+  local pw_name pw_uid pw_shell
+  pw_name="$(printf '%s\n' "$passwd_entry" | cut -d: -f1)"
+  pw_uid="$(printf '%s\n' "$passwd_entry" | cut -d: -f3)"
+  pw_shell="$(printf '%s\n' "$passwd_entry" | cut -d: -f7)"
+
+  if [[ "$pw_name" != "$target_user" ]]; then
+    echo "User '$target_user' does not exist."
+    exit 1
+  fi
+
+  if [[ ! "$pw_uid" =~ ^[0-9]+$ || "$pw_uid" =~ ^0+$ ]]; then
+    echo "Refusing to enable autologin for root (UID 0)."
+    exit 1
+  fi
+
+  if [[ "$pw_shell" == *nologin || "$pw_shell" == *false ]]; then
+    echo "User '$target_user' has non-interactive shell '$pw_shell'."
+    exit 1
+  fi
+
+  mkdir -p "$OVERRIDE_DIR"
+  echo "[Service]
+ExecStart=
+ExecStart=-/usr/bin/agetty --autologin $target_user --noclear %I \$TERM" > "$OVERRIDE_FILE"
   systemctl daemon-reload
   systemctl restart getty@tty1
-  echo "Autologin disabled."
-  exit 0
-fi
 
-if [[ -z "$1" ]]; then
-  usage
-fi
+  echo "Autologin enabled for user $target_user on tty1."
+}
 
-USER="$1"
-
-# Validate that the user exists
-if ! id "$USER" >/dev/null 2>&1; then
-  echo "User '$USER' does not exist."
-  exit 1
-fi
-
-mkdir -p "$OVERRIDE_DIR"
-echo "[Service]
-ExecStart=
-ExecStart=-/usr/bin/agetty --autologin $USER --noclear %I $TERM" > "$OVERRIDE_FILE"
-systemctl daemon-reload
-systemctl restart getty@tty1
-
-echo "Autologin enabled for user $USER on tty1." 
+main "$@"

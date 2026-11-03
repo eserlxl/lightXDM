@@ -247,4 +247,96 @@ else
   fail "main when sudo -v fails (status=$status, log=$log_content, output=$output)"
 fi
 
+# Case 11: enable-autologin.sh --help and -h print usage and write nothing
+autologin_dir="$TMP_DIR/autologin"
+for help_flag in --help -h; do
+  rm -rf "$autologin_dir"
+  : >"$STUB_LOG"
+  set +e
+  output="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$help_flag" 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -ne 0 && "$output" == *"Usage:"* && ! -e "$autologin_dir/override.conf" && -z "$log_content" ]]; then
+    pass "enable-autologin.sh $help_flag prints usage and writes nothing"
+  else
+    fail "enable-autologin.sh $help_flag (status=$status, output=$output, log=$log_content)"
+  fi
+done
+
+# Case 12: enable-autologin.sh requires exactly one argument
+real_test_user="$(command -p id -un)"
+rm -rf "$autologin_dir"
+set +e
+output_zero="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" 2>&1)"
+status_zero=$?
+output_two="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$real_test_user" extra 2>&1)"
+status_two=$?
+set -e
+if [[ $status_zero -ne 0 && "$output_zero" == *"Usage:"* && $status_two -ne 0 && "$output_two" == *"Usage:"* && ! -e "$autologin_dir/override.conf" ]]; then
+  pass "enable-autologin.sh requires exactly one argument"
+else
+  fail "enable-autologin.sh argument count (status_zero=$status_zero, out_zero=$output_zero, status_two=$status_two, out_two=$output_two)"
+fi
+
+# Case 13: enable-autologin.sh rejects dash-prefixed and unknown usernames
+for bad_user in -u --bad-flag nonexistent_autologin_user_99999; do
+  rm -rf "$autologin_dir"
+  : >"$STUB_LOG"
+  set +e
+  output="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$bad_user" 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -ne 0 && ! -e "$autologin_dir/override.conf" && -z "$log_content" ]]; then
+    pass "enable-autologin.sh rejects invalid user '$bad_user'"
+  else
+    fail "enable-autologin.sh should reject '$bad_user' (status=$status, output=$output, log=$log_content)"
+  fi
+done
+
+# Case 14: enable-autologin.sh rejects root (UID 0) and nologin/false shell accounts
+nologin_user="nobody"
+if ! getent passwd "$nologin_user" 2>/dev/null | grep -Eq ':(.*nologin|.*false)$'; then
+  nologin_user="$(getent passwd | grep -E ':(.*nologin|.*false)$' | grep -Ev '^[^:]*:[^:]*:0:|^-' | head -n 1 | cut -d: -f1 || true)"
+fi
+for disallowed_user in root "$nologin_user"; do
+  rm -rf "$autologin_dir"
+  : >"$STUB_LOG"
+  set +e
+  output="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$disallowed_user" 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -ne 0 && ! -e "$autologin_dir/override.conf" && -z "$log_content" ]]; then
+    pass "enable-autologin.sh rejects disallowed account '$disallowed_user'"
+  else
+    fail "enable-autologin.sh should reject '$disallowed_user' (status=$status, output=$output, log=$log_content)"
+  fi
+done
+
+# Case 15: enable-autologin.sh writes override.conf with literal $TERM for valid user
+rm -rf "$autologin_dir"
+: >"$STUB_LOG"
+set +e
+output="$(OVERRIDE_DIR="$autologin_dir" TERM="xterm-kitty" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$real_test_user" 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+expected_exec="ExecStart=-/usr/bin/agetty --autologin $real_test_user --noclear %I \$TERM"
+if [[ $status -eq 0 && -f "$autologin_dir/override.conf" ]] &&
+  grep -Fqx -- "[Service]" "$autologin_dir/override.conf" &&
+  grep -Fqx -- "ExecStart=" "$autologin_dir/override.conf" &&
+  grep -Fqx -- "$expected_exec" "$autologin_dir/override.conf" &&
+  ! grep -Fq -- "xterm-kitty" "$autologin_dir/override.conf" &&
+  [[ "$log_content" == *"systemctl daemon-reload"* ]]; then
+  pass "enable-autologin.sh writes literal \$TERM for $real_test_user"
+else
+  override_content=""
+  if [[ -f "$autologin_dir/override.conf" ]]; then
+    override_content="$(cat "$autologin_dir/override.conf")"
+  fi
+  fail "enable-autologin.sh valid user (status=$status, output=$output, content=$override_content, log=$log_content)"
+fi
+
 exit "$failures"
