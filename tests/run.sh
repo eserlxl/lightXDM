@@ -81,4 +81,40 @@ else
   fail "install_packages invokes pacman for i3 (status=$status, log=$log_content)"
 fi
 
+# Case 3: prompt_de_selection maps "1" to "plasma" without log or PS3 leakage
+unset PS3
+prompt_out="$TMP_DIR/prompt_out"
+set +e
+prompt_de_selection <<<"1" >"$prompt_out" 2>/dev/null
+status=$?
+set -e
+output="$(cat "$prompt_out")"
+if [[ $status -eq 0 && "$output" == "plasma" && -z "${PS3+x}" ]]; then
+  pass "prompt_de_selection maps option 1 to plasma without leaking log or PS3"
+else
+  fail "prompt_de_selection option 1 (status=$status, output=$output, PS3=${PS3-<unset>})"
+fi
+
+# Case 4: prompt_de_selection returns non-zero with empty stdout on Quit ("10")
+set +e
+output="$(prompt_de_selection <<<"10" 2>/dev/null)"
+status=$?
+set -e
+if [[ $status -ne 0 && -z "$output" ]]; then
+  pass "prompt_de_selection returns non-zero on Quit"
+else
+  fail "prompt_de_selection Quit (status=$status, output=$output)"
+fi
+
+# Case 5: prompt_de_selection returns non-zero with empty stdout on EOF
+set +e
+output="$(prompt_de_selection </dev/null 2>/dev/null)"
+status=$?
+set -e
+if [[ $status -ne 0 && -z "$output" ]]; then
+  pass "prompt_de_selection returns non-zero on EOF"
+else
+  fail "prompt_de_selection EOF (status=$status, output=$output)"
+fi
+
 exit "$failures"

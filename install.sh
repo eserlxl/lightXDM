@@ -15,7 +15,7 @@ readonly PAM_GNOME_KEYRING_PATCH_FILE="pam/login-pam-gnome-keyring.patch"
 
 # Log a message to the console
 log() {
-  echo "=> $1"
+  echo "=> $1" >&2
 }
 
 # Check for root privileges
@@ -57,55 +57,27 @@ detect_de() {
 
 # Prompt user to select a DE
 prompt_de_selection() {
+  local PS3 opt
+  local options=("KDE Plasma" "GNOME" "XFCE" "LXQt" "LXDE" "MATE" "Cinnamon" "Budgie" "i3" "Quit")
+  local ids=(plasma gnome xfce lxqt lxde mate cinnamon budgie i3)
+
   log "No supported desktop environment detected."
   PS3="Please select a desktop environment to install: "
-  options=("KDE Plasma" "GNOME" "XFCE" "LXQt" "LXDE" "MATE" "Cinnamon" "Budgie" "i3" "Quit")
   select opt in "${options[@]}"; do
-    case $opt in
-      "KDE Plasma")
-        echo "plasma"
-        break
-        ;;
-      "GNOME")
-        echo "gnome"
-        break
-        ;;
-      "XFCE")
-        echo "xfce"
-        break
-        ;;
-      "LXQt")
-        echo "lxqt"
-        break
-        ;;
-      "LXDE")
-        echo "lxde"
-        break
-        ;;
-      "MATE")
-        echo "mate"
-        break
-        ;;
-      "Cinnamon")
-        echo "cinnamon"
-        break
-        ;;
-      "Budgie")
-        echo "budgie"
-        break
-        ;;
-      "i3")
-        echo "i3"
-        break
-        ;;
+    case "$opt" in
       "Quit")
-        exit 0
+        return 1
+        ;;
+      "")
+        log "Invalid option $REPLY"
         ;;
       *)
-        log "Invalid option $REPLY"
+        echo "${ids[REPLY - 1]}"
+        return 0
         ;;
     esac
   done
+  return 1
 }
 
 # Install required packages
@@ -329,7 +301,7 @@ main() {
   de=$(detect_de)
 
   if [[ "$de" == "unknown" ]]; then
-    de=$(prompt_de_selection)
+    de=$(prompt_de_selection) || exit 0
   else
     log "Detected desktop environment: $de"
   fi
