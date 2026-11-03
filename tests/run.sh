@@ -10,6 +10,10 @@ cd "$REPO_ROOT"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+unset SUDO_USER
+export HOME="$TMP_DIR/home"
+mkdir -p "$HOME"
+
 STUB_BIN="$TMP_DIR/bin"
 mkdir -p "$STUB_BIN"
 
@@ -60,10 +64,19 @@ pass() {
   echo "PASS: $1"
 }
 
+skip() {
+  echo "SKIP: $1"
+}
+
 fail() {
   echo "FAIL: $1"
   failures=$((failures + 1))
 }
+
+can_unshare=0
+if unshare -r true >/dev/null 2>&1; then
+  can_unshare=1
+fi
 
 # Case 1: install_packages rejects an unknown DE
 set +e
@@ -256,94 +269,133 @@ fi
 
 # Case 11: enable-autologin.sh --help and -h print usage and write nothing
 autologin_dir="$TMP_DIR/autologin"
-for help_flag in --help -h; do
-  rm -rf "$autologin_dir"
-  : >"$STUB_LOG"
-  set +e
-  output="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$help_flag" 2>&1)"
-  status=$?
-  set -e
-  log_content="$(cat "$STUB_LOG")"
-  if [[ $status -ne 0 && "$output" == *"Usage:"* && ! -e "$autologin_dir/override.conf" && -z "$log_content" ]]; then
-    pass "enable-autologin.sh $help_flag prints usage and writes nothing"
-  else
-    fail "enable-autologin.sh $help_flag (status=$status, output=$output, log=$log_content)"
-  fi
-done
+if [[ $can_unshare -eq 0 ]]; then
+  skip "enable-autologin.sh --help/-h prints usage and writes nothing (unshare -r unavailable)"
+else
+  for help_flag in --help -h; do
+    rm -rf "$autologin_dir"
+    : >"$STUB_LOG"
+    set +e
+    output="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$help_flag" 2>&1)"
+    status=$?
+    set -e
+    log_content="$(cat "$STUB_LOG")"
+    if [[ $status -ne 0 && "$output" == *"Usage:"* && ! -e "$autologin_dir/override.conf" && -z "$log_content" ]]; then
+      pass "enable-autologin.sh $help_flag prints usage and writes nothing"
+    else
+      fail "enable-autologin.sh $help_flag (status=$status, output=$output, log=$log_content)"
+    fi
+  done
+fi
 
 # Case 12: enable-autologin.sh requires exactly one argument
 real_test_user="$(command -p id -un)"
-rm -rf "$autologin_dir"
-set +e
-output_zero="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" 2>&1)"
-status_zero=$?
-output_two="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$real_test_user" extra 2>&1)"
-status_two=$?
-set -e
-if [[ $status_zero -ne 0 && "$output_zero" == *"Usage:"* && $status_two -ne 0 && "$output_two" == *"Usage:"* && ! -e "$autologin_dir/override.conf" ]]; then
-  pass "enable-autologin.sh requires exactly one argument"
+if [[ $can_unshare -eq 0 ]]; then
+  skip "enable-autologin.sh requires exactly one argument (unshare -r unavailable)"
 else
-  fail "enable-autologin.sh argument count (status_zero=$status_zero, out_zero=$output_zero, status_two=$status_two, out_two=$output_two)"
+  rm -rf "$autologin_dir"
+  set +e
+  output_zero="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" 2>&1)"
+  status_zero=$?
+  output_two="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$real_test_user" extra 2>&1)"
+  status_two=$?
+  set -e
+  if [[ $status_zero -ne 0 && "$output_zero" == *"Usage:"* && $status_two -ne 0 && "$output_two" == *"Usage:"* && ! -e "$autologin_dir/override.conf" ]]; then
+    pass "enable-autologin.sh requires exactly one argument"
+  else
+    fail "enable-autologin.sh argument count (status_zero=$status_zero, out_zero=$output_zero, status_two=$status_two, out_two=$output_two)"
+  fi
 fi
 
 # Case 13: enable-autologin.sh rejects dash-prefixed and unknown usernames
-for bad_user in -u --bad-flag nonexistent_autologin_user_99999; do
-  rm -rf "$autologin_dir"
-  : >"$STUB_LOG"
-  set +e
-  output="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$bad_user" 2>&1)"
-  status=$?
-  set -e
-  log_content="$(cat "$STUB_LOG")"
-  if [[ $status -ne 0 && ! -e "$autologin_dir/override.conf" && -z "$log_content" ]]; then
-    pass "enable-autologin.sh rejects invalid user '$bad_user'"
-  else
-    fail "enable-autologin.sh should reject '$bad_user' (status=$status, output=$output, log=$log_content)"
-  fi
-done
+if [[ $can_unshare -eq 0 ]]; then
+  skip "enable-autologin.sh rejects dash-prefixed and unknown usernames (unshare -r unavailable)"
+else
+  for bad_user in -u --bad-flag nonexistent_autologin_user_99999; do
+    expected_msg="does not exist"
+    if [[ "$bad_user" == -* ]]; then
+      expected_msg="Invalid username"
+    fi
+    rm -rf "$autologin_dir"
+    : >"$STUB_LOG"
+    set +e
+    output="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$bad_user" 2>&1)"
+    status=$?
+    set -e
+    log_content="$(cat "$STUB_LOG")"
+    if [[ $status -ne 0 && "$output" == *"$expected_msg"* && ! -e "$autologin_dir/override.conf" && -z "$log_content" ]]; then
+      pass "enable-autologin.sh rejects invalid user '$bad_user'"
+    else
+      fail "enable-autologin.sh should reject '$bad_user' (status=$status, output=$output, log=$log_content)"
+    fi
+  done
+fi
 
 # Case 14: enable-autologin.sh rejects root (UID 0) and nologin/false shell accounts
-nologin_user="nobody"
-if ! getent passwd "$nologin_user" 2>/dev/null | grep -Eq ':(.*nologin|.*false)$'; then
-  nologin_user="$(getent passwd | grep -E ':(.*nologin|.*false)$' | grep -Ev '^[^:]*:[^:]*:0:|^-' | head -n 1 | cut -d: -f1 || true)"
-fi
-for disallowed_user in root "$nologin_user"; do
+if [[ $can_unshare -eq 0 ]]; then
+  skip "enable-autologin.sh rejects root and nologin/false accounts (unshare -r unavailable)"
+else
   rm -rf "$autologin_dir"
   : >"$STUB_LOG"
   set +e
-  output="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$disallowed_user" 2>&1)"
+  output="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" root 2>&1)"
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
-  if [[ $status -ne 0 && ! -e "$autologin_dir/override.conf" && -z "$log_content" ]]; then
-    pass "enable-autologin.sh rejects disallowed account '$disallowed_user'"
+  if [[ $status -ne 0 && "$output" == *"Refusing to enable autologin for root"* && ! -e "$autologin_dir/override.conf" && -z "$log_content" ]]; then
+    pass "enable-autologin.sh rejects disallowed account 'root'"
   else
-    fail "enable-autologin.sh should reject '$disallowed_user' (status=$status, output=$output, log=$log_content)"
+    fail "enable-autologin.sh should reject 'root' (status=$status, output=$output, log=$log_content)"
   fi
-done
+
+  nologin_user="nobody"
+  if ! getent passwd "$nologin_user" 2>/dev/null | grep -Ev '^[^:]*:[^:]*:0:' | grep -Eq ':(.*nologin|.*false)$'; then
+    nologin_user="$(getent passwd | grep -E ':(.*nologin|.*false)$' | grep -Ev '^[^:]*:[^:]*:0:|^-' | sed -n '1s/:.*//p' || true)"
+  fi
+  if [[ -z "$nologin_user" ]]; then
+    fail "enable-autologin.sh nologin test requires a non-empty nologin user"
+  else
+    rm -rf "$autologin_dir"
+    : >"$STUB_LOG"
+    set +e
+    output="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$nologin_user" 2>&1)"
+    status=$?
+    set -e
+    log_content="$(cat "$STUB_LOG")"
+    if [[ $status -ne 0 && "$output" == *"non-interactive shell"* && ! -e "$autologin_dir/override.conf" && -z "$log_content" ]]; then
+      pass "enable-autologin.sh rejects disallowed account '$nologin_user'"
+    else
+      fail "enable-autologin.sh should reject '$nologin_user' (status=$status, output=$output, log=$log_content)"
+    fi
+  fi
+fi
 
 # Case 15: enable-autologin.sh writes override.conf with literal $TERM for valid user
-rm -rf "$autologin_dir"
-: >"$STUB_LOG"
-set +e
-output="$(OVERRIDE_DIR="$autologin_dir" TERM="xterm-kitty" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$real_test_user" 2>&1)"
-status=$?
-set -e
-log_content="$(cat "$STUB_LOG")"
-expected_exec="ExecStart=-/usr/bin/agetty --autologin $real_test_user --noclear %I \$TERM"
-if [[ $status -eq 0 && -f "$autologin_dir/override.conf" ]] &&
-  grep -Fqx -- "[Service]" "$autologin_dir/override.conf" &&
-  grep -Fqx -- "ExecStart=" "$autologin_dir/override.conf" &&
-  grep -Fqx -- "$expected_exec" "$autologin_dir/override.conf" &&
-  ! grep -Fq -- "xterm-kitty" "$autologin_dir/override.conf" &&
-  [[ "$log_content" == *"systemctl daemon-reload"* ]]; then
-  pass "enable-autologin.sh writes literal \$TERM for $real_test_user"
+if [[ $can_unshare -eq 0 ]]; then
+  skip "enable-autologin.sh writes literal \$TERM for $real_test_user (unshare -r unavailable)"
 else
-  override_content=""
-  if [[ -f "$autologin_dir/override.conf" ]]; then
-    override_content="$(cat "$autologin_dir/override.conf")"
+  rm -rf "$autologin_dir"
+  : >"$STUB_LOG"
+  set +e
+  output="$(OVERRIDE_DIR="$autologin_dir" TERM="xterm-kitty" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$real_test_user" 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  expected_exec="ExecStart=-/usr/bin/agetty --autologin $real_test_user --noclear %I \$TERM"
+  if [[ $status -eq 0 && -f "$autologin_dir/override.conf" ]] &&
+    grep -Fqx -- "[Service]" "$autologin_dir/override.conf" &&
+    grep -Fqx -- "ExecStart=" "$autologin_dir/override.conf" &&
+    grep -Fqx -- "$expected_exec" "$autologin_dir/override.conf" &&
+    ! grep -Fq -- "xterm-kitty" "$autologin_dir/override.conf" &&
+    [[ "$log_content" == *"systemctl daemon-reload"* ]]; then
+    pass "enable-autologin.sh writes literal \$TERM for $real_test_user"
+  else
+    override_content=""
+    if [[ -f "$autologin_dir/override.conf" ]]; then
+      override_content="$(cat "$autologin_dir/override.conf")"
+    fi
+    fail "enable-autologin.sh valid user (status=$status, output=$output, content=$override_content, log=$log_content)"
   fi
-  fail "enable-autologin.sh valid user (status=$status, output=$output, content=$override_content, log=$log_content)"
 fi
 
 # Case 16: configure_pam creates LOGIN_FILE.lightxdm.bak once and preserves it across reruns
@@ -370,13 +422,15 @@ fi
 uninstall_dir="$TMP_DIR/uninstall"
 rm -rf "$uninstall_dir"
 mkdir -p "$uninstall_dir"
+uninstall_home="$uninstall_dir/home"
+mkdir -p "$uninstall_home"
 uninstall_override="$uninstall_dir/override.conf"
 uninstall_polkit="$uninstall_dir/49-nopasswd.rules"
 echo "[Service]" >"$uninstall_override"
 echo "// rule" >"$uninstall_polkit"
 : >"$STUB_LOG"
 set +e
-output="$(OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+output="$(TARGET_HOME="$uninstall_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" bash "$REPO_ROOT/uninstall.sh" 2>&1)"
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
@@ -387,36 +441,44 @@ else
 fi
 
 # Case 18: install then uninstall restores LOGIN_FILE to pre-install content and removes backup, override, and polkit rule
-rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
-write_stock_login
-stock_login="$(cat "$LOGIN_FILE")"
-configure_pam "plasma" 2>/dev/null
-configure_pam "gnome" 2>/dev/null
-: >"$STUB_LOG"
-set +e
-output="$(OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
-status=$?
-set -e
-log_content="$(cat "$STUB_LOG")"
-restored_login="$(cat "$LOGIN_FILE")"
-if [[ $status -eq 0 && "$restored_login" == "$stock_login" && ! -e "${LOGIN_FILE}.lightxdm.bak" && ! -e "$uninstall_override" && ! -e "$uninstall_polkit" && "$log_content" == *"systemctl daemon-reload"* ]]; then
-  pass "uninstall.sh restores pre-install PAM login and removes backup, override, and polkit rule"
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh restores pre-install PAM login and removes backup, override, and polkit rule (unshare -r unavailable)"
 else
-  fail "uninstall.sh restore (status=$status, output=$output, restored=$restored_login, log=$log_content)"
+  rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+  write_stock_login
+  stock_login="$(cat "$LOGIN_FILE")"
+  configure_pam "plasma" 2>/dev/null
+  configure_pam "gnome" 2>/dev/null
+  : >"$STUB_LOG"
+  set +e
+  output="$(TARGET_HOME="$uninstall_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  restored_login="$(cat "$LOGIN_FILE")"
+  if [[ $status -eq 0 && "$restored_login" == "$stock_login" && ! -e "${LOGIN_FILE}.lightxdm.bak" && ! -e "$uninstall_override" && ! -e "$uninstall_polkit" && "$log_content" == *"systemctl daemon-reload"* ]]; then
+    pass "uninstall.sh restores pre-install PAM login and removes backup, override, and polkit rule"
+  else
+    fail "uninstall.sh restore (status=$status, output=$output, restored=$restored_login, log=$log_content)"
+  fi
 fi
 
 # Case 19: uninstall.sh succeeds cleanly when backup, override, and polkit rule are absent
-: >"$STUB_LOG"
-set +e
-output="$(OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
-status=$?
-set -e
-log_content="$(cat "$STUB_LOG")"
-restored_login="$(cat "$LOGIN_FILE")"
-if [[ $status -eq 0 && "$restored_login" == "$stock_login" && -z "$log_content" ]]; then
-  pass "uninstall.sh skips missing files cleanly"
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh skips missing files cleanly (unshare -r unavailable)"
 else
-  fail "uninstall.sh idempotent rerun (status=$status, output=$output, restored=$restored_login, log=$log_content)"
+  : >"$STUB_LOG"
+  set +e
+  output="$(TARGET_HOME="$uninstall_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  restored_login="$(cat "$LOGIN_FILE")"
+  if [[ $status -eq 0 && "$restored_login" == "$stock_login" && -z "$log_content" ]]; then
+    pass "uninstall.sh skips missing files cleanly"
+  else
+    fail "uninstall.sh idempotent rerun (status=$status, output=$output, restored=$restored_login, log=$log_content)"
+  fi
 fi
 
 # Case 20: copy_dotfiles backs up pre-existing .bash_profile and .xinitrc once, and uninstall.sh restores them and removes gpg-agent files
@@ -446,37 +508,45 @@ else
   fail "copy_dotfiles backup once (bash_bak=$bash_bak, xinit_bak=$xinit_bak)"
 fi
 
-set +e
-output="$(TARGET_HOME="$temp_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
-status=$?
-set -e
-restored_bash="$(cat "$temp_home/.bash_profile")"
-restored_xinit="$(cat "$temp_home/.xinitrc")"
-if [[ $status -eq 0 && "$restored_bash" == "# user original bash_profile" && "$restored_xinit" == "# user original xinitrc" ]] &&
-  [[ ! -e "$temp_home/.bash_profile.lightxdm.bak" && ! -e "$temp_home/.xinitrc.lightxdm.bak" ]] &&
-  [[ ! -e "$temp_home/.gpg-agent-kwallet" && ! -e "$temp_home/.gpg-agent-gnome" ]]; then
-  pass "uninstall.sh restores .bash_profile and .xinitrc from backup and removes gpg-agent files"
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh restores .bash_profile and .xinitrc from backup and removes gpg-agent files (unshare -r unavailable)"
 else
-  fail "uninstall.sh dotfile restore (status=$status, output=$output, bash=$restored_bash, xinit=$restored_xinit)"
+  set +e
+  output="$(TARGET_HOME="$temp_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  restored_bash="$(cat "$temp_home/.bash_profile")"
+  restored_xinit="$(cat "$temp_home/.xinitrc")"
+  if [[ $status -eq 0 && "$restored_bash" == "# user original bash_profile" && "$restored_xinit" == "# user original xinitrc" ]] &&
+    [[ ! -e "$temp_home/.bash_profile.lightxdm.bak" && ! -e "$temp_home/.xinitrc.lightxdm.bak" ]] &&
+    [[ ! -e "$temp_home/.gpg-agent-kwallet" && ! -e "$temp_home/.gpg-agent-gnome" ]]; then
+    pass "uninstall.sh restores .bash_profile and .xinitrc from backup and removes gpg-agent files"
+  else
+    fail "uninstall.sh dotfile restore (status=$status, output=$output, bash=$restored_bash, xinit=$restored_xinit)"
+  fi
 fi
 
 # Case 21: uninstall.sh removes lightXDM dotfiles when no prior backup existed
-temp_home_fresh="$TMP_DIR/home_fresh"
-mkdir -p "$temp_home_fresh"
-(
-  export HOME="$temp_home_fresh"
-  export USER="${USER:-testuser}"
-  copy_dotfiles "plasma" 2>/dev/null
-)
-set +e
-output="$(TARGET_HOME="$temp_home_fresh" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
-status=$?
-set -e
-if [[ $status -eq 0 && ! -e "$temp_home_fresh/.bash_profile" && ! -e "$temp_home_fresh/.xinitrc" && ! -e "$temp_home_fresh/.gpg-agent-kwallet" ]] &&
-  [[ -f "$temp_home_fresh/.bash_profile.lightxdm-removed" && -f "$temp_home_fresh/.xinitrc.lightxdm-removed" ]]; then
-  pass "uninstall.sh removes installed dotfiles when no backup exists"
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh removes installed dotfiles when no backup exists (unshare -r unavailable)"
 else
-  fail "uninstall.sh fresh dotfile removal (status=$status, output=$output)"
+  temp_home_fresh="$TMP_DIR/home_fresh"
+  mkdir -p "$temp_home_fresh"
+  (
+    export HOME="$temp_home_fresh"
+    export USER="${USER:-testuser}"
+    copy_dotfiles "plasma" 2>/dev/null
+  )
+  set +e
+  output="$(TARGET_HOME="$temp_home_fresh" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && ! -e "$temp_home_fresh/.bash_profile" && ! -e "$temp_home_fresh/.xinitrc" && ! -e "$temp_home_fresh/.gpg-agent-kwallet" ]] &&
+    [[ -f "$temp_home_fresh/.bash_profile.lightxdm-removed" && -f "$temp_home_fresh/.xinitrc.lightxdm-removed" ]]; then
+    pass "uninstall.sh removes installed dotfiles when no backup exists"
+  else
+    fail "uninstall.sh fresh dotfile removal (status=$status, output=$output)"
+  fi
 fi
 
 # Case 22: gpg-agent dotfiles preserve SSH_AUTH_SOCK without enable-ssh-support, set it with enable-ssh-support, and never export GPG_TTY
@@ -675,16 +745,20 @@ else
 fi
 
 # Case 27: main rejects root via check_root and checks USER (not SUDO_USER) for wheel group
-: >"$STUB_LOG"
-set +e
-output="$(unshare -r bash "$REPO_ROOT/install.sh" 2>&1)"
-status=$?
-set -e
-log_content="$(cat "$STUB_LOG")"
-if [[ $status -eq 1 && "$output" == *"Do not run this script as root. Please run as a regular user."* && -z "$log_content" ]]; then
-  pass "main rejects running as root via check_root"
+if [[ $can_unshare -eq 0 ]]; then
+  skip "main rejects running as root via check_root (unshare -r unavailable)"
 else
-  fail "main root check (status=$status, output=$output, log=$log_content)"
+  : >"$STUB_LOG"
+  set +e
+  output="$(unshare -r bash "$REPO_ROOT/install.sh" 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -eq 1 && "$output" == *"Do not run this script as root. Please run as a regular user."* && -z "$log_content" ]]; then
+    pass "main rejects running as root via check_root"
+  else
+    fail "main root check (status=$status, output=$output, log=$log_content)"
+  fi
 fi
 
 id_user_check_dir="$TMP_DIR/id_user_check"
