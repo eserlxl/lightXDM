@@ -56,7 +56,7 @@ detect_de() {
 
 # Prompt user to select a DE
 prompt_de_selection() {
-  local PS3 opt
+  local PS3 opt i
   local options=("KDE Plasma" "GNOME" "XFCE" "LXQt" "LXDE" "MATE" "Cinnamon" "Budgie" "i3" "Quit")
   local ids=(plasma gnome xfce lxqt lxde mate cinnamon budgie i3)
 
@@ -71,8 +71,14 @@ prompt_de_selection() {
         log "Invalid option $REPLY"
         ;;
       *)
-        echo "${ids[10#$REPLY - 1]}"
-        return 0
+        # Map the chosen label, not REPLY: select also accepts " 1" or "+1".
+        for i in "${!ids[@]}"; do
+          if [[ "${options[i]}" == "$opt" ]]; then
+            echo "${ids[i]}"
+            return 0
+          fi
+        done
+        return 1
         ;;
     esac
   done

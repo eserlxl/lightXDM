@@ -1311,4 +1311,17 @@ else
   fi
 fi
 
+# select accepts " 1" and "+1" as item 1
+for spaced in " 1" "+1"; do
+  set +e
+  output="$(prompt_de_selection <<<"$spaced" 2>/dev/null)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && "$output" == "plasma" ]]; then
+    pass "prompt_de_selection maps '$spaced' to plasma"
+  else
+    fail "prompt_de_selection '$spaced' (status=$status, output=$output)"
+  fi
+done
+
 exit "$failures"
