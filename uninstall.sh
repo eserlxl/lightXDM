@@ -2,6 +2,15 @@
 # uninstall.sh: Revert changes made by install scripts (PAM, autologin, Polkit)
 set -e
 
+if [[ $# -gt 0 ]]; then
+  if [[ $# -eq 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
+    echo "Usage: sudo bash $0 [-h|--help]"
+    exit 0
+  fi
+  echo "Usage: sudo bash $0 [-h|--help]" >&2
+  exit 1
+fi
+
 if [[ $EUID -ne 0 ]]; then
   echo "Please run as root (with sudo)."
   exit 1

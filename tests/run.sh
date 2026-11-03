@@ -943,4 +943,83 @@ else
   fi
 fi
 
+# Case 31: install.sh and uninstall.sh handle -h/--help (exit 0) and unknown args (exit 1) with no side effects
+help_home="$TMP_DIR/help_home"
+mkdir -p "$help_home"
+echo "# untouched bash_profile" >"$help_home/.bash_profile"
+echo "# backup bash_profile" >"$help_home/.bash_profile.lightxdm.bak"
+echo "# untouched login" >"$LOGIN_FILE"
+echo "# backup login" >"${LOGIN_FILE}.lightxdm.bak"
+help_override="$TMP_DIR/help_override.conf"
+echo "[Service]" >"$help_override"
+help_polkit="$TMP_DIR/help_polkit.rules"
+echo "// rule" >"$help_polkit"
+
+for flag in --help -h; do
+  : >"$STUB_LOG"
+  set +e
+  output="$(HOME="$help_home" bash "$REPO_ROOT/install.sh" "$flag" 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -eq 0 && "$output" == *"Usage:"* && -z "$log_content" ]] &&
+    [[ "$(cat "$help_home/.bash_profile")" == "# untouched bash_profile" ]] &&
+    [[ "$(cat "$LOGIN_FILE")" == "# untouched login" ]]; then
+    pass "install.sh $flag prints usage, exits 0, and changes nothing"
+  else
+    fail "install.sh $flag (status=$status, output=$output, log=$log_content)"
+  fi
+done
+
+: >"$STUB_LOG"
+set +e
+output="$(HOME="$help_home" bash "$REPO_ROOT/install.sh" --unknown 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 1 && "$output" == *"Usage:"* && -z "$log_content" ]] &&
+  [[ "$(cat "$help_home/.bash_profile")" == "# untouched bash_profile" ]] &&
+  [[ "$(cat "$LOGIN_FILE")" == "# untouched login" ]]; then
+  pass "install.sh rejects unknown argument with usage and exits 1"
+else
+  fail "install.sh --unknown (status=$status, output=$output, log=$log_content)"
+fi
+
+uninstall_runner=(bash "$REPO_ROOT/uninstall.sh")
+if [[ $can_unshare -eq 1 ]]; then
+  uninstall_runner=(unshare -r bash "$REPO_ROOT/uninstall.sh")
+fi
+
+for flag in --help -h; do
+  : >"$STUB_LOG"
+  set +e
+  output="$(TARGET_HOME="$help_home" OVERRIDE_FILE="$help_override" POLKIT_RULE="$help_polkit" "${uninstall_runner[@]}" "$flag" 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -eq 0 && "$output" == *"Usage:"* && -z "$log_content" ]] &&
+    [[ -f "${LOGIN_FILE}.lightxdm.bak" && "$(cat "$LOGIN_FILE")" == "# untouched login" ]] &&
+    [[ -f "$help_override" && -f "$help_polkit" ]] &&
+    [[ -f "$help_home/.bash_profile.lightxdm.bak" && "$(cat "$help_home/.bash_profile")" == "# untouched bash_profile" ]]; then
+    pass "uninstall.sh $flag prints usage, exits 0, and changes nothing"
+  else
+    fail "uninstall.sh $flag (status=$status, output=$output, log=$log_content)"
+  fi
+done
+
+: >"$STUB_LOG"
+set +e
+output="$(TARGET_HOME="$help_home" OVERRIDE_FILE="$help_override" POLKIT_RULE="$help_polkit" "${uninstall_runner[@]}" --unknown 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 1 && "$output" == *"Usage:"* && -z "$log_content" ]] &&
+  [[ -f "${LOGIN_FILE}.lightxdm.bak" && "$(cat "$LOGIN_FILE")" == "# untouched login" ]] &&
+  [[ -f "$help_override" && -f "$help_polkit" ]] &&
+  [[ -f "$help_home/.bash_profile.lightxdm.bak" && "$(cat "$help_home/.bash_profile")" == "# untouched bash_profile" ]]; then
+  pass "uninstall.sh rejects unknown argument with usage and exits 1"
+else
+  fail "uninstall.sh --unknown (status=$status, output=$output, log=$log_content)"
+fi
+
 exit "$failures"

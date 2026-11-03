@@ -225,6 +225,15 @@ disable_display_managers() {
 # --- Main ---
 
 main() {
+  if [[ $# -gt 0 ]]; then
+    if [[ $# -eq 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
+      echo "Usage: bash $0 [-h|--help]"
+      exit 0
+    fi
+    echo "Usage: bash $0 [-h|--help]" >&2
+    exit 1
+  fi
+
   check_root
 
   # --- Wheel group and sudoers check ---
