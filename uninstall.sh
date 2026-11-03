@@ -16,6 +16,17 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
+if [[ -z "${TARGET_HOME:-}" && -n "${SUDO_USER:-}" && "$SUDO_USER" != -* ]]; then
+  if passwd_entry="$(getent passwd "$SUDO_USER")"; then
+    IFS=: read -r _ _ _ _ _ TARGET_HOME _ <<<"$passwd_entry"
+  fi
+fi
+
+if [[ -z "${TARGET_HOME:-}" ]]; then
+  echo "Error: Could not determine target user home directory. Run with sudo from your user account, or set TARGET_HOME." >&2
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
 BACKUP_FILE="${LOGIN_FILE}.lightxdm.bak"
@@ -50,46 +61,38 @@ else
 fi
 
 # Restore or remove user dotfiles
-if [[ -z "${TARGET_HOME:-}" && -n "${SUDO_USER:-}" ]]; then
-  TARGET_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
-fi
-
 files_match() {
   [[ "$(sha256sum < "$1")" == "$(sha256sum < "$2")" ]]
 }
 
-if [[ -n "${TARGET_HOME:-}" ]]; then
-  for dotfile in .bash_profile .xinitrc; do
-    if [[ -f "$TARGET_HOME/${dotfile}.lightxdm.bak" ]]; then
-      echo "Restoring $TARGET_HOME/$dotfile from backup..."
-      mv "$TARGET_HOME/${dotfile}.lightxdm.bak" "$TARGET_HOME/$dotfile"
-    elif [[ -f "$TARGET_HOME/$dotfile" ]]; then
-      matches_template=0
-      if [[ "$dotfile" == ".bash_profile" ]]; then
-        if [[ -f "$SCRIPT_DIR/dotfiles/.bash_profile" ]] && files_match "$TARGET_HOME/$dotfile" "$SCRIPT_DIR/dotfiles/.bash_profile"; then
+for dotfile in .bash_profile .xinitrc; do
+  if [[ -f "$TARGET_HOME/${dotfile}.lightxdm.bak" ]]; then
+    echo "Restoring $TARGET_HOME/$dotfile from backup..."
+    mv "$TARGET_HOME/${dotfile}.lightxdm.bak" "$TARGET_HOME/$dotfile"
+  elif [[ -f "$TARGET_HOME/$dotfile" ]]; then
+    matches_template=0
+    if [[ "$dotfile" == ".bash_profile" ]]; then
+      if [[ -f "$SCRIPT_DIR/dotfiles/.bash_profile" ]] && files_match "$TARGET_HOME/$dotfile" "$SCRIPT_DIR/dotfiles/.bash_profile"; then
+        matches_template=1
+      fi
+    else
+      for tmpl in "$SCRIPT_DIR"/dotfiles/.xinitrc-*; do
+        if [[ -f "$tmpl" ]] && files_match "$TARGET_HOME/$dotfile" "$tmpl"; then
           matches_template=1
+          break
         fi
-      else
-        for tmpl in "$SCRIPT_DIR"/dotfiles/.xinitrc-*; do
-          if [[ -f "$tmpl" ]] && files_match "$TARGET_HOME/$dotfile" "$tmpl"; then
-            matches_template=1
-            break
-          fi
-        done
-      fi
-      if [[ $matches_template -eq 0 ]]; then
-        echo "Keeping $TARGET_HOME/$dotfile (not an unmodified lightXDM template)."
-      elif [[ -e "$TARGET_HOME/${dotfile}.lightxdm-removed" || -L "$TARGET_HOME/${dotfile}.lightxdm-removed" ]]; then
-        echo "Skipping move of $TARGET_HOME/$dotfile; $TARGET_HOME/${dotfile}.lightxdm-removed already exists."
-      else
-        echo "Moving $TARGET_HOME/$dotfile to $TARGET_HOME/${dotfile}.lightxdm-removed..."
-        mv "$TARGET_HOME/$dotfile" "$TARGET_HOME/${dotfile}.lightxdm-removed"
-      fi
+      done
     fi
-  done
-  rm -f "$TARGET_HOME/.gpg-agent-kwallet" "$TARGET_HOME/.gpg-agent-gnome"
-else
-  echo "SUDO_USER is not set; skipping dotfile restore."
-fi
+    if [[ $matches_template -eq 0 ]]; then
+      echo "Keeping $TARGET_HOME/$dotfile (not an unmodified lightXDM template)."
+    elif [[ -e "$TARGET_HOME/${dotfile}.lightxdm-removed" || -L "$TARGET_HOME/${dotfile}.lightxdm-removed" ]]; then
+      echo "Skipping move of $TARGET_HOME/$dotfile; $TARGET_HOME/${dotfile}.lightxdm-removed already exists."
+    else
+      echo "Moving $TARGET_HOME/$dotfile to $TARGET_HOME/${dotfile}.lightxdm-removed..."
+      mv "$TARGET_HOME/$dotfile" "$TARGET_HOME/${dotfile}.lightxdm-removed"
+    fi
+  fi
+done
+rm -f "$TARGET_HOME/.gpg-agent-kwallet" "$TARGET_HOME/.gpg-agent-gnome"
 
 echo "Uninstall complete. Changes will take effect at the next login or reboot."

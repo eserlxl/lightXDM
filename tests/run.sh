@@ -1095,4 +1095,93 @@ else
   fi
 fi
 
+# Case 34: uninstall.sh refuses early when no target user can be resolved, leaving PAM, override, and Polkit rule untouched, and succeeds via SUDO_USER
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh refuses when target user is unknown and leaves PAM, override, and rule untouched (unshare -r unavailable)"
+else
+  refuse_dir="$TMP_DIR/refuse_uninstall"
+  mkdir -p "$refuse_dir"
+  refuse_override="$refuse_dir/override.conf"
+  refuse_polkit="$refuse_dir/49-nopasswd.rules"
+  echo "[Service]" >"$refuse_override"
+  echo "// rule" >"$refuse_polkit"
+
+  rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+  write_stock_login
+  stock_login="$(cat "$LOGIN_FILE")"
+  configure_pam "plasma" 2>/dev/null
+  configured_login="$(cat "$LOGIN_FILE")"
+
+  : >"$STUB_LOG"
+  set +e
+  output_unset="$(
+    unset TARGET_HOME SUDO_USER
+    OVERRIDE_FILE="$refuse_override" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
+  )"
+  status_unset=$?
+  output_bad_user="$(
+    unset TARGET_HOME
+    SUDO_USER="nonexistent_lightxdm_user_99999" OVERRIDE_FILE="$refuse_override" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
+  )"
+  status_bad_user=$?
+  output_dash_user="$(
+    unset TARGET_HOME
+    SUDO_USER="-V" OVERRIDE_FILE="$refuse_override" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
+  )"
+  status_dash_user=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+
+  if [[ $status_unset -eq 1 && "$output_unset" == *"sudo"* && "$output_unset" == *"TARGET_HOME"* ]] &&
+    [[ $status_bad_user -eq 1 && "$output_bad_user" == *"sudo"* && "$output_bad_user" == *"TARGET_HOME"* ]] &&
+    [[ $status_dash_user -eq 1 && "$output_dash_user" == *"sudo"* && "$output_dash_user" == *"TARGET_HOME"* ]] &&
+    [[ -f "${LOGIN_FILE}.lightxdm.bak" && "$(cat "${LOGIN_FILE}.lightxdm.bak")" == "$stock_login" ]] &&
+    [[ "$(cat "$LOGIN_FILE")" == "$configured_login" ]] &&
+    [[ -f "$refuse_override" && "$(cat "$refuse_override")" == "[Service]" ]] &&
+    [[ -f "$refuse_polkit" && "$(cat "$refuse_polkit")" == "// rule" ]] &&
+    [[ -z "$log_content" ]]; then
+    pass "uninstall.sh exits 1 without changes when target user cannot be resolved"
+  else
+    fail "uninstall.sh early refusal (s_unset=$status_unset:$output_unset | s_bad=$status_bad_user:$output_bad_user | s_dash=$status_dash_user:$output_dash_user | log=$log_content)"
+  fi
+
+  sudo_user_home="$refuse_dir/sudo_home"
+  mkdir -p "$sudo_user_home"
+  echo "# original bash_profile" >"$sudo_user_home/.bash_profile"
+  (
+    export HOME="$sudo_user_home"
+    export USER="stubuser"
+    copy_dotfiles "plasma" 2>/dev/null
+  )
+  getent_stub_dir="$refuse_dir/bin"
+  mkdir -p "$getent_stub_dir"
+  cat >"$getent_stub_dir/getent" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "passwd" && "\${2:-}" == "stubuser" ]]; then
+  echo "stubuser:x:1000:1000::${sudo_user_home}:/bin/bash"
+  exit 0
+fi
+exit 2
+EOF
+  chmod +x "$getent_stub_dir/getent"
+
+  : >"$STUB_LOG"
+  set +e
+  output_sudo="$(
+    unset TARGET_HOME
+    PATH="$getent_stub_dir:$PATH" SUDO_USER="stubuser" OVERRIDE_FILE="$refuse_override" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
+  )"
+  status_sudo=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status_sudo -eq 0 && "$(cat "$LOGIN_FILE")" == "$stock_login" && ! -e "${LOGIN_FILE}.lightxdm.bak" ]] &&
+    [[ ! -e "$refuse_override" && ! -e "$refuse_polkit" && "$log_content" == *"systemctl daemon-reload"* ]] &&
+    [[ "$(cat "$sudo_user_home/.bash_profile")" == "# original bash_profile" && ! -e "$sudo_user_home/.bash_profile.lightxdm.bak" ]] &&
+    [[ ! -e "$sudo_user_home/.xinitrc" && -f "$sudo_user_home/.xinitrc.lightxdm-removed" && ! -e "$sudo_user_home/.gpg-agent-kwallet" ]]; then
+    pass "uninstall.sh resolves TARGET_HOME from SUDO_USER and completes full uninstall"
+  else
+    fail "uninstall.sh SUDO_USER resolution (status=$status_sudo, output=$output_sudo, log=$log_content)"
+  fi
+fi
+
 exit "$failures"
