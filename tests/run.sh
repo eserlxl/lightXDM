@@ -477,6 +477,7 @@ else
   rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
   write_stock_login
   stock_login="$(cat "$LOGIN_FILE")"
+  stock_login_hash="$(sha256sum < "$LOGIN_FILE")"
   configure_pam "plasma" 2>/dev/null
   configure_pam "gnome" 2>/dev/null
   : >"$STUB_LOG"
@@ -486,11 +487,62 @@ else
   set -e
   log_content="$(cat "$STUB_LOG")"
   restored_login="$(cat "$LOGIN_FILE")"
-  if [[ $status -eq 0 && "$restored_login" == "$stock_login" && ! -e "${LOGIN_FILE}.lightxdm.bak" && ! -e "$uninstall_override" && ! -e "$uninstall_polkit" && "$log_content" == *"systemctl daemon-reload"* ]]; then
+  if [[ $status -eq 0 && "$(sha256sum < "$LOGIN_FILE")" == "$stock_login_hash" && ! -e "${LOGIN_FILE}.lightxdm.bak" && ! -e "$uninstall_override" && ! -e "$uninstall_polkit" && "$log_content" == *"systemctl daemon-reload"* ]]; then
     pass "uninstall.sh restores pre-install PAM login and removes backup, override, and polkit rule"
   else
     fail "uninstall.sh restore (status=$status, output=$output, restored=$restored_login, log=$log_content)"
   fi
+fi
+
+# Case 18b: uninstall restores exact PAM bytes for unusual original file endings
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh restores PAM bytes with unusual endings (unshare -r unavailable)"
+else
+  for pam_original in '' "$stock_login" "$stock_login"$'\n\n'; do
+    printf '%s' "$pam_original" >"$LOGIN_FILE"
+    original_hash="$(sha256sum < "$LOGIN_FILE")"
+    configure_pam "gnome" 2>/dev/null
+    set +e
+    output="$(TARGET_HOME="$uninstall_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+    status=$?
+    set -e
+    if [[ $status -eq 0 && "$(sha256sum < "$LOGIN_FILE")" == "$original_hash" && ! -e "${LOGIN_FILE}.lightxdm.bak" ]]; then
+      pass "uninstall.sh restores exact PAM bytes (original size=${#pam_original})"
+    else
+      fail "uninstall.sh PAM byte restoration (status=$status, output=$output)"
+    fi
+  done
+fi
+
+# Case 18c: later PAM edits survive, including near matches and a missing final newline
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh keeps later PAM edits and backup for review (unshare -r unavailable)"
+else
+  write_stock_login
+  original_hash="$(sha256sum < "$LOGIN_FILE")"
+  pam_edits='# auth       optional   pam_kwallet5.so
+auth       optional   pam_kwallet5.so custom_option
+session    optional   pam_kwallet5.so force_run custom_option
+auth       optional   pam_gnome_keyring.so custom_option
+session    optional   pam_gnome_keyring.so auto_start custom_option
+auth required pam_u2f.so'
+  edited_hash="$( { cat "$LOGIN_FILE"; printf '%s' "$pam_edits"; } | sha256sum)"
+  configure_pam "plasma" 2>/dev/null
+  configure_pam "gnome" 2>/dev/null
+  printf '%s' "$pam_edits" >>"$LOGIN_FILE"
+  set +e
+  output="$(TARGET_HOME="$uninstall_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && "$(sha256sum < "$LOGIN_FILE")" == "$edited_hash" &&
+    -f "${LOGIN_FILE}.lightxdm.bak" && "$(sha256sum < "${LOGIN_FILE}.lightxdm.bak")" == "$original_hash" &&
+    "$output" == *"backup kept for review"* ]]; then
+    pass "uninstall.sh removes only exact PAM lines, keeping later edits and backup for review"
+  else
+    fail "uninstall.sh PAM edit preservation (status=$status, output=$output)"
+  fi
+  cp "${LOGIN_FILE}.lightxdm.bak" "$LOGIN_FILE"
+  rm -f "${LOGIN_FILE}.lightxdm.bak"
 fi
 
 # Case 19: uninstall.sh succeeds cleanly when backup, override, and polkit rule are absent
@@ -1099,7 +1151,7 @@ if [[ $can_unshare -eq 0 ]]; then
 else
   no_cmp_bin="$TMP_DIR/no_cmp_bin"
   mkdir -p "$no_cmp_bin"
-  for tool in bash dirname cp rm mv sha256sum; do
+  for tool in bash dirname cp rm mv sha256sum sed tail cat; do
     ln -sf "$(command -v "$tool")" "$no_cmp_bin/$tool"
   done
   ln -sf "$STUB_BIN/systemctl" "$no_cmp_bin/systemctl"
@@ -1871,6 +1923,23 @@ if [[ $status_zsh -eq 0 && "$out_zsh" == *"WARNING:"* && "$out_zsh" == *'~/.zpro
   pass "main warns for non-bash login shells (zsh, fish) and keeps bash closing message unchanged"
 else
   fail "main login shell check (zsh=$status_zsh:$out_zsh | fish=$status_fish:$out_fish | bash=$status_bash:$out_bash)"
+fi
+
+# A PAM line that existed before install survives uninstall
+pre_dir="$TMP_DIR/pam_pre"
+mkdir -p "$pre_dir/home"
+rm -f "${LOGIN_FILE}.lightxdm.bak"
+printf '#%%PAM-1.0\nauth       optional   pam_kwallet5.so\naccount    include      system-local-login\n' >"$LOGIN_FILE"
+configure_pam plasma 2>/dev/null
+set +e
+output="$(env OVERRIDE_FILE="$pre_dir/o" POLKIT_RULE="$pre_dir/p" DM_STATE_FILE="$pre_dir/s" TARGET_HOME="$pre_dir/home" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+status=$?
+set -e
+if [[ $status -eq 0 ]] && grep -qx 'auth       optional   pam_kwallet5.so' "$LOGIN_FILE" &&
+  ! grep -q 'force_run' "$LOGIN_FILE"; then
+  pass "uninstall.sh keeps a PAM line that existed before install"
+else
+  fail "uninstall.sh pre-existing PAM line (status=$status, output=$output, content=$(cat "$LOGIN_FILE"))"
 fi
 
 exit "$failures"
