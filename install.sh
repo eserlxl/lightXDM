@@ -136,15 +136,12 @@ copy_dotfiles() {
     log "Backing up $user_home/.bash_profile to $user_home/.bash_profile.lightxdm.bak"
     cp "$user_home/.bash_profile" "$user_home/.bash_profile.lightxdm.bak"
   fi
-  sudo install -Dm644 "$SCRIPT_DIR/dotfiles/.bash_profile" "$user_home/.bash_profile"
-  sudo chown "$USER:$(id -gn "$USER")" "$user_home/.bash_profile"
+  install -Dm644 "$SCRIPT_DIR/dotfiles/.bash_profile" "$user_home/.bash_profile"
 
   if [[ "$de" == "plasma" ]]; then
-    sudo install -Dm744 "$SCRIPT_DIR/dotfiles/.gpg-agent-kwallet" "$user_home/.gpg-agent-kwallet"
-    sudo chown "$USER:$(id -gn "$USER")" "$user_home/.gpg-agent-kwallet"
+    install -Dm744 "$SCRIPT_DIR/dotfiles/.gpg-agent-kwallet" "$user_home/.gpg-agent-kwallet"
   else
-    sudo install -Dm744 "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome" "$user_home/.gpg-agent-gnome"
-    sudo chown "$USER:$(id -gn "$USER")" "$user_home/.gpg-agent-gnome"
+    install -Dm744 "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome" "$user_home/.gpg-agent-gnome"
   fi
 
   local xinitrc_template="$SCRIPT_DIR/dotfiles/.xinitrc-$de"
@@ -153,8 +150,7 @@ copy_dotfiles() {
       log "Backing up $user_home/.xinitrc to $user_home/.xinitrc.lightxdm.bak"
       cp "$user_home/.xinitrc" "$user_home/.xinitrc.lightxdm.bak"
     fi
-    sudo install -Dm755 "$xinitrc_template" "$user_home/.xinitrc"
-    sudo chown "$USER:$(id -gn "$USER")" "$user_home/.xinitrc"
+    install -Dm755 "$xinitrc_template" "$user_home/.xinitrc"
   else
     log "No .xinitrc template for $de. Please create $xinitrc_template for proper session startup."
   fi
@@ -226,14 +222,11 @@ disable_display_managers() {
 # --- Main ---
 
 main() {
+  check_root
+
   # --- Wheel group and sudoers check ---
   local real_user
-  real_user="${SUDO_USER:-$USER}"
-
-  if [[ $EUID -eq 0 ]]; then
-    log "Do not run this script as root or with sudo. Please run as a regular user."
-    exit 1
-  fi
+  real_user="$USER"
 
   if ! id -nG "$real_user" | grep -qw wheel; then
     log "ERROR: User '$real_user' is not in the 'wheel' group. Sudo and polkit rules will not work."
@@ -247,8 +240,6 @@ main() {
     log "ERROR: Failed to authenticate with sudo. Exiting."
     exit 1
   fi
-
-  check_root
 
   local de
   de=$(detect_de)

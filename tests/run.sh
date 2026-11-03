@@ -616,4 +616,109 @@ else
   fail "detect_de with only nemo (status=$status, output=$output)"
 fi
 
+# Case 25: copy_dotfiles writes dotfiles to HOME without invoking sudo
+no_sudo_home="$TMP_DIR/home_no_sudo"
+mkdir -p "$no_sudo_home"
+sudo_hard_fail_dir="$TMP_DIR/sudo_hard_fail"
+mkdir -p "$sudo_hard_fail_dir"
+cat >"$sudo_hard_fail_dir/sudo" <<'EOF'
+#!/usr/bin/env bash
+echo "unexpected sudo $*" >>"${STUB_LOG:-/dev/null}"
+exit 1
+EOF
+chmod +x "$sudo_hard_fail_dir/sudo"
+
+: >"$STUB_LOG"
+set +e
+output="$(
+  exec 2>&1
+  set -e
+  export PATH="$sudo_hard_fail_dir:$PATH"
+  export HOME="$no_sudo_home"
+  export USER="${USER:-testuser}"
+  copy_dotfiles "plasma"
+  copy_dotfiles "gnome"
+)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 0 && -f "$no_sudo_home/.bash_profile" && -O "$no_sudo_home/.bash_profile" && -f "$no_sudo_home/.gpg-agent-kwallet" && -f "$no_sudo_home/.gpg-agent-gnome" && -x "$no_sudo_home/.xinitrc" && -z "$log_content" ]]; then
+  pass "copy_dotfiles writes dotfiles to HOME without sudo"
+else
+  fail "copy_dotfiles without sudo (status=$status, log=$log_content, output=$output)"
+fi
+
+# Case 26: main prints check_root message when sudo is not installed
+no_sudo_path="$TMP_DIR/no_sudo_path"
+mkdir -p "$no_sudo_path"
+grep_bin="$(command -v grep)"
+bash_bin="$(command -v bash)"
+ln -sf "$STUB_BIN/id" "$no_sudo_path/id"
+ln -sf "$grep_bin" "$no_sudo_path/grep"
+ln -sf "$bash_bin" "$no_sudo_path/bash"
+
+: >"$STUB_LOG"
+set +e
+output="$(
+  exec 2>&1
+  export PATH="$no_sudo_path"
+  export USER="${USER:-testuser}"
+  main
+)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 1 && "$output" == *"sudo is required but not installed. Please install sudo and re-run."* && "$output" != *"command not found"* && -z "$log_content" ]]; then
+  pass "main prints check_root message when sudo is not installed"
+else
+  fail "main without sudo installed (status=$status, output=$output, log=$log_content)"
+fi
+
+# Case 27: main rejects root via check_root and checks USER (not SUDO_USER) for wheel group
+: >"$STUB_LOG"
+set +e
+output="$(unshare -r bash "$REPO_ROOT/install.sh" 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 1 && "$output" == *"Do not run this script as root. Please run as a regular user."* && -z "$log_content" ]]; then
+  pass "main rejects running as root via check_root"
+else
+  fail "main root check (status=$status, output=$output, log=$log_content)"
+fi
+
+id_user_check_dir="$TMP_DIR/id_user_check"
+mkdir -p "$id_user_check_dir"
+cat >"$id_user_check_dir/id" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-nG" ]]; then
+  if [[ "${2:-}" == "wheeluser" ]]; then
+    echo "users wheel"
+  else
+    echo "users"
+  fi
+else
+  echo "1000"
+fi
+EOF
+chmod +x "$id_user_check_dir/id"
+
+: >"$STUB_LOG"
+set +e
+output="$(
+  exec 2>&1
+  export PATH="$id_user_check_dir:$STUB_BIN:$PATH"
+  export USER="plainuser"
+  export SUDO_USER="wheeluser"
+  main
+)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 1 && "$output" == *"ERROR: User 'plainuser' is not in the 'wheel' group."* && -z "$log_content" ]]; then
+  pass "main checks USER rather than SUDO_USER for wheel group"
+else
+  fail "main wheel check with SUDO_USER set (status=$status, output=$output, log=$log_content)"
+fi
+
 exit "$failures"
