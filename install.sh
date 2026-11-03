@@ -212,33 +212,6 @@ disable_display_managers() {
   fi
 }
 
-# Check for active %wheel sudoers rule in /etc/sudoers and /etc/sudoers.d
-check_wheel_sudoers() {
-  local user_regex
-  user_regex="^[[:space:]]*(%wheel|$real_user)[[:space:]]+ALL=\\(ALL(:ALL)?\\)[[:space:]]+ALL"
-
-  # Search for uncommented %wheel or user lines in /etc/sudoers
-  if sudo grep -E "$user_regex" /etc/sudoers | grep -vq '^[[:space:]]*#'; then
-    return 0
-  fi
-
-  # Search for uncommented %wheel or user lines in all /etc/sudoers.d/* files
-  if [[ -d /etc/sudoers.d ]]; then
-    for f in /etc/sudoers.d/*; do
-      [[ -f "$f" ]] || continue
-      if sudo grep -E "$user_regex" "$f" | grep -vq '^[[:space:]]*#'; then
-        return 0
-      fi
-    done
-  fi
-
-  # If we reach here, no active rule was found
-  log "ERROR: No active '%wheel ALL=(ALL:ALL) ALL', '$real_user ALL=(ALL:ALL) ALL', or similar rule found in /etc/sudoers or /etc/sudoers.d/."
-  log "Users in the wheel group or user '$real_user' will NOT be able to use sudo."
-  log "To fix, run: sudo visudo and add or uncomment a '%wheel ALL=(ALL:ALL) ALL' or '$real_user ALL=(ALL:ALL) ALL' line."
-  exit 1
-}
-
 # --- Main ---
 
 main() {
@@ -254,15 +227,6 @@ main() {
   if ! id -nG "$real_user" | grep -qw wheel; then
     log "ERROR: User '$real_user' is not in the 'wheel' group. Sudo and polkit rules will not work."
     log "Add the user to the wheel group and re-login: sudo usermod -aG wheel $real_user"
-    exit 1
-  fi
-
-  check_wheel_sudoers
-
-  # Check if user can actually run sudo non-interactively
-  if ! sudo -n true 2>/dev/null; then
-    log "ERROR: User '$real_user' cannot run sudo without a password or is not in the sudoers file."
-    log "Please ensure your user is in the wheel group and the sudoers file is configured."
     exit 1
   fi
 

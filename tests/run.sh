@@ -182,4 +182,69 @@ for non_plasma_de in xfce lxqt lxde mate cinnamon budgie i3; do
   fi
 done
 
+# Case 9: main gets past sudo checks when sudo -n fails but sudo -v succeeds
+sudo_pw_dir="$TMP_DIR/sudo_pw"
+mkdir -p "$sudo_pw_dir"
+cat >"$sudo_pw_dir/sudo" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-n" ]]; then
+  exit 1
+elif [[ "${1:-}" == "-v" ]]; then
+  echo "sudo -v" >>"${STUB_LOG:-/dev/null}"
+  exit 0
+fi
+exec "$@"
+EOF
+chmod +x "$sudo_pw_dir/sudo"
+
+# shellcheck disable=SC2317,SC2329  # overrides are called indirectly through main
+run_main_with_stubs() (
+  export PATH="$1:$PATH"
+  export USER="${USER:-testuser}"
+  unset SUDO_USER
+  detect_de() { echo "i3"; }
+  install_packages() { echo "install_packages $1" >>"$STUB_LOG"; }
+  copy_dotfiles() { echo "copy_dotfiles $1" >>"$STUB_LOG"; }
+  configure_pam() { echo "configure_pam $1" >>"$STUB_LOG"; }
+  install_polkit_rule() { echo "install_polkit_rule" >>"$STUB_LOG"; }
+  disable_display_managers() { echo "disable_display_managers" >>"$STUB_LOG"; }
+  main
+)
+
+: >"$STUB_LOG"
+set +e
+output="$(run_main_with_stubs "$sudo_pw_dir" 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 0 && "$log_content" == *"sudo -v"* && "$log_content" == *"install_packages i3"* ]]; then
+  pass "main succeeds when sudo requires a password (-n fails, -v succeeds)"
+else
+  fail "main with password sudo (status=$status, log=$log_content, output=$output)"
+fi
+
+# Case 10: main fails with clear error when sudo -v fails
+sudo_fail_dir="$TMP_DIR/sudo_fail"
+mkdir -p "$sudo_fail_dir"
+cat >"$sudo_fail_dir/sudo" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-v" || "${1:-}" == "-n" ]]; then
+  exit 1
+fi
+exec "$@"
+EOF
+chmod +x "$sudo_fail_dir/sudo"
+
+: >"$STUB_LOG"
+set +e
+output="$(run_main_with_stubs "$sudo_fail_dir" 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 1 && "$output" == *"ERROR: Failed to authenticate with sudo. Exiting."* && -z "$log_content" ]]; then
+  pass "main exits 1 when sudo -v fails"
+else
+  fail "main when sudo -v fails (status=$status, log=$log_content, output=$output)"
+fi
+
 exit "$failures"
