@@ -30,6 +30,13 @@ fail() {
 
 pacman -Sy --noconfirm --needed python-pam kwallet-pam gnome-keyring
 
+for module in /usr/lib/security/pam_kwallet5.so /usr/lib/security/pam_gnome_keyring.so; do
+  if [[ ! -f "$module" ]]; then
+    fail "Missing PAM module: $module"
+    exit 1
+  fi
+done
+
 test_user="lightxdmtest"
 right_pw="TestPass_lightXDM_42!"
 wrong_pw="WrongPass_lightXDM_99!"
@@ -51,10 +58,22 @@ source "$REPO_ROOT/install.sh"
 pam_auth() {
   local user=$1
   local pw=$2
-  python -c 'import sys, pam; user, pw = sys.argv[1], sys.argv[2]; p = pam.pam(); ok = p.authenticate(user, pw, service="login"); sys.exit(0 if ok else 1)' "$user" "$pw"
+  python - "$user" "$pw" <<'PY'
+import sys
+import pam
+
+p = pam.pam()
+if not p.authenticate(sys.argv[1], sys.argv[2], service="login"):
+    sys.exit(1)
+p.open_session()
+if p.code != 0:
+    sys.exit(1)
+p.close_session()
+sys.exit(0 if p.code == 0 else 1)
+PY
 }
 
-# 1. configure_pam plasma + PAM auth checks
+# 1. configure_pam plasma + PAM auth/session checks
 configure_pam plasma
 if grep -Eq '^[[:space:]]*auth[[:space:]]+optional[[:space:]]+pam_kwallet5\.so$' /etc/pam.d/login &&
   grep -Eq '^[[:space:]]*session[[:space:]]+optional[[:space:]]+pam_kwallet5\.so force_run$' /etc/pam.d/login; then
@@ -64,9 +83,9 @@ else
 fi
 
 if pam_auth "$test_user" "$right_pw"; then
-  pass "PAM login authenticates right password after configure_pam plasma"
+  pass "PAM login authenticates right password and opens/closes session after configure_pam plasma"
 else
-  fail "PAM login rejected right password after configure_pam plasma"
+  fail "PAM login authentication or session failed after configure_pam plasma"
 fi
 
 if ! pam_auth "$test_user" "$wrong_pw"; then
@@ -76,7 +95,7 @@ else
 fi
 faillock --user "$test_user" --reset >/dev/null 2>&1 || true
 
-# 2. Restore original /etc/pam.d/login, then configure_pam gnome + PAM auth checks
+# 2. Restore original /etc/pam.d/login, then configure_pam gnome + PAM auth/session checks
 cp "$orig_login" /etc/pam.d/login
 rm -f /etc/pam.d/login.lightxdm.bak
 
@@ -89,9 +108,9 @@ else
 fi
 
 if pam_auth "$test_user" "$right_pw"; then
-  pass "PAM login authenticates right password after configure_pam gnome"
+  pass "PAM login authenticates right password and opens/closes session after configure_pam gnome"
 else
-  fail "PAM login rejected right password after configure_pam gnome"
+  fail "PAM login authentication or session failed after configure_pam gnome"
 fi
 
 if ! pam_auth "$test_user" "$wrong_pw"; then
