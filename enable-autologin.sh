@@ -48,6 +48,13 @@ main() {
         echo "Keeping $LEGACY_OVERRIDE_FILE (not written by lightXDM)."
       fi
     fi
+    local drop_in LC_ALL=C
+    for drop_in in "$OVERRIDE_DIR"/*.conf; do
+      if [[ -f "$drop_in" ]] &&
+        grep -Eq '^[[:space:]]*ExecStart[[:space:]]*=.*--autologin' "$drop_in"; then
+        echo "Warning: $drop_in still enables autologin."
+      fi
+    done
     systemctl daemon-reload
     echo "Autologin disabled. Change will take effect at the next login or reboot."
     exit 0

@@ -2572,4 +2572,52 @@ if [[ $can_unshare -eq 1 ]]; then
   fi
 fi
 
+# Case 55: enable-autologin.sh --disable warns by name when a remaining drop-in still enables autologin, and stays quiet otherwise
+if [[ $can_unshare -eq 0 ]]; then
+  skip "enable-autologin.sh --disable warns about remaining autologin drop-ins (unshare -r unavailable)"
+else
+  dis_warn_dir="$TMP_DIR/disable_autologin_warning"
+  mkdir -p "$dis_warn_dir"
+  cat >"$dis_warn_dir/10-plain.conf" <<'EOF'
+[Service]
+# ExecStart=-/usr/bin/agetty --autologin commented --noclear %I $TERM
+ExecStart=-/usr/bin/agetty --noclear %I $TERM
+EOF
+  cat >"$dis_warn_dir/90-extra.conf" <<'EOF'
+[Service]
+  ExecStart = -/usr/bin/agetty --autologin extrauser --noclear %I $TERM
+EOF
+  cat >"$dis_warn_dir/override.conf" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/usr/bin/agetty --autologin customuser --noclear %I $TERM
+TTYVTDisallocate=no
+EOF
+  env OVERRIDE_DIR="$dis_warn_dir" LOGIN_FILE="$dis_warn_dir/login" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$real_test_user" >/dev/null 2>&1
+  set +e
+  out_dis_warn="$(env OVERRIDE_DIR="$dis_warn_dir" LOGIN_FILE="$dis_warn_dir/login" unshare -r bash "$REPO_ROOT/enable-autologin.sh" --disable 2>&1)"
+  st_dis_warn=$?
+  set -e
+
+  rm -f "$dis_warn_dir/90-extra.conf"
+  cat >"$dis_warn_dir/override.conf" <<'EOF'
+[Service]
+TTYVTDisallocate=no
+# ExecStart=-/usr/bin/agetty --autologin commented --noclear %I $TERM
+EOF
+  set +e
+  out_dis_quiet="$(env OVERRIDE_DIR="$dis_warn_dir" LOGIN_FILE="$dis_warn_dir/login" unshare -r bash "$REPO_ROOT/enable-autologin.sh" --disable 2>&1)"
+  st_dis_quiet=$?
+  set -e
+
+  if [[ $st_dis_warn -eq 0 && ! -e "$dis_warn_dir/lightxdm-autologin.conf" && -f "$dis_warn_dir/override.conf" ]] &&
+    [[ "$out_dis_warn" == *"Warning: $dis_warn_dir/90-extra.conf"*"Warning: $dis_warn_dir/override.conf"*"Autologin disabled."* ]] &&
+    [[ "$out_dis_warn" != *"$dis_warn_dir/10-plain.conf"* ]] &&
+    [[ $st_dis_quiet -eq 0 && "$out_dis_quiet" == *"Keeping $dis_warn_dir/override.conf"* && "$out_dis_quiet" != *"Warning:"* ]]; then
+    pass "enable-autologin.sh --disable warns by name only for drop-ins still enabling autologin"
+  else
+    fail "enable-autologin.sh --disable autologin warning (warn=$st_dis_warn:$out_dis_warn | quiet=$st_dis_quiet:$out_dis_quiet)"
+  fi
+fi
+
 exit "$failures"
