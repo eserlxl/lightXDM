@@ -1063,4 +1063,36 @@ else
   fi
 fi
 
+# Case 33: uninstall.sh moves aside unmodified lightXDM dotfiles when cmp is absent from PATH
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh moves aside unmodified dotfiles without cmp in PATH (unshare -r unavailable)"
+else
+  no_cmp_bin="$TMP_DIR/no_cmp_bin"
+  mkdir -p "$no_cmp_bin"
+  for tool in bash dirname cp rm mv sha256sum; do
+    ln -sf "$(command -v "$tool")" "$no_cmp_bin/$tool"
+  done
+  ln -sf "$STUB_BIN/systemctl" "$no_cmp_bin/systemctl"
+
+  no_cmp_home="$TMP_DIR/home_no_cmp"
+  mkdir -p "$no_cmp_home"
+  (
+    export HOME="$no_cmp_home"
+    export USER="${USER:-testuser}"
+    copy_dotfiles "plasma" 2>/dev/null
+  )
+  unshare_bin="$(command -v unshare)"
+  set +e
+  output="$(PATH="$no_cmp_bin" TARGET_HOME="$no_cmp_home" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" "$unshare_bin" -r "$no_cmp_bin/bash" "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && ! -e "$no_cmp_home/.bash_profile" && ! -e "$no_cmp_home/.xinitrc" ]] &&
+    [[ -f "$no_cmp_home/.bash_profile.lightxdm-removed" && -f "$no_cmp_home/.xinitrc.lightxdm-removed" ]] &&
+    [[ "$output" != *"command not found"* ]]; then
+    pass "uninstall.sh moves aside unmodified dotfiles without cmp in PATH"
+  else
+    fail "uninstall.sh without cmp (status=$status, output=$output)"
+  fi
+fi
+
 exit "$failures"

@@ -54,6 +54,10 @@ if [[ -z "${TARGET_HOME:-}" && -n "${SUDO_USER:-}" ]]; then
   TARGET_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
 fi
 
+files_match() {
+  [[ "$(sha256sum < "$1")" == "$(sha256sum < "$2")" ]]
+}
+
 if [[ -n "${TARGET_HOME:-}" ]]; then
   for dotfile in .bash_profile .xinitrc; do
     if [[ -f "$TARGET_HOME/${dotfile}.lightxdm.bak" ]]; then
@@ -62,12 +66,12 @@ if [[ -n "${TARGET_HOME:-}" ]]; then
     elif [[ -f "$TARGET_HOME/$dotfile" ]]; then
       matches_template=0
       if [[ "$dotfile" == ".bash_profile" ]]; then
-        if [[ -f "$SCRIPT_DIR/dotfiles/.bash_profile" ]] && cmp -s "$TARGET_HOME/$dotfile" "$SCRIPT_DIR/dotfiles/.bash_profile"; then
+        if [[ -f "$SCRIPT_DIR/dotfiles/.bash_profile" ]] && files_match "$TARGET_HOME/$dotfile" "$SCRIPT_DIR/dotfiles/.bash_profile"; then
           matches_template=1
         fi
       else
         for tmpl in "$SCRIPT_DIR"/dotfiles/.xinitrc-*; do
-          if [[ -f "$tmpl" ]] && cmp -s "$TARGET_HOME/$dotfile" "$tmpl"; then
+          if [[ -f "$tmpl" ]] && files_match "$TARGET_HOME/$dotfile" "$tmpl"; then
             matches_template=1
             break
           fi
