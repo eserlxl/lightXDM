@@ -479,4 +479,51 @@ else
   fail "uninstall.sh fresh dotfile removal (status=$status, output=$output)"
 fi
 
+# Case 22: gpg-agent dotfiles preserve SSH_AUTH_SOCK without enable-ssh-support, set it with enable-ssh-support, and never export GPG_TTY
+cat >"$STUB_BIN/gpg-connect-agent" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+
+cat >"$STUB_BIN/gpgconf" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--list-dirs" && "${2:-}" == "agent-ssh-socket" ]]; then
+  echo "/run/user/1000/gnupg/S.gpg-agent.ssh"
+fi
+EOF
+chmod +x "$STUB_BIN/gpg-connect-agent" "$STUB_BIN/gpgconf"
+
+for gpg_dotfile in .gpg-agent-gnome .gpg-agent-kwallet; do
+  gpg_home="$TMP_DIR/gpg_home_${gpg_dotfile#.}"
+  rm -rf "$gpg_home"
+  mkdir -p "$gpg_home/.gnupg"
+
+  without_out="$(
+    export HOME="$gpg_home"
+    export PATH="$STUB_BIN:$PATH"
+    export SSH_AUTH_SOCK="/tmp/sentinel-ssh.sock"
+    unset GPG_TTY
+    # shellcheck disable=SC1090
+    source "$REPO_ROOT/dotfiles/$gpg_dotfile"
+    printf '%s|%s\n' "$SSH_AUTH_SOCK" "${GPG_TTY-<unset>}"
+  )"
+
+  echo "enable-ssh-support" >"$gpg_home/.gnupg/gpg-agent.conf"
+  with_out="$(
+    export HOME="$gpg_home"
+    export PATH="$STUB_BIN:$PATH"
+    export SSH_AUTH_SOCK="/tmp/sentinel-ssh.sock"
+    unset GPG_TTY
+    # shellcheck disable=SC1090
+    source "$REPO_ROOT/dotfiles/$gpg_dotfile"
+    printf '%s|%s\n' "$SSH_AUTH_SOCK" "${GPG_TTY-<unset>}"
+  )"
+
+  if [[ "$without_out" == "/tmp/sentinel-ssh.sock|<unset>" && "$with_out" == "/run/user/1000/gnupg/S.gpg-agent.ssh|<unset>" ]]; then
+    pass "$gpg_dotfile respects enable-ssh-support and does not export GPG_TTY"
+  else
+    fail "$gpg_dotfile (without=$without_out, with=$with_out)"
+  fi
+done
+
 exit "$failures"
