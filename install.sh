@@ -164,7 +164,7 @@ configure_pam() {
       auth_line="auth       optional   pam_kwallet5.so"
       session_line="session    optional   pam_kwallet5.so force_run"
       ;;
-    gnome)
+    gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3)
       module="pam_gnome_keyring.so"
       auth_line="auth       optional   pam_gnome_keyring.so"
       session_line="session    optional   pam_gnome_keyring.so auto_start"

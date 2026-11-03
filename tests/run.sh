@@ -164,4 +164,22 @@ else
   fail "configure_pam GNOME Keyring (content=$second_run)"
 fi
 
+# Case 8: configure_pam appends GNOME Keyring lines for non-Plasma desktops
+for non_plasma_de in xfce lxqt lxde mate cinnamon budgie i3; do
+  write_stock_login
+  configure_pam "$non_plasma_de" 2>/dev/null
+  first_run="$(cat "$LOGIN_FILE")"
+  configure_pam "$non_plasma_de" 2>/dev/null
+  second_run="$(cat "$LOGIN_FILE")"
+  if [[ "$first_run" == "$second_run" ]] &&
+    grep -Eq '^auth[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so$' "$LOGIN_FILE" &&
+    grep -Eq '^session[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so auto_start$' "$LOGIN_FILE" &&
+    [[ "$(grep -c 'pam_gnome_keyring\.so' "$LOGIN_FILE")" -eq 2 ]] &&
+    ! grep -q 'pam_kwallet5\.so' "$LOGIN_FILE"; then
+    pass "configure_pam configures GNOME Keyring idempotently for $non_plasma_de"
+  else
+    fail "configure_pam GNOME Keyring for $non_plasma_de (content=$second_run)"
+  fi
+done
+
 exit "$failures"
