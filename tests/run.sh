@@ -1022,4 +1022,45 @@ else
   fail "uninstall.sh --unknown (status=$status, output=$output, log=$log_content)"
 fi
 
+# Case 32: enable-autologin.sh warns when LOGIN_FILE has active keyring PAM lines and stays quiet otherwise
+if [[ $can_unshare -eq 0 ]]; then
+  skip "enable-autologin.sh keyring PAM warning check (unshare -r unavailable)"
+else
+  rm -rf "$autologin_dir"
+  rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+  write_stock_login
+  echo "# auth       optional   pam_kwallet5.so" >>"$LOGIN_FILE"
+  echo "# session    optional   pam_gnome_keyring.so auto_start" >>"$LOGIN_FILE"
+  set +e
+  out_no_keyring="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$real_test_user" 2>&1)"
+  status_no_keyring=$?
+  set -e
+
+  rm -rf "$autologin_dir"
+  rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+  write_stock_login
+  configure_pam "plasma" 2>/dev/null
+  set +e
+  out_kwallet="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$real_test_user" 2>&1)"
+  status_kwallet=$?
+  set -e
+
+  rm -rf "$autologin_dir"
+  rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+  write_stock_login
+  configure_pam "gnome" 2>/dev/null
+  set +e
+  out_gkr="$(OVERRIDE_DIR="$autologin_dir" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$real_test_user" 2>&1)"
+  status_gkr=$?
+  set -e
+
+  if [[ $status_no_keyring -eq 0 && "$out_no_keyring" != *"Warning:"* && "$out_no_keyring" != *"will not unlock"* ]] &&
+    [[ $status_kwallet -eq 0 && "$out_kwallet" == *"Warning:"* && "$out_kwallet" == *"will not unlock automatically with autologin"* && "$out_kwallet" == *"empty"* ]] &&
+    [[ $status_gkr -eq 0 && "$out_gkr" == *"Warning:"* && "$out_gkr" == *"will not unlock automatically with autologin"* && "$out_gkr" == *"empty"* ]]; then
+    pass "enable-autologin.sh warns only when active PAM keyring lines are present"
+  else
+    fail "enable-autologin.sh keyring warning (no_kr=$status_no_keyring:$out_no_keyring | kw=$status_kwallet:$out_kwallet | gkr=$status_gkr:$out_gkr)"
+  fi
+fi
+
 exit "$failures"

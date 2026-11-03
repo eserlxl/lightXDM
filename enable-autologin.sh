@@ -4,6 +4,7 @@ set -e
 
 OVERRIDE_DIR="${OVERRIDE_DIR:-/etc/systemd/system/getty@tty1.service.d}"
 OVERRIDE_FILE="$OVERRIDE_DIR/override.conf"
+LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
 
 usage() {
   echo "Usage: sudo bash $0 <username> | --disable"
@@ -74,6 +75,9 @@ ExecStart=-/usr/bin/agetty --autologin $target_user --noclear %I \$TERM" > "$OVE
   systemctl daemon-reload
 
   echo "Autologin enabled for user $target_user on tty1. Change will take effect at the next login or reboot."
+  if [[ -f "$LOGIN_FILE" ]] && grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*(pam_kwallet5\.so|pam_gnome_keyring\.so)([[:space:]]|$)' "$LOGIN_FILE"; then
+    echo "Warning: PAM keyring unlock is configured in $LOGIN_FILE; the keyring will not unlock automatically with autologin and will ask for its password in the desktop, unless its password is empty."
+  fi
 }
 
 main "$@"
