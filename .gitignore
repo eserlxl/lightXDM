@@ -17,3 +17,4 @@
 
 # Temporary files
 *.tmp 
+.planwright/
