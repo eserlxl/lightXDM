@@ -7,7 +7,11 @@ lightXDM provides a display-manager-free autologin experience by:
 ## How it works
 - If you log in on TTY1, `.bash_profile` runs `startx` automatically.
 - No graphical login screen, no display manager needed.
-- You get a full KDE Plasma session with minimal RAM and boot time.
+- You get a full desktop environment session with minimal RAM and boot time.
+
+## Keyring Unlock Trade-Off
+- **Default mode (password login on TTY1):** You type your password on TTY1, your desktop starts automatically, and PAM unlocks your keyring (KWallet on Plasma, GNOME Keyring on all other supported desktops) using that password.
+- **Autologin mode (`agetty --autologin`):** Login happens without a password, so the PAM keyring module cannot unlock your keyring automatically. The keyring stays locked and asks for its password in the desktop unless its password is empty (`enable-autologin.sh` prints a warning when PAM keyring unlock is configured).
 
 ## Setup
 - The installer copies `.bash_profile` and `.xinitrc` to your home.
@@ -29,22 +33,20 @@ lightXDM provides a display-manager-free autologin experience by:
    ExecStart=
    ExecStart=-/usr/bin/agetty --autologin YOURUSER --noclear %I $TERM
    ```
-3. Reload systemd and restart the service:
+3. Reload systemd (takes effect at next login or reboot):
    ```sh
    sudo systemctl daemon-reload
-   sudo systemctl restart getty@tty1
    ```
 
 **To disable autologin:**
-Remove the override file and restart the service:
+Remove the override file and reload systemd (takes effect at next login or reboot):
 ```sh
 sudo rm /etc/systemd/system/getty@tty1.service.d/override.conf
 sudo systemctl daemon-reload
-sudo systemctl restart getty@tty1
 ```
 
 ### Optional: Helper Script
-You can use the provided `enable-autologin.sh` script to automate this setup. Run:
+You can use the provided `enable-autologin.sh` script to automate this setup (changes take effect at the next login or reboot). Run:
 ```sh
 sudo bash enable-autologin.sh YOURUSER
 ```
