@@ -3,7 +3,7 @@
 lightXDM uses pam_kwallet5 to automatically unlock your KDE Wallet (KWallet) at login, even without a display manager.
 
 ## How it works
-- The installer creates a one-time backup of `/etc/pam.d/login` at `/etc/pam.d/login.lightxdm.bak` (which `uninstall.sh` restores).
+- The installer creates a one-time backup of `/etc/pam.d/login` at `/etc/pam.d/login.lightxdm.bak`. `uninstall.sh` removes only the lines lightXDM added; it restores the backup when nothing else changed, and otherwise keeps your other edits and leaves the backup for review.
 - It appends two PAM lines (`auth       optional   pam_kwallet5.so` and `session    optional   pam_kwallet5.so force_run`) to `/etc/pam.d/login` if `pam_kwallet5.so` is not already configured.
 - The `force_run` option ensures KWallet unlock runs even if no display manager is present.
 - When you type your password to log in on TTY1 and Plasma starts with `startx`, your wallet is unlocked seamlessly.

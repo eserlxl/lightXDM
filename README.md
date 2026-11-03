@@ -46,7 +46,7 @@ bash install.sh
   - polkit-gnome for all other supported DEs.
 - Pass `--no-packages` (optionally with `--de <id>`) to skip all package installation when you already have the required packages. Dotfiles, PAM, Polkit and display manager setup still run.
 - Copies dotfiles to your home, including the correct `.xinitrc-<de>` for your DE.
-- Appends PAM lines to `/etc/pam.d/login` (after a one-time backup at `/etc/pam.d/login.lightxdm.bak`, which `uninstall.sh` restores) for KWallet (`pam_kwallet5.so` on Plasma) or GNOME Keyring (`pam_gnome_keyring.so` on every other supported desktop) auto-unlock.
+- Appends PAM lines to `/etc/pam.d/login` (after a one-time backup at `/etc/pam.d/login.lightxdm.bak`; `uninstall.sh` removes the lines lightXDM added and restores the backup when nothing else changed, otherwise it keeps your other edits and leaves the backup for review) for KWallet (`pam_kwallet5.so` on Plasma) or GNOME Keyring (`pam_gnome_keyring.so` on every other supported desktop) auto-unlock.
 - Configures Polkit for passwordless power-off, reboot, suspend, and hibernate for local active `wheel` users, while USB mounting uses `udisks2` defaults.
 - Your DE will start automatically on TTY1 after login—no need to run 'startx'.
 
@@ -69,7 +69,7 @@ lightXDM has recently expanded to support many desktop environments and improved
 - **Auto-Start on TTY1:** After login on TTY1, your desktop environment starts automatically—no need to run `startx` manually. Optional passwordless autologin is available via `enable-autologin.sh` (with the trade-off that the keyring cannot unlock automatically unless its password is empty).
 
 ### System Integration
-- **Polkit & PAM:** The installer installs a Polkit rule granting passwordless power-off, reboot, suspend, and hibernate to local active `wheel` users (leaving USB mounting to `udisks2` defaults), and appends PAM lines to `/etc/pam.d/login` (with a one-time backup `/etc/pam.d/login.lightxdm.bak` restored by `uninstall.sh`) for KWallet (`pam_kwallet5.so` on Plasma) or GNOME Keyring (`pam_gnome_keyring.so` on every other desktop) auto-unlock.
+- **Polkit & PAM:** The installer installs a Polkit rule granting passwordless power-off, reboot, suspend, and hibernate to local active `wheel` users (leaving USB mounting to `udisks2` defaults), and appends PAM lines to `/etc/pam.d/login` (with a one-time backup `/etc/pam.d/login.lightxdm.bak`; `uninstall.sh` removes only the lines lightXDM added and keeps the backup for review if you changed anything else) for KWallet (`pam_kwallet5.so` on Plasma) or GNOME Keyring (`pam_gnome_keyring.so` on every other desktop) auto-unlock.
 - **GPG Agent Integration**: Starts `gpg-agent` at session startup, points `SSH_AUTH_SOCK` at it when `enable-ssh-support` is set in `~/.gnupg/gpg-agent.conf`, and refreshes its startup tty (see `docs/gpg-agent.md` for optional keyring-backed `pinentry` setup).
 - **Documentation:** See the `docs/` directory for technical details on KWallet auto-unlock, Polkit integration, and autologin setup.
 
