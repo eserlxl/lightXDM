@@ -63,13 +63,15 @@ import sys
 import pam
 
 p = pam.pam()
-if not p.authenticate(sys.argv[1], sys.argv[2], service="login"):
+# call_end=False keeps the handle open; otherwise open_session() fails with
+# PAM_SYSTEM_ERR without updating p.code, and a broken session stack passes.
+if not p.authenticate(sys.argv[1], sys.argv[2], service="login", call_end=False):
     sys.exit(1)
-p.open_session()
-if p.code != 0:
+if p.open_session() != 0:
     sys.exit(1)
-p.close_session()
-sys.exit(0 if p.code == 0 else 1)
+rc = p.close_session()
+p.end()
+sys.exit(0 if rc == 0 else 1)
 PY
 }
 
