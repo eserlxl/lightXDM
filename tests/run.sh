@@ -836,4 +836,17 @@ else
   fail "configure_pam with commented module lines (content=$commented_content)"
 fi
 
+# Zero-padded menu numbers are read as decimal, not octal
+for padded in "08:budgie" "09:i3"; do
+  set +e
+  output="$(prompt_de_selection <<<"${padded%%:*}" 2>/dev/null)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && "$output" == "${padded#*:}" ]]; then
+    pass "prompt_de_selection maps ${padded%%:*} to ${padded#*:}"
+  else
+    fail "prompt_de_selection ${padded%%:*} (status=$status, output=$output)"
+  fi
+done
+
 exit "$failures"

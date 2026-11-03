@@ -71,7 +71,7 @@ prompt_de_selection() {
         log "Invalid option $REPLY"
         ;;
       *)
-        echo "${ids[REPLY - 1]}"
+        echo "${ids[10#$REPLY - 1]}"
         return 0
         ;;
     esac
