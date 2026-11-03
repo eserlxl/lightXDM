@@ -111,9 +111,26 @@ elif [[ ! -f "$OVERRIDE_FILE" && ! -L "$OVERRIDE_FILE" ]]; then
   echo "No autologin drop-in found; skipping."
 fi
 
+save_edited_dotfile() {
+  local src="$1"
+  local edited_dest="${src}.lightxdm-edited" n=1
+  if [[ -e "$edited_dest" || -L "$edited_dest" ]]; then
+    while [[ -e "${edited_dest}.${n}" || -L "${edited_dest}.${n}" ]]; do
+      n=$((n + 1))
+    done
+    edited_dest="${edited_dest}.${n}"
+  fi
+  echo "Saving edited $src to $edited_dest..."
+  mv -- "$src" "$edited_dest"
+}
+
 # Restore the original Polkit rule or remove the installed rule
 POLKIT_RULE="${POLKIT_RULE:-/etc/polkit-1/rules.d/49-nopasswd.rules}"
 if [[ -e "${POLKIT_RULE}.lightxdm.bak" || -L "${POLKIT_RULE}.lightxdm.bak" ]]; then
+  if [[ -L "$POLKIT_RULE" ]] ||
+    { [[ -e "$POLKIT_RULE" ]] && ! files_match "$POLKIT_RULE" "$SCRIPT_DIR/polkit/49-nopasswd.rules"; }; then
+    save_edited_dotfile "$POLKIT_RULE"
+  fi
   echo "Restoring $POLKIT_RULE from backup..."
   mv -- "${POLKIT_RULE}.lightxdm.bak" "$POLKIT_RULE"
 elif [[ -f "$POLKIT_RULE" && ! -L "$POLKIT_RULE" ]] && files_match "$POLKIT_RULE" "$SCRIPT_DIR/polkit/49-nopasswd.rules"; then
@@ -147,19 +164,6 @@ matches_lightxdm_template() {
     fi
   done
   return 1
-}
-
-save_edited_dotfile() {
-  local src="$1"
-  local edited_dest="${src}.lightxdm-edited" n=1
-  if [[ -e "$edited_dest" || -L "$edited_dest" ]]; then
-    while [[ -e "${edited_dest}.${n}" || -L "${edited_dest}.${n}" ]]; do
-      n=$((n + 1))
-    done
-    edited_dest="${edited_dest}.${n}"
-  fi
-  echo "Saving edited $src to $edited_dest..."
-  mv -- "$src" "$edited_dest"
 }
 
 for dotfile in .bash_profile .xinitrc .gpg-agent-kwallet .gpg-agent-gnome; do

@@ -268,11 +268,23 @@ configure_pam() {
 install_polkit_rule() {
   log "Installing Polkit rule for passwordless actions..."
   local backup="${POLKIT_RULE_DEST}.lightxdm.bak"
-  if sudo test -e "$POLKIT_RULE_DEST" &&
-    ! sudo test -e "$backup" && ! sudo test -L "$backup" &&
-    [[ "$(sudo sha256sum -- "$POLKIT_RULE_DEST" | cut -d' ' -f1)" != "$(sha256sum -- "$POLKIT_RULE_SRC" | cut -d' ' -f1)" ]]; then
-    log "Backing up $POLKIT_RULE_DEST to $backup"
-    sudo cp -pP -- "$POLKIT_RULE_DEST" "$backup"
+  if sudo test -L "$POLKIT_RULE_DEST" ||
+    { sudo test -e "$POLKIT_RULE_DEST" &&
+      [[ "$(sudo sha256sum -- "$POLKIT_RULE_DEST" | cut -d' ' -f1)" != "$(sha256sum -- "$POLKIT_RULE_SRC" | cut -d' ' -f1)" ]]; }; then
+    if ! sudo test -e "$backup" && ! sudo test -L "$backup"; then
+      log "Backing up $POLKIT_RULE_DEST to $backup"
+      sudo cp -pP -- "$POLKIT_RULE_DEST" "$backup"
+    else
+      local edited="${POLKIT_RULE_DEST}.lightxdm-edited" n=1
+      if sudo test -e "$edited" || sudo test -L "$edited"; then
+        while sudo test -e "${edited}.${n}" || sudo test -L "${edited}.${n}"; do
+          n=$((n + 1))
+        done
+        edited="${edited}.${n}"
+      fi
+      log "Saving edited $POLKIT_RULE_DEST to $edited"
+      sudo cp -pP -- "$POLKIT_RULE_DEST" "$edited"
+    fi
   fi
   sudo install -Dm644 "$POLKIT_RULE_SRC" "$POLKIT_RULE_DEST"
 }

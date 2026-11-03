@@ -2095,16 +2095,27 @@ else
 fi
 
 printf '// later administrator edit\n' >"$POLKIT_RULE_DEST"
+polkit_edit_hash="$(sha256sum < "$POLKIT_RULE_DEST")"
+install_polkit_rule 2>/dev/null
+printf '// second administrator edit\n' >"$POLKIT_RULE_DEST"
+polkit_second_edit_hash="$(sha256sum < "$POLKIT_RULE_DEST")"
+install_polkit_rule 2>/dev/null
 install_polkit_rule 2>/dev/null
 if [[ -f "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
-  [[ "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm.bak")" == "$polkit_original_hash" ]]; then
-  pass "install_polkit_rule preserves an existing backup on reinstall"
+  [[ "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm.bak")" == "$polkit_original_hash" ]] &&
+  [[ -f "${POLKIT_RULE_DEST}.lightxdm-edited" && "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm-edited")" == "$polkit_edit_hash" ]] &&
+  [[ -f "${POLKIT_RULE_DEST}.lightxdm-edited.1" && "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm-edited.1")" == "$polkit_second_edit_hash" ]] &&
+  [[ ! -e "${POLKIT_RULE_DEST}.lightxdm-edited.2" ]] &&
+  [[ "$(sha256sum < "$POLKIT_RULE_DEST")" == "$(sha256sum < "$POLKIT_RULE_SRC")" ]]; then
+  pass "install_polkit_rule preserves the original backup and successive edits on reinstall"
 else
-  fail "install_polkit_rule overwrote the original backup"
+  fail "install_polkit_rule backup or edit preservation on reinstall"
 fi
 
 polkit_test_dir="$TMP_DIR/polkit_uninstall"
 mkdir -p "$polkit_test_dir/home"
+printf '// administrator edit before uninstall\n' >>"$POLKIT_RULE_DEST"
+polkit_uninstall_edit_hash="$(sha256sum < "$POLKIT_RULE_DEST")"
 if [[ $can_unshare -eq 0 ]]; then
   skip "uninstall.sh restores the original Polkit rule (unshare -r unavailable)"
 else
@@ -2115,8 +2126,12 @@ else
     set -e
     if [[ $status -eq 0 && -f "$POLKIT_RULE_DEST" && ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
       [[ "$(sha256sum < "$POLKIT_RULE_DEST")" == "$polkit_original_hash" ]] &&
+      [[ "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm-edited")" == "$polkit_edit_hash" ]] &&
+      [[ "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm-edited.1")" == "$polkit_second_edit_hash" ]] &&
+      [[ -f "${POLKIT_RULE_DEST}.lightxdm-edited.2" && "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm-edited.2")" == "$polkit_uninstall_edit_hash" ]] &&
+      [[ ! -e "${POLKIT_RULE_DEST}.lightxdm-edited.3" ]] &&
       [[ $polkit_run -eq 1 || "$output" == *"Keeping $POLKIT_RULE_DEST"* ]]; then
-      pass "uninstall.sh keeps the original Polkit rule after run $polkit_run"
+      pass "uninstall.sh preserves edits and keeps the original Polkit rule after run $polkit_run"
     else
       fail "uninstall.sh Polkit restore (run=$polkit_run, status=$status, output=$output)"
     fi
@@ -2177,6 +2192,45 @@ else
     fi
   done
 fi
+
+# Case 51c: template-identical and dangling Polkit symlinks round-trip with later symlink edits
+for polkit_link_target in "$POLKIT_RULE_SRC" "$polkit_test_dir/missing.rules"; do
+  rm -f "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak" "${POLKIT_RULE_DEST}.lightxdm-edited" "${POLKIT_RULE_DEST}.lightxdm-edited.1" "${POLKIT_RULE_DEST}.lightxdm-edited.2"
+  ln -s "$polkit_link_target" "$POLKIT_RULE_DEST"
+  install_polkit_rule 2>/dev/null
+  rm -f "$POLKIT_RULE_DEST"
+  ln -s "$polkit_test_dir/reinstall-missing.rules" "$POLKIT_RULE_DEST"
+  install_polkit_rule 2>/dev/null
+  if [[ -L "${POLKIT_RULE_DEST}.lightxdm.bak" && "$(readlink "${POLKIT_RULE_DEST}.lightxdm.bak")" == "$polkit_link_target" ]] &&
+    [[ -L "${POLKIT_RULE_DEST}.lightxdm-edited" && "$(readlink "${POLKIT_RULE_DEST}.lightxdm-edited")" == "$polkit_test_dir/reinstall-missing.rules" ]] &&
+    [[ -f "$POLKIT_RULE_DEST" && ! -L "$POLKIT_RULE_DEST" ]] &&
+    [[ "$(sha256sum < "$POLKIT_RULE_DEST")" == "$(sha256sum < "$POLKIT_RULE_SRC")" ]]; then
+    pass "install_polkit_rule preserves original and edited symlinks ($polkit_link_target)"
+  else
+    fail "install_polkit_rule symlink preservation ($polkit_link_target)"
+  fi
+  if [[ $can_unshare -eq 0 ]]; then
+    skip "uninstall.sh restores Polkit symlink ($polkit_link_target; unshare -r unavailable)"
+  else
+    rm -f "$POLKIT_RULE_DEST"
+    ln -s "$POLKIT_RULE_SRC" "$POLKIT_RULE_DEST"
+    for polkit_run in 1 2; do
+      set +e
+      output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" AUTOLOGIN_DROPIN="$polkit_test_dir/autologin" OVERRIDE_FILE="$polkit_test_dir/override" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+      status=$?
+      set -e
+      if [[ $status -eq 0 && -L "$POLKIT_RULE_DEST" && "$(readlink "$POLKIT_RULE_DEST")" == "$polkit_link_target" ]] &&
+        [[ ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" && ! -L "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
+        [[ -L "${POLKIT_RULE_DEST}.lightxdm-edited" && "$(readlink "${POLKIT_RULE_DEST}.lightxdm-edited")" == "$polkit_test_dir/reinstall-missing.rules" ]] &&
+        [[ -L "${POLKIT_RULE_DEST}.lightxdm-edited.1" && "$(readlink "${POLKIT_RULE_DEST}.lightxdm-edited.1")" == "$POLKIT_RULE_SRC" ]] &&
+        [[ ! -e "${POLKIT_RULE_DEST}.lightxdm-edited.2" && ! -L "${POLKIT_RULE_DEST}.lightxdm-edited.2" ]]; then
+        pass "uninstall.sh preserves edited and original Polkit symlinks after run $polkit_run ($polkit_link_target)"
+      else
+        fail "uninstall.sh Polkit symlink round-trip (target=$polkit_link_target, run=$polkit_run, status=$status, output=$output)"
+      fi
+    done
+  fi
+done
 
 # Case 52: gpg-agent helper edits survive reinstall and uninstall without overwriting saved copies
 gpg_reinstall_home="$TMP_DIR/home_gpg_reinstall"
