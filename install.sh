@@ -351,4 +351,7 @@ On next boot, after logging in, your desktop environment will start automaticall
 EOF
 }
 
-main "$@"
+# Run only when executed directly, so tests can source the functions.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

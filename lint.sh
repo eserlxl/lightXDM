@@ -2,7 +2,7 @@
 # lint.sh: Run ShellCheck on all project shell scripts
 set -e
 
-scripts=(install.sh enable-autologin.sh uninstall.sh)
+scripts=(install.sh enable-autologin.sh uninstall.sh tests/run.sh)
 
 for script in "${scripts[@]}"; do
   if [ -f "$script" ]; then
