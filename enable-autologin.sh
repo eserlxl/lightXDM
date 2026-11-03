@@ -3,7 +3,7 @@
 set -e
 
 OVERRIDE_DIR="${OVERRIDE_DIR:-/etc/systemd/system/getty@tty1.service.d}"
-OVERRIDE_FILE="$OVERRIDE_DIR/override.conf"
+OVERRIDE_FILE="$OVERRIDE_DIR/lightxdm-autologin.conf"
 LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
 
 usage() {

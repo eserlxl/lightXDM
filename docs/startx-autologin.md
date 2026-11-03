@@ -25,7 +25,7 @@ lightXDM provides a display-manager-free autologin experience by:
    ```
 2. Create the override file:
    ```sh
-   sudo nano /etc/systemd/system/getty@tty1.service.d/override.conf
+   sudo nano /etc/systemd/system/getty@tty1.service.d/lightxdm-autologin.conf
    ```
    Paste the following content (replace `YOURUSER` with your username):
    ```ini
@@ -41,7 +41,7 @@ lightXDM provides a display-manager-free autologin experience by:
 **To disable autologin:**
 Remove the override file and reload systemd (takes effect at next login or reboot):
 ```sh
-sudo rm /etc/systemd/system/getty@tty1.service.d/override.conf
+sudo rm /etc/systemd/system/getty@tty1.service.d/lightxdm-autologin.conf
 sudo systemctl daemon-reload
 ```
 
