@@ -130,6 +130,7 @@ lightXDM/
 │   ├── polkit-support.md
 │   └── startx-autologin.md
 ├── tests/
+│   ├── docker-arch.sh   # real PAM checks in an Arch container (needs Docker)
 │   └── run.sh
 └── LICENSE
 ```
