@@ -1,14 +1,14 @@
 #!/bin/bash
 #
-# GPG agent integration for KWallet
+# GPG agent session initialization for KDE Plasma
 #
-# This script is sourced from .xinitrc-plasma to start the GPG agent
-# and configure it to use KWallet for password caching.
+# This script is sourced from .xinitrc-plasma to start gpg-agent,
+# point SSH_AUTH_SOCK at it when enable-ssh-support is set, and refresh its tty.
 
 # Start the GPG agent
 gpg-connect-agent /bye
 
-# Configure the GPG agent to use KWallet
+# Point SSH_AUTH_SOCK at gpg-agent when enable-ssh-support is set and refresh its tty
 if grep -qs '^enable-ssh-support' ~/.gnupg/gpg-agent.conf; then
   export SSH_AUTH_SOCK=$(gpgconf --list-dirs agent-ssh-socket)
 fi

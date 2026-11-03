@@ -1,14 +1,14 @@
 #!/bin/bash
 #
-# GPG agent integration for GNOME Keyring
+# GPG agent session initialization for non-Plasma desktops
 #
-# This script is sourced from .xinitrc files to start the GPG agent
-# and configure it to use GNOME Keyring for password caching.
+# This script is sourced from .xinitrc files to start gpg-agent,
+# point SSH_AUTH_SOCK at it when enable-ssh-support is set, and refresh its tty.
 
 # Start the GPG agent
 gpg-connect-agent /bye
 
-# Configure the GPG agent to use GNOME Keyring
+# Point SSH_AUTH_SOCK at gpg-agent when enable-ssh-support is set and refresh its tty
 if grep -qs '^enable-ssh-support' ~/.gnupg/gpg-agent.conf; then
   export SSH_AUTH_SOCK=$(gpgconf --list-dirs agent-ssh-socket)
 fi
