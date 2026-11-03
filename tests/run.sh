@@ -795,4 +795,45 @@ else
   fail "main wheel check with SUDO_USER set (status=$status, output=$output, log=$log_content)"
 fi
 
+# Case 28: configure_pam preserves every original line when LOGIN_FILE lacks a trailing newline
+rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+printf '%s' '#%PAM-1.0
+
+auth       requisite    pam_nologin.so
+auth       include      system-local-login
+account    include      system-local-login
+session    include      system-local-login
+password   include      system-local-login' >"$LOGIN_FILE"
+configure_pam "gnome" 2>/dev/null
+no_nl_content="$(cat "$LOGIN_FILE")"
+if grep -Fqx "#%PAM-1.0" "$LOGIN_FILE" &&
+  grep -Fqx "auth       requisite    pam_nologin.so" "$LOGIN_FILE" &&
+  grep -Fqx "auth       include      system-local-login" "$LOGIN_FILE" &&
+  grep -Fqx "account    include      system-local-login" "$LOGIN_FILE" &&
+  grep -Fqx "session    include      system-local-login" "$LOGIN_FILE" &&
+  grep -Fqx "password   include      system-local-login" "$LOGIN_FILE" &&
+  grep -Eq '^auth[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so$' "$LOGIN_FILE" &&
+  grep -Eq '^session[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so auto_start$' "$LOGIN_FILE"; then
+  pass "configure_pam preserves every original line when LOGIN_FILE has no trailing newline"
+else
+  fail "configure_pam without trailing newline (content=$no_nl_content)"
+fi
+
+# Case 29: configure_pam appends active rules even when commented module lines exist
+rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+write_stock_login
+echo "# auth optional pam_gnome_keyring.so" >>"$LOGIN_FILE"
+echo "# session optional pam_kwallet5.so force_run" >>"$LOGIN_FILE"
+configure_pam "gnome" 2>/dev/null
+configure_pam "plasma" 2>/dev/null
+commented_content="$(cat "$LOGIN_FILE")"
+if grep -Eq '^auth[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so$' "$LOGIN_FILE" &&
+  grep -Eq '^session[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so auto_start$' "$LOGIN_FILE" &&
+  grep -Eq '^auth[[:space:]]+optional[[:space:]]+pam_kwallet5\.so$' "$LOGIN_FILE" &&
+  grep -Eq '^session[[:space:]]+optional[[:space:]]+pam_kwallet5\.so force_run$' "$LOGIN_FILE"; then
+  pass "configure_pam appends active rules when only commented module lines exist"
+else
+  fail "configure_pam with commented module lines (content=$commented_content)"
+fi
+
 exit "$failures"

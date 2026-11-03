@@ -179,12 +179,15 @@ configure_pam() {
       ;;
   esac
 
-  if ! grep -q "$module" "$LOGIN_FILE"; then
+  if ! grep -Eq "^[[:space:]]*(auth|session)[[:space:]].*${module//./\\.}" "$LOGIN_FILE"; then
     local backup_file
     backup_file="${LOGIN_FILE}.lightxdm.bak"
     if [[ ! -e "$backup_file" ]]; then
       log "Backing up $LOGIN_FILE to $backup_file"
       sudo cp "$LOGIN_FILE" "$backup_file"
+    fi
+    if [[ -s "$LOGIN_FILE" && -n "$(tail -c 1 "$LOGIN_FILE")" ]]; then
+      printf '\n' | sudo tee -a "$LOGIN_FILE" > /dev/null
     fi
     printf '%s\n%s\n' "$auth_line" "$session_line" | sudo tee -a "$LOGIN_FILE" > /dev/null
     log "Configured $module in $LOGIN_FILE."
