@@ -2,11 +2,6 @@
 # .xinitrc for lightXDM: start KDE Plasma with dbus and session vars
 # shellcheck disable=SC1090
 
-# Source GPG agent integration for KWallet
-if [[ -f ~/.gpg-agent-kwallet ]]; then
-  source ~/.gpg-agent-kwallet
-fi
-
 export DESKTOP_SESSION=plasma
 export XDG_CURRENT_DESKTOP=KDE
 export XDG_SESSION_TYPE=x11
@@ -19,6 +14,11 @@ if [ -d /etc/X11/xinit/xinitrc.d ]; then
     [ -x "$f" ] && . "$f"
   done
   unset f
+fi
+
+# Source GPG agent integration for KWallet
+if [[ -f ~/.gpg-agent-kwallet ]]; then
+  source ~/.gpg-agent-kwallet
 fi
 
 exec startplasma-x11
