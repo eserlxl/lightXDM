@@ -38,6 +38,7 @@ fi
 
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
+DM_STATE_FILE="${DM_STATE_FILE:-/etc/lightxdm/disabled-display-managers}"
 BACKUP_FILE="${LOGIN_FILE}.lightxdm.bak"
 
 # Restore /etc/pam.d/login if backup exists
@@ -121,5 +122,16 @@ for dotfile in .bash_profile .xinitrc; do
   fi
 done
 rm -f "$TARGET_HOME/.gpg-agent-kwallet" "$TARGET_HOME/.gpg-agent-gnome"
+
+# Re-enable only display managers disabled by the installer
+if [[ -f "$DM_STATE_FILE" ]]; then
+  while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
+    [[ -n "$dm_unit" ]] || continue
+    systemctl enable "$dm_unit"
+  done < "$DM_STATE_FILE"
+  rm -f "$DM_STATE_FILE"
+fi
+# install.sh creates the state directory even when it disables nothing.
+rmdir --ignore-fail-on-non-empty "$(dirname -- "$DM_STATE_FILE")" 2>/dev/null || true
 
 echo "Uninstall complete. Changes will take effect at the next login or reboot."

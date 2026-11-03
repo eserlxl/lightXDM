@@ -55,6 +55,7 @@ export PATH="$STUB_BIN:$PATH"
 export STUB_LOG="$TMP_DIR/stub.log"
 export LOGIN_FILE="$TMP_DIR/login"
 export DISPLAY_MANAGER_LINK="$TMP_DIR/display-manager.service"
+export DM_STATE_FILE="$TMP_DIR/lightxdm/disabled-display-managers"
 
 # shellcheck source=install.sh disable=SC1091
 source "$REPO_ROOT/install.sh"
@@ -1452,7 +1453,7 @@ else
   fail "configure_pam trailing # comment mention (content=$trailing_comment_after)"
 fi
 
-# Case 41: disable_display_managers disables an enabled DM behind display-manager.service
+# Case 41: record enabled DMs from the known list and display-manager.service
 dm_stub_dir="$TMP_DIR/dm_bin"
 mkdir -p "$dm_stub_dir"
 : >"$TMP_DIR/greetd.service"
@@ -1461,8 +1462,8 @@ cat >"$dm_stub_dir/systemctl" <<'EOF'
 #!/usr/bin/env bash
 echo "systemctl $*" >>"$STUB_LOG"
 case "$1" in
-  list-unit-files) echo "greetd.service enabled" ;;
-  is-enabled) [[ "$3" == "greetd.service" ]] ;;
+  list-unit-files) printf '%s\n' "sddm.service enabled" "lightdm.service disabled" "greetd.service enabled" ;;
+  is-enabled) [[ "$3" == "greetd.service" || "$3" == "sddm.service" ]] ;;
   disable) exit 0 ;;
   *) exit 1 ;;
 esac
@@ -1477,11 +1478,71 @@ output="$(
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
-if [[ $status -eq 0 ]] && grep -Fxq 'systemctl disable greetd.service' "$STUB_LOG" &&
-  [[ "$output" == *"Disabled display manager(s): greetd"* ]]; then
-  pass "disable_display_managers disables greetd through display-manager.service"
+if [[ $status -eq 0 && -f "$DM_STATE_FILE" ]] &&
+  [[ "$(cat "$DM_STATE_FILE")" == $'sddm.service\ngreetd.service' ]] &&
+  grep -Fxq 'systemctl disable greetd.service' "$STUB_LOG" &&
+  grep -Fxq 'systemctl disable sddm.service' "$STUB_LOG" &&
+  ! grep -Fxq 'systemctl disable lightdm.service' "$STUB_LOG" &&
+  [[ "$output" == *"Disabled display manager(s): sddm greetd"* ]]; then
+  pass "disable_display_managers records only disabled sddm and greetd units"
 else
   fail "disable_display_managers alias (status=$status, log=$log_content, output=$output)"
+fi
+
+# Case 41a: rerunning install and finding sddm through both paths adds no duplicates
+ln -sf "$TMP_DIR/sddm.service" "$DISPLAY_MANAGER_LINK"
+: >"$TMP_DIR/sddm.service"
+: >"$STUB_LOG"
+set +e
+output="$(PATH="$dm_stub_dir:$PATH" disable_display_managers 2>&1)"
+status=$?
+set -e
+if [[ $status -eq 0 && -f "$DM_STATE_FILE" ]] &&
+  [[ "$(cat "$DM_STATE_FILE")" == $'sddm.service\ngreetd.service' ]] &&
+  [[ "$(grep -Fxc 'systemctl disable sddm.service' "$STUB_LOG")" == 1 ]]; then
+  pass "disable_display_managers keeps unique state across reruns and alias overlap"
+else
+  fail "disable_display_managers duplicate state (status=$status, output=$output)"
+fi
+
+# Case 41b: uninstall preserves state on failure, then restores exactly its units
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh restores recorded display managers (unshare -r unavailable)"
+else
+  dm_home="$TMP_DIR/dm_home"
+  mkdir -p "$dm_home"
+  set +e
+  output="$(env STUB_SYSTEMCTL_EXIT=1 TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" OVERRIDE_FILE="$TMP_DIR/dm_override" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -ne 0 && -f "$DM_STATE_FILE" ]]; then
+    pass "uninstall.sh keeps display manager state when enabling fails"
+  else
+    fail "uninstall.sh failed enable (status=$status, output=$output)"
+  fi
+
+  : >"$STUB_LOG"
+  set +e
+  output="$(env TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" OVERRIDE_FILE="$TMP_DIR/dm_override" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -eq 0 && ! -e "$DM_STATE_FILE" && "$log_content" == $'systemctl enable sddm.service\nsystemctl enable greetd.service' ]]; then
+    pass "uninstall.sh enables only recorded display managers and removes state"
+  else
+    fail "uninstall.sh display manager restore (status=$status, log=$log_content, output=$output)"
+  fi
+
+  : >"$STUB_LOG"
+  set +e
+  output="$(env TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" OVERRIDE_FILE="$TMP_DIR/dm_override" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && ! -s "$STUB_LOG" ]]; then
+    pass "uninstall.sh enables nothing when display manager state is absent"
+  else
+    fail "uninstall.sh missing display manager state (status=$status, output=$output)"
+  fi
 fi
 
 # Case 42: main --de <id> overrides detect_de/prompt_de_selection and rejects invalid or missing ids

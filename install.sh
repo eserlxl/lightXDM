@@ -7,6 +7,7 @@ set -e
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly DM_LIST=(sddm lightdm gdm lxdm)
 readonly DISPLAY_MANAGER_LINK="${DISPLAY_MANAGER_LINK:-/etc/systemd/system/display-manager.service}"
+readonly DM_STATE_FILE="${DM_STATE_FILE:-/etc/lightxdm/disabled-display-managers}"
 readonly LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
 readonly POLKIT_RULE_SRC="$SCRIPT_DIR/polkit/49-nopasswd.rules"
 readonly POLKIT_RULE_DEST="${POLKIT_RULE_DEST:-/etc/polkit-1/rules.d/49-nopasswd.rules}"
@@ -261,12 +262,16 @@ install_polkit_rule() {
 # Disable any installed display managers
 disable_display_managers() {
   log "Disabling any installed display managers..."
+  sudo mkdir -p "$(dirname -- "$DM_STATE_FILE")"
   local dm dm_unit
   local disabled_dms=()
   for dm in "${DM_LIST[@]}"; do
     if systemctl list-unit-files | grep -q "${dm}.service"; then
       if systemctl is-enabled --quiet "${dm}.service"; then
-        sudo systemctl disable "${dm}.service"
+        sudo systemctl disable "${dm}.service" || return
+        if ! sudo grep -Fxq -- "${dm}.service" "$DM_STATE_FILE" 2>/dev/null; then
+          printf '%s\n' "${dm}.service" | sudo tee -a "$DM_STATE_FILE" > /dev/null
+        fi
         disabled_dms+=("$dm")
       fi
     fi
@@ -275,7 +280,10 @@ disable_display_managers() {
     dm_unit="${dm_unit##*/}"
     dm="${dm_unit%.service}"
     if [[ " ${disabled_dms[*]} " != *" $dm "* ]] && systemctl is-enabled --quiet "$dm_unit"; then
-      sudo systemctl disable "$dm_unit"
+      sudo systemctl disable "$dm_unit" || return
+      if ! sudo grep -Fxq -- "$dm_unit" "$DM_STATE_FILE" 2>/dev/null; then
+        printf '%s\n' "$dm_unit" | sudo tee -a "$DM_STATE_FILE" > /dev/null
+      fi
       disabled_dms+=("$dm")
     fi
   fi

@@ -97,6 +97,10 @@ lightXDM has recently expanded to support many desktop environments and improved
 ---
 See `docs/` for technical details and customization tips.
 
+## Uninstall
+
+Run `sudo bash uninstall.sh` from your user account to restore backups and remove lightXDM configuration. Display managers disabled by the installer are re-enabled for the next boot, using `/etc/lightxdm/disabled-display-managers`; the state file is then removed. Other display managers are left unchanged. To use a different state path, set `DM_STATE_FILE` to the same path for both scripts (pass it through sudo when uninstalling).
+
 ## Project Structure
 ```
 lightXDM/
