@@ -2959,7 +2959,7 @@ xinit_specs=(
   "plasma|plasma|KDE|<unset>|gpg-agent-kwallet|0|0|startplasma-x11"
   "gnome|gnome|GNOME|x11|gpg-agent-gnome|0|0|gnome-session"
   "xfce|xfce|XFCE|<unset>|gpg-agent-gnome|0|1|startxfce4"
-  "lxqt|lxqt|LXQt|<unset>|gpg-agent-gnome|0|0|lxqt-session"
+  "lxqt|lxqt|LXQt|<unset>|gpg-agent-gnome|0|0|startlxqt"
   "lxde|lxde|LXDE|<unset>|gpg-agent-gnome|1|0|startlxde"
   "mate|mate|MATE|<unset>|gpg-agent-gnome|0|0|mate-session"
   "cinnamon|cinnamon|X-Cinnamon|<unset>|gpg-agent-gnome|0|0|cinnamon-session"
