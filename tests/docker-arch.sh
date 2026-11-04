@@ -120,7 +120,22 @@ for desktop in xfce lxqt lxde mate cinnamon i3; do
   fi
 done
 
+# Plasma starts on Wayland: every absolute path on its launcher's last exec line must ship in its set.
+wayland_template="$REPO_ROOT/dotfiles/.wayland-session-plasma"
+wayland_exec="$(grep -E '^[[:space:]]*exec[[:space:]]' "$wayland_template" | tail -n 1)"
+wayland_paths=0
+for token in $wayland_exec; do
+  if [[ "$token" == /* ]]; then
+    check_packaged_command plasma "$token"
+    wayland_paths=$((wayland_paths + 1))
+  fi
+done
+if [[ $wayland_paths -eq 0 ]]; then
+  fail "No absolute launch path on the last exec line of $wayland_template"
+fi
+
 for desktop in "${desktops[@]}"; do
+  [[ "$desktop" == plasma ]] && continue
   check_packaged_command "$desktop" /usr/bin/startx
 done
 for desktop in xfce i3; do
