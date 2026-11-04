@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Eser KUBALI
 # SPDX-License-Identifier: GPL-3.0-or-later
 # lint.sh: Run ShellCheck on all project shell scripts
 set -e

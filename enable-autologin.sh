@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Eser KUBALI
 # SPDX-License-Identifier: GPL-3.0-or-later
 # enable-autologin.sh: Enable or disable TTY1 autologin for a user using systemd override
 set -e

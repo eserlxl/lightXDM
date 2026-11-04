@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Eser KUBALI
 # SPDX-License-Identifier: GPL-3.0-or-later
 # lightXDM install script for Arch Linux
 # Installs a minimal DE, configures auto-login, KWallet, Polkit, and PAM

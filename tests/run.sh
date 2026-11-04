@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025-2026 Eser KUBALI
 # SPDX-License-Identifier: GPL-3.0-or-later
 # tests/run.sh: Behavior test harness for lightXDM scripts
 # Test cases change HOME/USER inside subshells on purpose, to keep each case isolated.
