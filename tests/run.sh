@@ -3763,7 +3763,7 @@ else
   fail "main default Polkit install after --no-polkit-rule (status=$status, output=$output)"
 fi
 
-# Case 65: a failing dotfile backup copy stops copy_dotfiles before overwriting ~/.bash_profile
+# Case 65: a failing dotfile backup or edit-save copy stops copy_dotfiles before overwriting ~/.bash_profile
 fail_cp_home="$TMP_DIR/home_fail_cp"
 fail_cp_bin="$TMP_DIR/bin_fail_cp"
 mkdir -p "$fail_cp_home" "$fail_cp_bin"
@@ -3797,6 +3797,39 @@ if [[ $status -ne 0 ]] &&
   pass "copy_dotfiles aborts on failed backup without overwriting ~/.bash_profile"
 else
   fail "copy_dotfiles on failed backup (status=$status, output=$output)"
+fi
+
+fail_cp_edit_home="$TMP_DIR/home_fail_cp_edited"
+mkdir -p "$fail_cp_edit_home"
+printf '# original skel bash_profile\n' >"$fail_cp_edit_home/.bash_profile.lightxdm.bak"
+fail_cp_bak_hash="$(sha256sum < "$fail_cp_edit_home/.bash_profile.lightxdm.bak")"
+printf '# post-install user edit\nexport EDITOR=nvim\n' >"$fail_cp_edit_home/.bash_profile"
+fail_cp_edit_hash="$(sha256sum < "$fail_cp_edit_home/.bash_profile")"
+set +e
+# shellcheck disable=SC2016  # expand inside the child shell so install.sh owns errexit
+output="$(
+  env -u SHELLOPTS -u SUDO_USER \
+    HOME="$fail_cp_edit_home" \
+    PATH="$fail_cp_bin:$STUB_BIN:$PATH" \
+    USER="testuser" \
+    bash -c '
+      source "$1/install.sh"
+      copy_dotfiles "i3"
+    ' bash "$REPO_ROOT" 2>&1
+)"
+status=$?
+set -e
+if [[ $status -ne 0 ]] &&
+  [[ -f "$fail_cp_edit_home/.bash_profile" && ! -L "$fail_cp_edit_home/.bash_profile" ]] &&
+  [[ "$(sha256sum < "$fail_cp_edit_home/.bash_profile")" == "$fail_cp_edit_hash" ]] &&
+  [[ -f "$fail_cp_edit_home/.bash_profile.lightxdm.bak" && ! -L "$fail_cp_edit_home/.bash_profile.lightxdm.bak" ]] &&
+  [[ "$(sha256sum < "$fail_cp_edit_home/.bash_profile.lightxdm.bak")" == "$fail_cp_bak_hash" ]] &&
+  [[ ! -e "$fail_cp_edit_home/.bash_profile.lightxdm.absent" && ! -L "$fail_cp_edit_home/.bash_profile.lightxdm.absent" ]] &&
+  [[ ! -e "$fail_cp_edit_home/.bash_profile.lightxdm-edited" && ! -L "$fail_cp_edit_home/.bash_profile.lightxdm-edited" ]] &&
+  [[ ! -e "$fail_cp_edit_home/.gpg-agent-gnome" && ! -e "$fail_cp_edit_home/.xinitrc" ]]; then
+  pass "copy_dotfiles aborts on failed edit save without overwriting ~/.bash_profile"
+else
+  fail "copy_dotfiles on failed edit save (status=$status, output=$output)"
 fi
 
 # Case 66: reload failures are tolerated only when systemd is not running
