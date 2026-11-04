@@ -67,6 +67,7 @@ done
 export PATH="$STUB_BIN:$PATH"
 export STUB_LOG="$TMP_DIR/stub.log"
 export LOGIN_FILE="$TMP_DIR/login"
+export AUTOLOGIN_DROPIN_DIR="$TMP_DIR/getty@tty1.service.d"
 export POLKIT_RULE_DEST="$TMP_DIR/49-nopasswd.rules"
 export DISPLAY_MANAGER_LINK="$TMP_DIR/display-manager.service"
 export DM_STATE_FILE="$TMP_DIR/lightxdm/disabled-display-managers"
@@ -4683,6 +4684,39 @@ if [[ $status -ne 0 ]] &&
 else
   fail "configure_pam on failed backup (status=$status, output=$output)"
 fi
+
+# configure_pam warns when a tty1 autologin drop-in is active, and stays quiet without one
+autologin_pam_dir="$TMP_DIR/autologin_pam"
+mkdir -p "$autologin_pam_dir/getty.d"
+printf '#%%PAM-1.0\nauth       include      system-local-login\n' >"$autologin_pam_dir/login"
+for autologin_pam_case in without with; do
+  if [[ "$autologin_pam_case" == with ]]; then
+    # shellcheck disable=SC2016  # $TERM is literal systemd syntax
+    printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin someone --noclear %%I $TERM\n' >"$autologin_pam_dir/getty.d/lightxdm-autologin.conf"
+  fi
+  set +e
+  # shellcheck disable=SC2016  # expand inside the child shell so install.sh owns errexit
+  output="$(
+    env -u SHELLOPTS -u SUDO_USER \
+      LOGIN_FILE="$autologin_pam_dir/login" \
+      AUTOLOGIN_DROPIN_DIR="$autologin_pam_dir/getty.d" \
+      PATH="$STUB_BIN:$PATH" \
+      bash -c '
+        source "$1/install.sh"
+        configure_pam "i3"
+      ' bash "$REPO_ROOT" 2>&1
+  )"
+  status=$?
+  set -e
+  if [[ $status -eq 0 ]] && {
+    [[ "$autologin_pam_case" == with && "$output" == *"TTY1 autologin is enabled"* && "$output" == *"--no-keyring"* ]] ||
+    [[ "$autologin_pam_case" == without && "$output" != *"TTY1 autologin is enabled"* ]];
+  }; then
+    pass "configure_pam autologin warning ($autologin_pam_case autologin drop-in)"
+  else
+    fail "configure_pam autologin warning ($autologin_pam_case, status=$status, output=$output)"
+  fi
+done
 
 # A missing LOGIN_FILE is never created, even when an earlier backup exists
 missing_pam_dir="$TMP_DIR/missing_pam"

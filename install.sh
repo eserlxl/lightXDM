@@ -9,6 +9,7 @@ readonly DM_LIST=(sddm lightdm gdm lxdm)
 readonly DISPLAY_MANAGER_LINK="${DISPLAY_MANAGER_LINK:-/etc/systemd/system/display-manager.service}"
 readonly DM_STATE_FILE="${DM_STATE_FILE:-/etc/lightxdm/disabled-display-managers}"
 readonly LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
+readonly AUTOLOGIN_DROPIN_DIR="${AUTOLOGIN_DROPIN_DIR:-/etc/systemd/system/getty@tty1.service.d}"
 readonly PAM_KWALLET_AUTH="auth       optional   pam_kwallet5.so"
 readonly PAM_KWALLET_SESSION="session    optional   pam_kwallet5.so force_run"
 readonly PAM_GNOME_KEYRING_AUTH="auth       optional   pam_gnome_keyring.so"
@@ -380,6 +381,15 @@ configure_pam() {
   else
     log "PAM configuration for $module already exists. Skipping."
   fi
+
+  # Autologin passes no password, so keyring unlock cannot work alongside it.
+  local drop_in
+  for drop_in in "$AUTOLOGIN_DROPIN_DIR"/*.conf; do
+    if [[ -f "$drop_in" ]] && grep -Eqs '^[[:space:]]*ExecStart[[:space:]]*=.*--autologin' "$drop_in"; then
+      log "WARNING: TTY1 autologin is enabled ($drop_in); it cannot unlock the keyring. Rerun with --no-keyring, or run 'sudo bash enable-autologin.sh --disable'."
+      break
+    fi
+  done
 }
 
 # Install Polkit rule for passwordless actions
