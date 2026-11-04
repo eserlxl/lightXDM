@@ -2,10 +2,10 @@
 
 lightXDM provides a display-manager-free autologin experience by:
 - Logging in to TTY1 (via systemd or getty autologin)
-- Using `.bash_profile` to auto-launch `startx` only on TTY1
+- Using `.bash_profile` to auto-launch the desktop only on TTY1: `~/.wayland-session` when it is executable (Plasma on Wayland), otherwise `startx`
 
 ## How it works
-- If you log in on TTY1 (an interactive login shell), `.bash_profile` runs `startx` automatically. Non-interactive login shells such as `su - user -c cmd` on TTY1 run their command and do not start X.
+- If you log in on TTY1 (an interactive login shell), `.bash_profile` runs `~/.wayland-session` or `startx` automatically (never from inside an X11 or Wayland session). Non-interactive login shells such as `su - user -c cmd` on TTY1 run their command and do not start X.
 - No graphical login screen, no display manager needed.
 - You get a full desktop environment session with minimal RAM and boot time.
 
@@ -19,20 +19,28 @@ The installer only writes `~/.bash_profile`. If your login shell is zsh or fish,
 
 zsh, in `~/.zprofile`:
 ```zsh
-if [[ -o interactive && -z $DISPLAY && $(tty) == /dev/tty1 && ! -e ~/.config/lightxdm/no-autostart ]] && command -v startx >/dev/null 2>&1; then
-  exec startx
+if [[ -o interactive && -z $DISPLAY && -z $WAYLAND_DISPLAY && $(tty) == /dev/tty1 && ! -e ~/.config/lightxdm/no-autostart ]]; then
+  if [[ -f ~/.wayland-session && -x ~/.wayland-session ]]; then
+    exec ~/.wayland-session
+  elif command -v startx >/dev/null 2>&1; then
+    exec startx
+  fi
 fi
 ```
 
 fish, in `~/.config/fish/config.fish`:
 ```fish
-if status is-login; and status is-interactive; and test -z "$DISPLAY"; and test (tty) = /dev/tty1; and not test -e ~/.config/lightxdm/no-autostart; and command -q startx
-  exec startx
+if status is-login; and status is-interactive; and test -z "$DISPLAY"; and test -z "$WAYLAND_DISPLAY"; and test (tty) = /dev/tty1; and not test -e ~/.config/lightxdm/no-autostart
+  if test -f ~/.wayland-session; and test -x ~/.wayland-session
+    exec ~/.wayland-session
+  else if command -q startx
+    exec startx
+  end
 end
 ```
 
 ## Setup
-- The installer copies `.bash_profile` and `.xinitrc` to your home.
+- The installer copies `.bash_profile` and `.xinitrc` (or `.wayland-session` for Plasma) to your home.
 - With the installed Bash profile, you can keep autologin enabled and temporarily skip the desktop using `~/.config/lightxdm/no-autostart` (see Recovery below).
 - To enable TTY1 autologin, set up a systemd override for `agetty` on tty1 for your user:
 
@@ -81,14 +89,14 @@ This prints `enabled for <user> (<file>)` for the lightXDM drop-in (or an accept
 
 ## Recovery
 
-If `startx` was launched on TTY1 three times within the 30 seconds before a TTY1 login (a desktop that keeps crashing right after it starts), that login automatically pauses auto-start: `.bash_profile` creates `~/.config/lightxdm/no-autostart`, clears `${XDG_STATE_HOME:-~/.local/state}/lightxdm/startx-attempts`, prints a one-line notice explaining how to resume, and loads `~/.bashrc` instead of running `startx`. (Recent launch timestamps are kept in `${XDG_STATE_HOME:-~/.local/state}/lightxdm/startx-attempts`, dropping entries older than 30 seconds; `uninstall.sh` removes this file from the default `~/.local/state` location, but not a copy under a custom `XDG_STATE_HOME`.)
+If the desktop (`~/.wayland-session` or `startx`) was launched on TTY1 three times within the 30 seconds before a TTY1 login (a desktop that keeps crashing right after it starts), that login automatically pauses auto-start: `.bash_profile` creates `~/.config/lightxdm/no-autostart`, clears `${XDG_STATE_HOME:-~/.local/state}/lightxdm/startx-attempts`, prints a one-line notice explaining how to resume, and loads `~/.bashrc` instead of starting the desktop. (Recent launch timestamps are kept in `${XDG_STATE_HOME:-~/.local/state}/lightxdm/startx-attempts`, dropping entries older than 30 seconds; `uninstall.sh` removes this file from the default `~/.local/state` location, but not a copy under a custom `XDG_STATE_HOME`.)
 
 You can also create the marker manually as your user from another TTY or SSH:
 ```sh
 mkdir -p ~/.config/lightxdm
 touch ~/.config/lightxdm/no-autostart
 ```
-While the marker exists, the installed `.bash_profile` skips `startx` and loads `~/.bashrc`, giving you an interactive shell on the next TTY1 login. Other TTYs are unchanged, and no edit to `~/.bash_profile` is needed.
+While the marker exists, the installed `.bash_profile` skips the desktop launch and loads `~/.bashrc`, giving you an interactive shell on the next TTY1 login. Other TTYs are unchanged, and no edit to `~/.bash_profile` is needed.
 
 To restore desktop auto-start at the next TTY1 login:
 ```sh

@@ -1,10 +1,10 @@
 # lightXDM
 
-A lightweight, display-manager-free desktop environment for minimalists, Arch Linux users, and those who prefer `startx` over SDDM/LightDM.
+A lightweight, display-manager-free desktop environment for minimalists, Arch Linux users, and those who prefer a TTY1 login over SDDM/LightDM: X11 desktops start with `startx`, and KDE Plasma starts on Wayland.
 
 ## Purpose & Target Users
 - **Minimal RAM/boot time**: No display manager, no bloat, just your DE.
-- **Session auto-start, with Keyring auto-unlock or optional Autologin**: Choose between password login on TTY1 with automatic keyring unlock via PAM (default) or passwordless TTY1 autologin via `enable-autologin.sh` across XFCE, LXQt, LXDE, MATE, Cinnamon, and i3.
+- **Session auto-start, with Keyring auto-unlock or optional Autologin**: Choose between password login on TTY1 with automatic keyring unlock via PAM (default) or passwordless TTY1 autologin via `enable-autologin.sh` across KDE Plasma (Wayland), XFCE, LXQt, LXDE, MATE, Cinnamon, and i3.
 - **Full Polkit & PAM integration**: `udisks2` defaults for USB mounting, passwordless power actions for local active `wheel` users, and PAM keyring unlock.
 - **Systemd compatible**: Works on Arch Linux and derivatives.
 
@@ -48,9 +48,9 @@ bash install.sh
 > - Your user **must be in the `wheel` group** and have working `sudo` privileges. If not, see the error messages for instructions on how to add your user to the `wheel` group and configure `sudo`.
 > - If you run `sudo bash install.sh` or run as root, the script will exit with an error.
 
-Plasma, GNOME, and Budgie now run only on Wayland on Arch Linux and cannot be started with `startx`. The installer refuses these desktops when no supported X11 desktop is installed or when passed with `--de`, before changing packages, dotfiles, PAM, Polkit, or display managers. Their templates are retained for future Wayland support.
+Plasma, GNOME, and Budgie now run only on Wayland on Arch Linux and cannot be started with `startx`. Plasma is supported on Wayland: the installer copies `~/.wayland-session` (instead of `~/.xinitrc`), which `.bash_profile` runs on TTY1 in place of `startx`, and skips the Xorg packages. GNOME and Budgie are not supported yet (their Wayland support is planned): the installer refuses them when no supported desktop is installed or when passed with `--de`, before changing packages, dotfiles, PAM, Polkit, or display managers. Installing an X11 desktop later removes a lightXDM `~/.wayland-session`, since it would take precedence over `startx`.
 
-- **Detects your installed DE** (XFCE, LXQt, LXDE, MATE, Cinnamon, or i3), or pass `--de <id>` (`xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, or `i3`) to configure a specific desktop explicitly. When several desktops are installed, Wayland-only desktops (Plasma, GNOME, Budgie) are skipped while a supported X11 desktop is present, a single remaining supported desktop is configured automatically, and two or more supported desktops prompt you to choose (or pass `--de <id>` to select non-interactively).
+- **Detects your installed DE** (Plasma, XFCE, LXQt, LXDE, MATE, Cinnamon, or i3), or pass `--de <id>` (`plasma`, `xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, or `i3`) to configure a specific desktop explicitly. When several desktops are installed, GNOME and Budgie are skipped while a supported desktop is present, a single remaining supported desktop is configured automatically, and two or more supported desktops prompt you to choose (or pass `--de <id>` to select non-interactively).
 - If no DE is found (and `--de` is not passed), it **prompts you to choose one** to install.
 - Installs the minimal required packages for your chosen DE, including the correct polkit agent:
   - lxqt-policykit for LXQt
@@ -123,7 +123,7 @@ lightXDM/
 ├── dotfiles/
 │   ├── .gpg-agent-gnome
 │   ├── .gpg-agent-kwallet
-│   ├── .xinitrc-plasma
+│   ├── .wayland-session-plasma
 │   ├── .xinitrc-gnome
 │   ├── .xinitrc-xfce
 │   ├── .xinitrc-lxqt

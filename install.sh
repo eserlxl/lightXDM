@@ -828,11 +828,13 @@ EOF
       ;;
   esac
 
-  local template is_wayland=0 session_dotfile=".xinitrc"
+  local template is_wayland=0 session_dotfile=".xinitrc" manual_start="startx"
   template="$(xinitrc_template "$de")"
   if [[ "${template##*/}" == .wayland-session-* ]]; then
     is_wayland=1
     session_dotfile=".wayland-session"
+    # shellcheck disable=SC2088  # shown to the user as text, never expanded
+    manual_start="~/.wayland-session"
   fi
   if [[ ! -f "$template" ]]; then
     if [[ $is_wayland -eq 1 ]]; then
@@ -895,7 +897,7 @@ EOF
         shell_profile=".profile"
         ;;
     esac
-    log "WARNING: Login shell for $real_user is $login_shell, which does not read ~/.bash_profile. Add the TTY1 startx block to ~/$shell_profile (zsh and fish snippets: docs/startx-autologin.md)."
+    log "WARNING: Login shell for $real_user is $login_shell, which does not read ~/.bash_profile. Add the TTY1 auto-start block to ~/$shell_profile (zsh and fish snippets: docs/startx-autologin.md)."
   fi
   if [[ $no_keyring -eq 1 ]]; then
     log "Skipping keyring PAM configuration (--no-keyring)."
@@ -970,9 +972,9 @@ EOF
 lightXDM install complete!
 - $de is configured in ~/$session_dotfile for $real_user (auto-start requires ~/$shell_profile)
 - $unlock_summary
-- Add the TTY1 startx block to ~/$shell_profile (see docs/startx-autologin.md), then reboot or log out to test
+- Add the TTY1 auto-start block to ~/$shell_profile (see docs/startx-autologin.md), then reboot or log out to test
 
-Your login shell ($login_shell) does not read ~/.bash_profile, so $de will not auto-start on TTY1 until you add a startx block to ~/$shell_profile (or run 'startx' manually).
+Your login shell ($login_shell) does not read ~/.bash_profile, so $de will not auto-start on TTY1 until you add the auto-start block to ~/$shell_profile (or run '$manual_start' manually).
 EOF
   fi
 }
