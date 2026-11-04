@@ -13,6 +13,23 @@ lightXDM provides a display-manager-free autologin experience by:
 - **Default mode (password login on TTY1):** You type your password on TTY1, your desktop starts automatically, and PAM unlocks your keyring (KWallet on Plasma, GNOME Keyring on all other supported desktops) using that password.
 - **Autologin mode (`agetty --autologin`):** Login happens without a password, so the PAM keyring module cannot unlock your keyring automatically. The keyring stays locked and asks for its password in the desktop unless its password is empty (`enable-autologin.sh` prints a warning when PAM keyring unlock is configured).
 
+## zsh and fish users
+The installer only writes `~/.bash_profile`. If your login shell is zsh or fish, add the equivalent block yourself (the installer warns you when this applies).
+
+zsh, in `~/.zprofile`:
+```zsh
+if [[ -o interactive && -z $DISPLAY && $(tty) == /dev/tty1 ]] && command -v startx >/dev/null 2>&1; then
+  exec startx
+fi
+```
+
+fish, in `~/.config/fish/config.fish`:
+```fish
+if status is-login; and status is-interactive; and test -z "$DISPLAY"; and test (tty) = /dev/tty1; and command -q startx
+  exec startx
+end
+```
+
 ## Setup
 - The installer copies `.bash_profile` and `.xinitrc` to your home.
 - To enable TTY1 autologin, set up a systemd override for `agetty` on tty1 for your user:

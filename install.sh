@@ -483,7 +483,7 @@ main() {
         shell_profile=".profile"
         ;;
     esac
-    log "WARNING: Login shell for $real_user is $login_shell, which does not read ~/.bash_profile. Add the TTY1 startx block to ~/$shell_profile."
+    log "WARNING: Login shell for $real_user is $login_shell, which does not read ~/.bash_profile. Add the TTY1 startx block to ~/$shell_profile (zsh and fish snippets: docs/startx-autologin.md)."
   fi
   if [[ $no_keyring -eq 1 ]]; then
     log "Skipping keyring PAM configuration (--no-keyring)."
@@ -522,7 +522,7 @@ EOF
 lightXDM install complete!
 - $de is configured in ~/.xinitrc for $real_user (auto-start requires ~/$shell_profile)
 - $unlock_summary
-- Add the TTY1 startx block to ~/$shell_profile, then reboot or log out to test
+- Add the TTY1 startx block to ~/$shell_profile (see docs/startx-autologin.md), then reboot or log out to test
 
 Your login shell ($login_shell) does not read ~/.bash_profile, so $de will not auto-start on TTY1 until you add a startx block to ~/$shell_profile (or run 'startx' manually).
 EOF
