@@ -81,7 +81,7 @@ This prints `enabled for <user> (<file>)` for the lightXDM drop-in (or an accept
 
 ## Recovery
 
-If `startx` on TTY1 exits three times within 30 seconds, the next TTY1 login automatically pauses auto-start: `.bash_profile` creates `~/.config/lightxdm/no-autostart`, clears `${XDG_STATE_HOME:-~/.local/state}/lightxdm/startx-attempts`, prints a one-line notice explaining how to resume, and loads `~/.bashrc` instead of running `startx`. (Recent launch timestamps are kept in `${XDG_STATE_HOME:-~/.local/state}/lightxdm/startx-attempts`, dropping entries older than 30 seconds; `uninstall.sh` removes this file from the default `~/.local/state` location, but not a copy under a custom `XDG_STATE_HOME`.)
+If `startx` was launched on TTY1 three times within the 30 seconds before a TTY1 login (a desktop that keeps crashing right after it starts), that login automatically pauses auto-start: `.bash_profile` creates `~/.config/lightxdm/no-autostart`, clears `${XDG_STATE_HOME:-~/.local/state}/lightxdm/startx-attempts`, prints a one-line notice explaining how to resume, and loads `~/.bashrc` instead of running `startx`. (Recent launch timestamps are kept in `${XDG_STATE_HOME:-~/.local/state}/lightxdm/startx-attempts`, dropping entries older than 30 seconds; `uninstall.sh` removes this file from the default `~/.local/state` location, but not a copy under a custom `XDG_STATE_HOME`.)
 
 You can also create the marker manually as your user from another TTY or SSH:
 ```sh
