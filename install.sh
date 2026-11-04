@@ -245,7 +245,12 @@ copy_dotfiles() {
   local template
   template="$(xinitrc_template "$de")"
   if [[ -f "$template" ]]; then
-    preserve_dotfile "$user_home/.xinitrc" "$HOME"/.config/lightxdm/.xinitrc-* "$SCRIPT_DIR"/dotfiles/.xinitrc-*
+    local xinitrc_templates=("$SCRIPT_DIR"/dotfiles/.xinitrc-*)
+    if [[ -e "$user_home/.xinitrc.lightxdm.bak" || -L "$user_home/.xinitrc.lightxdm.bak" ||
+      -e "$user_home/.xinitrc.lightxdm.absent" || -L "$user_home/.xinitrc.lightxdm.absent" ]]; then
+      xinitrc_templates=("$HOME"/.config/lightxdm/.xinitrc-* "${xinitrc_templates[@]}")
+    fi
+    preserve_dotfile "$user_home/.xinitrc" "${xinitrc_templates[@]}"
     install -Dm755 "$template" "$user_home/.xinitrc"
   else
     log "No .xinitrc template for $de. Please create $template for proper session startup."

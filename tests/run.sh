@@ -4692,6 +4692,115 @@ else
   fi
 fi
 
+# Case 72c: a pre-existing ~/.xinitrc copied to ~/.config/lightxdm is backed up on first install, restored by uninstall, and kept without markers
+for ut_copy_de in xfce dwm; do
+  ut_copy_dir="$user_tmpl_dir/copy_$ut_copy_de"
+  ut_copy_home="$ut_copy_dir/home"
+  mkdir -p "$ut_copy_home/.config/lightxdm"
+  printf '#!/bin/sh\nexec dwm\n' >"$ut_copy_home/.xinitrc"
+  ut_copy_hash="$(sha256sum < "$ut_copy_home/.xinitrc")"
+  cp "$ut_copy_home/.xinitrc" "$ut_copy_home/.config/lightxdm/.xinitrc-dwm"
+  printf '#%%PAM-1.0\n' >"$ut_copy_dir/login"
+  set +e
+  output="$(
+    env -u SHELLOPTS -u SUDO_USER \
+      HOME="$ut_copy_home" \
+      PATH="$sudo_pw_dir:$STUB_BIN:$PATH" \
+      USER="testuser" \
+      LOGIN_FILE="$ut_copy_dir/login" \
+      POLKIT_RULE_DEST="$ut_copy_dir/polkit" \
+      DISPLAY_MANAGER_LINK="$ut_copy_dir/display-manager.service" \
+      DM_STATE_FILE="$ut_copy_dir/state/disabled-display-managers" \
+      bash "$REPO_ROOT/install.sh" --no-packages --de "$ut_copy_de" 2>&1
+  )"
+  status=$?
+  set -e
+  (
+    export HOME="$ut_copy_home"
+    export USER="testuser"
+    copy_dotfiles "$ut_copy_de" 2>/dev/null
+  )
+  ut_expected_installed_hash="$ut_copy_hash"
+  if [[ "$ut_copy_de" == "xfce" ]]; then
+    ut_expected_installed_hash="$(sha256sum < "$REPO_ROOT/dotfiles/.xinitrc-xfce")"
+  fi
+  if [[ $status -eq 0 && -f "$ut_copy_home/.xinitrc.lightxdm.bak" ]] &&
+    [[ "$(sha256sum < "$ut_copy_home/.xinitrc.lightxdm.bak")" == "$ut_copy_hash" ]] &&
+    [[ "$(sha256sum < "$ut_copy_home/.xinitrc")" == "$ut_expected_installed_hash" ]] &&
+    [[ ! -e "$ut_copy_home/.xinitrc.lightxdm.absent" && ! -e "$ut_copy_home/.xinitrc.lightxdm-edited" ]]; then
+    pass "install.sh backs up pre-existing ~/.xinitrc equal to user template (--de $ut_copy_de)"
+  else
+    fail "install.sh backup with copied user template (--de $ut_copy_de, status=$status, output=$output)"
+  fi
+
+  if [[ ${#ut_uninstall_runner[@]} -eq 0 ]]; then
+    skip "uninstall.sh restores ~/.xinitrc backed up despite matching user template (--de $ut_copy_de; unshare -r unavailable)"
+  else
+    set +e
+    out_u1="$(
+      env TARGET_HOME="$ut_copy_home" \
+        LOGIN_FILE="$ut_copy_dir/u_login" \
+        AUTOLOGIN_DROPIN="$ut_copy_dir/u_auto" \
+        OVERRIDE_FILE="$ut_copy_dir/u_over" \
+        POLKIT_RULE="$ut_copy_dir/u_polkit" \
+        DM_STATE_FILE="$ut_copy_dir/u_dm" \
+        "${ut_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
+    )"
+    st_u1=$?
+    out_u2="$(
+      env TARGET_HOME="$ut_copy_home" \
+        LOGIN_FILE="$ut_copy_dir/u_login" \
+        AUTOLOGIN_DROPIN="$ut_copy_dir/u_auto" \
+        OVERRIDE_FILE="$ut_copy_dir/u_over" \
+        POLKIT_RULE="$ut_copy_dir/u_polkit" \
+        DM_STATE_FILE="$ut_copy_dir/u_dm" \
+        "${ut_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
+    )"
+    st_u2=$?
+    set -e
+    if [[ $st_u1 -eq 0 && $st_u2 -eq 0 && -f "$ut_copy_home/.xinitrc" ]] &&
+      [[ "$(sha256sum < "$ut_copy_home/.xinitrc")" == "$ut_copy_hash" ]] &&
+      [[ ! -e "$ut_copy_home/.xinitrc.lightxdm.bak" && ! -e "$ut_copy_home/.xinitrc.lightxdm.absent" && ! -e "$ut_copy_home/.xinitrc.lightxdm-edited" ]] &&
+      [[ -f "$ut_copy_home/.config/lightxdm/.xinitrc-dwm" && "$(sha256sum < "$ut_copy_home/.config/lightxdm/.xinitrc-dwm")" == "$ut_copy_hash" ]] &&
+      [[ "$out_u2" == *"Keeping $ut_copy_home/.xinitrc"* ]]; then
+      pass "uninstall.sh restores ~/.xinitrc equal to user template and keeps it on repeat uninstall (--de $ut_copy_de)"
+    else
+      fail "uninstall.sh restore/keep with copied user template (--de $ut_copy_de, s1=$st_u1:$out_u1 | s2=$st_u2:$out_u2)"
+    fi
+  fi
+done
+
+if [[ ${#ut_uninstall_runner[@]} -eq 0 ]]; then
+  skip "uninstall.sh keeps pre-existing ~/.xinitrc copied to ~/.config/lightxdm when no markers exist (unshare -r unavailable)"
+else
+  ut_nomarker_home="$user_tmpl_dir/home_copy_nomarker"
+  mkdir -p "$ut_nomarker_home/.config/lightxdm"
+  printf '#!/bin/sh\nexec dwm\n' >"$ut_nomarker_home/.xinitrc"
+  ut_nomarker_hash="$(sha256sum < "$ut_nomarker_home/.xinitrc")"
+  cp "$ut_nomarker_home/.xinitrc" "$ut_nomarker_home/.config/lightxdm/.xinitrc-dwm"
+  set +e
+  output="$(
+    env TARGET_HOME="$ut_nomarker_home" \
+      LOGIN_FILE="$user_tmpl_dir/u_nm_login" \
+      AUTOLOGIN_DROPIN="$user_tmpl_dir/u_nm_auto" \
+      OVERRIDE_FILE="$user_tmpl_dir/u_nm_over" \
+      POLKIT_RULE="$user_tmpl_dir/u_nm_polkit" \
+      DM_STATE_FILE="$user_tmpl_dir/u_nm_dm" \
+      "${ut_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
+  )"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && -f "$ut_nomarker_home/.xinitrc" ]] &&
+    [[ "$(sha256sum < "$ut_nomarker_home/.xinitrc")" == "$ut_nomarker_hash" ]] &&
+    [[ -f "$ut_nomarker_home/.config/lightxdm/.xinitrc-dwm" && "$(sha256sum < "$ut_nomarker_home/.config/lightxdm/.xinitrc-dwm")" == "$ut_nomarker_hash" ]] &&
+    [[ ! -e "$ut_nomarker_home/.xinitrc.lightxdm-edited" ]] &&
+    [[ "$output" == *"Keeping $ut_nomarker_home/.xinitrc"* ]]; then
+    pass "uninstall.sh keeps ~/.xinitrc equal to user template when no markers exist"
+  else
+    fail "uninstall.sh no-marker copied user template (status=$status, output=$output)"
+  fi
+fi
+
 # Case 73: --list-packages prints the package set one per line without sudo, root/wheel checks, or side effects
 help_list_pkgs_out="$(HOME="$help_home" bash "$REPO_ROOT/install.sh" --help 2>&1)"
 if [[ "$help_list_pkgs_out" == *"--list-packages"* ]]; then

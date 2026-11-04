@@ -162,6 +162,7 @@ fi
 # Restore or remove user dotfiles
 matches_lightxdm_template() {
   local dotfile="$1"
+  local mode="${2:-}"
   local path="$TARGET_HOME/$dotfile"
   if [[ ! -f "$path" || -L "$path" ]]; then
     return 1
@@ -174,8 +175,12 @@ matches_lightxdm_template() {
       return 1
       ;;
   esac
+  local templates=("$SCRIPT_DIR"/dotfiles/.xinitrc-*)
+  if [[ "$mode" != "--bundled-only" ]]; then
+    templates+=("$TARGET_HOME"/.config/lightxdm/.xinitrc-*)
+  fi
   local tmpl
-  for tmpl in "$SCRIPT_DIR"/dotfiles/.xinitrc-* "$TARGET_HOME"/.config/lightxdm/.xinitrc-*; do
+  for tmpl in "${templates[@]}"; do
     [[ "$tmpl" -ef "$path" ]] && continue
     if [[ -f "$tmpl" ]] && files_match "$path" "$tmpl"; then
       return 0
@@ -207,7 +212,7 @@ for dotfile in .bash_profile .xinitrc .gpg-agent-kwallet .gpg-agent-gnome; do
     fi
     rm -f -- "$TARGET_HOME/${dotfile}.lightxdm.absent"
   elif [[ -e "$TARGET_HOME/$dotfile" || -L "$TARGET_HOME/$dotfile" ]]; then
-    if matches_lightxdm_template "$dotfile"; then
+    if matches_lightxdm_template "$dotfile" --bundled-only; then
       echo "Removing $TARGET_HOME/$dotfile..."
       rm -f -- "$TARGET_HOME/$dotfile"
     else
