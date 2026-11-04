@@ -7,6 +7,7 @@ if [[ $# -gt 0 ]]; then
   if [[ $# -eq 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
     echo "Usage: sudo bash $0 [-h|--help] [--keyring-only]"
     echo "  --keyring-only  remove only the keyring lines lightXDM added to /etc/pam.d/login (for switching to autologin)"
+    echo "Run it with sudo from your user account; as root without sudo, set TARGET_HOME=/home/<user>."
     exit 0
   elif [[ $# -eq 1 && "$1" == "--keyring-only" ]]; then
     keyring_only=1

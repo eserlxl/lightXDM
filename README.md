@@ -79,7 +79,7 @@ lightXDM has recently expanded to support many desktop environments and improved
 - **Dotfiles:** The correct `.xinitrc-<de>` and `.bash_profile` are copied for your DE, ensuring seamless session start on TTY1.
 
 ### Display Manager Independence
-- **No Display Manager Needed:** The script disables any installed display managers (SDDM, LightDM, GDM, LXDM) to ensure a pure TTY+startx workflow.
+- **No Display Manager Needed:** The script disables enabled display managers (SDDM, LightDM, GDM, LXDM, `ly@tty1`, and whatever unit `display-manager.service` points to) to ensure a pure TTY+startx workflow; `ly` on other TTYs is left alone.
 - **Auto-Start on TTY1:** After login on TTY1, your desktop environment starts automatically—no need to run `startx` manually. Optional passwordless autologin is available via `enable-autologin.sh` (with the trade-off that the keyring cannot unlock automatically unless its password is empty).
 
 ### System Integration
@@ -98,7 +98,7 @@ lightXDM has recently expanded to support many desktop environments and improved
 | Cinnamon support               | auto-detect/install, GNOME Keyring, polkit-gnome, dotfiles    |
 | i3 support                     | auto-detect/install, GNOME Keyring, polkit-gnome, dotfiles    |
 | No DE installed                | Prompts user, installs selected DE                                |
-| Display manager free           | disables SDDM, LightDM, GDM, LXDM                           |
+| Display manager free           | disables SDDM, LightDM, GDM, LXDM, ly@tty1 and the display-manager.service unit |
 | Auto-start & optional autologin| TTY1 auto-start via `.bash_profile`/`.xinitrc-*`; optional autologin via `enable-autologin.sh` |
 | Polkit integration             | passwordless power-off/reboot/suspend/hibernate for local active `wheel` users, `udisks2` defaults for USB, correct agent for each DE |
 | PAM integration                | appends `pam_gnome_keyring.so` to `/etc/pam.d/login` with one-time backup |
