@@ -1607,8 +1607,15 @@ cat >"$dm_stub_dir/systemctl" <<'EOF'
 #!/usr/bin/env bash
 echo "systemctl $*" >>"$STUB_LOG"
 case "$1" in
-  list-unit-files) printf '%s\n' "sddm.service enabled" "lightdm.service disabled" "greetd.service enabled" ;;
-  is-enabled) [[ "$3" == "greetd.service" || "$3" == "sddm.service" ]] ;;
+  list-unit-files) printf '%s\n' "sddm.service enabled" "lightdm.service disabled" "gdm.service indirect" "lxdm.service static" "greetd.service enabled" ;;
+  is-enabled)
+    case "${3:-$2}" in
+      greetd.service | sddm.service) echo enabled ;;
+      gdm.service | ly@.service) echo indirect ;;
+      lxdm.service | static-dm.service) echo static ;;
+      *) echo disabled; exit 1 ;;
+    esac
+    ;;
   disable) exit 0 ;;
   *) exit 1 ;;
 esac
@@ -1628,11 +1635,31 @@ if [[ $status -eq 0 && -f "$DM_STATE_FILE" ]] &&
   grep -Fxq 'systemctl disable greetd.service' "$STUB_LOG" &&
   grep -Fxq 'systemctl disable sddm.service' "$STUB_LOG" &&
   ! grep -Fxq 'systemctl disable lightdm.service' "$STUB_LOG" &&
+  ! grep -Fxq 'systemctl disable gdm.service' "$STUB_LOG" &&
+  ! grep -Fxq 'systemctl disable lxdm.service' "$STUB_LOG" &&
   [[ "$output" == *"Disabled display manager(s): sddm greetd"* ]]; then
   pass "disable_display_managers records only disabled sddm and greetd units"
 else
   fail "disable_display_managers alias (status=$status, log=$log_content, output=$output)"
 fi
+
+# Indirect and static units behind display-manager.service are also skipped.
+for dm_unit in ly@.service static-dm.service; do
+  : >"$TMP_DIR/$dm_unit"
+  ln -sf "$TMP_DIR/$dm_unit" "$DISPLAY_MANAGER_LINK"
+  : >"$STUB_LOG"
+  set +e
+  output="$(PATH="$dm_stub_dir:$PATH" disable_display_managers 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && -f "$DM_STATE_FILE" ]] &&
+    [[ "$(cat "$DM_STATE_FILE")" == $'sddm.service\ngreetd.service' ]] &&
+    ! grep -Fxq "systemctl disable $dm_unit" "$STUB_LOG"; then
+    pass "disable_display_managers skips $dm_unit behind display-manager.service"
+  else
+    fail "disable_display_managers non-enabled alias (unit=$dm_unit, status=$status, output=$output)"
+  fi
+done
 
 # Case 41a: rerunning install and finding sddm through both paths adds no duplicates
 ln -sf "$TMP_DIR/sddm.service" "$DISPLAY_MANAGER_LINK"

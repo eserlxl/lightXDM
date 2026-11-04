@@ -306,7 +306,7 @@ disable_display_managers() {
   local disabled_dms=()
   for dm in "${DM_LIST[@]}"; do
     if systemctl list-unit-files | grep -q "${dm}.service"; then
-      if systemctl is-enabled --quiet "${dm}.service"; then
+      if [[ "$(systemctl is-enabled "${dm}.service" 2>/dev/null || true)" == "enabled" ]]; then
         sudo systemctl disable "${dm}.service" || return
         if ! sudo grep -Fxq -- "${dm}.service" "$DM_STATE_FILE" 2>/dev/null; then
           printf '%s\n' "${dm}.service" | sudo tee -a "$DM_STATE_FILE" > /dev/null
@@ -318,7 +318,7 @@ disable_display_managers() {
   if [[ -L "$DISPLAY_MANAGER_LINK" ]] && dm_unit="$(readlink -f "$DISPLAY_MANAGER_LINK")"; then
     dm_unit="${dm_unit##*/}"
     dm="${dm_unit%.service}"
-    if [[ " ${disabled_dms[*]} " != *" $dm "* ]] && systemctl is-enabled --quiet "$dm_unit"; then
+    if [[ " ${disabled_dms[*]} " != *" $dm "* ]] && [[ "$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)" == "enabled" ]]; then
       sudo systemctl disable "$dm_unit" || return
       if ! sudo grep -Fxq -- "$dm_unit" "$DM_STATE_FILE" 2>/dev/null; then
         printf '%s\n' "$dm_unit" | sudo tee -a "$DM_STATE_FILE" > /dev/null
