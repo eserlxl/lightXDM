@@ -609,6 +609,11 @@ EOF
       echo "$usage" >&2
       exit 1
     fi
+    # The template belongs in the desktop user's home, not root's.
+    if [[ $EUID -eq 0 ]]; then
+      log "Do not run --init-template as root or with sudo; run it as the user who will log in."
+      exit 1
+    fi
     init_xinitrc_template "$de"
     exit $?
   fi

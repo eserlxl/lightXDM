@@ -91,6 +91,9 @@ else
 fi
 
 if [[ $keyring_only -eq 1 ]]; then
+  if [[ -f "$LOGIN_FILE" ]] && grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*(pam_kwallet5\.so|pam_gnome_keyring\.so)([[:space:]]|$)' "$LOGIN_FILE"; then
+    echo "Warning: $LOGIN_FILE still configures PAM keyring unlock (lines lightXDM did not add); remove them by hand if you use autologin." >&2
+  fi
   echo "Done (--keyring-only): dotfiles, autologin, the Polkit rule and display managers are unchanged."
   exit 0
 fi

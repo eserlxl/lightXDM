@@ -6143,6 +6143,14 @@ out_custom="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/insta
 status_custom=$?
 out_wayland="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de gnome 2>&1)"
 status_wayland=$?
+out_badid="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de Dwm 2>&1)"
+status_badid=$?
+out_asroot=""
+status_asroot=1
+if [[ $can_unshare -eq 1 ]]; then
+  out_asroot="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" unshare -r bash "$REPO_ROOT/install.sh" --init-template --de openbox 2>&1)"
+  status_asroot=$?
+fi
 out_no_de="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template 2>&1)"
 status_no_de=$?
 set -e
@@ -6167,6 +6175,18 @@ if [[ $status_wayland -eq 1 && ! -e "$init_home/.config/lightxdm/.xinitrc-gnome"
   pass "install.sh --init-template refuses Wayland-only ids and a missing --de, and never calls sudo"
 else
   fail "install.sh --init-template refusals (status=$status_wayland/$status_no_de, log=$(cat "$STUB_LOG"), output=$out_wayland / $out_no_de)"
+fi
+if [[ $status_badid -eq 1 && "$out_badid" == *"Invalid desktop id: Dwm"* && ! -e "$init_home/.config/lightxdm/.xinitrc-Dwm" ]]; then
+  pass "install.sh --init-template rejects an id with uppercase letters"
+else
+  fail "install.sh --init-template invalid id (status=$status_badid, output=$out_badid)"
+fi
+if [[ $can_unshare -eq 0 ]]; then
+  skip "install.sh --init-template refuses root (unshare -r unavailable)"
+elif [[ $status_asroot -eq 1 && "$out_asroot" == *"Do not run --init-template as root"* && ! -e "$init_home/.config/lightxdm/.xinitrc-openbox" ]]; then
+  pass "install.sh --init-template refuses to run as root"
+else
+  fail "install.sh --init-template as root (status=$status_asroot, output=$out_asroot)"
 fi
 
 set +e
@@ -6203,6 +6223,17 @@ else
     pass "uninstall.sh --keyring-only restores PAM and keeps autologin, Polkit, dotfiles and disabled display managers"
   else
     fail "uninstall.sh --keyring-only (status=$status, output=$output, login=$(cat "$ko_dir/login"))"
+  fi
+  # A keyring line lightXDM did not add stays, with a warning
+  printf '#%%PAM-1.0\nauth       optional   pam_kwallet5.so\n' >"$ko_dir/login"
+  set +e
+  output="$(env -u SUDO_USER TARGET_HOME= LOGIN_FILE="$ko_dir/login" AUTOLOGIN_DROPIN="$ko_dir/autologin.conf" POLKIT_RULE="$ko_dir/polkit.rules" DM_STATE_FILE="$ko_dir/dm" unshare -r bash "$REPO_ROOT/uninstall.sh" --keyring-only 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && "$output" == *"still configures PAM keyring unlock"* ]] && grep -q pam_kwallet5 "$ko_dir/login"; then
+    pass "uninstall.sh --keyring-only warns about keyring lines it did not add and keeps them"
+  else
+    fail "uninstall.sh --keyring-only foreign keyring line (status=$status, output=$output)"
   fi
 fi
 
