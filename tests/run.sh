@@ -692,6 +692,47 @@ else
   fi
 fi
 
+# Case 15a: the drop-in is a readable regular file even under a strict umask or a symlink at its path
+if [[ $can_unshare -eq 0 ]]; then
+  skip "enable-autologin.sh writes a readable regular drop-in (unshare -r unavailable)"
+else
+  perm_dir="$TMP_DIR/autologin_perm"
+  mkdir -p "$perm_dir/getty.d"
+  perm_target="$perm_dir/elsewhere.conf"
+  : >"$perm_target"
+  ln -s "$perm_target" "$perm_dir/getty.d/lightxdm-autologin.conf"
+  set +e
+  output="$(umask 077; env OVERRIDE_DIR="$perm_dir/getty.d" LOGIN_FILE="$perm_dir/login" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$real_test_user" 2>&1)"
+  status=$?
+  set -e
+  perm_dropin="$perm_dir/getty.d/lightxdm-autologin.conf"
+  if [[ $status -eq 0 && -f "$perm_dropin" && ! -L "$perm_dropin" && ! -s "$perm_target" ]] &&
+    [[ "$(stat -c '%a' "$perm_dropin")" == 644 ]] && grep -q -- "--autologin $real_test_user" "$perm_dropin"; then
+    pass "enable-autologin.sh replaces a symlinked drop-in with a 0644 regular file under umask 077"
+  else
+    fail "enable-autologin.sh drop-in mode/symlink (status=$status, mode=$(stat -c '%a' "$perm_dropin" 2>/dev/null), link=$([[ -L "$perm_dropin" ]] && echo yes || echo no), output=$output)"
+  fi
+fi
+
+# --status skips an unreadable drop-in with a note instead of failing
+unread_dir="$TMP_DIR/autologin_unreadable"
+mkdir -p "$unread_dir/getty.d"
+# shellcheck disable=SC2016  # $TERM is literal systemd syntax
+printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin someone --noclear %%I $TERM\n' >"$unread_dir/getty.d/lightxdm-autologin.conf"
+chmod 000 "$unread_dir/getty.d/lightxdm-autologin.conf"
+set +e
+output="$(env OVERRIDE_DIR="$unread_dir/getty.d" LOGIN_FILE="$unread_dir/login" bash "$REPO_ROOT/enable-autologin.sh" --status 2>&1)"
+status=$?
+set -e
+chmod 644 "$unread_dir/getty.d/lightxdm-autologin.conf"
+if [[ $(id -u) -eq 0 ]]; then
+  skip "enable-autologin.sh --status with an unreadable drop-in (running as root)"
+elif [[ $status -eq 0 && "$output" == *"cannot read $unread_dir/getty.d/lightxdm-autologin.conf"* ]]; then
+  pass "enable-autologin.sh --status notes an unreadable drop-in and exits 0"
+else
+  fail "enable-autologin.sh --status unreadable drop-in (status=$status, output=$output)"
+fi
+
 # Case 15b: only later drop-ins with an active ExecStart setting warn about overriding autologin
 if [[ $can_unshare -eq 0 ]]; then
   skip "enable-autologin.sh warns about later ExecStart drop-ins (unshare -r unavailable)"

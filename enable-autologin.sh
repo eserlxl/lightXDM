@@ -35,6 +35,10 @@ show_status() {
   # The accepted legacy override sorts after the current lightXDM drop-in.
   for file in "$OVERRIDE_FILE" "$LEGACY_OVERRIDE_FILE"; do
     [[ -f "$file" ]] || continue
+    if [[ ! -r "$file" ]]; then
+      echo "Note: cannot read $file; run --status with sudo for an exact result." >&2
+      continue
+    fi
     if [[ "$file" == "$LEGACY_OVERRIDE_FILE" ]] && ! is_legacy_autologin_override "$file"; then
       continue
     fi
@@ -151,12 +155,16 @@ main() {
     exit 1
   fi
 
+  # --status reads the drop-in without sudo, so never inherit a stricter root umask.
+  umask 022
   mkdir -p "$OVERRIDE_DIR"
   # An older lightXDM override.conf sorts after our drop-in and would keep the previous user.
   if is_legacy_autologin_override "$LEGACY_OVERRIDE_FILE"; then
     echo "Removing legacy autologin override..."
     rm -f "$LEGACY_OVERRIDE_FILE"
   fi
+  # Replace a symlink at the drop-in path instead of writing through it.
+  rm -f "$OVERRIDE_FILE"
   echo "[Service]
 ExecStart=
 ExecStart=-/usr/bin/agetty --autologin $target_user --noclear %I \$TERM" > "$OVERRIDE_FILE"
