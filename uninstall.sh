@@ -226,7 +226,14 @@ if [[ -f "$DM_STATE_FILE" ]]; then
   failed=()
   while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
     [[ -n "$dm_unit" ]] || continue
-    systemctl enable "$dm_unit" || failed+=("$dm_unit")
+    if ! systemctl enable "$dm_unit"; then
+      # A unit removed or masked since install cannot be re-enabled; do not block uninstall on it.
+      case "$(systemctl is-enabled "$dm_unit" 2>/dev/null)" in
+        not-found) echo "Warning: $dm_unit is not installed any more; skipping it." >&2 ;;
+        masked) echo "Warning: $dm_unit is masked; unmask it to use it again." >&2 ;;
+        *) failed+=("$dm_unit") ;;
+      esac
+    fi
   done < "$DM_STATE_FILE"
   if [[ ${#failed[@]} -eq 0 ]]; then
     rm -f "$DM_STATE_FILE"

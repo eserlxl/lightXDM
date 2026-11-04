@@ -37,6 +37,10 @@ fi
 if [[ "${1:-}" == "enable" && "${2:-}" == "${STUB_SYSTEMCTL_FAIL_UNIT:-}" ]]; then
   exit 1
 fi
+if [[ "${1:-}" == "is-enabled" && -n "${STUB_SYSTEMCTL_STATE:-}" ]]; then
+  echo "$STUB_SYSTEMCTL_STATE"
+  exit 1
+fi
 exit "${STUB_SYSTEMCTL_EXIT:-0}"
 EOF
 
@@ -2076,12 +2080,32 @@ else
   log_content="$(cat "$STUB_LOG")"
   if [[ $status -ne 0 && -f "$DM_STATE_FILE" ]] &&
     [[ "$(cat "$DM_STATE_FILE")" == 'sddm.service' ]] &&
-    [[ "$log_content" == $'systemctl enable sddm.service\nsystemctl enable greetd.service' ]] &&
+    [[ "$log_content" == $'systemctl enable sddm.service\nsystemctl is-enabled sddm.service\nsystemctl enable greetd.service' ]] &&
     [[ "$output" == *"Failed to re-enable display manager(s): sddm.service"* ]]; then
     pass "uninstall.sh restores later display managers and keeps only failed units"
   else
     fail "uninstall.sh partial display manager restore (status=$status, log=$log_content, output=$output)"
   fi
+
+  # A recorded unit that was removed or masked since install is skipped, not kept forever.
+  for dm_gone_state in not-found masked; do
+    mkdir -p "$(dirname -- "$DM_STATE_FILE")"
+    printf '%s\n' sddm.service greetd.service >"$DM_STATE_FILE"
+    : >"$STUB_LOG"
+    set +e
+    output="$(env STUB_SYSTEMCTL_FAIL_UNIT=sddm.service STUB_SYSTEMCTL_STATE="$dm_gone_state" TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" AUTOLOGIN_DROPIN="$TMP_DIR/dm_autologin" OVERRIDE_FILE="$TMP_DIR/dm_override" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+    status=$?
+    set -e
+    log_content="$(cat "$STUB_LOG")"
+    if [[ $status -eq 0 && ! -e "$DM_STATE_FILE" && "$output" == *"Warning: sddm.service is"* &&
+      "$log_content" == *"systemctl enable greetd.service"* ]]; then
+      pass "uninstall.sh skips a $dm_gone_state display manager and finishes"
+    else
+      fail "uninstall.sh with $dm_gone_state display manager (status=$status, log=$log_content, output=$output)"
+    fi
+  done
+  mkdir -p "$(dirname -- "$DM_STATE_FILE")"
+  printf '%s\n' sddm.service >"$DM_STATE_FILE"
 
   : >"$STUB_LOG"
   set +e
