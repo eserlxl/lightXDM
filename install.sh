@@ -434,6 +434,11 @@ record_and_disable_unit() {
 }
 
 # Disable any installed display managers
+enable_autologin() {
+  log "Enabling TTY1 autologin for $1..."
+  sudo bash "$SCRIPT_DIR/enable-autologin.sh" "$1"
+}
+
 disable_display_managers() {
   log "Disabling any installed display managers..."
   sudo mkdir -p "$(dirname -- "$DM_STATE_FILE")"
@@ -476,7 +481,8 @@ main() {
   local no_packages=0
   local no_keyring=0
   local no_polkit_rule=0
-  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--no-packages] [--no-keyring] [--no-polkit-rule]"
+  local autologin=0
+  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--no-packages] [--no-keyring] [--no-polkit-rule] [--autologin]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -498,6 +504,7 @@ Options:
   --no-packages     skip package installation
   --no-keyring      skip keyring packages and the PAM lines (use with autologin)
   --no-polkit-rule  keep your Polkit policy; do not install the rule
+  --autologin       also log in on TTY1 without a password (requires --no-keyring)
 
 uninstall.sh reverts these changes; installed packages stay.
 EOF
@@ -519,6 +526,10 @@ EOF
         no_polkit_rule=1
         shift
         ;;
+      --autologin)
+        autologin=1
+        shift
+        ;;
       --de)
         if [[ $# -lt 2 || "$2" == -* ]]; then
           log "Missing argument for --de (valid ids: xfce lxqt lxde mate cinnamon i3)"
@@ -535,6 +546,12 @@ EOF
         ;;
     esac
   done
+
+  if [[ $autologin -eq 1 && $no_keyring -eq 0 ]]; then
+    log "--autologin requires --no-keyring: autologin passes no password, so PAM cannot unlock the keyring."
+    echo "$usage" >&2
+    exit 1
+  fi
 
   if [[ $list_only -eq 1 ]]; then
     if [[ $de_specified -eq 0 ]]; then
@@ -733,6 +750,12 @@ EOF
   fi
   install_step="disable_display_managers"
   disable_display_managers
+  completed_steps+=("$install_step")
+  if [[ $autologin -eq 1 ]]; then
+    install_step="enable_autologin"
+    enable_autologin "$real_user"
+    completed_steps+=("$install_step")
+  fi
 
   local unlock_summary="Auto-unlock and Polkit rules are set"
   if [[ $no_keyring -eq 1 && $no_polkit_rule -eq 1 ]]; then
@@ -741,6 +764,10 @@ EOF
     unlock_summary="Polkit rules are set (keyring setup skipped)"
   elif [[ $no_polkit_rule -eq 1 ]]; then
     unlock_summary="Auto-unlock is set (Polkit rule skipped)"
+  fi
+
+  if [[ $autologin -eq 1 ]]; then
+    unlock_summary+="; TTY1 autologin is enabled (sudo bash enable-autologin.sh --disable reverts it)"
   fi
 
   trap - EXIT

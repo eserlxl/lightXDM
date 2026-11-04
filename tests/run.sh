@@ -268,8 +268,57 @@ run_main_with_stubs() (
   configure_pam() { stub_install_step configure_pam "$1"; }
   install_polkit_rule() { stub_install_step install_polkit_rule; }
   disable_display_managers() { stub_install_step disable_display_managers; }
+  enable_autologin() { stub_install_step enable_autologin "$1"; }
   main "$@"
 )
+
+# --autologin needs --no-keyring, and then enables autologin for the user after the display managers
+: >"$STUB_LOG"
+set +e
+output="$(run_main_with_stubs "$sudo_pw_dir" --de i3 --autologin 2>&1)"
+status=$?
+set -e
+if [[ $status -ne 0 && "$output" == *"--autologin requires --no-keyring"* && ! -s "$STUB_LOG" ]]; then
+  pass "install.sh refuses --autologin without --no-keyring before changing anything"
+else
+  fail "install.sh --autologin without --no-keyring (status=$status, log=$(cat "$STUB_LOG"), output=$output)"
+fi
+: >"$STUB_LOG"
+set +e
+output="$(run_main_with_stubs "$sudo_pw_dir" --de i3 --no-keyring --autologin 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 0 && "$log_content" == *$'disable_display_managers\nenable_autologin '"${USER:-testuser}"* &&
+  "$output" == *"TTY1 autologin is enabled"* ]]; then
+  pass "install.sh --no-keyring --autologin enables autologin after the display managers"
+else
+  fail "install.sh --no-keyring --autologin (status=$status, log=$log_content, output=$output)"
+fi
+: >"$STUB_LOG"
+output="$(run_main_with_stubs "$sudo_pw_dir" --de i3 --no-keyring 2>&1)"
+if [[ "$(cat "$STUB_LOG")" != *enable_autologin* && "$output" != *"TTY1 autologin is enabled"* ]]; then
+  pass "install.sh without --autologin leaves autologin alone"
+else
+  fail "install.sh without --autologin ran enable_autologin (log=$(cat "$STUB_LOG"))"
+fi
+
+# enable_autologin runs the bundled enable-autologin.sh through sudo for the given user
+autologin_call_dir="$TMP_DIR/autologin_call"
+mkdir -p "$autologin_call_dir"
+cat >"$autologin_call_dir/sudo" <<'EOF'
+#!/usr/bin/env bash
+echo "sudo $*" >>"$STUB_LOG"
+EOF
+chmod +x "$autologin_call_dir/sudo"
+: >"$STUB_LOG"
+# shellcheck disable=SC2016  # expand inside the child shell
+env -u SHELLOPTS PATH="$autologin_call_dir:$PATH" bash -c 'source "$1/install.sh"; enable_autologin someone' bash "$REPO_ROOT" >/dev/null 2>&1 || true
+if [[ "$(cat "$STUB_LOG")" == "sudo bash $REPO_ROOT/enable-autologin.sh someone" ]]; then
+  pass "enable_autologin calls enable-autologin.sh through sudo for the user"
+else
+  fail "enable_autologin call (log=$(cat "$STUB_LOG"))"
+fi
 
 : >"$STUB_LOG"
 set +e
