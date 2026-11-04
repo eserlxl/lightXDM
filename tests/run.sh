@@ -3111,6 +3111,7 @@ xinit_home="$xinit_test_dir/home"
 xinit_empty_home="$xinit_test_dir/empty_home"
 xinit_sys_xresources="$xinit_test_dir/sys.Xresources"
 xinit_sys_xmodmap="$xinit_test_dir/sys.Xmodmap"
+xinit_sys_xprofile="$xinit_test_dir/sys.xprofile"
 xinit_d="$xinit_test_dir/xinitrc.d"
 xinit_empty_d="$xinit_test_dir/empty_xinitrc.d"
 xinit_bin="$xinit_test_dir/bin"
@@ -3122,6 +3123,9 @@ mkdir -p "$xinit_home" "$xinit_empty_home" "$xinit_d" "$xinit_empty_d" "$xinit_b
 
 : >"$xinit_sys_xresources"
 : >"$xinit_sys_xmodmap"
+cat >"$xinit_sys_xprofile" <<'EOF'
+echo "sys-xprofile" >>"$XINITRC_LOG"
+EOF
 : >"$xinit_home/.Xresources"
 : >"$xinit_home/.Xmodmap"
 cat >"$xinit_home/.xprofile" <<'EOF'
@@ -3247,6 +3251,7 @@ for spec in "${xinit_specs[@]}"; do
     export PATH="$xinit_bin:$PATH"
     export SYS_XRESOURCES="$xinit_sys_xresources"
     export SYS_XMODMAP="$xinit_sys_xmodmap"
+    export SYS_XPROFILE="$xinit_sys_xprofile"
     export XINITRC_D="$xinit_d"
     export POLKIT_GNOME_AGENT="$xinit_bin/polkit-gnome-authentication-agent-1"
     export XINITRC_LOG="$xinit_log"
@@ -3262,6 +3267,7 @@ for spec in "${xinit_specs[@]}"; do
     "xrdb -merge $xinit_home/.Xresources"
     "xmodmap $xinit_sys_xmodmap"
     "xmodmap $xinit_home/.Xmodmap"
+    "sys-xprofile"
     "${common_lines[@]}"
     "session:$exp_cmd|pid=$subshell_pid|DESKTOP_SESSION=$exp_ds|XDG_CURRENT_DESKTOP=$exp_desktop|XDG_SESSION_TYPE=x11|GDK_BACKEND=$exp_gdk|SSH_AUTH_SOCK=$exp_ssh"
   )
@@ -3280,6 +3286,7 @@ for spec in "${xinit_specs[@]}"; do
     export PATH="$xinit_bin:$PATH"
     export SYS_XRESOURCES="$xinit_test_dir/missing_Xresources"
     export SYS_XMODMAP="$xinit_test_dir/missing_Xmodmap"
+    export SYS_XPROFILE="$xinit_test_dir/missing_xprofile"
     export XINITRC_D="$xinit_d"
     export POLKIT_GNOME_AGENT="$xinit_bin/polkit-gnome-authentication-agent-1"
     export XINITRC_LOG="$xinit_log"
@@ -3311,6 +3318,7 @@ for spec in "${xinit_specs[@]}"; do
     export PATH="$xinit_no_xtools_bin"
     export SYS_XRESOURCES="$xinit_sys_xresources"
     export SYS_XMODMAP="$xinit_sys_xmodmap"
+    export SYS_XPROFILE="$xinit_sys_xprofile"
     export XINITRC_D="$xinit_d"
     export POLKIT_GNOME_AGENT="$xinit_no_xtools_bin/polkit-gnome-authentication-agent-1"
     export XINITRC_LOG="$xinit_log"
@@ -3322,6 +3330,7 @@ for spec in "${xinit_specs[@]}"; do
 
   no_xtools_pid="$(cat "$xinit_pid_file")"
   expected_no_xtools_lines=(
+    "sys-xprofile"
     "${common_lines[@]}"
     "session:$exp_cmd|pid=$no_xtools_pid|DESKTOP_SESSION=$exp_ds|XDG_CURRENT_DESKTOP=$exp_desktop|XDG_SESSION_TYPE=x11|GDK_BACKEND=$exp_gdk|SSH_AUTH_SOCK=$exp_ssh"
   )
@@ -3340,6 +3349,7 @@ for spec in "${xinit_specs[@]}"; do
     export PATH="$xinit_bin:$PATH"
     export SYS_XRESOURCES="$xinit_test_dir/missing_Xresources"
     export SYS_XMODMAP="$xinit_test_dir/missing_Xmodmap"
+    export SYS_XPROFILE="$xinit_test_dir/missing_xprofile"
     export XINITRC_D="$xinit_empty_d"
     export POLKIT_GNOME_AGENT="$xinit_test_dir/missing_polkit_agent"
     export XINITRC_LOG="$xinit_log"
@@ -3369,6 +3379,7 @@ for spec in "${xinit_specs[@]}"; do
     defaults_ok=1
     if [[ "$tmpl_active" != *'${SYS_XRESOURCES:-/etc/X11/xinit/.Xresources}'* ||
       "$tmpl_active" != *'${SYS_XMODMAP:-/etc/X11/xinit/.Xmodmap}'* ||
+      "$tmpl_active" != *'${SYS_XPROFILE:-/etc/xprofile}'* ||
       "$tmpl_active" != *'${XINITRC_D:-/etc/X11/xinit/xinitrc.d}'* ]]; then
       defaults_ok=0
     fi
