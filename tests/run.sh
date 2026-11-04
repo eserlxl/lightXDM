@@ -3493,4 +3493,48 @@ else
   fail "main --no-keyring --de dwm without --no-packages (status=$status, log=$(cat "$STUB_LOG"), output=$output)"
 fi
 
+# Case 63: a failing pacman run stops main before dotfiles, PAM, Polkit, or display managers
+for fail_pkg_flag in "" "--no-keyring"; do
+  fail_pkg_args=(--de i3)
+  if [[ -n "$fail_pkg_flag" ]]; then
+    fail_pkg_args+=("$fail_pkg_flag")
+  fi
+  fail_pkg_home="$TMP_DIR/home_fail_pkg${fail_pkg_flag:+_no_kr}"
+  mkdir -p "$fail_pkg_home"
+  : >"$STUB_LOG"
+  set +e
+  # shellcheck disable=SC2016  # expand inside the child shell so install.sh owns errexit
+  output="$(
+    env -u SHELLOPTS -u SUDO_USER \
+      HOME="$fail_pkg_home" \
+      PATH="$sudo_pw_dir:$STUB_BIN:$PATH" \
+      STUB_PACMAN_EXIT=1 \
+      USER="testuser" \
+      bash -c '
+        source "$1/install.sh"
+        copy_dotfiles() { echo "copy_dotfiles $*" >>"$STUB_LOG"; }
+        configure_pam() { echo "configure_pam $*" >>"$STUB_LOG"; }
+        install_polkit_rule() { echo "install_polkit_rule" >>"$STUB_LOG"; }
+        disable_display_managers() { echo "disable_display_managers" >>"$STUB_LOG"; }
+        shift
+        main "$@"
+      ' bash "$REPO_ROOT" "${fail_pkg_args[@]}" 2>&1
+  )"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -ne 0 ]] &&
+    grep -Fxq -- "sudo -v" "$STUB_LOG" &&
+    grep -Fq -- "pacman -S --needed --noconfirm" "$STUB_LOG" &&
+    [[ "$log_content" != *"copy_dotfiles"* ]] &&
+    [[ "$log_content" != *"configure_pam"* ]] &&
+    [[ "$log_content" != *"install_polkit_rule"* ]] &&
+    [[ "$log_content" != *"disable_display_managers"* ]] &&
+    [[ "$output" != *"lightXDM install complete!"* ]]; then
+    pass "main ${fail_pkg_args[*]} stops on pacman failure before dotfiles, PAM, Polkit, or display managers"
+  else
+    fail "main ${fail_pkg_args[*]} on pacman failure (status=$status, log=$log_content, output=$output)"
+  fi
+done
+
 exit "$failures"
