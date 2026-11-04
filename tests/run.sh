@@ -2421,6 +2421,21 @@ else
   fail "main login shell check (zsh=$status_zsh:$out_zsh | fish=$status_fish:$out_fish | bash=$status_bash:$out_bash)"
 fi
 
+paused_home="$TMP_DIR/paused_home"
+mkdir -p "$paused_home/.config/lightxdm"
+: >"$paused_home/.config/lightxdm/no-autostart"
+set +e
+out_paused="$(HOME="$paused_home" USER=testuser run_main_with_stubs "$bash_stub_dir:$sudo_pw_dir" --no-packages --de i3 2>&1)"
+status_paused=$?
+set -e
+if [[ $status_paused -eq 0 && "$out_paused" == *"auto-start on TTY1 stays paused"* &&
+  "$out_paused" == *"rm ~/.config/lightxdm/no-autostart"* && "$out_paused" != *"will auto-start on TTY1"* &&
+  -e "$paused_home/.config/lightxdm/no-autostart" ]]; then
+  pass "main reports paused auto-start and keeps the no-autostart marker"
+else
+  fail "main with no-autostart marker (status=$status_paused, output=$out_paused)"
+fi
+
 # A PAM line that existed before install survives uninstall
 if [[ $can_unshare -eq 0 ]]; then
   skip "uninstall.sh keeps a PAM line that existed before install (unshare -r unavailable)"

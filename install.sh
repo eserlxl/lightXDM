@@ -663,7 +663,17 @@ EOF
     unlock_summary="Auto-unlock is set (Polkit rule skipped)"
   fi
 
-  if [[ -z "$shell_profile" ]]; then
+  if [[ -z "$shell_profile" && -e "$HOME/.config/lightxdm/no-autostart" ]]; then
+    cat <<EOF
+
+lightXDM install complete!
+- $de is configured in ~/.xinitrc for $real_user
+- $unlock_summary
+- Desktop auto-start on TTY1 stays paused because ~/.config/lightxdm/no-autostart exists
+
+Run 'rm ~/.config/lightxdm/no-autostart' to start $de automatically at the next TTY1 login.
+EOF
+  elif [[ -z "$shell_profile" ]]; then
     cat <<EOF
 
 lightXDM install complete!
