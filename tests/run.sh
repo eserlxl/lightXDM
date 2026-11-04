@@ -303,6 +303,23 @@ else
   fail "install.sh without --autologin ran enable_autologin (log=$(cat "$STUB_LOG"))"
 fi
 
+# A failed enable_autologin step reports the steps already done and keeps its status
+: >"$STUB_LOG"
+set +e
+output="$(
+  exec 2>&1
+  set -e
+  STUB_FAIL_STEP=enable_autologin STUB_FAIL_STATUS=23 run_main_with_stubs "$sudo_pw_dir" --de i3 --no-keyring --autologin
+)"
+status=$?
+set -e
+if [[ $status -eq 23 && "$output" == *"Install stopped during enable_autologin; already done: install_packages copy_dotfiles install_polkit_rule disable_display_managers"* &&
+  "$output" != *"lightXDM install complete!"* ]]; then
+  pass "install.sh reports a failed enable_autologin step and keeps its exit status"
+else
+  fail "install.sh failed enable_autologin step (status=$status, output=$output)"
+fi
+
 # enable_autologin runs the bundled enable-autologin.sh through sudo for the given user
 autologin_call_dir="$TMP_DIR/autologin_call"
 mkdir -p "$autologin_call_dir"
@@ -6122,6 +6139,28 @@ else
     pass "uninstall.sh --keyring-only restores PAM and keeps autologin, Polkit and dotfiles"
   else
     fail "uninstall.sh --keyring-only (status=$status, output=$output, login=$(cat "$ko_dir/login"))"
+  fi
+fi
+
+# uninstall.sh warns about an autologin drop-in it did not write
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh warns about remaining autologin drop-ins (unshare -r unavailable)"
+else
+  ua_dir="$TMP_DIR/uninstall_autologin_warn"
+  mkdir -p "$ua_dir/getty.d" "$ua_dir/home"
+  # shellcheck disable=SC2016  # $TERM is literal systemd syntax
+  printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin someone --noclear %%I $TERM\n' >"$ua_dir/getty.d/lightxdm-autologin.conf"
+  cp "$ua_dir/getty.d/lightxdm-autologin.conf" "$ua_dir/getty.d/zz-local.conf"
+  printf '[Service]\nTTYVTDisallocate=no\n' >"$ua_dir/getty.d/plain.conf"
+  set +e
+  output="$(env TARGET_HOME="$ua_dir/home" LOGIN_FILE="$ua_dir/login" AUTOLOGIN_DROPIN="$ua_dir/getty.d/lightxdm-autologin.conf" OVERRIDE_FILE="$ua_dir/getty.d/override.conf" POLKIT_RULE="$ua_dir/polkit" DM_STATE_FILE="$ua_dir/dm" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && ! -e "$ua_dir/getty.d/lightxdm-autologin.conf" && "$output" == *"Warning: $ua_dir/getty.d/zz-local.conf still enables autologin."* &&
+    "$output" != *"plain.conf"* ]]; then
+    pass "uninstall.sh warns by name about an autologin drop-in it did not write"
+  else
+    fail "uninstall.sh remaining autologin warning (status=$status, output=$output)"
   fi
 fi
 

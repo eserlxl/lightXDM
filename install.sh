@@ -537,7 +537,8 @@ A default run, as your regular user (it asks for sudo once):
   - disables installed display managers (uninstall.sh re-enables them)
 
 Options:
-  --de <id>         configure this desktop: xfce lxqt lxde mate cinnamon i3
+  --de <id>         configure this desktop: xfce lxqt lxde mate cinnamon i3, or a custom
+                    id that has a ~/.config/lightxdm/.xinitrc-<id> template (with --no-packages)
   --list-packages   print the packages for --de <id> and exit; changes nothing
   --init-template   create ~/.config/lightxdm/.xinitrc-<id> for --de <id> to edit, and exit
                     (any lowercase id: a custom one starts from the i3 template)

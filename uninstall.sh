@@ -130,6 +130,12 @@ if [[ $autologin_removed -eq 1 ]]; then
 elif [[ ! -f "$OVERRIDE_FILE" && ! -L "$OVERRIDE_FILE" ]]; then
   echo "No autologin drop-in found; skipping."
 fi
+# Drop-ins lightXDM did not write can still log tty1 in without a password.
+for drop_in in "$(dirname -- "$AUTOLOGIN_DROPIN")"/*.conf; do
+  if [[ -f "$drop_in" ]] && grep -Eqs '^[[:space:]]*ExecStart[[:space:]]*=.*--autologin' "$drop_in"; then
+    echo "Warning: $drop_in still enables autologin."
+  fi
+done
 
 save_edited_dotfile() {
   local src="$1"

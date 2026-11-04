@@ -20,7 +20,7 @@ In systems with no display manager (like SDDM or GDM), some polkit agents and pr
 
 ## 🔒 The Default Polkit Rule (Hybrid: Secure & Usable)
 
-By default, `lightXDM` now installs a hybrid rule at:
+By default, `lightXDM` now installs a hybrid rule at (pass `--no-polkit-rule` to `install.sh` to keep your existing policy instead; packages and the desktop's authentication agent are still set up):
 
 ```
 /etc/polkit-1/rules.d/49-nopasswd.rules
