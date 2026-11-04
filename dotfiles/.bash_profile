@@ -24,7 +24,7 @@ if [[ $- == *i* && -z $DISPLAY && $(tty) == /dev/tty1 ]] && command -v startx >/
             : 2>/dev/null > "$HOME/.config/lightxdm/no-autostart"; then
             : 2>/dev/null > "$_lightxdm_attempts" || :
         fi
-        printf '%s\n' "TTY1 auto-start paused after startx exited 3 times within 30s; run 'rm ~/.config/lightxdm/no-autostart' to resume."
+        printf '%s\n' "TTY1 auto-start paused: startx was started 3 times within 30s; run 'rm ~/.config/lightxdm/no-autostart' to resume."
         unset _lightxdm_attempts _lightxdm_now _lightxdm_lines _lightxdm_recent _lightxdm_ts
     else
         if mkdir -p "${_lightxdm_attempts%/*}" 2>/dev/null; then
