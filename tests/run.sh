@@ -854,7 +854,7 @@ else
   fi
 fi
 
-# Case 22: gpg-agent dotfiles preserve SSH_AUTH_SOCK without enable-ssh-support, set it with enable-ssh-support, and never export GPG_TTY
+# Case 22: gpg-agent dotfiles respect SSH_AUTH_SOCK priority, fall back to GCR, and never export GPG_TTY
 cat >"$STUB_BIN/gpg-connect-agent" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$STUB_LOG"
@@ -872,11 +872,30 @@ chmod +x "$STUB_BIN/gpg-connect-agent" "$STUB_BIN/gpgconf"
 for gpg_dotfile in .gpg-agent-gnome .gpg-agent-kwallet; do
   gpg_home="$TMP_DIR/gpg_home_${gpg_dotfile#.}"
   rm -rf "$gpg_home"
-  mkdir -p "$gpg_home/.gnupg"
+  gpg_runtime="$gpg_home/runtime"
+  mkdir -p "$gpg_home/.gnupg" "$gpg_runtime/gcr"
+  python3 - "$gpg_runtime/gcr/ssh" <<'PY'
+import socket
+import sys
+
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as agent:
+    agent.bind(sys.argv[1])
+PY
   : >"$STUB_LOG"
+
+  gcr_out="$(
+    export HOME="$gpg_home"
+    export XDG_RUNTIME_DIR="$gpg_runtime"
+    export PATH="$STUB_BIN:$PATH"
+    unset SSH_AUTH_SOCK GPG_TTY GNUPGHOME
+    # shellcheck disable=SC1090
+    source "$REPO_ROOT/dotfiles/$gpg_dotfile"
+    printf '%s|%s\n' "${SSH_AUTH_SOCK-<unset>}" "${GPG_TTY-<unset>}"
+  )"
 
   without_out="$(
     export HOME="$gpg_home"
+    export XDG_RUNTIME_DIR="$gpg_runtime"
     export PATH="$STUB_BIN:$PATH"
     export SSH_AUTH_SOCK="/tmp/sentinel-ssh.sock"
     unset GPG_TTY GNUPGHOME
@@ -888,6 +907,7 @@ for gpg_dotfile in .gpg-agent-gnome .gpg-agent-kwallet; do
   echo "enable-ssh-support" >"$gpg_home/.gnupg/gpg-agent.conf"
   with_out="$(
     export HOME="$gpg_home"
+    export XDG_RUNTIME_DIR="$gpg_runtime"
     export PATH="$STUB_BIN:$PATH"
     export SSH_AUTH_SOCK="/tmp/sentinel-ssh.sock"
     unset GPG_TTY GNUPGHOME
@@ -899,6 +919,7 @@ for gpg_dotfile in .gpg-agent-gnome .gpg-agent-kwallet; do
   echo "  enable-ssh-support" >"$gpg_home/.gnupg/gpg-agent.conf"
   indented_out="$(
     export HOME="$gpg_home"
+    export XDG_RUNTIME_DIR="$gpg_runtime"
     export PATH="$STUB_BIN:$PATH"
     export SSH_AUTH_SOCK="/tmp/sentinel-ssh.sock"
     unset GPG_TTY GNUPGHOME
@@ -912,6 +933,7 @@ for gpg_dotfile in .gpg-agent-gnome .gpg-agent-kwallet; do
   echo "enable-ssh-support" >"$gpg_home/custom-gnupg/gpg-agent.conf"
   gnupghome_out="$(
     export HOME="$gpg_home"
+    export XDG_RUNTIME_DIR="$gpg_runtime"
     export GNUPGHOME="$gpg_home/custom-gnupg"
     export PATH="$STUB_BIN:$PATH"
     export SSH_AUTH_SOCK="/tmp/sentinel-ssh.sock"
@@ -919,6 +941,17 @@ for gpg_dotfile in .gpg-agent-gnome .gpg-agent-kwallet; do
     # shellcheck disable=SC1090
     source "$REPO_ROOT/dotfiles/$gpg_dotfile"
     printf '%s|%s\n' "$SSH_AUTH_SOCK" "${GPG_TTY-<unset>}"
+  )"
+
+  rm -f "$gpg_runtime/gcr/ssh"
+  no_socket_out="$(
+    export HOME="$gpg_home"
+    export XDG_RUNTIME_DIR="$gpg_runtime"
+    export PATH="$STUB_BIN:$PATH"
+    unset SSH_AUTH_SOCK GPG_TTY GNUPGHOME
+    # shellcheck disable=SC1090
+    source "$REPO_ROOT/dotfiles/$gpg_dotfile"
+    printf '%s|%s\n' "${SSH_AUTH_SOCK-<unset>}" "${GPG_TTY-<unset>}"
   )"
 
   expected_gpg_out="/run/user/1000/gnupg/S.gpg-agent.ssh|<unset>"
@@ -931,9 +964,15 @@ for gpg_dotfile in .gpg-agent-gnome .gpg-agent-kwallet; do
     fail "$gpg_dotfile (without=$without_out, with=$with_out, indented=$indented_out, gnupghome=$gnupghome_out)"
   fi
 
-  # Each of the four configurations must start the agent, then refresh its tty.
+  if [[ "$gcr_out" == "$gpg_runtime/gcr/ssh|<unset>" && "$no_socket_out" == "<unset>|<unset>" ]]; then
+    pass "$gpg_dotfile uses the GCR socket when SSH_AUTH_SOCK is unset and leaves it unset without a socket"
+  else
+    fail "$gpg_dotfile GCR fallback (socket=$gcr_out, no_socket=$no_socket_out)"
+  fi
+
+  # Each of the six configurations must start the agent, then refresh its tty.
   expected_gpg_calls=$'/bye\nupdatestartuptty /bye'
-  expected_gpg_log="$(printf '%s\n' "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls")"
+  expected_gpg_log="$(printf '%s\n' "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls")"
   gpg_log="$(cat "$STUB_LOG")"
   if [[ "$gpg_log" == "$expected_gpg_log" ]]; then
     pass "$gpg_dotfile starts the agent and refreshes its tty in order for all configurations"
