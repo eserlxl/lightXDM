@@ -273,7 +273,7 @@ check_session_commands() {
   read -r session_command _ <<< "$session_line"
   # Only inspect a literal command name; custom templates may use shell expressions or paths.
   if [[ "$session_command" =~ ^[[:alnum:]_][[:alnum:]_.+-]*$ ]] &&
-    ! command -v "$session_command" >/dev/null 2>&1; then
+    ! PATH="$HOME/.local/bin:$PATH" command -v "$session_command" >/dev/null 2>&1; then
     case "$session_command" in
       startxfce4) package="xfce4-session" ;;
       startlxqt) package="lxqt-session" ;;

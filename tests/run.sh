@@ -2091,7 +2091,7 @@ else
   fi
 
   # A recorded unit that was removed or masked since install is skipped, not kept forever.
-  for dm_gone_state in not-found masked; do
+  for dm_gone_state in not-found masked masked-runtime; do
     mkdir -p "$(dirname -- "$DM_STATE_FILE")"
     printf '%s\n' sddm.service greetd.service >"$DM_STATE_FILE"
     : >"$STUB_LOG"
@@ -2245,7 +2245,7 @@ done
 # Check the selected user template's last exec line without evaluating shell expressions.
 startup_home="$TMP_DIR/startup_home"
 mkdir -p "$startup_home/.config/lightxdm"
-for startup_template_case in last-exec missing-session no-exec expression path; do
+for startup_template_case in last-exec missing-session no-exec expression path local-bin; do
   expected_startup_status=0
   case "$startup_template_case" in
     last-exec) startup_template=$'exec lightxdm-missing-session\nexec startxfce4 --example' ;;
@@ -2259,6 +2259,13 @@ for startup_template_case in last-exec missing-session no-exec expression path; 
       startup_template='exec "$SESSION"'
       ;;
     path) startup_template='exec /custom/session' ;;
+    local-bin)
+      # .bash_profile puts ~/.local/bin on PATH before startx, so a session there is valid.
+      mkdir -p "$startup_home/.local/bin"
+      printf '#!/bin/sh\n' >"$startup_home/.local/bin/lightxdm-local-session"
+      chmod +x "$startup_home/.local/bin/lightxdm-local-session"
+      startup_template='exec lightxdm-local-session'
+      ;;
   esac
   printf '%s' "$startup_template" >"$startup_home/.config/lightxdm/.xinitrc-xfce"
   : >"$STUB_LOG"
@@ -3750,6 +3757,17 @@ if [[ $status -eq 0 && "$actual_log" == "$profile_expected_startx" && -z "$outpu
   pass ".bash_profile drops entries older than 30s and execs startx"
 else
   fail ".bash_profile old attempts pruning (status=$status, log=$actual_log, count=${#recorded_lines[@]}, output=$output, stderr=$(cat "$profile_home/profile.err"))"
+fi
+
+# Entries from the future (the clock stepped back) are not recent attempts.
+printf -v profile_now '%(%s)T' -1
+printf '%s\n' "$((profile_now + 600))" "$((profile_now + 700))" "$((profile_now + 800))" >"$profile_attempts"
+run_tty1_profile
+if [[ $status -eq 0 && "$actual_log" == "$profile_expected_startx" && -z "$output" && ! -s "$profile_home/profile.err" ]] &&
+  [[ ! -e "$profile_home/.config/lightxdm/no-autostart" ]]; then
+  pass ".bash_profile ignores attempt times in the future and execs startx"
+else
+  fail ".bash_profile future attempts (status=$status, log=$actual_log, output=$output, stderr=$(cat "$profile_home/profile.err"))"
 fi
 
 printf -v profile_now '%(%s)T' -1

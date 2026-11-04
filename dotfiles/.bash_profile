@@ -15,7 +15,7 @@ if [[ $- == *i* && -z $DISPLAY && $(tty) == /dev/tty1 ]] && command -v startx >/
     fi
     for _lightxdm_ts in "${_lightxdm_lines[@]}"; do
         if [[ -n $_lightxdm_ts && ${#_lightxdm_ts} -le 18 && $_lightxdm_ts != *[!0123456789]* ]] &&
-            (( _lightxdm_now - 10#$_lightxdm_ts <= 30 )); then
+            (( _lightxdm_now - 10#$_lightxdm_ts >= 0 && _lightxdm_now - 10#$_lightxdm_ts <= 30 )); then
             _lightxdm_recent+=("$_lightxdm_ts")
         fi
     done
