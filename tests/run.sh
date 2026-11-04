@@ -588,8 +588,8 @@ else
     status=$?
     set -e
     log_content="$(cat "$STUB_LOG")"
-    if [[ $status -ne 0 && "$output" == *"Usage:"* && ! -e "$autologin_dir/lightxdm-autologin.conf" && -z "$log_content" ]]; then
-      pass "enable-autologin.sh $help_flag prints usage and writes nothing"
+    if [[ $status -eq 0 && "$output" == *"Usage:"* && "$output" == *"--status"* && ! -e "$autologin_dir/lightxdm-autologin.conf" && -z "$log_content" ]]; then
+      pass "enable-autologin.sh $help_flag prints help, exits 0 and writes nothing"
     else
       fail "enable-autologin.sh $help_flag (status=$status, output=$output, log=$log_content)"
     fi
@@ -6192,13 +6192,15 @@ else
   printf '[Service]\n' >"$ko_dir/autologin.conf"
   printf 'rule\n' >"$ko_dir/polkit.rules"
   printf 'xfce\n' >"$ko_dir/home/.xinitrc"
+  printf 'sddm.service\n' >"$ko_dir/dm"
+  : >"$STUB_LOG"
   set +e
   output="$(env -u SUDO_USER TARGET_HOME= LOGIN_FILE="$ko_dir/login" AUTOLOGIN_DROPIN="$ko_dir/autologin.conf" POLKIT_RULE="$ko_dir/polkit.rules" DM_STATE_FILE="$ko_dir/dm" unshare -r bash "$REPO_ROOT/uninstall.sh" --keyring-only 2>&1)"
   status=$?
   set -e
   if [[ $status -eq 0 && "$output" == *"Done (--keyring-only)"* && -f "$ko_dir/autologin.conf" && -f "$ko_dir/polkit.rules" && -f "$ko_dir/home/.xinitrc" ]] &&
-    cmp -s "$ko_dir/login" "$ko_dir/login.expected"; then
-    pass "uninstall.sh --keyring-only restores PAM and keeps autologin, Polkit and dotfiles"
+    cmp -s "$ko_dir/login" "$ko_dir/login.expected" && [[ "$(cat "$ko_dir/dm")" == sddm.service ]] && ! grep -q systemctl "$STUB_LOG"; then
+    pass "uninstall.sh --keyring-only restores PAM and keeps autologin, Polkit, dotfiles and disabled display managers"
   else
     fail "uninstall.sh --keyring-only (status=$status, output=$output, login=$(cat "$ko_dir/login"))"
   fi

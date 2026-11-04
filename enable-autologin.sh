@@ -8,8 +8,21 @@ LEGACY_OVERRIDE_FILE="$OVERRIDE_DIR/override.conf"
 LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
 
 usage() {
-  echo "Usage: sudo bash $0 <username> | --disable; bash $0 --status"
+  echo "Usage: sudo bash $0 <username> | --disable; bash $0 --status | -h | --help" >&2
   exit 1
+}
+
+show_help() {
+  cat <<EOF
+Usage: sudo bash $0 <username> | --disable; bash $0 --status | -h | --help
+
+Turn passwordless TTY1 autologin on or off (changes apply at the next login or reboot).
+  <username>  log <username> in on TTY1 without a password
+  --disable   remove lightXDM's autologin drop-in
+  --status    show whether autologin is enabled; read-only, no sudo needed
+  -h, --help  show this help
+EOF
+  exit 0
 }
 
 is_legacy_autologin_override() {
@@ -82,7 +95,7 @@ show_status() {
 
 main() {
   if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-    usage
+    show_help
   fi
 
   if [[ "${1:-}" == "--status" ]]; then
