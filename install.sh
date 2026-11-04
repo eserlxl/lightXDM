@@ -37,7 +37,7 @@ check_root() {
 
 # Detect the installed desktop environment
 detect_de() {
-  local pair pkg de
+  local pair pkg de found=0
   local pairs=(
     plasma-desktop:plasma
     gnome-shell:gnome
@@ -54,20 +54,40 @@ detect_de() {
     de="${pair#*:}"
     if pacman -Qq "$pkg" >/dev/null 2>&1; then
       echo "$de"
-      return 0
+      found=1
     fi
   done
-  echo "unknown"
+  if [[ $found -eq 0 ]]; then
+    echo "unknown"
+  fi
 }
 
-# Prompt user to select a DE
-prompt_de_selection() {
-  local PS3 opt i
-  local options=("XFCE" "LXQt" "LXDE" "MATE" "Cinnamon" "i3" "Quit")
-  local ids=(xfce lxqt lxde mate cinnamon i3)
+# Map a desktop id to its menu label
+de_label() {
+  case "$1" in
+    xfce) echo "XFCE" ;;
+    lxqt) echo "LXQt" ;;
+    lxde) echo "LXDE" ;;
+    mate) echo "MATE" ;;
+    cinnamon) echo "Cinnamon" ;;
+    i3) echo "i3" ;;
+    *) echo "$1" ;;
+  esac
+}
 
-  log "No supported desktop environment detected."
-  PS3="Please select a desktop environment to install: "
+# Run an interactive select menu for the given desktop ids
+select_de_from_menu() {
+  local prompt="$1"
+  shift
+  local ids=("$@")
+  local options=() id label PS3 opt i
+  for id in "${ids[@]}"; do
+    label="$(de_label "$id")"
+    options+=("$label")
+  done
+  options+=("Quit")
+
+  PS3="$prompt"
   select opt in "${options[@]}"; do
     case "$opt" in
       "Quit")
@@ -89,6 +109,19 @@ prompt_de_selection() {
     esac
   done
   return 1
+}
+
+# Prompt user to select a DE
+prompt_de_selection() {
+  log "No supported desktop environment detected."
+  select_de_from_menu "Please select a desktop environment to install: " \
+    xfce lxqt lxde mate cinnamon i3
+}
+
+# Prompt user to select among multiple detected DEs
+prompt_detected_de_selection() {
+  log "Multiple supported desktop environments detected: $*"
+  select_de_from_menu "Please select a desktop environment to configure: " "$@"
 }
 
 # Print required packages for a desktop environment, one per line
@@ -488,19 +521,61 @@ main() {
   fi
 
   if [[ -z "$de" ]]; then
-    de=$(detect_de)
+    local detected_output detected_des=()
+    detected_output="$(detect_de)"
+    if [[ -n "$detected_output" ]]; then
+      mapfile -t detected_des <<<"$detected_output"
+    fi
 
-    if [[ "$de" == "unknown" ]]; then
-      de=$(prompt_de_selection) || {
-        local menu_rc=$?
-        if [[ $menu_rc -eq 2 ]]; then
-          exit 0
-        fi
-        log "No desktop environment was chosen. Exiting."
-        exit 1
-      }
+    if [[ ${#detected_des[@]} -le 1 ]]; then
+      de="${detected_des[0]:-unknown}"
+      if [[ "$de" == "unknown" ]]; then
+        de=$(prompt_de_selection) || {
+          local menu_rc=$?
+          if [[ $menu_rc -eq 2 ]]; then
+            exit 0
+          fi
+          log "No desktop environment was chosen. Exiting."
+          exit 1
+        }
+      else
+        log "Detected desktop environment: $de"
+      fi
     else
-      log "Detected desktop environment: $de"
+      local candidate supported_des=() wayland_des=()
+      for candidate in "${detected_des[@]}"; do
+        case "$candidate" in
+          plasma | gnome | budgie)
+            wayland_des+=("$candidate")
+            ;;
+          unknown | "") ;;
+          *)
+            supported_des+=("$candidate")
+            ;;
+        esac
+      done
+
+      if [[ ${#supported_des[@]} -eq 0 ]]; then
+        de="${detected_des[0]}"
+        log "Detected desktop environment: $de"
+      else
+        if [[ ${#wayland_des[@]} -gt 0 ]]; then
+          log "Skipping Wayland-only desktop environment(s): ${wayland_des[*]}"
+        fi
+        if [[ ${#supported_des[@]} -eq 1 ]]; then
+          de="${supported_des[0]}"
+          log "Detected desktop environment: $de"
+        else
+          de=$(prompt_detected_de_selection "${supported_des[@]}") || {
+            local menu_rc=$?
+            if [[ $menu_rc -eq 2 ]]; then
+              exit 0
+            fi
+            log "No desktop environment was chosen. Pass --de <id> to select one (detected: ${supported_des[*]}). Exiting."
+            exit 1
+          }
+        fi
+      fi
     fi
   fi
 

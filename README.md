@@ -44,9 +44,9 @@ bash install.sh
 > - Your user **must be in the `wheel` group** and have working `sudo` privileges. If not, see the error messages for instructions on how to add your user to the `wheel` group and configure `sudo`.
 > - If you run `sudo bash install.sh` or run as root, the script will exit with an error.
 
-Plasma, GNOME, and Budgie now run only on Wayland on Arch Linux and cannot be started with `startx`. The installer refuses these desktops, whether detected or passed with `--de`, before changing packages, dotfiles, PAM, Polkit, or display managers. Their templates are retained for future Wayland support.
+Plasma, GNOME, and Budgie now run only on Wayland on Arch Linux and cannot be started with `startx`. The installer refuses these desktops when no supported X11 desktop is installed or when passed with `--de`, before changing packages, dotfiles, PAM, Polkit, or display managers. Their templates are retained for future Wayland support.
 
-- **Detects your installed DE** (XFCE, LXQt, LXDE, MATE, Cinnamon, or i3), or pass `--de <id>` (`xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, or `i3`) to configure a specific desktop explicitly.
+- **Detects your installed DE** (XFCE, LXQt, LXDE, MATE, Cinnamon, or i3), or pass `--de <id>` (`xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, or `i3`) to configure a specific desktop explicitly. When several desktops are installed, Wayland-only desktops (Plasma, GNOME, Budgie) are skipped while a supported X11 desktop is present, a single remaining supported desktop is configured automatically, and two or more supported desktops prompt you to choose (or pass `--de <id>` to select non-interactively).
 - If no DE is found (and `--de` is not passed), it **prompts you to choose one** to install.
 - Installs the minimal required packages for your chosen DE, including the correct polkit agent:
   - lxqt-policykit for LXQt

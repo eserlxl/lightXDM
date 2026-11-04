@@ -234,11 +234,18 @@ run_main_with_stubs() (
   unset SUDO_USER
   detect_de() {
     echo "detect_de" >>"$STUB_LOG"
-    echo "${STUB_DETECTED_DE:-i3}"
+    printf '%s\n' "${STUB_DETECTED_DE:-i3}"
   }
   if [[ "${STUB_REAL_PROMPT:-0}" != "1" ]]; then
     prompt_de_selection() {
       echo "prompt_de_selection" >>"$STUB_LOG"
+      return "${STUB_PROMPT_RC:-1}"
+    }
+    prompt_detected_de_selection() {
+      echo "prompt_detected_de_selection $*" >>"$STUB_LOG"
+      if [[ -n "${STUB_PROMPT_DE:-}" ]]; then
+        printf '%s\n' "$STUB_PROMPT_DE"
+      fi
       return "${STUB_PROMPT_RC:-1}"
     }
   fi
@@ -5305,5 +5312,169 @@ for lp_bad_case in custom custom-no-packages unknown empty; do
     fail "main --list-packages rejection ($lp_bad_case, status=$lp_bad_status, out=$lp_bad_out, err=$lp_bad_err, log=$(cat "$STUB_LOG"))"
   fi
 done
+
+# Case 74: multi-desktop detection lists all matches, skips Wayland-only desktops when supported ones exist, and prompts when two or more supported desktops remain
+multi_detect_bin="$TMP_DIR/pacman_multi_detect"
+mkdir -p "$multi_detect_bin"
+cat >"$multi_detect_bin/pacman" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-Qq" && $# -eq 2 ]]; then
+  case "$2" in
+    xfce4-session | i3-wm)
+      echo "$2"
+      exit 0
+      ;;
+  esac
+fi
+exit 1
+EOF
+chmod +x "$multi_detect_bin/pacman"
+
+multi_detect_out="$TMP_DIR/multi_detect_out"
+set +e
+(
+  set -e
+  export PATH="$multi_detect_bin:$PATH"
+  detect_de
+) >"$multi_detect_out"
+status=$?
+set -e
+output="$(cat "$multi_detect_out")"
+if [[ $status -eq 0 && "$output" == $'xfce\ni3' &&
+  "$(sha256sum < "$multi_detect_out")" == "$(printf 'xfce\ni3\n' | sha256sum)" ]]; then
+  pass "detect_de lists two installed desktops one per line"
+else
+  fail "detect_de two desktops (status=$status, output=$output)"
+fi
+
+unset PS3
+multi_prompt_out="$TMP_DIR/multi_prompt_out"
+multi_prompt_err="$TMP_DIR/multi_prompt_err"
+set +e
+prompt_detected_de_selection xfce i3 <<<$'99\n2\n' >"$multi_prompt_out" 2>"$multi_prompt_err"
+status=$?
+set -e
+output="$(cat "$multi_prompt_out")"
+err_output="$(cat "$multi_prompt_err")"
+if [[ $status -eq 0 && "$output" == "i3" && -z "${PS3+x}" &&
+  "$(sha256sum < "$multi_prompt_out")" == "$(printf 'i3\n' | sha256sum)" &&
+  "$err_output" == *"1) XFCE"* && "$err_output" == *"2) i3"* && "$err_output" == *"3) Quit"* &&
+  "$err_output" != *"LXQt"* && "$err_output" == *"Invalid option 99"* ]]; then
+  pass "prompt_detected_de_selection offers only detected labels plus Quit and maps choice without leaking PS3"
+else
+  fail "prompt_detected_de_selection xfce i3 (status=$status, out=$output, err=$err_output, PS3=${PS3-<unset>})"
+fi
+
+: >"$STUB_LOG"
+set +e
+output="$(STUB_DETECTED_DE=$'plasma\nxfce' run_main_with_stubs "$sudo_pw_dir" 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+expected_px_log=$'sudo -v\ndetect_de\ninstall_packages xfce\ncopy_dotfiles xfce\nconfigure_pam xfce\ninstall_polkit_rule\ndisable_display_managers'
+if [[ $status -eq 0 && "$log_content" == "$expected_px_log" &&
+  "$output" == *"Wayland-only"* && "$output" == *"plasma"* &&
+  "$output" == *"Detected desktop environment: xfce"* &&
+  "$output" == *"lightXDM install complete!"* && "$output" == *"- xfce "* ]]; then
+  pass "main skips Wayland-only plasma and configures xfce when plasma and xfce are detected"
+else
+  fail "main plasma+xfce (status=$status, log=$log_content, output=$output)"
+fi
+
+: >"$STUB_LOG"
+set +e
+output="$(STUB_DETECTED_DE=$'plasma\ngnome\nlxqt' run_main_with_stubs "$sudo_pw_dir" 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+wayland_line_count="$(grep -Fc 'Wayland-only' <<<"$output" || true)"
+expected_pgl_log=$'sudo -v\ndetect_de\ninstall_packages lxqt\ncopy_dotfiles lxqt\nconfigure_pam lxqt\ninstall_polkit_rule\ndisable_display_managers'
+if [[ $status -eq 0 && "$log_content" == "$expected_pgl_log" &&
+  "$wayland_line_count" -eq 1 &&
+  "$output" == *"plasma gnome"* &&
+  "$output" == *"Detected desktop environment: lxqt"* ]]; then
+  pass "main logs multiple Wayland-only desktops once and configures remaining lxqt"
+else
+  fail "main plasma+gnome+lxqt (status=$status, count=$wayland_line_count, log=$log_content, output=$output)"
+fi
+
+for all_wl_detected in $'plasma\ngnome' $'gnome\nbudgie'; do
+  first_wl="${all_wl_detected%%$'\n'*}"
+  : >"$STUB_LOG"
+  set +e
+  output="$(STUB_DETECTED_DE="$all_wl_detected" run_main_with_stubs "$sudo_pw_dir" 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -eq 1 && "$log_content" == $'sudo -v\ndetect_de' &&
+    "$output" == *"$first_wl now runs only on Wayland and cannot be started with startx (see README.md)."* &&
+    "$output" != *"lightXDM install complete!"* ]]; then
+    pass "main keeps Wayland refusal when only Wayland desktops are detected (${all_wl_detected//$'\n'/+})"
+  else
+    fail "main all-Wayland multi-detect (${all_wl_detected//$'\n'/+}, status=$status, log=$log_content, output=$output)"
+  fi
+done
+
+for multi_choice_detected in $'xfce\ni3' $'plasma\nxfce\ni3'; do
+  : >"$STUB_LOG"
+  set +e
+  output="$(STUB_DETECTED_DE="$multi_choice_detected" STUB_REAL_PROMPT=1 run_main_with_stubs "$sudo_pw_dir" <<<"2" 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  expected_i3_log=$'sudo -v\ndetect_de\ninstall_packages i3\ncopy_dotfiles i3\nconfigure_pam i3\ninstall_polkit_rule\ndisable_display_managers'
+  wl_note_ok=0
+  if [[ "$multi_choice_detected" == plasma* && "$output" == *"Wayland-only"* && "$output" == *"plasma"* ]] ||
+    [[ "$multi_choice_detected" != plasma* && "$output" != *"Wayland-only"* ]]; then
+    wl_note_ok=1
+  fi
+  if [[ $status -eq 0 && $wl_note_ok -eq 1 && "$log_content" == "$expected_i3_log" &&
+    "$output" == *"1) XFCE"* && "$output" == *"2) i3"* && "$output" == *"3) Quit"* &&
+    "$output" == *"lightXDM install complete!"* && "$output" == *"- i3 "* ]]; then
+    pass "main configures i3 when selected from detected chooser (${multi_choice_detected//$'\n'/+})"
+  else
+    fail "main multi-detect select i3 (${multi_choice_detected//$'\n'/+}, status=$status, log=$log_content, output=$output)"
+  fi
+done
+
+: >"$STUB_LOG"
+set +e
+output="$(STUB_DETECTED_DE=$'xfce\ni3' STUB_REAL_PROMPT=1 run_main_with_stubs "$sudo_pw_dir" <<<"3" 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 0 && "$log_content" == $'sudo -v\ndetect_de' &&
+  "$output" != *"lightXDM install complete!"* ]]; then
+  pass "main exits 0 without installing when Quit is chosen from detected chooser"
+else
+  fail "main detected chooser Quit via stdin (status=$status, log=$log_content, output=$output)"
+fi
+
+: >"$STUB_LOG"
+set +e
+output="$(STUB_DETECTED_DE=$'xfce\ni3' STUB_PROMPT_RC=2 run_main_with_stubs "$sudo_pw_dir" 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 0 && "$log_content" == $'sudo -v\ndetect_de\nprompt_detected_de_selection xfce i3' &&
+  "$output" != *"lightXDM install complete!"* ]]; then
+  pass "main exits 0 without installing when stubbed detected chooser returns 2"
+else
+  fail "main detected chooser Quit via STUB_PROMPT_RC=2 (status=$status, log=$log_content, output=$output)"
+fi
+
+: >"$STUB_LOG"
+set +e
+output="$(STUB_DETECTED_DE=$'xfce\ni3' STUB_REAL_PROMPT=1 run_main_with_stubs "$sudo_pw_dir" </dev/null 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 1 && "$log_content" == $'sudo -v\ndetect_de' &&
+  "$output" == *"No desktop environment was chosen"* && "$output" == *"--de"* &&
+  "$output" != *"lightXDM install complete!"* ]]; then
+  pass "main exits 1 with a --de hint on detected chooser EOF"
+else
+  fail "main detected chooser EOF (status=$status, log=$log_content, output=$output)"
+fi
 
 exit "$failures"
