@@ -2934,6 +2934,9 @@ EOF
   st_dis_legacy=$?
   set -e
   log_dis_legacy="$(cat "$STUB_LOG")"
+  # Record now: the enable step below also removes a legacy override.conf.
+  dis_legacy_gone=0
+  [[ -e "$dis_override" ]] || dis_legacy_gone=1
 
   cat >"$dis_override" <<'EOF'
 [Service]
@@ -2948,7 +2951,7 @@ EOF
   set -e
   log_dis_both_legacy="$(cat "$STUB_LOG")"
 
-  if [[ $st_dis_legacy -eq 0 && ! -e "$dis_override" && "$out_dis_legacy" != *"Keeping"* && "$log_dis_legacy" == *"systemctl daemon-reload"* ]] &&
+  if [[ $st_dis_legacy -eq 0 && $dis_legacy_gone -eq 1 && "$out_dis_legacy" != *"Keeping"* && "$log_dis_legacy" == *"systemctl daemon-reload"* ]] &&
     [[ $st_dis_both_legacy -eq 0 && ! -e "$dis_dropin" && ! -e "$dis_override" && "$log_dis_both_legacy" == *"systemctl daemon-reload"* ]]; then
     pass "enable-autologin.sh --disable removes legacy lightXDM override.conf"
   else
