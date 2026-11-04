@@ -3714,4 +3714,40 @@ else
   fail "main default Polkit install after --no-polkit-rule (status=$status, output=$output)"
 fi
 
+# Case 65: a failing dotfile backup copy stops copy_dotfiles before overwriting ~/.bash_profile
+fail_cp_home="$TMP_DIR/home_fail_cp"
+fail_cp_bin="$TMP_DIR/bin_fail_cp"
+mkdir -p "$fail_cp_home" "$fail_cp_bin"
+printf '# user custom bash_profile\nexport EDITOR=vim\n' >"$fail_cp_home/.bash_profile"
+fail_cp_hash="$(sha256sum < "$fail_cp_home/.bash_profile")"
+cat >"$fail_cp_bin/cp" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$fail_cp_bin/cp"
+set +e
+# shellcheck disable=SC2016  # expand inside the child shell so install.sh owns errexit
+output="$(
+  env -u SHELLOPTS -u SUDO_USER \
+    HOME="$fail_cp_home" \
+    PATH="$fail_cp_bin:$STUB_BIN:$PATH" \
+    USER="testuser" \
+    bash -c '
+      source "$1/install.sh"
+      copy_dotfiles "i3"
+    ' bash "$REPO_ROOT" 2>&1
+)"
+status=$?
+set -e
+if [[ $status -ne 0 ]] &&
+  [[ -f "$fail_cp_home/.bash_profile" && ! -L "$fail_cp_home/.bash_profile" ]] &&
+  [[ "$(sha256sum < "$fail_cp_home/.bash_profile")" == "$fail_cp_hash" ]] &&
+  [[ ! -e "$fail_cp_home/.bash_profile.lightxdm.bak" && ! -L "$fail_cp_home/.bash_profile.lightxdm.bak" ]] &&
+  [[ ! -e "$fail_cp_home/.bash_profile.lightxdm.absent" && ! -e "$fail_cp_home/.bash_profile.lightxdm-edited" ]] &&
+  [[ ! -e "$fail_cp_home/.gpg-agent-gnome" && ! -e "$fail_cp_home/.xinitrc" ]]; then
+  pass "copy_dotfiles aborts on failed backup without overwriting ~/.bash_profile"
+else
+  fail "copy_dotfiles on failed backup (status=$status, output=$output)"
+fi
+
 exit "$failures"
