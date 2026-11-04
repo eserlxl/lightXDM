@@ -30,7 +30,7 @@ warn_keyring_unlock() {
 }
 
 show_status() {
-  local file line status_file="" target_user="" LC_ALL=C
+  local file line status_file="" target_user="" reset_file="" LC_ALL=C
   local exec_re='^[[:space:]]*ExecStart[[:space:]]*=.*--autologin[[:space:]]+([^[:space:]]+)'
   # The accepted legacy override sorts after the current lightXDM drop-in.
   for file in "$OVERRIDE_FILE" "$LEGACY_OVERRIDE_FILE"; do
@@ -38,10 +38,16 @@ show_status() {
     if [[ "$file" == "$LEGACY_OVERRIDE_FILE" ]] && ! is_legacy_autologin_override "$file"; then
       continue
     fi
+    # shellcheck disable=SC2094  # the loop only compares the path; it never writes the file
     while IFS= read -r line || [[ -n "$line" ]]; do
       if [[ "$line" =~ $exec_re ]]; then
         status_file="$file"
         target_user="${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ ^[[:space:]]*ExecStart[[:space:]]*= && "$status_file" == "$file" ]]; then
+        # A later plain ExecStart in the same file replaces the autologin command.
+        status_file=""
+        target_user=""
+        reset_file="$file"
       fi
     done < "$file"
   done
@@ -51,7 +57,7 @@ show_status() {
     echo "disabled"
   fi
   for file in "$OVERRIDE_DIR"/*.conf; do
-    [[ -f "$file" && "$file" != "$status_file" ]] || continue
+    [[ -f "$file" && "$file" != "$status_file" && "$file" != "$reset_file" ]] || continue
     if grep -Eq '^[[:space:]]*ExecStart[[:space:]]*=.*--autologin' "$file"; then
       echo "Warning: $file still enables autologin."
     fi

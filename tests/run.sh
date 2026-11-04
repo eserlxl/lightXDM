@@ -400,13 +400,13 @@ fi
 
 # Status runs directly, without unshare -r, so normal users exercise the read-only path.
 status_dir="$TMP_DIR/autologin_status"
-for status_case in disabled missing enabled legacy both foreign later kwallet gnome commented; do
+for status_case in disabled missing enabled legacy both foreign later kwallet gnome commented reset; do
   rm -rf "$status_dir"
   mkdir -p "$status_dir/getty.d"
   printf '# PAM login\n' >"$status_dir/login"
   expected_status="disabled"
   case "$status_case" in
-    enabled|both|later|kwallet|gnome|commented)
+    enabled|both|later|kwallet|gnome|commented|reset)
       # shellcheck disable=SC2016  # $TERM is literal systemd syntax
       printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin testuser --noclear %%I $TERM\n' >"$status_dir/getty.d/lightxdm-autologin.conf"
       expected_status="enabled for testuser ($status_dir/getty.d/lightxdm-autologin.conf)"
@@ -433,6 +433,11 @@ for status_case in disabled missing enabled legacy both foreign later kwallet gn
       ;;
     gnome)
       printf '%s\n' '-session optional pam_gnome_keyring.so auto_start' >"$status_dir/login"
+      ;;
+    reset)
+      # shellcheck disable=SC2016
+      printf 'ExecStart=\nExecStart=-/usr/bin/agetty --noclear %%I $TERM\n' >>"$status_dir/getty.d/lightxdm-autologin.conf"
+      expected_status="disabled"
       ;;
     commented)
       printf '# auth optional pam_kwallet5.so\nsession optional pam_other.so # pam_gnome_keyring.so\n' >"$status_dir/login"
