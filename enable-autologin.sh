@@ -30,7 +30,7 @@ warn_keyring_unlock() {
 }
 
 show_status() {
-  local file line status_file="" target_user="" reset_file="" LC_ALL=C
+  local file line status_file="" target_user="" reset_file="" foreign_autologin=0 LC_ALL=C
   local exec_re='^[[:space:]]*ExecStart[[:space:]]*=.*--autologin[[:space:]]+([^[:space:]]+)'
   # The accepted legacy override sorts after the current lightXDM drop-in.
   for file in "$OVERRIDE_FILE" "$LEGACY_OVERRIDE_FILE"; do
@@ -43,6 +43,7 @@ show_status() {
       if [[ "$line" =~ $exec_re ]]; then
         status_file="$file"
         target_user="${BASH_REMATCH[1]}"
+        reset_file=""
       elif [[ "$line" =~ ^[[:space:]]*ExecStart[[:space:]]*= && "$status_file" == "$file" ]]; then
         # A later plain ExecStart in the same file replaces the autologin command.
         status_file=""
@@ -60,13 +61,16 @@ show_status() {
     [[ -f "$file" && "$file" != "$status_file" && "$file" != "$reset_file" ]] || continue
     if grep -Eq '^[[:space:]]*ExecStart[[:space:]]*=.*--autologin' "$file"; then
       echo "Warning: $file still enables autologin."
+      foreign_autologin=1
     fi
     if [[ -n "$status_file" && "$file" > "$status_file" ]] &&
       grep -Eq '^[[:space:]]*ExecStart[[:space:]]*=' "$file"; then
       echo "Warning: $file overrides autologin with a later ExecStart= setting."
     fi
   done
-  warn_keyring_unlock
+  if [[ -n "$status_file" || $foreign_autologin -eq 1 ]]; then
+    warn_keyring_unlock
+  fi
 }
 
 main() {

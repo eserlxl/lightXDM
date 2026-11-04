@@ -400,7 +400,7 @@ fi
 
 # Status runs directly, without unshare -r, so normal users exercise the read-only path.
 status_dir="$TMP_DIR/autologin_status"
-for status_case in disabled missing enabled legacy both foreign later kwallet gnome commented reset; do
+for status_case in disabled missing enabled legacy both foreign later kwallet gnome commented reset keyring-disabled foreign-keyring; do
   rm -rf "$status_dir"
   mkdir -p "$status_dir/getty.d"
   printf '# PAM login\n' >"$status_dir/login"
@@ -433,6 +433,13 @@ for status_case in disabled missing enabled legacy both foreign later kwallet gn
       ;;
     gnome)
       printf '%s\n' '-session optional pam_gnome_keyring.so auto_start' >"$status_dir/login"
+      ;;
+    foreign-keyring)
+      printf '[Service]\nExecStart=\nExecStart=/usr/bin/agetty --autologin foreignuser tty1\n' >"$status_dir/getty.d/00-foreign.conf"
+      printf 'auth optional pam_gnome_keyring.so\n' >"$status_dir/login"
+      ;;
+    keyring-disabled)
+      printf 'auth optional pam_gnome_keyring.so\n' >"$status_dir/login"
       ;;
     reset)
       # shellcheck disable=SC2016
@@ -469,6 +476,12 @@ for status_case in disabled missing enabled legacy both foreign later kwallet gn
       ;;
     later)
       if [[ "$output" == *"Warning: $status_dir/getty.d/zz-later.conf overrides autologin with a later ExecStart="* ]]; then
+        status_warnings_ok=1
+      fi
+      ;;
+    foreign-keyring)
+      if [[ "$output" == *"Warning: $status_dir/getty.d/00-foreign.conf still enables autologin."* &&
+        "$output" == *"Warning: PAM keyring unlock is configured in $status_dir/login"* ]]; then
         status_warnings_ok=1
       fi
       ;;
