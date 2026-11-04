@@ -2,7 +2,7 @@
 # tests/docker-arch.sh: Test configure_pam and uninstall.sh against real Arch Linux PAM in Docker
 set -euo pipefail
 
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [[ "${1:-}" != "--in-container" ]]; then
   if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then

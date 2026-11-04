@@ -2,7 +2,7 @@
 # lint.sh: Run ShellCheck on all project shell scripts
 set -e
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 scripts=(
   install.sh
