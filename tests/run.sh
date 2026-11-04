@@ -695,6 +695,7 @@ fi
 # Case 22: gpg-agent dotfiles preserve SSH_AUTH_SOCK without enable-ssh-support, set it with enable-ssh-support, and never export GPG_TTY
 cat >"$STUB_BIN/gpg-connect-agent" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >>"$STUB_LOG"
 exit 0
 EOF
 
@@ -710,6 +711,7 @@ for gpg_dotfile in .gpg-agent-gnome .gpg-agent-kwallet; do
   gpg_home="$TMP_DIR/gpg_home_${gpg_dotfile#.}"
   rm -rf "$gpg_home"
   mkdir -p "$gpg_home/.gnupg"
+  : >"$STUB_LOG"
 
   without_out="$(
     export HOME="$gpg_home"
@@ -765,6 +767,16 @@ for gpg_dotfile in .gpg-agent-gnome .gpg-agent-kwallet; do
     pass "$gpg_dotfile respects enable-ssh-support (including indented and custom GNUPGHOME) and does not export GPG_TTY"
   else
     fail "$gpg_dotfile (without=$without_out, with=$with_out, indented=$indented_out, gnupghome=$gnupghome_out)"
+  fi
+
+  # Each of the four configurations must start the agent, then refresh its tty.
+  expected_gpg_calls=$'/bye\nupdatestartuptty /bye'
+  expected_gpg_log="$(printf '%s\n' "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls")"
+  gpg_log="$(cat "$STUB_LOG")"
+  if [[ "$gpg_log" == "$expected_gpg_log" ]]; then
+    pass "$gpg_dotfile starts the agent and refreshes its tty in order for all configurations"
+  else
+    fail "$gpg_dotfile gpg-connect-agent calls (log=$gpg_log)"
   fi
 done
 
