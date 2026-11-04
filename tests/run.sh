@@ -105,7 +105,7 @@ output="$(install_packages "i3" 2>&1)"
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
-if [[ $status -eq 0 && "$log_content" == *"pacman -S --needed --noconfirm"* && "$log_content" == *"i3 xterm gnome-keyring polkit-gnome"* ]]; then
+if [[ $status -eq 0 && "$log_content" == *"pacman -S --needed --noconfirm"* && "$log_content" == *"i3 xterm dex gnome-keyring polkit-gnome"* ]]; then
   pass "install_packages invokes pacman for i3"
 else
   fail "install_packages invokes pacman for i3 (status=$status, log=$log_content)"
@@ -3480,7 +3480,7 @@ de_pkg_specs=(
   "mate|mate-session-manager|mate mate-terminal gnome-keyring polkit-gnome"
   "cinnamon|cinnamon|cinnamon gnome-terminal gnome-keyring polkit-gnome"
   "budgie|budgie-desktop|budgie-desktop gnome-terminal gnome-keyring polkit-gnome"
-  "i3|i3-wm|i3 xterm gnome-keyring polkit-gnome"
+  "i3|i3-wm|i3 xterm dex gnome-keyring polkit-gnome"
 )
 
 detect_pair_bin="$TMP_DIR/pacman_detect_pair"
@@ -3561,7 +3561,7 @@ for spec in "${de_pkg_specs[@]}"; do
 done
 
 no_kr_specs=(
-  "detected-i3|i3|--no-keyring|i3 xterm polkit-gnome|.gpg-agent-gnome"
+  "detected-i3|i3|--no-keyring|i3 xterm dex polkit-gnome|.gpg-agent-gnome"
   "de-lxqt|lxqt|--no-keyring --de lxqt|lxqt xdg-utils lxterminal lxqt-policykit|.gpg-agent-gnome"
   "de-first-xfce|xfce|--de xfce --no-keyring|xfce4 xfce4-session xfce4-terminal polkit-gnome|.gpg-agent-gnome"
 )
@@ -5030,7 +5030,7 @@ lp_nosudo_status=$?
 lp_stub_main_out="$(STUB_DETECTED_DE=xfce run_main_with_stubs "$lp_bin" --list-packages --de i3 2>>"$lp_err")"
 lp_stub_main_status=$?
 set -e
-lp_expected_i3="$(printf '%s\n' xorg-server xorg-xinit udisks2 polkit gvfs gvfs-mtp gvfs-gphoto2 gvfs-afc i3 xterm gnome-keyring polkit-gnome)"
+lp_expected_i3="$(printf '%s\n' xorg-server xorg-xinit udisks2 polkit gvfs gvfs-mtp gvfs-gphoto2 gvfs-afc i3 xterm dex gnome-keyring polkit-gnome)"
 if [[ $lp_nosudo_status -eq 0 && $lp_stub_main_status -eq 0 &&
   "$lp_nosudo_out" == "$lp_expected_i3" && "$lp_stub_main_out" == "$lp_expected_i3" &&
   ! -s "$lp_err" && ! -s "$STUB_LOG" ]]; then

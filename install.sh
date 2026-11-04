@@ -126,7 +126,7 @@ list_packages() {
       pkgs=(budgie-desktop gnome-terminal gnome-keyring polkit-gnome)
       ;;
     i3)
-      pkgs=(i3 xterm gnome-keyring polkit-gnome)
+      pkgs=(i3 xterm dex gnome-keyring polkit-gnome)
       ;;
     *)
       log "Unsupported desktop environment: $de"
