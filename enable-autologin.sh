@@ -8,7 +8,7 @@ LEGACY_OVERRIDE_FILE="$OVERRIDE_DIR/override.conf"
 LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
 
 usage() {
-  echo "Usage: sudo bash $0 <username> | --disable"
+  echo "Usage: sudo bash $0 <username> | --disable; bash $0 --status"
   exit 1
 }
 
@@ -23,9 +23,55 @@ is_legacy_autologin_override() {
   [[ ${#lines[@]} -eq 3 && "${lines[0]}" == "[Service]" && "${lines[1]}" == "ExecStart=" && "${lines[2]}" =~ $exec_re ]]
 }
 
+warn_keyring_unlock() {
+  if [[ -f "$LOGIN_FILE" ]] && grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*(pam_kwallet5\.so|pam_gnome_keyring\.so)([[:space:]]|$)' "$LOGIN_FILE"; then
+    echo "Warning: PAM keyring unlock is configured in $LOGIN_FILE; the keyring will not unlock automatically with autologin and will ask for its password in the desktop, unless its password is empty."
+  fi
+}
+
+show_status() {
+  local file line status_file="" target_user="" LC_ALL=C
+  local exec_re='^[[:space:]]*ExecStart[[:space:]]*=.*--autologin[[:space:]]+([^[:space:]]+)'
+  # The accepted legacy override sorts after the current lightXDM drop-in.
+  for file in "$OVERRIDE_FILE" "$LEGACY_OVERRIDE_FILE"; do
+    [[ -f "$file" ]] || continue
+    if [[ "$file" == "$LEGACY_OVERRIDE_FILE" ]] && ! is_legacy_autologin_override "$file"; then
+      continue
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" =~ $exec_re ]]; then
+        status_file="$file"
+        target_user="${BASH_REMATCH[1]}"
+      fi
+    done < "$file"
+  done
+  if [[ -n "$status_file" ]]; then
+    echo "enabled for $target_user ($status_file)"
+  else
+    echo "disabled"
+  fi
+  for file in "$OVERRIDE_DIR"/*.conf; do
+    [[ -f "$file" && "$file" != "$status_file" ]] || continue
+    if grep -Eq '^[[:space:]]*ExecStart[[:space:]]*=.*--autologin' "$file"; then
+      echo "Warning: $file still enables autologin."
+    fi
+    if [[ -n "$status_file" && "$file" > "$status_file" ]] &&
+      grep -Eq '^[[:space:]]*ExecStart[[:space:]]*=' "$file"; then
+      echo "Warning: $file overrides autologin with a later ExecStart= setting."
+    fi
+  done
+  warn_keyring_unlock
+}
+
 main() {
   if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     usage
+  fi
+
+  if [[ "${1:-}" == "--status" ]]; then
+    [[ $# -eq 1 ]] || usage
+    show_status
+    exit 0
   fi
 
   if [[ $EUID -ne 0 ]]; then
@@ -114,9 +160,7 @@ ExecStart=-/usr/bin/agetty --autologin $target_user --noclear %I \$TERM" > "$OVE
   systemctl daemon-reload || [[ ! -d "${SYSTEMD_RUN_DIR:-/run/systemd/system}" ]]
 
   echo "Autologin enabled for user $target_user on tty1. Change will take effect at the next login or reboot."
-  if [[ -f "$LOGIN_FILE" ]] && grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*(pam_kwallet5\.so|pam_gnome_keyring\.so)([[:space:]]|$)' "$LOGIN_FILE"; then
-    echo "Warning: PAM keyring unlock is configured in $LOGIN_FILE; the keyring will not unlock automatically with autologin and will ask for its password in the desktop, unless its password is empty."
-  fi
+  warn_keyring_unlock
 }
 
 main "$@"

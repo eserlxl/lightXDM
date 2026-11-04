@@ -398,6 +398,94 @@ else
   done
 fi
 
+# Status runs directly, without unshare -r, so normal users exercise the read-only path.
+status_dir="$TMP_DIR/autologin_status"
+for status_case in disabled missing enabled legacy both foreign later kwallet gnome commented; do
+  rm -rf "$status_dir"
+  mkdir -p "$status_dir/getty.d"
+  printf '# PAM login\n' >"$status_dir/login"
+  expected_status="disabled"
+  case "$status_case" in
+    enabled|both|later|kwallet|gnome|commented)
+      # shellcheck disable=SC2016  # $TERM is literal systemd syntax
+      printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin testuser --noclear %%I $TERM\n' >"$status_dir/getty.d/lightxdm-autologin.conf"
+      expected_status="enabled for testuser ($status_dir/getty.d/lightxdm-autologin.conf)"
+      ;;
+  esac
+  case "$status_case" in
+    missing)
+      rmdir "$status_dir/getty.d"
+      ;;
+    legacy|both)
+      # shellcheck disable=SC2016
+      printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin legacyuser --noclear %%I $TERM\n' >"$status_dir/getty.d/override.conf"
+      expected_status="enabled for legacyuser ($status_dir/getty.d/override.conf)"
+      ;;
+    foreign)
+      printf '[Service]\n  ExecStart = /usr/bin/agetty --autologin foreignuser tty1\n' >"$status_dir/getty.d/00-foreign.conf"
+      cp "$status_dir/getty.d/00-foreign.conf" "$status_dir/getty.d/override.conf"
+      ;;
+    later)
+      printf '[Service]\nExecStart=/usr/bin/agetty tty1\n' >"$status_dir/getty.d/zz-later.conf"
+      ;;
+    kwallet)
+      printf 'auth optional pam_kwallet5.so\n' >"$status_dir/login"
+      ;;
+    gnome)
+      printf '%s\n' '-session optional pam_gnome_keyring.so auto_start' >"$status_dir/login"
+      ;;
+    commented)
+      printf '# auth optional pam_kwallet5.so\nsession optional pam_other.so # pam_gnome_keyring.so\n' >"$status_dir/login"
+      printf '[Service]\nExecStart=/usr/bin/agetty tty1\n' >"$status_dir/getty.d/00-earlier.conf"
+      printf '# ExecStart=/usr/bin/agetty --autologin ignored tty1\n' >"$status_dir/getty.d/zz-commented.conf"
+      ;;
+  esac
+  : >"$STUB_LOG"
+  status_before="$(find "$status_dir" -printf '%P %y %m %s %T@ %C@ %l\n' -type f -exec sha256sum {} \; | LC_ALL=C sort)"
+  set +e
+  output="$(env OVERRIDE_DIR="$status_dir/getty.d" LOGIN_FILE="$status_dir/login" bash "$REPO_ROOT/enable-autologin.sh" --status 2>&1)"
+  status=$?
+  set -e
+  status_after="$(find "$status_dir" -printf '%P %y %m %s %T@ %C@ %l\n' -type f -exec sha256sum {} \; | LC_ALL=C sort)"
+  log_content="$(cat "$STUB_LOG")"
+  status_warnings_ok=0
+  case "$status_case" in
+    both)
+      if [[ "$output" == *"Warning: $status_dir/getty.d/lightxdm-autologin.conf still enables autologin."* ]]; then
+        status_warnings_ok=1
+      fi
+      ;;
+    foreign)
+      if [[ "$output" == *"Warning: $status_dir/getty.d/00-foreign.conf still enables autologin."* &&
+        "$output" == *"Warning: $status_dir/getty.d/override.conf still enables autologin."* &&
+        "$output" != *"overrides autologin with a later ExecStart="* ]]; then
+        status_warnings_ok=1
+      fi
+      ;;
+    later)
+      if [[ "$output" == *"Warning: $status_dir/getty.d/zz-later.conf overrides autologin with a later ExecStart="* ]]; then
+        status_warnings_ok=1
+      fi
+      ;;
+    kwallet|gnome)
+      if [[ "$output" == *"Warning: PAM keyring unlock is configured in $status_dir/login; the keyring will not unlock automatically with autologin"* ]]; then
+        status_warnings_ok=1
+      fi
+      ;;
+    *)
+      if [[ "$output" != *"Warning:"* ]]; then
+        status_warnings_ok=1
+      fi
+      ;;
+  esac
+  if [[ $status -eq 0 && "${output%%$'\n'*}" == "$expected_status" && $status_warnings_ok -eq 1 &&
+    "$status_before" == "$status_after" && -z "$log_content" ]]; then
+    pass "enable-autologin.sh --status reports $status_case without changing files or calling systemctl"
+  else
+    fail "enable-autologin.sh --status $status_case (status=$status, output=$output, log=$log_content, unchanged=$([[ "$status_before" == "$status_after" ]] && echo yes || echo no))"
+  fi
+done
+
 # Case 12: enable-autologin.sh requires exactly one argument
 real_test_user="$(command -p id -un)"
 if [[ $can_unshare -eq 0 ]]; then

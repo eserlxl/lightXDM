@@ -71,3 +71,8 @@ This will create the override for you. To remove autologin, run:
 ```sh
 sudo bash enable-autologin.sh --disable
 ```
+To inspect the saved configuration without sudo, run:
+```sh
+bash enable-autologin.sh --status
+```
+This prints `enabled for <user> (<file>)` for the lightXDM drop-in (or an accepted legacy `override.conf`), otherwise `disabled`. It warns about other drop-ins that enable autologin or override it with a later `ExecStart=`, and about PAM keyring unlock lines. It exits successfully without changing files or calling `systemctl`. The status describes the saved configuration; changes take effect at the next login or reboot.
