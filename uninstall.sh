@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # uninstall.sh: Revert changes made by install scripts (PAM, autologin, Polkit)
 set -e
 

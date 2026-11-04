@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # tests/docker-arch.sh: Test package lists, configure_pam and uninstall.sh against Arch Linux in Docker
 set -euo pipefail
 

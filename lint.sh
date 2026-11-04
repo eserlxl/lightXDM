@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # lint.sh: Run ShellCheck on all project shell scripts
 set -e
 
