@@ -56,7 +56,7 @@ cp /etc/pam.d/login "$orig_login"
 sudo() {
   if [[ "${1:-}" == "pacman" && "${2:-}" == "-S" ]]; then
     shift 2
-    pacman -Sp "$@"
+    pacman -Sp --print-format '%n' "$@"
   else
     "$@"
   fi
@@ -67,8 +67,10 @@ unset LOGIN_FILE SUDO_USER
 source "$REPO_ROOT/install.sh"
 
 # Resolve every desktop's full package list without installing it.
-for desktop in plasma gnome xfce lxqt lxde mate cinnamon budgie i3; do
-  if install_packages "$desktop"; then
+desktops=(plasma gnome xfce lxqt lxde mate cinnamon budgie i3)
+declare -A desktop_packages
+for desktop in "${desktops[@]}"; do
+  if desktop_packages[$desktop]="$(install_packages "$desktop")"; then
     pass "Package list resolves for $desktop"
   else
     fail "Package list cannot be resolved for $desktop"
@@ -76,6 +78,22 @@ for desktop in plasma gnome xfce lxqt lxde mate cinnamon budgie i3; do
 done
 
 pacman -Fy
+
+check_packaged_command() {
+  local desktop=$1 required_path=$2 pkg_out pkg
+  if ! pkg_out="$(pacman -Fq "${required_path#/}")" || [[ -z "${pkg_out//[[:space:]]/}" ]]; then
+    fail "Required command for $desktop ($required_path) is not shipped by any package"
+    return
+  fi
+  while IFS= read -r pkg; do
+    # File database results may include a repository prefix.
+    if [[ $'\n'${desktop_packages[$desktop]}$'\n' == *$'\n'"${pkg##*/}"$'\n'* ]]; then
+      pass "Required command for $desktop ($required_path) is in its resolved package set ($pkg)"
+      return
+    fi
+  done <<<"$pkg_out"
+  fail "Required command for $desktop ($required_path) is outside its resolved package set ($pkg_out)"
+}
 
 last_exec_cmd() {
   local file=$1 line cmd=""
@@ -97,19 +115,16 @@ for desktop in xfce lxqt lxde mate cinnamon i3; do
   exec_cmd="$(last_exec_cmd "$template")"
   if [[ -z "$exec_cmd" || "$exec_cmd" == */ ]]; then
     fail "No valid exec command in template for $desktop ($exec_cmd)"
-  elif pkg_out="$(pacman -F "usr/bin/$exec_cmd")" && [[ -n "${pkg_out//[[:space:]]/}" ]]; then
-    pass "Exec command for $desktop ($exec_cmd) is shipped (${pkg_out%%$'\n'*})"
   else
-    fail "Exec command for $desktop ($exec_cmd) is not shipped by any package"
+    check_packaged_command "$desktop" "/usr/bin/$exec_cmd"
   fi
 done
 
-for required_path in /usr/bin/startx /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1; do
-  if pkg_out="$(pacman -F "${required_path#/}")" && [[ -n "${pkg_out//[[:space:]]/}" ]]; then
-    pass "Required command $required_path is shipped (${pkg_out%%$'\n'*})"
-  else
-    fail "Required command $required_path is not shipped by any package"
-  fi
+for desktop in "${desktops[@]}"; do
+  check_packaged_command "$desktop" /usr/bin/startx
+done
+for desktop in xfce i3; do
+  check_packaged_command "$desktop" /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1
 done
 
 pam_auth() {
