@@ -8,7 +8,7 @@ When you log in, your `.xinitrc` sources a helper script that:
 
 1. Starts `gpg-agent` via `gpg-connect-agent /bye`.
 2. Points `SSH_AUTH_SOCK` at the `gpg-agent` SSH socket when `enable-ssh-support` is present in `~/.gnupg/gpg-agent.conf`.
-3. If `SSH_AUTH_SOCK` is still empty and `$XDG_RUNTIME_DIR/gcr/ssh` is a socket, exports that path for the GCR SSH agent (`gcr-ssh-agent.socket`).
+3. If `SSH_AUTH_SOCK` is still empty, exports the first agent socket found: OpenSSH's `$XDG_RUNTIME_DIR/ssh-agent.socket` (`ssh-agent.socket`), then the GCR SSH agent's `$XDG_RUNTIME_DIR/gcr/ssh` (`gcr-ssh-agent.socket`).
 4. Refreshes the agent's startup tty with `gpg-connect-agent updatestartuptty /bye`.
 
 These scripts do not configure a `pinentry-program` or desktop keyring integration on their own.
@@ -27,4 +27,4 @@ These scripts do not configure a `pinentry-program` or desktop keyring integrati
 
 -   **Keyring-Backed Passphrase Caching (`pinentry-program`)**: To cache your GPG passphrase in GNOME Keyring or KWallet, set `pinentry-program` in `~/.gnupg/gpg-agent.conf` to `/usr/bin/pinentry-gnome3` or `/usr/bin/pinentry-qt`, then reload the agent with `gpgconf --kill gpg-agent`.
 -   **Terminal Pinentry (`GPG_TTY`)**: Add `export GPG_TTY=$(tty)` to `~/.bashrc` so interactive terminal shells report the active tty to `gpg-agent`.
--   **SSH Agent Support (`SSH_AUTH_SOCK`)**: `enable-ssh-support` gives `gpg-agent` priority. Otherwise, the `.gpg-agent-*` scripts preserve an existing `SSH_AUTH_SOCK` (for example, from `~/.xprofile` or `xinitrc.d`) and fall back to `$XDG_RUNTIME_DIR/gcr/ssh` only when `SSH_AUTH_SOCK` is empty and that socket exists. With no socket, an unset `SSH_AUTH_SOCK` stays unset.
+-   **SSH Agent Support (`SSH_AUTH_SOCK`)**: `enable-ssh-support` gives `gpg-agent` priority. Otherwise, the `.gpg-agent-*` scripts preserve an existing `SSH_AUTH_SOCK` (for example, from `~/.xprofile` or `xinitrc.d`) and, only when `SSH_AUTH_SOCK` is empty, fall back to `$XDG_RUNTIME_DIR/ssh-agent.socket` and then `$XDG_RUNTIME_DIR/gcr/ssh`, whichever socket exists first. With no socket, an unset `SSH_AUTH_SOCK` stays unset.

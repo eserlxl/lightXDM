@@ -943,7 +943,46 @@ PY
     printf '%s|%s\n' "$SSH_AUTH_SOCK" "${GPG_TTY-<unset>}"
   )"
 
+  python3 - "$gpg_runtime/ssh-agent.socket" <<'PY'
+import socket
+import sys
+
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as agent:
+    agent.bind(sys.argv[1])
+PY
+  both_sockets_out="$(
+    export HOME="$gpg_home"
+    export XDG_RUNTIME_DIR="$gpg_runtime"
+    export PATH="$STUB_BIN:$PATH"
+    unset SSH_AUTH_SOCK GPG_TTY GNUPGHOME
+    # shellcheck disable=SC1090
+    source "$REPO_ROOT/dotfiles/$gpg_dotfile"
+    printf '%s|%s\n' "${SSH_AUTH_SOCK-<unset>}" "${GPG_TTY-<unset>}"
+  )"
+
+  preset_openssh_out="$(
+    export HOME="$gpg_home"
+    export XDG_RUNTIME_DIR="$gpg_runtime"
+    export PATH="$STUB_BIN:$PATH"
+    export SSH_AUTH_SOCK="/tmp/sentinel-ssh.sock"
+    unset GPG_TTY GNUPGHOME
+    # shellcheck disable=SC1090
+    source "$REPO_ROOT/dotfiles/$gpg_dotfile"
+    printf '%s|%s\n' "$SSH_AUTH_SOCK" "${GPG_TTY-<unset>}"
+  )"
+
   rm -f "$gpg_runtime/gcr/ssh"
+  openssh_out="$(
+    export HOME="$gpg_home"
+    export XDG_RUNTIME_DIR="$gpg_runtime"
+    export PATH="$STUB_BIN:$PATH"
+    unset SSH_AUTH_SOCK GPG_TTY GNUPGHOME
+    # shellcheck disable=SC1090
+    source "$REPO_ROOT/dotfiles/$gpg_dotfile"
+    printf '%s|%s\n' "${SSH_AUTH_SOCK-<unset>}" "${GPG_TTY-<unset>}"
+  )"
+
+  rm -f "$gpg_runtime/ssh-agent.socket"
   no_socket_out="$(
     export HOME="$gpg_home"
     export XDG_RUNTIME_DIR="$gpg_runtime"
@@ -970,9 +1009,16 @@ PY
     fail "$gpg_dotfile GCR fallback (socket=$gcr_out, no_socket=$no_socket_out)"
   fi
 
-  # Each of the six configurations must start the agent, then refresh its tty.
+  if [[ "$both_sockets_out" == "$gpg_runtime/ssh-agent.socket|<unset>" && "$openssh_out" == "$gpg_runtime/ssh-agent.socket|<unset>" &&
+    "$preset_openssh_out" == "/tmp/sentinel-ssh.sock|<unset>" ]]; then
+    pass "$gpg_dotfile prefers the OpenSSH agent socket over the GCR socket when SSH_AUTH_SOCK is unset"
+  else
+    fail "$gpg_dotfile OpenSSH fallback (both=$both_sockets_out, openssh=$openssh_out, preset=$preset_openssh_out)"
+  fi
+
+  # Each of the nine configurations must start the agent, then refresh its tty.
   expected_gpg_calls=$'/bye\nupdatestartuptty /bye'
-  expected_gpg_log="$(printf '%s\n' "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls")"
+  expected_gpg_log="$(printf '%s\n' "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls" "$expected_gpg_calls")"
   gpg_log="$(cat "$STUB_LOG")"
   if [[ "$gpg_log" == "$expected_gpg_log" ]]; then
     pass "$gpg_dotfile starts the agent and refreshes its tty in order for all configurations"
