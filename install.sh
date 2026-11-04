@@ -273,10 +273,17 @@ configure_pam() {
 install_polkit_rule() {
   log "Installing Polkit rule for passwordless actions..."
   local backup="${POLKIT_RULE_DEST}.lightxdm.bak"
+  local absent="${POLKIT_RULE_DEST}.lightxdm.absent"
+  if ! sudo test -e "$POLKIT_RULE_DEST" && ! sudo test -L "$POLKIT_RULE_DEST" &&
+    ! sudo test -e "$backup" && ! sudo test -L "$backup" &&
+    ! sudo test -e "$absent" && ! sudo test -L "$absent"; then
+    sudo install -Dm644 /dev/null "$absent"
+  fi
   if sudo test -L "$POLKIT_RULE_DEST" ||
     { sudo test -e "$POLKIT_RULE_DEST" &&
       [[ "$(sudo sha256sum -- "$POLKIT_RULE_DEST" | cut -d' ' -f1)" != "$(sha256sum -- "$POLKIT_RULE_SRC" | cut -d' ' -f1)" ]]; }; then
-    if ! sudo test -e "$backup" && ! sudo test -L "$backup"; then
+    if ! sudo test -e "$backup" && ! sudo test -L "$backup" &&
+      ! sudo test -e "$absent" && ! sudo test -L "$absent"; then
       log "Backing up $POLKIT_RULE_DEST to $backup"
       sudo cp -pP -- "$POLKIT_RULE_DEST" "$backup"
     else

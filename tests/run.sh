@@ -2199,6 +2199,7 @@ rm -f "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak"
 install_polkit_rule 2>/dev/null
 install_polkit_rule 2>/dev/null
 if [[ ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
+  [[ -f "${POLKIT_RULE_DEST}.lightxdm.absent" && ! -s "${POLKIT_RULE_DEST}.lightxdm.absent" ]] &&
   [[ "$(sha256sum < "$POLKIT_RULE_SRC")" == "$(sha256sum < "$POLKIT_RULE_DEST")" ]]; then
   pass "install_polkit_rule creates no backup for a fresh or identical rule"
 else
@@ -2211,7 +2212,7 @@ else
   output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" AUTOLOGIN_DROPIN="$polkit_test_dir/autologin" OVERRIDE_FILE="$polkit_test_dir/override" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
-  if [[ $status -eq 0 && ! -e "$POLKIT_RULE_DEST" && ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" ]]; then
+  if [[ $status -eq 0 && ! -e "$POLKIT_RULE_DEST" && ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" && ! -e "${POLKIT_RULE_DEST}.lightxdm.absent" ]]; then
     pass "uninstall.sh removes Polkit rule without a prior rule"
   else
     fail "uninstall.sh fresh Polkit removal (status=$status, output=$output)"
@@ -2219,7 +2220,7 @@ else
 fi
 
 # Case 51b: a foreign Polkit symlink survives install/uninstall and a repeated uninstall
-rm -f "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak"
+rm -f "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak" "${POLKIT_RULE_DEST}.lightxdm.absent"
 printf '// administrator symlink rule\n' >"$polkit_test_dir/original.rules"
 polkit_link_hash="$(sha256sum < "$polkit_test_dir/original.rules")"
 ln -s "$polkit_test_dir/original.rules" "$POLKIT_RULE_DEST"
@@ -2285,6 +2286,48 @@ for polkit_link_target in "$POLKIT_RULE_SRC" "$polkit_test_dir/missing.rules"; d
         fail "uninstall.sh Polkit symlink round-trip (target=$polkit_link_target, run=$polkit_run, status=$status, output=$output)"
       fi
     done
+  fi
+done
+
+# Case 51d: a fresh Polkit rule edited before uninstall or reinstall is saved and removed
+for polkit_reinstall in 0 1; do
+  rm -f "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak" "${POLKIT_RULE_DEST}.lightxdm.absent" "${POLKIT_RULE_DEST}.lightxdm-edited" "${POLKIT_RULE_DEST}.lightxdm-edited.1" "${POLKIT_RULE_DEST}.lightxdm-edited.2"
+  install_polkit_rule 2>/dev/null
+  printf '// fresh install user edit\n' >>"$POLKIT_RULE_DEST"
+  polkit_fresh_edit_hash="$(sha256sum < "$POLKIT_RULE_DEST")"
+  if [[ $polkit_reinstall -eq 1 ]]; then
+    install_polkit_rule 2>/dev/null
+  fi
+  if [[ -f "${POLKIT_RULE_DEST}.lightxdm.absent" && ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" && ! -L "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
+    { [[ $polkit_reinstall -eq 0 ]] ||
+      { [[ -f "${POLKIT_RULE_DEST}.lightxdm-edited" ]] &&
+        [[ "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm-edited")" == "$polkit_fresh_edit_hash" ]] &&
+        [[ "$(sha256sum < "$POLKIT_RULE_DEST")" == "$(sha256sum < "$POLKIT_RULE_SRC")" ]]; }; }; then
+    pass "install_polkit_rule remembers an absent original and preserves edits (reinstall=$polkit_reinstall)"
+  else
+    fail "install_polkit_rule fresh edited rule (reinstall=$polkit_reinstall)"
+  fi
+
+  if [[ $EUID -eq 0 ]]; then
+    polkit_uninstall_runner=(bash)
+  elif [[ $can_unshare -eq 1 ]]; then
+    polkit_uninstall_runner=(unshare -r bash)
+  else
+    skip "uninstall.sh saves fresh Polkit edits (reinstall=$polkit_reinstall; unshare -r unavailable)"
+    continue
+  fi
+  set +e
+  output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" AUTOLOGIN_DROPIN="$polkit_test_dir/autologin" OVERRIDE_FILE="$polkit_test_dir/override" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" "${polkit_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && ! -e "$POLKIT_RULE_DEST" && ! -L "$POLKIT_RULE_DEST" ]] &&
+    [[ ! -e "${POLKIT_RULE_DEST}.lightxdm.absent" && ! -L "${POLKIT_RULE_DEST}.lightxdm.absent" ]] &&
+    [[ ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" && ! -L "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
+    [[ -f "${POLKIT_RULE_DEST}.lightxdm-edited" && ! -e "${POLKIT_RULE_DEST}.lightxdm-edited.1" ]] &&
+    [[ "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm-edited")" == "$polkit_fresh_edit_hash" ]]; then
+    pass "uninstall.sh removes the fresh Polkit rule and saves edits (reinstall=$polkit_reinstall)"
+  else
+    fail "uninstall.sh fresh Polkit edits (reinstall=$polkit_reinstall, status=$status, output=$output)"
   fi
 done
 

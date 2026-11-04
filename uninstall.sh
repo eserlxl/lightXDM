@@ -133,6 +133,16 @@ if [[ -e "${POLKIT_RULE}.lightxdm.bak" || -L "${POLKIT_RULE}.lightxdm.bak" ]]; t
   fi
   echo "Restoring $POLKIT_RULE from backup..."
   mv -- "${POLKIT_RULE}.lightxdm.bak" "$POLKIT_RULE"
+elif [[ -e "${POLKIT_RULE}.lightxdm.absent" || -L "${POLKIT_RULE}.lightxdm.absent" ]]; then
+  if [[ -e "$POLKIT_RULE" || -L "$POLKIT_RULE" ]]; then
+    if [[ -f "$POLKIT_RULE" && ! -L "$POLKIT_RULE" ]] && files_match "$POLKIT_RULE" "$SCRIPT_DIR/polkit/49-nopasswd.rules"; then
+      echo "Removing Polkit rule..."
+      rm -f "$POLKIT_RULE"
+    else
+      save_edited_dotfile "$POLKIT_RULE"
+    fi
+  fi
+  rm -f -- "${POLKIT_RULE}.lightxdm.absent"
 elif [[ -f "$POLKIT_RULE" && ! -L "$POLKIT_RULE" ]] && files_match "$POLKIT_RULE" "$SCRIPT_DIR/polkit/49-nopasswd.rules"; then
   echo "Removing Polkit rule..."
   rm -f "$POLKIT_RULE"
