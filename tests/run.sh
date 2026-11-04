@@ -2254,8 +2254,10 @@ for startup_template_case in last-exec missing-session no-exec expression path; 
       expected_startup_status=1
       ;;
     no-exec) startup_template='# No exec line' ;;
-    # shellcheck disable=SC2016  # a literal shell expression in the template, not expanded here
-    expression) startup_template='exec "$SESSION"' ;;
+    expression)
+      # shellcheck disable=SC2016  # a literal shell expression in the template, not expanded here
+      startup_template='exec "$SESSION"'
+      ;;
     path) startup_template='exec /custom/session' ;;
   esac
   printf '%s' "$startup_template" >"$startup_home/.config/lightxdm/.xinitrc-xfce"
