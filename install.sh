@@ -298,6 +298,14 @@ configure_pam() {
   de=$1
 
   log "Configuring PAM for $de..."
+  # Never create the login PAM file: a file holding only the optional keyring lines is an unsafe login stack.
+  if [[ ! -f "$LOGIN_FILE" ]]; then
+    log "ERROR: $LOGIN_FILE is missing; lightXDM will not create it."
+    if [[ -e "${LOGIN_FILE}.lightxdm.bak" ]]; then
+      log "Restore it from the backup first: sudo cp ${LOGIN_FILE}.lightxdm.bak $LOGIN_FILE"
+    fi
+    return 1
+  fi
   local module auth_line session_line
   case "$de" in
     plasma)

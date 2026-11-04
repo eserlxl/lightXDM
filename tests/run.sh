@@ -4533,6 +4533,31 @@ else
   fail "configure_pam on failed backup (status=$status, output=$output)"
 fi
 
+# A missing LOGIN_FILE is never created, even when an earlier backup exists
+missing_pam_dir="$TMP_DIR/missing_pam"
+mkdir -p "$missing_pam_dir"
+missing_pam_login="$missing_pam_dir/login"
+printf '#%%PAM-1.0\nauth       include      system-local-login\n' >"${missing_pam_login}.lightxdm.bak"
+set +e
+# shellcheck disable=SC2016  # expand inside the child shell so install.sh owns errexit
+output="$(
+  env -u SHELLOPTS -u SUDO_USER \
+    LOGIN_FILE="$missing_pam_login" \
+    PATH="$STUB_BIN:$PATH" \
+    bash -c '
+      source "$1/install.sh"
+      configure_pam "i3"
+    ' bash "$REPO_ROOT" 2>&1
+)"
+status=$?
+set -e
+if [[ $status -ne 0 && ! -e "$missing_pam_login" && "$output" == *"is missing; lightXDM will not create it"* &&
+  "$output" == *"sudo cp ${missing_pam_login}.lightxdm.bak $missing_pam_login"* ]]; then
+  pass "configure_pam refuses a missing LOGIN_FILE and points at the backup"
+else
+  fail "configure_pam with missing LOGIN_FILE (status=$status, exists=$([[ -e "$missing_pam_login" ]] && echo yes || echo no), output=$output)"
+fi
+
 for polkit_cp_case in backup edited; do
   fail_polkit_rule="$fail_sys_cp_dir/${polkit_cp_case}.rules"
   printf '// foreign administrator rule (%s)\n' "$polkit_cp_case" >"$fail_polkit_rule"
