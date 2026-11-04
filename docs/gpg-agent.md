@@ -7,7 +7,7 @@ lightXDM initializes `gpg-agent` when your desktop session starts so it is ready
 When you log in, your `.xinitrc` sources a helper script that:
 
 1. Starts `gpg-agent` via `gpg-connect-agent /bye`.
-2. Points `SSH_AUTH_SOCK` at the `gpg-agent` SSH socket when `enable-ssh-support` is present in `~/.gnupg/gpg-agent.conf`.
+2. Points `SSH_AUTH_SOCK` at the `gpg-agent` SSH socket when `enable-ssh-support` is present in `~/.gnupg/gpg-agent.conf` (`$GNUPGHOME/gpg-agent.conf` when `GNUPGHOME` is set).
 3. If `SSH_AUTH_SOCK` is still empty, exports the first agent socket found: OpenSSH's `$XDG_RUNTIME_DIR/ssh-agent.socket` (`ssh-agent.socket`), then the GCR SSH agent's `$XDG_RUNTIME_DIR/gcr/ssh` (`gcr-ssh-agent.socket`).
 4. Refreshes the agent's startup tty with `gpg-connect-agent updatestartuptty /bye`.
 
