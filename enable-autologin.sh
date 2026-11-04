@@ -55,7 +55,7 @@ main() {
         echo "Warning: $drop_in still enables autologin."
       fi
     done
-    systemctl daemon-reload
+    systemctl daemon-reload || [[ ! -d "${SYSTEMD_RUN_DIR:-/run/systemd/system}" ]]
     echo "Autologin disabled. Change will take effect at the next login or reboot."
     exit 0
   fi
@@ -111,7 +111,7 @@ ExecStart=-/usr/bin/agetty --autologin $target_user --noclear %I \$TERM" > "$OVE
       echo "Warning: $drop_in overrides autologin with a later ExecStart= setting."
     fi
   done
-  systemctl daemon-reload
+  systemctl daemon-reload || [[ ! -d "${SYSTEMD_RUN_DIR:-/run/systemd/system}" ]]
 
   echo "Autologin enabled for user $target_user on tty1. Change will take effect at the next login or reboot."
   if [[ -f "$LOGIN_FILE" ]] && grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*(pam_kwallet5\.so|pam_gnome_keyring\.so)([[:space:]]|$)' "$LOGIN_FILE"; then

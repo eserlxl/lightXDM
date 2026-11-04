@@ -112,7 +112,7 @@ if [[ -f "$OVERRIDE_FILE" || -L "$OVERRIDE_FILE" ]]; then
   fi
 fi
 if [[ $autologin_removed -eq 1 ]]; then
-  systemctl daemon-reload
+  systemctl daemon-reload || [[ ! -d "${SYSTEMD_RUN_DIR:-/run/systemd/system}" ]]
   echo "Autologin configuration removed. Change will take effect at the next login or reboot."
 elif [[ ! -f "$OVERRIDE_FILE" && ! -L "$OVERRIDE_FILE" ]]; then
   echo "No autologin drop-in found; skipping."

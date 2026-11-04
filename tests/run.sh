@@ -31,6 +31,9 @@ EOF
 cat >"$STUB_BIN/systemctl" <<'EOF'
 #!/usr/bin/env bash
 echo "systemctl $*" >>"${STUB_LOG:-/dev/null}"
+if [[ "${1:-}" == "daemon-reload" && "${STUB_SYSTEMCTL_FAIL_RELOAD:-0}" == "1" ]]; then
+  exit 1
+fi
 if [[ "${1:-}" == "enable" && "${2:-}" == "${STUB_SYSTEMCTL_FAIL_UNIT:-}" ]]; then
   exit 1
 fi
@@ -3792,6 +3795,90 @@ if [[ $status -ne 0 ]] &&
   pass "copy_dotfiles aborts on failed backup without overwriting ~/.bash_profile"
 else
   fail "copy_dotfiles on failed backup (status=$status, output=$output)"
+fi
+
+# Case 66: reload failures are tolerated only when systemd is not running
+if [[ $EUID -eq 0 ]]; then
+  reload_runner=(bash)
+elif [[ $can_unshare -eq 1 ]]; then
+  reload_runner=(unshare -r bash)
+else
+  reload_runner=()
+fi
+if [[ ${#reload_runner[@]} -eq 0 ]]; then
+  skip "daemon-reload failure handling (unshare -r unavailable)"
+else
+  reload_bin="$TMP_DIR/reload_bin"
+  mkdir -p "$reload_bin"
+  cat >"$reload_bin/getent" <<'EOF'
+#!/usr/bin/env bash
+echo 'testuser:x:1000:1000::/home/testuser:/bin/bash'
+EOF
+  chmod +x "$reload_bin/getent"
+  for systemd_state in missing running; do
+    reload_dir="$TMP_DIR/reload_$systemd_state"
+    mkdir -p "$reload_dir/home" "$reload_dir/getty.d" "$reload_dir/state"
+    if [[ "$systemd_state" == running ]]; then
+      mkdir -p "$reload_dir/run"
+    fi
+    printf 'auth optional pam_gnome_keyring.so\n' >"$reload_dir/login"
+    for autologin_action in testuser --disable; do
+      printf '[Service]\n' >"$reload_dir/getty.d/lightxdm-autologin.conf"
+      : >"$STUB_LOG"
+      set +e
+      output="$(env PATH="$reload_bin:$PATH" STUB_SYSTEMCTL_FAIL_RELOAD=1 SYSTEMD_RUN_DIR="$reload_dir/run" OVERRIDE_DIR="$reload_dir/getty.d" LOGIN_FILE="$reload_dir/login" "${reload_runner[@]}" "$REPO_ROOT/enable-autologin.sh" "$autologin_action" 2>&1)"
+      status=$?
+      set -e
+      log_content="$(cat "$STUB_LOG")"
+      if [[ "$autologin_action" == testuser ]]; then
+        completion_message="Autologin enabled for user testuser"
+        autologin_changed=0
+        if grep -Fq -- '--autologin testuser ' "$reload_dir/getty.d/lightxdm-autologin.conf"; then
+          autologin_changed=1
+        fi
+      else
+        completion_message="Autologin disabled."
+        autologin_changed=0
+        if [[ ! -e "$reload_dir/getty.d/lightxdm-autologin.conf" ]]; then
+          autologin_changed=1
+        fi
+      fi
+      if [[ $autologin_changed -eq 1 && "$log_content" == "systemctl daemon-reload" ]] &&
+        { { [[ "$systemd_state" == missing && $status -eq 0 && "$output" == *"$completion_message"* ]] &&
+            [[ "$autologin_action" == --disable || "$output" == *"Warning: PAM keyring unlock"* ]]; } ||
+          [[ "$systemd_state" == running && $status -ne 0 && "$output" != *"$completion_message"* && "$output" != *"Warning: PAM keyring unlock"* ]]; }; then
+        pass "enable-autologin.sh $autologin_action handles reload failure with systemd $systemd_state"
+      else
+        fail "enable-autologin.sh reload failure (action=$autologin_action, systemd=$systemd_state, status=$status, output=$output, log=$log_content)"
+      fi
+    done
+
+    printf '[Service]\n' >"$reload_dir/getty.d/lightxdm-autologin.conf"
+    cp "$POLKIT_RULE_SRC" "$reload_dir/polkit"
+    printf '// original rule\n' >"$reload_dir/polkit.lightxdm.bak"
+    cp "$REPO_ROOT/dotfiles/.bash_profile" "$reload_dir/home/.bash_profile"
+    printf '# original profile\n' >"$reload_dir/home/.bash_profile.lightxdm.bak"
+    printf 'sddm.service\n' >"$reload_dir/state/disabled-display-managers"
+    : >"$STUB_LOG"
+    set +e
+    output="$(env STUB_SYSTEMCTL_FAIL_RELOAD=1 SYSTEMD_RUN_DIR="$reload_dir/run" TARGET_HOME="$reload_dir/home" LOGIN_FILE="$reload_dir/login" AUTOLOGIN_DROPIN="$reload_dir/getty.d/lightxdm-autologin.conf" OVERRIDE_FILE="$reload_dir/getty.d/override.conf" POLKIT_RULE="$reload_dir/polkit" DM_STATE_FILE="$reload_dir/state/disabled-display-managers" "${reload_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1)"
+    status=$?
+    set -e
+    log_content="$(cat "$STUB_LOG")"
+    if [[ ! -e "$reload_dir/getty.d/lightxdm-autologin.conf" && "$log_content" == *"systemctl daemon-reload"* ]] &&
+      { [[ "$systemd_state" == missing && $status -eq 0 && "$output" == *"Uninstall complete."* &&
+           "$(cat "$reload_dir/polkit")" == '// original rule' &&
+           "$(cat "$reload_dir/home/.bash_profile")" == '# original profile' &&
+           ! -e "$reload_dir/polkit.lightxdm.bak" && ! -e "$reload_dir/home/.bash_profile.lightxdm.bak" &&
+           ! -e "$reload_dir/state/disabled-display-managers" && "$log_content" == *"systemctl enable sddm.service"* ]] ||
+        [[ "$systemd_state" == running && $status -ne 0 && "$output" != *"Uninstall complete."* &&
+           -f "$reload_dir/polkit.lightxdm.bak" && -f "$reload_dir/home/.bash_profile.lightxdm.bak" &&
+           -f "$reload_dir/state/disabled-display-managers" && "$log_content" != *"systemctl enable"* ]]; }; then
+      pass "uninstall.sh handles reload failure with systemd $systemd_state"
+    else
+      fail "uninstall.sh reload failure (systemd=$systemd_state, status=$status, output=$output, log=$log_content)"
+    fi
+  done
 fi
 
 exit "$failures"
