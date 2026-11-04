@@ -178,6 +178,7 @@ preserve_dotfile() {
   if [[ -f "$target" && ! -L "$target" ]]; then
     target_sum="$(sha256sum < "$target")"
     for tmpl in "$@"; do
+      [[ "$tmpl" -ef "$target" ]] && continue
       if [[ -f "$tmpl" && "$target_sum" == "$(sha256sum < "$tmpl")" ]]; then
         return 0
       fi
@@ -509,6 +510,10 @@ main() {
   template="$(xinitrc_template "$de")"
   if [[ ! -f "$template" ]]; then
     log "No .xinitrc template for $de: $template. Installation aborted."
+    exit 1
+  fi
+  if [[ "$template" -ef "$HOME/.xinitrc" ]]; then
+    log "The template for $de is ~/.xinitrc itself: $template. Installation aborted."
     exit 1
   fi
 

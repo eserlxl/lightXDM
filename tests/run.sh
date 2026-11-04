@@ -4615,6 +4615,78 @@ else
   fi
 fi
 
+# Case 72b: a user template pointing to ~/.xinitrc must not identify it as a lightXDM file
+for ut_link_de in xfce dwm; do
+  ut_link_dir="$user_tmpl_dir/link_$ut_link_de"
+  ut_link_home="$ut_link_dir/home"
+  mkdir -p "$ut_link_home/.config/lightxdm"
+  printf '# user xinitrc\nexec dwm\n' >"$ut_link_home/.xinitrc"
+  ut_link_hash="$(sha256sum < "$ut_link_home/.xinitrc")"
+  ln -s ../../.xinitrc "$ut_link_home/.config/lightxdm/.xinitrc-dwm"
+  printf '#%%PAM-1.0\n' >"$ut_link_dir/login"
+  set +e
+  output="$(
+    env -u SHELLOPTS -u SUDO_USER \
+      HOME="$ut_link_home" \
+      PATH="$sudo_pw_dir:$STUB_BIN:$PATH" \
+      USER="testuser" \
+      LOGIN_FILE="$ut_link_dir/login" \
+      POLKIT_RULE_DEST="$ut_link_dir/polkit" \
+      DISPLAY_MANAGER_LINK="$ut_link_dir/display-manager.service" \
+      DM_STATE_FILE="$ut_link_dir/state/disabled-display-managers" \
+      bash "$REPO_ROOT/install.sh" --no-packages --de "$ut_link_de" 2>&1
+  )"
+  status=$?
+  set -e
+  if [[ "$ut_link_de" == xfce ]]; then
+    if [[ $status -eq 0 && -f "$ut_link_home/.xinitrc.lightxdm.bak" ]] &&
+      [[ "$(sha256sum < "$ut_link_home/.xinitrc.lightxdm.bak")" == "$ut_link_hash" ]] &&
+      [[ "$(sha256sum < "$ut_link_home/.xinitrc")" == "$(sha256sum < "$REPO_ROOT/dotfiles/.xinitrc-xfce")" ]]; then
+      pass "install.sh backs up ~/.xinitrc when another session's user template links to it"
+    else
+      fail "install.sh backup with linked user template (status=$status, output=$output)"
+    fi
+  else
+    if [[ $status -eq 1 && "$output" == *"template for dwm is ~/.xinitrc itself"* ]] &&
+      [[ "$(sha256sum < "$ut_link_home/.xinitrc")" == "$ut_link_hash" ]] &&
+      [[ "$ut_link_home/.config/lightxdm/.xinitrc-dwm" -ef "$ut_link_home/.xinitrc" ]] &&
+      [[ ! -e "$ut_link_home/.xinitrc.lightxdm.bak" && ! -e "$ut_link_home/.xinitrc.lightxdm.absent" && ! -e "$ut_link_home/.xinitrc.lightxdm-edited" ]]; then
+      pass "install.sh rejects a user template pointing to ~/.xinitrc without changing ~/.xinitrc"
+    else
+      fail "install.sh rejects self template (status=$status, output=$output)"
+    fi
+  fi
+done
+
+if [[ ${#ut_uninstall_runner[@]} -eq 0 ]]; then
+  skip "uninstall.sh keeps ~/.xinitrc when a user template links to it (unshare -r unavailable)"
+else
+  ut_link_keep_home="$user_tmpl_dir/home_link_keep"
+  mkdir -p "$ut_link_keep_home/.config/lightxdm"
+  printf '# user xinitrc\nexec dwm\n' >"$ut_link_keep_home/.xinitrc"
+  ut_link_keep_hash="$(sha256sum < "$ut_link_keep_home/.xinitrc")"
+  ln -s ../../.xinitrc "$ut_link_keep_home/.config/lightxdm/.xinitrc-dwm"
+  set +e
+  output="$(
+    env TARGET_HOME="$ut_link_keep_home" \
+      LOGIN_FILE="$user_tmpl_dir/u_link_login" \
+      AUTOLOGIN_DROPIN="$user_tmpl_dir/u_link_auto" \
+      OVERRIDE_FILE="$user_tmpl_dir/u_link_over" \
+      POLKIT_RULE="$user_tmpl_dir/u_link_polkit" \
+      DM_STATE_FILE="$user_tmpl_dir/u_link_dm" \
+      "${ut_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
+  )"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && -f "$ut_link_keep_home/.xinitrc" ]] &&
+    [[ "$(sha256sum < "$ut_link_keep_home/.xinitrc")" == "$ut_link_keep_hash" ]] &&
+    [[ -L "$ut_link_keep_home/.config/lightxdm/.xinitrc-dwm" && "$ut_link_keep_home/.config/lightxdm/.xinitrc-dwm" -ef "$ut_link_keep_home/.xinitrc" ]]; then
+    pass "uninstall.sh keeps ~/.xinitrc when a user template links to it"
+  else
+    fail "uninstall.sh with linked user template (status=$status, output=$output)"
+  fi
+fi
+
 # Case 73: --list-packages prints the package set one per line without sudo, root/wheel checks, or side effects
 help_list_pkgs_out="$(HOME="$help_home" bash "$REPO_ROOT/install.sh" --help 2>&1)"
 if [[ "$help_list_pkgs_out" == *"--list-packages"* ]]; then
