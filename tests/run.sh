@@ -3939,4 +3939,101 @@ for polkit_cp_case in backup edited; do
   fi
 done
 
+# Case 68: Polkit probes must use sudo when the rule directory is inaccessible
+restricted_polkit_dir="$TMP_DIR/restricted-polkit"
+restricted_polkit_bin="$TMP_DIR/restricted-polkit-bin"
+restricted_polkit_rule="$restricted_polkit_dir/49-nopasswd.rules"
+mkdir -p "$restricted_polkit_dir" "$restricted_polkit_bin"
+chmod 000 "$restricted_polkit_dir"
+if [[ -r "$restricted_polkit_dir" || -x "$restricted_polkit_dir" ]]; then
+  chmod 700 "$restricted_polkit_dir"
+  skip "install_polkit_rule uses sudo for inaccessible rule directory (permissions bypassed, e.g. root)"
+else
+  cat >"$restricted_polkit_bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+set -e
+chmod 700 "$POLKIT_RULE_DIR"
+trap 'chmod 000 "$POLKIT_RULE_DIR"' EXIT
+"$@"
+EOF
+  chmod +x "$restricted_polkit_bin/sudo"
+
+  polkit_path_state() {
+    if [[ -L "$1" ]]; then
+      printf 'link:%s' "$(readlink -- "$1")"
+    elif [[ -f "$1" ]]; then
+      printf 'file:%s' "$(sha256sum < "$1")"
+    else
+      printf 'missing'
+    fi
+  }
+
+  shipped_polkit_state="$(polkit_path_state "$POLKIT_RULE_SRC")"
+  polkit_marker_suffixes=(.lightxdm.bak .lightxdm.absent .lightxdm-edited .lightxdm-edited.1 .lightxdm-edited.2)
+  for restricted_fixture in foreign shipped dangling \
+    backup-missing backup-link-missing absent-missing absent-link-missing \
+    backup backup-link absent absent-link edited edited-link numbered numbered-link; do
+    chmod 700 "$restricted_polkit_dir"
+    rm -f -- "$restricted_polkit_dir/"*
+    printf '// foreign administrator rule\n' >"$restricted_polkit_rule"
+    case "$restricted_fixture" in
+      shipped) cp "$POLKIT_RULE_SRC" "$restricted_polkit_rule" ;;
+      dangling)
+        rm "$restricted_polkit_rule"
+        ln -s missing-rule "$restricted_polkit_rule"
+        ;;
+      *-missing) rm "$restricted_polkit_rule" ;;
+    esac
+    case "$restricted_fixture" in
+      backup-link*) ln -s missing-backup "${restricted_polkit_rule}.lightxdm.bak" ;;
+      backup*|edited*|numbered*) printf '// original backup\n' >"${restricted_polkit_rule}.lightxdm.bak" ;;
+      absent-link*) ln -s missing-marker "${restricted_polkit_rule}.lightxdm.absent" ;;
+      absent*) printf 'preserve marker\n' >"${restricted_polkit_rule}.lightxdm.absent" ;;
+    esac
+    case "$restricted_fixture" in
+      edited-link) ln -s missing-edit "${restricted_polkit_rule}.lightxdm-edited" ;;
+      edited|numbered*) printf '// previous edit\n' >"${restricted_polkit_rule}.lightxdm-edited" ;;
+    esac
+    case "$restricted_fixture" in
+      numbered) printf '// numbered edit\n' >"${restricted_polkit_rule}.lightxdm-edited.1" ;;
+      numbered-link) ln -s missing-numbered-edit "${restricted_polkit_rule}.lightxdm-edited.1" ;;
+    esac
+
+    expected_polkit_markers=()
+    for suffix in "${polkit_marker_suffixes[@]}"; do
+      expected_polkit_markers+=("$(polkit_path_state "$restricted_polkit_rule$suffix")")
+    done
+    case "$restricted_fixture" in
+      foreign|dangling) expected_polkit_markers[0]="$(polkit_path_state "$restricted_polkit_rule")" ;;
+      backup|backup-link|absent|absent-link) expected_polkit_markers[2]="$(polkit_path_state "$restricted_polkit_rule")" ;;
+      edited|edited-link) expected_polkit_markers[3]="$(polkit_path_state "$restricted_polkit_rule")" ;;
+      numbered*) expected_polkit_markers[4]="$(polkit_path_state "$restricted_polkit_rule")" ;;
+    esac
+
+    chmod 000 "$restricted_polkit_dir"
+    set +e
+    # shellcheck disable=SC2016  # source with the destination set before readonly declarations
+    output="$(env -u SHELLOPTS POLKIT_RULE_DEST="$restricted_polkit_rule" \
+      POLKIT_RULE_DIR="$restricted_polkit_dir" PATH="$restricted_polkit_bin:$PATH" \
+      bash -c 'source "$1/install.sh"; install_polkit_rule' bash "$REPO_ROOT" 2>&1)"
+    status=$?
+    set -e
+    chmod 700 "$restricted_polkit_dir"
+    restricted_polkit_ok=1
+    if [[ $status -ne 0 || "$(polkit_path_state "$restricted_polkit_rule")" != "$shipped_polkit_state" ]]; then
+      restricted_polkit_ok=0
+    fi
+    for marker_index in "${!polkit_marker_suffixes[@]}"; do
+      if [[ "$(polkit_path_state "$restricted_polkit_rule${polkit_marker_suffixes[marker_index]}")" != "${expected_polkit_markers[marker_index]}" ]]; then
+        restricted_polkit_ok=0
+      fi
+    done
+    if [[ $restricted_polkit_ok -eq 1 ]]; then
+      pass "install_polkit_rule preserves $restricted_fixture rule state using sudo in an inaccessible directory"
+    else
+      fail "install_polkit_rule inaccessible directory ($restricted_fixture, status=$status, output=$output)"
+    fi
+  done
+fi
+
 exit "$failures"
