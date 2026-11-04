@@ -5,7 +5,7 @@ A lightweight, display-manager-free desktop environment for minimalists, Arch Li
 ## Purpose & Target Users
 - **Minimal RAM/boot time**: No display manager, no bloat, just your DE.
 - **Session auto-start, with Keyring auto-unlock or optional Autologin**: Choose between password login on TTY1 with automatic keyring unlock via PAM (default) or passwordless TTY1 autologin via `enable-autologin.sh` across KDE Plasma (Wayland), XFCE, LXQt, LXDE, MATE, Cinnamon, and i3.
-- **Full Polkit & PAM integration**: `udisks2` defaults for USB mounting, passwordless power actions for local active `wheel` users, and PAM keyring unlock.
+- **Full Polkit & PAM integration**: `udisks2` defaults for USB mounting, passwordless power actions for local active `wheel` users on seat0, and PAM keyring unlock.
 - **Systemd compatible**: Works on Arch Linux and derivatives.
 
 **Target users:**
@@ -17,7 +17,7 @@ A lightweight, display-manager-free desktop environment for minimalists, Arch Li
 ## Why not SDDM/LightDM?
 - No extra daemons or RAM usage
 - Faster boot (no DM startup delay)
-- Simpler troubleshooting (all config in dotfiles)
+- Simpler troubleshooting (session config in dotfiles; system changes limited to `/etc/pam.d/login`, one Polkit rule, and systemd units)
 - No graphical login: boots to TTY1, and your DE auto-starts after login—no need to run `startx` manually
 
 ## Quick Install (Arch Linux)
@@ -41,49 +41,51 @@ bash install.sh
 # bash install.sh --no-keyring --autologin --de i3
 # Or create ~/.config/lightxdm/.xinitrc-<id> to customize before installing (no sudo):
 # bash install.sh --init-template --de i3
+# Every script has a read-only help: bash install.sh --help, bash uninstall.sh --help, bash enable-autologin.sh --help
 ```
 
 > **Important:**
 > - **Do NOT run `install.sh` as root or with `sudo`.** Run it as your regular user. The script will use `sudo` internally when needed.
 > - Your user **must be in the `wheel` group** and have working `sudo` privileges. If not, see the error messages for instructions on how to add your user to the `wheel` group and configure `sudo`.
-> - If you run `sudo bash install.sh` or run as root, the script will exit with an error.
+> - If you run `sudo bash install.sh` or run as root, the script will exit with an error (only `--help` and `--list-packages` work as root, since they change nothing).
 
-Plasma, GNOME, and Budgie now run only on Wayland on Arch Linux and cannot be started with `startx`. Plasma is supported on Wayland: the installer copies `~/.wayland-session` (instead of `~/.xinitrc`), which `.bash_profile` runs on TTY1 in place of `startx`, and skips the Xorg packages. GNOME and Budgie are not supported yet (their Wayland support is planned): the installer refuses them when no supported desktop is installed or when passed with `--de`, before changing packages, dotfiles, PAM, Polkit, or display managers. Installing an X11 desktop later removes a lightXDM `~/.wayland-session`, since it would take precedence over `startx`.
+Plasma, GNOME, and Budgie now run only on Wayland on Arch Linux and cannot be started with `startx`. Plasma is supported on Wayland: the installer copies `~/.wayland-session` (instead of `~/.xinitrc`), which `.bash_profile` runs on TTY1 in place of `startx`, and skips the Xorg packages. GNOME and Budgie are not supported yet (their Wayland support is planned): the installer refuses them when no supported desktop is installed or when passed with `--de`, before changing packages, dotfiles, PAM, Polkit, or display managers. Installing an X11 desktop later removes `~/.wayland-session` when it still matches a lightXDM template (restoring any backup of your own), since it would take precedence over `startx`; an edited or foreign `~/.wayland-session` is kept with a warning.
 
 - **Detects your installed DE** (Plasma, XFCE, LXQt, LXDE, MATE, Cinnamon, or i3), or pass `--de <id>` (`plasma`, `xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, or `i3`) to configure a specific desktop explicitly. When several desktops are installed, GNOME and Budgie are skipped while a supported desktop is present, a single remaining supported desktop is configured automatically, and two or more supported desktops prompt you to choose (or pass `--de <id>` to select non-interactively).
 - If no DE is found (and `--de` is not passed), it **prompts you to choose one** to install.
 - Installs the minimal required packages for your chosen DE, including the correct polkit agent:
   - lxqt-policykit for LXQt
+  - polkit-kde-agent for Plasma
   - polkit-gnome for all other supported DEs.
-- Pass `--list-packages --de <id>` (`xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, or `i3`; combinable with `--no-keyring`) to print the package set `install.sh` would install, one per line, and exit 0 without needing `sudo` or changing anything—useful to review the packages beforehand or install them yourself before running `--no-packages`.
-- Pass `--no-packages` (optionally with `--de <id>`) to skip all package installation when you already have the required packages. Before changing dotfiles, PAM, Polkit or display managers, the installer requires `startx` and the plain command name in the selected template's last `exec ` line to be on PATH (also after package installation). Templates without a simple `exec` command skip the session-command check. Dotfiles, PAM, Polkit and display manager setup then run. For a custom session, create `~/.config/lightxdm/.xinitrc-<id>` and run, for example, `bash install.sh --no-packages --de dwm` with `~/.config/lightxdm/.xinitrc-dwm` present (`~/.config/lightxdm/.xinitrc-<id>` also overrides any bundled `dotfiles/.xinitrc-<id>` template). `bash install.sh --init-template --de <id>` creates that file for you without sudo: a copy of the bundled template for a built-in id, or the i3 template with the session id and `exec` command swapped for a custom one; it never overwrites an existing file. Custom ids must match `^[a-z0-9_][a-z0-9_-]*$` (no leading hyphen) and use GNOME Keyring for PAM (pass `--no-keyring` to skip PAM setup); install the required packages yourself.
+- Pass `--list-packages --de <id>` (`plasma`, `xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, or `i3`; combinable with `--no-keyring`) to print the package set `install.sh` would install, one per line, and exit 0 without needing `sudo` or changing anything—useful to review the packages beforehand or install them yourself before running `--no-packages`.
+- Pass `--no-packages` (optionally with `--de <id>`) to skip all package installation when you already have the required packages. Before changing dotfiles, PAM, Polkit or display managers, the installer checks the session commands (also after package installation): for an X11 desktop, `startx` and the plain command name in the selected template's last `exec ` line must be on PATH; for Plasma, every absolute path on the last `exec` line of its Wayland template must be executable (no `startx` needed). Templates without a simple `exec` command skip the session-command check. Dotfiles, PAM, Polkit and display manager setup then run. For a custom session, create `~/.config/lightxdm/.xinitrc-<id>` and run, for example, `bash install.sh --no-packages --de dwm` with `~/.config/lightxdm/.xinitrc-dwm` present (`~/.config/lightxdm/.xinitrc-<id>` also overrides any bundled `dotfiles/.xinitrc-<id>` template). `bash install.sh --init-template --de <id>` creates that file for you without sudo: a copy of the bundled template for a built-in id, or the i3 template with the session id and `exec` command swapped for a custom one; it never overwrites an existing file. For Plasma it creates `~/.config/lightxdm/.wayland-session-plasma` instead. Custom ids must match `^[a-z0-9_][a-z0-9_-]*$` (no leading hyphen) and use GNOME Keyring for PAM (pass `--no-keyring` to skip PAM setup); install the required packages yourself.
 - Pass `--no-keyring` (combinable with `--de <id>`, `--list-packages`, `--no-packages`, and `--no-polkit-rule`) to omit `gnome-keyring` and `kwallet-pam` from package installation and skip `/etc/pam.d/login` keyring setup.
 - Pass `--no-polkit-rule` (combinable with `--de <id>`, `--no-packages`, and `--no-keyring`) to skip installing `/etc/polkit-1/rules.d/49-nopasswd.rules` and keep your existing Polkit authorization policy.
-- Copies dotfiles to your home, including the correct `.xinitrc-<de>` for your DE.
-- Appends PAM lines to `/etc/pam.d/login` (unless `--no-keyring` is passed; after a one-time backup at `/etc/pam.d/login.lightxdm.bak`; `uninstall.sh` removes the lines lightXDM added and restores the backup when nothing else changed, otherwise it keeps your other edits and leaves the backup for review) for GNOME Keyring (`pam_gnome_keyring.so`) auto-unlock.
-- Configures Polkit (unless `--no-polkit-rule` is passed) for passwordless power-off, reboot, suspend, and hibernate for local active `wheel` users, while USB mounting uses `udisks2` defaults.
+- Copies dotfiles to your home: `.bash_profile`, the session template as `~/.xinitrc` (X11 desktops) or `~/.wayland-session` (Plasma), and the gpg-agent helper (`~/.gpg-agent-kwallet` for Plasma, `~/.gpg-agent-gnome` otherwise).
+- Appends PAM lines to `/etc/pam.d/login` (unless `--no-keyring` is passed; after a one-time backup at `/etc/pam.d/login.lightxdm.bak`; `uninstall.sh` removes the lines lightXDM added and restores the backup when nothing else changed, otherwise it keeps your other edits and leaves the backup for review) for keyring auto-unlock: KWallet (`pam_kwallet5.so`) for Plasma, GNOME Keyring (`pam_gnome_keyring.so`) for the other desktops.
+- Configures Polkit (unless `--no-polkit-rule` is passed) for passwordless power-off, reboot, suspend, and hibernate for local active `wheel` users on seat0, while USB mounting uses `udisks2` defaults.
 - Your DE will start automatically on TTY1 after login—no need to run 'startx'.
 
 ### Two Login Modes
-1. **Default (Password Login + Keyring Auto-Unlock):** Type your password on TTY1; the desktop starts automatically and GNOME Keyring unlocks through PAM.
-2. **Optional Autologin (`enable-autologin.sh`):** Run `sudo bash enable-autologin.sh YOURUSER` (`--disable` to revert; changes apply at the next login or reboot) to log in on TTY1 without a password; `bash enable-autologin.sh --status` shows the current state without sudo. Because login happens without a password, PAM cannot unlock the keyring automatically—the keyring stays locked and asks for its password in the desktop unless its password is empty (`enable-autologin.sh` prints this warning). Pass `--no-keyring` to `install.sh` (combinable with `--de <id>` and `--no-packages`) to skip installing `gnome-keyring` / `kwallet-pam` and skip adding keyring lines to `/etc/pam.d/login`—recommended for autologin users who do not use a keyring and for window-manager setups without one. If keyring unlock is already set up, `sudo bash uninstall.sh --keyring-only` removes only the keyring lines lightXDM added to `/etc/pam.d/login` and leaves everything else in place. On a new install, `bash install.sh --no-keyring --autologin` skips the keyring setup and enables autologin in one run: it calls `enable-autologin.sh` for you after the rest of the install succeeds (`--autologin` refuses to run without `--no-keyring`).
+1. **Default (Password Login + Keyring Auto-Unlock):** Type your password on TTY1; the desktop starts automatically and the keyring unlocks through PAM (KWallet on Plasma, GNOME Keyring elsewhere).
+2. **Optional Autologin (`enable-autologin.sh`):** Run `sudo bash enable-autologin.sh YOURUSER` (`--disable` to revert; changes apply at the next login or reboot) to log in on TTY1 without a password; `bash enable-autologin.sh --status` shows the current state without sudo. Because login happens without a password, PAM cannot unlock the keyring automatically—the keyring stays locked and asks for its password in the desktop unless its password is empty (`enable-autologin.sh` prints this warning when PAM keyring lines are configured). Pass `--no-keyring` to `install.sh` (combinable with `--de <id>` and `--no-packages`) to skip installing `gnome-keyring` / `kwallet-pam` and skip adding keyring lines to `/etc/pam.d/login`—recommended for autologin users who do not use a keyring and for window-manager setups without one. If keyring unlock is already set up, `sudo bash uninstall.sh --keyring-only` removes only the keyring lines lightXDM added to `/etc/pam.d/login` and leaves everything else in place. On a new install, `bash install.sh --no-keyring --autologin` skips the keyring setup and enables autologin in one run: it calls `enable-autologin.sh` for you after the rest of the install succeeds (`--autologin` refuses to run without `--no-keyring`).
 
 ## Features
 
 lightXDM has recently expanded to support many desktop environments and improved its installation workflow:
 
 ### Multi-Desktop Environment Support
-- **Automatic Detection:** The installer detects if XFCE, LXQt, LXDE, MATE, Cinnamon, or i3 is already installed.
+- **Automatic Detection:** The installer detects if Plasma, XFCE, LXQt, LXDE, MATE, Cinnamon, or i3 is already installed.
 - **User Choice:** If no DE is found, the installer prompts you to select and install one (XFCE, LXQt, LXDE, MATE, Cinnamon, or i3).
-- **Minimal Install:** Only the essential packages for your chosen DE are installed, including the correct polkit agent (lxqt-policykit for LXQt, polkit-gnome for all others), keeping the system lightweight.
-- **Dotfiles:** The correct `.xinitrc-<de>` and `.bash_profile` are copied for your DE, ensuring seamless session start on TTY1.
+- **Minimal Install:** Only the essential packages for your chosen DE are installed, including the correct polkit agent (lxqt-policykit for LXQt, polkit-kde-agent for Plasma, polkit-gnome for all others), keeping the system lightweight.
+- **Dotfiles:** `.bash_profile` and the session template for your DE (`~/.xinitrc`, or `~/.wayland-session` for Plasma) are copied, ensuring seamless session start on TTY1.
 
 ### Display Manager Independence
-- **No Display Manager Needed:** The script disables enabled display managers (SDDM, LightDM, GDM, LXDM, `ly@tty1`, and whatever unit `display-manager.service` points to) to ensure a pure TTY+startx workflow; `ly` on other TTYs is left alone.
+- **No Display Manager Needed:** The script disables enabled display managers (SDDM, LightDM, GDM, LXDM, `ly@tty1`, and whatever unit `display-manager.service` points to) to ensure a pure TTY workflow (`startx`, or Plasma's Wayland session); `ly` on other TTYs is left alone unless `display-manager.service` points to it.
 - **Auto-Start on TTY1:** After login on TTY1, your desktop environment starts automatically—no need to run `startx` manually. Optional passwordless autologin is available via `enable-autologin.sh` (with the trade-off that the keyring cannot unlock automatically unless its password is empty).
 
 ### System Integration
-- **Polkit & PAM:** The installer installs a Polkit rule granting passwordless power-off, reboot, suspend, and hibernate to local active `wheel` users (leaving USB mounting to `udisks2` defaults), and appends PAM lines to `/etc/pam.d/login` (with a one-time backup `/etc/pam.d/login.lightxdm.bak`; `uninstall.sh` removes only the lines lightXDM added and keeps the backup for review if you changed anything else) for GNOME Keyring (`pam_gnome_keyring.so`) auto-unlock.
+- **Polkit & PAM:** The installer installs a Polkit rule granting passwordless power-off, reboot, suspend, and hibernate to local active `wheel` users on seat0 (leaving USB mounting to `udisks2` defaults), and appends PAM lines to `/etc/pam.d/login` (with a one-time backup `/etc/pam.d/login.lightxdm.bak`; `uninstall.sh` removes only the lines lightXDM added and keeps the backup for review if you changed anything else) for keyring auto-unlock (`pam_kwallet5.so` on Plasma, `pam_gnome_keyring.so` elsewhere).
 - **GPG Agent Integration**: Starts `gpg-agent` at session startup, points `SSH_AUTH_SOCK` at it when `enable-ssh-support` is set in `~/.gnupg/gpg-agent.conf`, and refreshes its startup tty (see `docs/gpg-agent.md` for optional keyring-backed `pinentry` setup).
 - **Documentation:** See the `docs/` directory for technical details on KWallet auto-unlock, Polkit integration, and autologin setup.
 
@@ -91,6 +93,7 @@ lightXDM has recently expanded to support many desktop environments and improved
 
 | Feature                        | Status                                      |
 |--------------------------------|-----------------------------------------------------------|
+| Plasma support                 | auto-detect/install, Wayland via `~/.wayland-session`, KWallet, polkit-kde-agent, dotfiles |
 | XFCE support                   | auto-detect/install, GNOME Keyring, polkit-gnome, dotfiles    |
 | LXQt support                   | auto-detect/install, GNOME Keyring, lxqt-policykit, dotfiles   |
 | LXDE support                   | auto-detect/install, GNOME Keyring, polkit-gnome, dotfiles    |
@@ -99,10 +102,10 @@ lightXDM has recently expanded to support many desktop environments and improved
 | i3 support                     | auto-detect/install, GNOME Keyring, polkit-gnome, dotfiles    |
 | No DE installed                | Prompts user, installs selected DE                                |
 | Display manager free           | disables SDDM, LightDM, GDM, LXDM, ly@tty1 and the display-manager.service unit |
-| Auto-start & optional autologin| TTY1 auto-start via `.bash_profile`/`.xinitrc-*`; optional autologin via `enable-autologin.sh` |
-| Polkit integration             | passwordless power-off/reboot/suspend/hibernate for local active `wheel` users, `udisks2` defaults for USB, correct agent for each DE |
-| PAM integration                | appends `pam_gnome_keyring.so` to `/etc/pam.d/login` with one-time backup |
-| GPG Agent Integration          | starts `gpg-agent`, sets `SSH_AUTH_SOCK` when `enable-ssh-support` is set, and refreshes its tty via `~/.gpg-agent-gnome` |
+| Auto-start & optional autologin| TTY1 auto-start via `.bash_profile` (`~/.xinitrc` or `~/.wayland-session`); optional autologin via `enable-autologin.sh` |
+| Polkit integration             | passwordless power-off/reboot/suspend/hibernate for local active `wheel` users on seat0, `udisks2` defaults for USB, correct agent for each DE |
+| PAM integration                | appends `pam_kwallet5.so` (Plasma) or `pam_gnome_keyring.so` to `/etc/pam.d/login` with one-time backup |
+| GPG Agent Integration          | starts `gpg-agent`, sets `SSH_AUTH_SOCK` when `enable-ssh-support` is set, and refreshes its tty via `~/.gpg-agent-kwallet` (Plasma) or `~/.gpg-agent-gnome` |
 | Documentation                  | `README.md`, `docs/`                                        |
 
 ---
@@ -110,7 +113,7 @@ See `docs/` for technical details and customization tips.
 
 ## Uninstall
 
-Run `sudo bash uninstall.sh` from your user account to restore backups and remove lightXDM configuration. Display managers disabled by the installer are re-enabled for the next boot, using `/etc/lightxdm/disabled-display-managers`; the state file is then removed. Other display managers are left unchanged. To use a different state path, set `DM_STATE_FILE` to the same path for both scripts (pass it through sudo when uninstalling). To keep everything else and remove only the keyring lines lightXDM added to `/etc/pam.d/login` (for example to switch to autologin), run `sudo bash uninstall.sh --keyring-only`.
+Run `sudo bash uninstall.sh` from your user account to restore backups and remove lightXDM configuration. Display managers disabled by the installer are re-enabled for the next boot, using `/etc/lightxdm/disabled-display-managers`; the state file is then removed (a unit that fails to re-enable stays recorded there and uninstall exits with an error). Other display managers are left unchanged. To use a different state path, set `DM_STATE_FILE` to the same path for both scripts (pass it through sudo when uninstalling). To keep everything else and remove only the keyring lines lightXDM added to `/etc/pam.d/login` (for example to switch to autologin), run `sudo bash uninstall.sh --keyring-only`.
 
 ## Project Structure
 ```
@@ -142,6 +145,6 @@ lightXDM/
 │   └── startx-autologin.md
 ├── tests/
 │   ├── docker-arch.sh   # real PAM checks in an Arch container (needs Docker)
-│   └── run.sh
+│   └── run.sh           # behavior suite (--strict fails on skipped checks; --help)
 └── LICENSE
 ```

@@ -58,7 +58,7 @@ polkit.addRule(function(action, subject) {
 
 ### ✅ What this allows:
 
-* **Shutdown, reboot, suspend, hibernate** from the GUI for local, active users in the `wheel` group (no password required), including while other sessions (SSH, another tty) are open
+* **Shutdown, reboot, suspend, hibernate** from the GUI for local, active users in the `wheel` group on seat0 (no password required), including while other sessions (SSH, another tty) are open
 * **Mounting removable drives** (`udisks2` defaults) and **power management** (`UPower` defaults) for active local users without overriding upstream policies
 
 ### ❌ What it doesn't allow:
@@ -66,12 +66,13 @@ polkit.addRule(function(action, subject) {
 * Arbitrary admin-level system changes
 * Package installations via polkit
 * Actions from unknown services
-* Remote or inactive users to shutdown/reboot/suspend
+* Remote or inactive users, or sessions on other seats, to shutdown/reboot/suspend
 
 This hybrid rule balances usability and security: trusted local users can power off or reboot without a password, but other privileged actions still require authentication.
 
 > **Note:** The correct polkit agent is installed automatically for your desktop environment:
 > - LXQt: lxqt-policykit
+> - Plasma: polkit-kde-agent
 > - All other supported desktops: polkit-gnome
 
 ---

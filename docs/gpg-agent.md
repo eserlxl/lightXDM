@@ -4,7 +4,7 @@ lightXDM initializes `gpg-agent` when your desktop session starts so it is ready
 
 ## How It Works
 
-When you log in, your `.xinitrc` sources a helper script that:
+When you log in, your session script (`~/.xinitrc` on X11 desktops, `~/.wayland-session` on Plasma) sources a helper script that:
 
 1. Starts `gpg-agent` via `gpg-connect-agent /bye`.
 2. Points `SSH_AUTH_SOCK` at the `gpg-agent` SSH socket when `enable-ssh-support` is present in `~/.gnupg/gpg-agent.conf` (`$GNUPGHOME/gpg-agent.conf` when `GNUPGHOME` is set).
@@ -17,7 +17,7 @@ These scripts do not configure a `pinentry-program` or desktop keyring integrati
 
 -   **`~/.gpg-agent-kwallet` Script**: Sourced by `~/.wayland-session` (from `.wayland-session-plasma`) to start `gpg-agent`, set `SSH_AUTH_SOCK` when `enable-ssh-support` is enabled, and refresh the agent's tty.
 
-### For GNOME, XFCE, and other non-Plasma environments
+### For XFCE and other non-Plasma environments
 
 -   **`~/.gpg-agent-gnome` Script**: Sourced by the relevant `.xinitrc-*` file to start `gpg-agent`, set `SSH_AUTH_SOCK` when `enable-ssh-support` is enabled, and refresh the agent's tty.
 
