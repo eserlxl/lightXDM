@@ -2,13 +2,18 @@
 # uninstall.sh: Revert changes made by install scripts (PAM, autologin, Polkit)
 set -e
 
+keyring_only=0
 if [[ $# -gt 0 ]]; then
   if [[ $# -eq 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
-    echo "Usage: sudo bash $0 [-h|--help]"
+    echo "Usage: sudo bash $0 [-h|--help] [--keyring-only]"
+    echo "  --keyring-only  remove only the keyring lines lightXDM added to /etc/pam.d/login (for switching to autologin)"
     exit 0
+  elif [[ $# -eq 1 && "$1" == "--keyring-only" ]]; then
+    keyring_only=1
+  else
+    echo "Usage: sudo bash $0 [-h|--help] [--keyring-only]" >&2
+    exit 1
   fi
-  echo "Usage: sudo bash $0 [-h|--help]" >&2
-  exit 1
 fi
 
 if [[ $EUID -ne 0 ]]; then
@@ -79,6 +84,11 @@ if [ -f "$BACKUP_FILE" ]; then
   fi
 else
   echo "No $BACKUP_FILE found; skipping PAM restore."
+fi
+
+if [[ $keyring_only -eq 1 ]]; then
+  echo "Done (--keyring-only): dotfiles, autologin, the Polkit rule and display managers are unchanged."
+  exit 0
 fi
 
 # Remove autologin drop-in and any legacy lightXDM-written override.conf

@@ -258,6 +258,43 @@ xinitrc_template() {
   fi
 }
 
+# Create ~/.config/lightxdm/.xinitrc-<id> to edit: a copy of the built-in template,
+# or for a custom window manager the i3 template with its session id and command swapped.
+init_xinitrc_template() {
+  local id="$1" dest="$HOME/.config/lightxdm/.xinitrc-$1"
+  case "$id" in
+    plasma | gnome | budgie)
+      log "$id now runs only on Wayland and cannot be started with startx (see README.md)."
+      return 1
+      ;;
+  esac
+  # Explicit character list: [a-z] ranges miss "i" under some locales (for example tr_TR).
+  if [[ -z "$id" || "$id" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* ]]; then
+    log "Invalid desktop id: $id (use lowercase letters, digits, _ and -)"
+    return 1
+  fi
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    log "$dest already exists; edit it, or remove it to start over."
+    return 1
+  fi
+  mkdir -p "$HOME/.config/lightxdm"
+  case "$id" in
+    xfce | lxqt | lxde | mate | cinnamon | i3)
+      cp -- "$SCRIPT_DIR/dotfiles/.xinitrc-$id" "$dest"
+      chmod 755 "$dest"
+      log "Created $dest from the built-in $id template. Edit it, then run: bash install.sh --de $id"
+      ;;
+    *)
+      sed -e "s/^# \.xinitrc for lightXDM: start i3 /# .xinitrc for lightXDM: start $id /" \
+        -e "s/^\(export [A-Z_]*\)=i3\$/\1=$id/" \
+        -e "s/^# i3 does not update the activation environment itself, unlike full desktops\.\$/# Window managers often do not update the activation environment themselves./" \
+        -e "s/^exec i3\$/exec $id/" "$SCRIPT_DIR/dotfiles/.xinitrc-i3" >"$dest"
+      chmod 755 "$dest"
+      log "Created $dest for $id. Check its exec line, then run: bash install.sh --no-packages --de $id"
+      ;;
+  esac
+}
+
 # Check startup commands before changing the user's session configuration
 check_session_commands() {
   local template="$1" line session_line="" session_command package
@@ -386,7 +423,7 @@ configure_pam() {
   local drop_in
   for drop_in in "$AUTOLOGIN_DROPIN_DIR"/*.conf; do
     if [[ -f "$drop_in" ]] && grep -Eqs '^[[:space:]]*ExecStart[[:space:]]*=.*--autologin' "$drop_in"; then
-      log "WARNING: TTY1 autologin is enabled ($drop_in); it cannot unlock the keyring. Disable it with 'sudo bash enable-autologin.sh --disable', or keep autologin without keyring unlock: run 'sudo bash uninstall.sh', then reinstall with --no-keyring."
+      log "WARNING: TTY1 autologin is enabled ($drop_in); it cannot unlock the keyring. Disable it with 'sudo bash enable-autologin.sh --disable', or keep autologin and remove the keyring lines with 'sudo bash uninstall.sh --keyring-only'."
       break
     fi
   done
@@ -482,7 +519,8 @@ main() {
   local no_keyring=0
   local no_polkit_rule=0
   local autologin=0
-  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--no-packages] [--no-keyring] [--no-polkit-rule] [--autologin]"
+  local init_template=0
+  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--init-template] [--no-packages] [--no-keyring] [--no-polkit-rule] [--autologin]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -501,6 +539,8 @@ A default run, as your regular user (it asks for sudo once):
 Options:
   --de <id>         configure this desktop: xfce lxqt lxde mate cinnamon i3
   --list-packages   print the packages for --de <id> and exit; changes nothing
+  --init-template   create ~/.config/lightxdm/.xinitrc-<id> for --de <id> to edit, and exit
+                    (any lowercase id: a custom one starts from the i3 template)
   --no-packages     skip package installation
   --no-keyring      skip keyring packages and the PAM lines (use with autologin)
   --no-polkit-rule  keep your Polkit policy; do not install the rule
@@ -530,6 +570,10 @@ EOF
         autologin=1
         shift
         ;;
+      --init-template)
+        init_template=1
+        shift
+        ;;
       --de)
         if [[ $# -lt 2 || "$2" == -* ]]; then
           log "Missing argument for --de (valid ids: xfce lxqt lxde mate cinnamon i3)"
@@ -551,6 +595,16 @@ EOF
     log "--autologin requires --no-keyring: autologin passes no password, so PAM cannot unlock the keyring."
     echo "$usage" >&2
     exit 1
+  fi
+
+  if [[ $init_template -eq 1 ]]; then
+    if [[ $de_specified -eq 0 ]]; then
+      log "--init-template requires --de <id>"
+      echo "$usage" >&2
+      exit 1
+    fi
+    init_xinitrc_template "$de"
+    exit $?
   fi
 
   if [[ $list_only -eq 1 ]]; then

@@ -4777,7 +4777,7 @@ for autologin_pam_case in without with; do
   set -e
   if [[ $status -eq 0 ]] && {
     [[ "$autologin_pam_case" == with && "$output" == *"TTY1 autologin is enabled"* && "$output" == *"enable-autologin.sh --disable"* &&
-      "$output" == *"uninstall.sh', then reinstall with --no-keyring"* ]] ||
+      "$output" == *"sudo bash uninstall.sh --keyring-only"* ]] ||
     [[ "$autologin_pam_case" == without && "$output" != *"TTY1 autologin is enabled"* ]];
   }; then
     pass "configure_pam autologin warning ($autologin_pam_case autologin drop-in)"
@@ -6049,6 +6049,70 @@ if [[ $status -eq 1 && "$log_content" == $'sudo -v\ndetect_de' &&
   pass "main exits 1 with a --de hint on detected chooser EOF"
 else
   fail "main detected chooser EOF (status=$status, log=$log_content, output=$output)"
+fi
+
+# --init-template writes an editable user template and exits before sudo or any system change
+init_home="$TMP_DIR/init_home"
+mkdir -p "$init_home"
+: >"$STUB_LOG"
+set +e
+out_builtin="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de xfce 2>&1)"
+status_builtin=$?
+out_again="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de xfce 2>&1)"
+status_again=$?
+out_custom="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de dwm 2>&1)"
+status_custom=$?
+out_wayland="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de gnome 2>&1)"
+status_wayland=$?
+out_no_de="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template 2>&1)"
+status_no_de=$?
+set -e
+init_xfce="$init_home/.config/lightxdm/.xinitrc-xfce"
+init_dwm="$init_home/.config/lightxdm/.xinitrc-dwm"
+if [[ $status_builtin -eq 0 && "$out_builtin" == *"Created $init_xfce"* ]] && cmp -s "$init_xfce" "$REPO_ROOT/dotfiles/.xinitrc-xfce" &&
+  [[ "$(stat -c '%a' "$init_xfce")" == 755 && $status_again -eq 1 && "$out_again" == *"already exists"* ]]; then
+  pass "install.sh --init-template copies a built-in template once and refuses to overwrite it"
+else
+  fail "install.sh --init-template built-in (status=$status_builtin/$status_again, output=$out_builtin / $out_again)"
+fi
+if [[ $status_custom -eq 0 && "$(stat -c '%a' "$init_dwm" 2>/dev/null)" == 755 ]] && bash -n "$init_dwm" &&
+  grep -qx 'exec dwm' "$init_dwm" && grep -qx 'export DESKTOP_SESSION=dwm' "$init_dwm" &&
+  grep -qx 'export XDG_CURRENT_DESKTOP=dwm' "$init_dwm" && ! grep -q 'i3' "$init_dwm" &&
+  [[ "$out_custom" == *"--no-packages --de dwm"* ]]; then
+  pass "install.sh --init-template renders a custom window manager template from the i3 one"
+else
+  fail "install.sh --init-template custom (status=$status_custom, output=$out_custom, content=$(cat "$init_dwm" 2>/dev/null))"
+fi
+if [[ $status_wayland -eq 1 && ! -e "$init_home/.config/lightxdm/.xinitrc-gnome" && $status_no_de -eq 1 &&
+  "$out_no_de" == *"--init-template requires --de"* && ! -s "$STUB_LOG" ]]; then
+  pass "install.sh --init-template refuses Wayland-only ids and a missing --de, and never calls sudo"
+else
+  fail "install.sh --init-template refusals (status=$status_wayland/$status_no_de, log=$(cat "$STUB_LOG"), output=$out_wayland / $out_no_de)"
+fi
+
+# uninstall.sh --keyring-only removes lightXDM's PAM lines and leaves everything else in place
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh --keyring-only (unshare -r unavailable)"
+else
+  ko_dir="$TMP_DIR/keyring_only"
+  mkdir -p "$ko_dir/home"
+  printf '#%%PAM-1.0\nauth       include      system-local-login\n' >"$ko_dir/login.lightxdm.bak"
+  cp "$ko_dir/login.lightxdm.bak" "$ko_dir/login"
+  cp "$ko_dir/login.lightxdm.bak" "$ko_dir/login.expected"
+  printf 'auth       optional   pam_gnome_keyring.so\nsession    optional   pam_gnome_keyring.so auto_start\n' >>"$ko_dir/login"
+  printf '[Service]\n' >"$ko_dir/autologin.conf"
+  printf 'rule\n' >"$ko_dir/polkit.rules"
+  printf 'xfce\n' >"$ko_dir/home/.xinitrc"
+  set +e
+  output="$(env TARGET_HOME="$ko_dir/home" LOGIN_FILE="$ko_dir/login" AUTOLOGIN_DROPIN="$ko_dir/autologin.conf" POLKIT_RULE="$ko_dir/polkit.rules" DM_STATE_FILE="$ko_dir/dm" unshare -r bash "$REPO_ROOT/uninstall.sh" --keyring-only 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && "$output" == *"Done (--keyring-only)"* && -f "$ko_dir/autologin.conf" && -f "$ko_dir/polkit.rules" && -f "$ko_dir/home/.xinitrc" ]] &&
+    cmp -s "$ko_dir/login" "$ko_dir/login.expected"; then
+    pass "uninstall.sh --keyring-only restores PAM and keeps autologin, Polkit and dotfiles"
+  else
+    fail "uninstall.sh --keyring-only (status=$status, output=$output, login=$(cat "$ko_dir/login"))"
+  fi
 fi
 
 exit "$failures"
