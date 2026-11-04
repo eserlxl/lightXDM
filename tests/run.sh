@@ -4,13 +4,88 @@
 # shellcheck disable=SC2030,SC2031
 set -euo pipefail
 
+strict_mode=0
+
+print_harness_help() {
+  cat <<EOF
+Usage: bash $0 [-h|--help] [--strict]
+
+Run the behavior test suite for lightXDM scripts.
+
+Options:
+  -h, --help  Show this help message and exit
+  --strict    Exit 1 if any test check is skipped (also enabled by LIGHTXDM_STRICT_TESTS=1)
+EOF
+}
+
+parse_harness_args() {
+  local usage="Usage: bash $0 [-h|--help] [--strict]"
+  local show_help=0
+
+  if [[ "${LIGHTXDM_STRICT_TESTS:-0}" == "1" ]]; then
+    strict_mode=1
+  fi
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h | --help)
+        show_help=1
+        shift
+        ;;
+      --strict)
+        strict_mode=1
+        shift
+        ;;
+      *)
+        echo "$usage" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ $show_help -eq 1 ]]; then
+    print_harness_help
+    exit 0
+  fi
+}
+
+passes=0
+skips=0
+failures=0
+
+pass() {
+  echo "PASS: $1"
+  passes=$((passes + 1))
+}
+
+skip() {
+  echo "SKIP: $1"
+  skips=$((skips + 1))
+}
+
+fail() {
+  echo "FAIL: $1"
+  failures=$((failures + 1))
+}
+
+finish_harness() {
+  echo "SUMMARY: PASS=$passes SKIP=$skips FAIL=$failures"
+  if [[ $failures -gt 0 || ( $strict_mode -eq 1 && $skips -gt 0 ) ]]; then
+    exit 1
+  fi
+  exit 0
+}
+
+parse_harness_args "$@"
+set --
+
 REPO_ROOT="$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-unset SUDO_USER
+unset SUDO_USER LIGHTXDM_STRICT_TESTS
 export HOME="$TMP_DIR/home"
 mkdir -p "$HOME"
 
@@ -74,21 +149,6 @@ export DM_STATE_FILE="$TMP_DIR/lightxdm/disabled-display-managers"
 
 # shellcheck source=install.sh disable=SC1091
 source "$REPO_ROOT/install.sh"
-
-failures=0
-
-pass() {
-  echo "PASS: $1"
-}
-
-skip() {
-  echo "SKIP: $1"
-}
-
-fail() {
-  echo "FAIL: $1"
-  failures=$((failures + 1))
-}
 
 can_unshare=0
 if unshare -r true >/dev/null 2>&1; then
@@ -3349,7 +3409,9 @@ EOF
 fi
 
 # Enabling autologin replaces a legacy lightXDM override.conf for another user
-if [[ $can_unshare -eq 1 ]]; then
+if [[ $can_unshare -eq 0 ]]; then
+  skip "enable-autologin.sh removes a legacy override.conf when switching users (unshare -r unavailable)"
+else
   switch_dir="$TMP_DIR/autologin_switch"
   mkdir -p "$switch_dir/getty.d"
   # shellcheck disable=SC2016  # $TERM is a literal for systemd, not a shell expansion
@@ -6164,4 +6226,4 @@ else
   fi
 fi
 
-exit "$failures"
+finish_harness
