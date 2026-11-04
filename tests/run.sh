@@ -3020,18 +3020,25 @@ else
   fail "PAM constant drift between install.sh and uninstall.sh (${pam_sync_errors[*]})"
 fi
 
-# Case 57: .xinitrc-* templates export session vars, source xinitrc.d before gpg-agent, manage activation/polkit per DE, and exec the session command
+# Case 57: .xinitrc-* templates merge X resources/keymaps, export session vars, source xinitrc.d before gpg-agent, manage activation/polkit per DE, and exec the session command
 xinit_test_dir="$TMP_DIR/xinitrc_templates"
 xinit_home="$xinit_test_dir/home"
 xinit_empty_home="$xinit_test_dir/empty_home"
+xinit_sys_xresources="$xinit_test_dir/sys.Xresources"
+xinit_sys_xmodmap="$xinit_test_dir/sys.Xmodmap"
 xinit_d="$xinit_test_dir/xinitrc.d"
 xinit_empty_d="$xinit_test_dir/empty_xinitrc.d"
 xinit_bin="$xinit_test_dir/bin"
+xinit_no_xtools_bin="$xinit_test_dir/no_xtools_bin"
 xinit_log="$xinit_test_dir/calls.log"
+xinit_err="$xinit_test_dir/stderr.log"
 xinit_pid_file="$xinit_test_dir/subshell.pid"
-mkdir -p "$xinit_home" "$xinit_empty_home" "$xinit_d" "$xinit_empty_d" "$xinit_bin"
+mkdir -p "$xinit_home" "$xinit_empty_home" "$xinit_d" "$xinit_empty_d" "$xinit_bin" "$xinit_no_xtools_bin"
 
+: >"$xinit_sys_xresources"
+: >"$xinit_sys_xmodmap"
 : >"$xinit_home/.Xresources"
+: >"$xinit_home/.Xmodmap"
 cat >"$xinit_home/.xprofile" <<'EOF'
 echo "xprofile" >>"$XINITRC_LOG"
 EOF
@@ -3055,6 +3062,10 @@ cat >"$xinit_bin/xrdb" <<'EOF'
 #!/usr/bin/env bash
 echo "xrdb $*" >>"$XINITRC_LOG"
 EOF
+cat >"$xinit_bin/xmodmap" <<'EOF'
+#!/usr/bin/env bash
+echo "xmodmap $*" >>"$XINITRC_LOG"
+EOF
 cat >"$xinit_bin/dbus-update-activation-environment" <<'EOF'
 #!/usr/bin/env bash
 printf 'dbus-update-activation-environment %s|DESKTOP_SESSION=%s|XDG_CURRENT_DESKTOP=%s|XDG_SESSION_TYPE=%s|SSH_AUTH_SOCK=%s\n' \
@@ -3068,7 +3079,13 @@ cat >"$xinit_bin/polkit-gnome-authentication-agent-1" <<'EOF'
 #!/usr/bin/env bash
 echo "polkit-gnome-authentication-agent-1${*:+ $*}" >>"$XINITRC_LOG"
 EOF
-chmod +x "$xinit_bin/xrdb" "$xinit_bin/dbus-update-activation-environment" "$xinit_bin/polkit-gnome-authentication-agent-1"
+chmod +x "$xinit_bin/xrdb" "$xinit_bin/xmodmap" "$xinit_bin/dbus-update-activation-environment" "$xinit_bin/polkit-gnome-authentication-agent-1"
+
+for xinit_tool in bash sleep; do
+  ln -sf "$(command -v "$xinit_tool")" "$xinit_no_xtools_bin/$xinit_tool"
+done
+ln -sf "$xinit_bin/dbus-update-activation-environment" "$xinit_no_xtools_bin/dbus-update-activation-environment"
+ln -sf "$xinit_bin/polkit-gnome-authentication-agent-1" "$xinit_no_xtools_bin/polkit-gnome-authentication-agent-1"
 
 xinit_specs=(
   "plasma|plasma|KDE|<unset>|gpg-agent-kwallet|0|0|startplasma-x11"
@@ -3102,6 +3119,7 @@ printf 'session:%s|pid=%s|DESKTOP_SESSION=%s|XDG_CURRENT_DESKTOP=%s|XDG_SESSION_
   "\${SSH_AUTH_SOCK-<unset>}" >>"\$XINITRC_LOG"
 EOF
   chmod +x "$xinit_bin/$session_cmd"
+  ln -sf "$xinit_bin/$session_cmd" "$xinit_no_xtools_bin/$session_cmd"
 done
 
 xinit_template_files=("$REPO_ROOT"/dotfiles/.xinitrc-*)
@@ -3119,13 +3137,31 @@ for spec in "${xinit_specs[@]}"; do
     exp_ssh="/tmp/kwallet-gpg-ssh.sock"
   fi
 
+  common_lines=(
+    "xprofile"
+    "xinitrc.d"
+    "$exp_gpg"
+  )
+  if [[ "$exp_dbus" -eq 1 ]]; then
+    common_lines+=(
+      "dbus-update-activation-environment --systemd XDG_CURRENT_DESKTOP DESKTOP_SESSION XDG_SESSION_TYPE SSH_AUTH_SOCK|DESKTOP_SESSION=$exp_ds|XDG_CURRENT_DESKTOP=$exp_desktop|XDG_SESSION_TYPE=x11|SSH_AUTH_SOCK=$exp_ssh"
+    )
+  fi
+  if [[ "$exp_polkit" -eq 1 ]]; then
+    common_lines+=("polkit-gnome-authentication-agent-1")
+  fi
+
   : >"$xinit_log"
+  : >"$xinit_err"
   : >"$xinit_pid_file"
   set +e
   (
+    exec 2>"$xinit_err"
     echo "$BASHPID" >"$xinit_pid_file"
     export HOME="$xinit_home"
     export PATH="$xinit_bin:$PATH"
+    export SYS_XRESOURCES="$xinit_sys_xresources"
+    export SYS_XMODMAP="$xinit_sys_xmodmap"
     export XINITRC_D="$xinit_d"
     export POLKIT_GNOME_AGENT="$xinit_bin/polkit-gnome-authentication-agent-1"
     export XINITRC_LOG="$xinit_log"
@@ -3137,32 +3173,88 @@ for spec in "${xinit_specs[@]}"; do
 
   subshell_pid="$(cat "$xinit_pid_file")"
   expected_lines=(
+    "xrdb -merge $xinit_sys_xresources"
     "xrdb -merge $xinit_home/.Xresources"
-    "xprofile"
-    "xinitrc.d"
-    "$exp_gpg"
-  )
-  if [[ "$exp_dbus" -eq 1 ]]; then
-    expected_lines+=(
-      "dbus-update-activation-environment --systemd XDG_CURRENT_DESKTOP DESKTOP_SESSION XDG_SESSION_TYPE SSH_AUTH_SOCK|DESKTOP_SESSION=$exp_ds|XDG_CURRENT_DESKTOP=$exp_desktop|XDG_SESSION_TYPE=x11|SSH_AUTH_SOCK=$exp_ssh"
-    )
-  fi
-  if [[ "$exp_polkit" -eq 1 ]]; then
-    expected_lines+=("polkit-gnome-authentication-agent-1")
-  fi
-  expected_lines+=(
+    "xmodmap $xinit_sys_xmodmap"
+    "xmodmap $xinit_home/.Xmodmap"
+    "${common_lines[@]}"
     "session:$exp_cmd|pid=$subshell_pid|DESKTOP_SESSION=$exp_ds|XDG_CURRENT_DESKTOP=$exp_desktop|XDG_SESSION_TYPE=x11|GDK_BACKEND=$exp_gdk|SSH_AUTH_SOCK=$exp_ssh"
   )
   expected_log="$(printf '%s\n' "${expected_lines[@]}")"
   actual_log="$(cat "$xinit_log")"
+  full_err="$(cat "$xinit_err")"
 
   : >"$xinit_log"
+  : >"$xinit_err"
   : >"$xinit_pid_file"
   set +e
   (
+    exec 2>"$xinit_err"
+    echo "$BASHPID" >"$xinit_pid_file"
+    export HOME="$xinit_home"
+    export PATH="$xinit_bin:$PATH"
+    export SYS_XRESOURCES="$xinit_test_dir/missing_Xresources"
+    export SYS_XMODMAP="$xinit_test_dir/missing_Xmodmap"
+    export XINITRC_D="$xinit_d"
+    export POLKIT_GNOME_AGENT="$xinit_bin/polkit-gnome-authentication-agent-1"
+    export XINITRC_LOG="$xinit_log"
+    unset DESKTOP_SESSION XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GDK_BACKEND SSH_AUTH_SOCK
+    exec bash "$tmpl"
+  )
+  user_only_status=$?
+  set -e
+
+  user_only_pid="$(cat "$xinit_pid_file")"
+  expected_user_only_lines=(
+    "xrdb -merge $xinit_home/.Xresources"
+    "xmodmap $xinit_home/.Xmodmap"
+    "${common_lines[@]}"
+    "session:$exp_cmd|pid=$user_only_pid|DESKTOP_SESSION=$exp_ds|XDG_CURRENT_DESKTOP=$exp_desktop|XDG_SESSION_TYPE=x11|GDK_BACKEND=$exp_gdk|SSH_AUTH_SOCK=$exp_ssh"
+  )
+  expected_user_only_log="$(printf '%s\n' "${expected_user_only_lines[@]}")"
+  actual_user_only_log="$(cat "$xinit_log")"
+  user_only_err="$(cat "$xinit_err")"
+
+  : >"$xinit_log"
+  : >"$xinit_err"
+  : >"$xinit_pid_file"
+  set +e
+  (
+    exec 2>"$xinit_err"
+    echo "$BASHPID" >"$xinit_pid_file"
+    export HOME="$xinit_home"
+    export PATH="$xinit_no_xtools_bin"
+    export SYS_XRESOURCES="$xinit_sys_xresources"
+    export SYS_XMODMAP="$xinit_sys_xmodmap"
+    export XINITRC_D="$xinit_d"
+    export POLKIT_GNOME_AGENT="$xinit_no_xtools_bin/polkit-gnome-authentication-agent-1"
+    export XINITRC_LOG="$xinit_log"
+    unset DESKTOP_SESSION XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GDK_BACKEND SSH_AUTH_SOCK
+    exec "$xinit_no_xtools_bin/bash" "$tmpl"
+  )
+  no_xtools_status=$?
+  set -e
+
+  no_xtools_pid="$(cat "$xinit_pid_file")"
+  expected_no_xtools_lines=(
+    "${common_lines[@]}"
+    "session:$exp_cmd|pid=$no_xtools_pid|DESKTOP_SESSION=$exp_ds|XDG_CURRENT_DESKTOP=$exp_desktop|XDG_SESSION_TYPE=x11|GDK_BACKEND=$exp_gdk|SSH_AUTH_SOCK=$exp_ssh"
+  )
+  expected_no_xtools_log="$(printf '%s\n' "${expected_no_xtools_lines[@]}")"
+  actual_no_xtools_log="$(cat "$xinit_log")"
+  no_xtools_err="$(cat "$xinit_err")"
+
+  : >"$xinit_log"
+  : >"$xinit_err"
+  : >"$xinit_pid_file"
+  set +e
+  (
+    exec 2>"$xinit_err"
     echo "$BASHPID" >"$xinit_pid_file"
     export HOME="$xinit_empty_home"
     export PATH="$xinit_bin:$PATH"
+    export SYS_XRESOURCES="$xinit_test_dir/missing_Xresources"
+    export SYS_XMODMAP="$xinit_test_dir/missing_Xmodmap"
     export XINITRC_D="$xinit_empty_d"
     export POLKIT_GNOME_AGENT="$xinit_test_dir/missing_polkit_agent"
     export XINITRC_LOG="$xinit_log"
@@ -3184,12 +3276,15 @@ for spec in "${xinit_specs[@]}"; do
   )
   expected_empty_log="$(printf '%s\n' "${expected_empty_lines[@]}")"
   actual_empty_log="$(cat "$xinit_log")"
+  empty_err="$(cat "$xinit_err")"
 
   # shellcheck disable=SC2016  # matching literal parameter default expressions in templates
   {
     tmpl_active="$(grep -Ev '^[[:space:]]*#' "$tmpl")"
     defaults_ok=1
-    if [[ "$tmpl_active" != *'${XINITRC_D:-/etc/X11/xinit/xinitrc.d}'* ]]; then
+    if [[ "$tmpl_active" != *'${SYS_XRESOURCES:-/etc/X11/xinit/.Xresources}'* ||
+      "$tmpl_active" != *'${SYS_XMODMAP:-/etc/X11/xinit/.Xmodmap}'* ||
+      "$tmpl_active" != *'${XINITRC_D:-/etc/X11/xinit/xinitrc.d}'* ]]; then
       defaults_ok=0
     fi
     if [[ "$exp_polkit" -eq 1 && "$tmpl_active" != *'${POLKIT_GNOME_AGENT:-/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1}'* ]]; then
@@ -3197,12 +3292,14 @@ for spec in "${xinit_specs[@]}"; do
     fi
   }
 
-  if [[ $status -eq 0 && "$actual_log" == "$expected_log" &&
-    $empty_status -eq 0 && "$actual_empty_log" == "$expected_empty_log" &&
+  if [[ $status -eq 0 && -z "$full_err" && "$actual_log" == "$expected_log" &&
+    $user_only_status -eq 0 && -z "$user_only_err" && "$actual_user_only_log" == "$expected_user_only_log" &&
+    $no_xtools_status -eq 0 && -z "$no_xtools_err" && "$actual_no_xtools_log" == "$expected_no_xtools_log" &&
+    $empty_status -eq 0 && -z "$empty_err" && "$actual_empty_log" == "$expected_empty_log" &&
     $defaults_ok -eq 1 ]]; then
-    pass ".xinitrc-$de exports session env, runs xinitrc.d before $exp_gpg, and execs $exp_cmd"
+    pass ".xinitrc-$de merges X resources/keymaps, exports session env, runs xinitrc.d before $exp_gpg, and execs $exp_cmd"
   else
-    fail ".xinitrc-$de (status=$status, log=$actual_log, expected=$expected_log, empty_status=$empty_status, empty_log=$actual_empty_log, defaults_ok=$defaults_ok)"
+    fail ".xinitrc-$de (status=$status, err=$full_err, log=$actual_log, expected=$expected_log, user_only=$user_only_status:$user_only_err:$actual_user_only_log, no_xtools=$no_xtools_status:$no_xtools_err:$actual_no_xtools_log, empty_status=$empty_status, empty_err=$empty_err, empty_log=$actual_empty_log, defaults_ok=$defaults_ok)"
   fi
 done
 
