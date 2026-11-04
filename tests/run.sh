@@ -108,7 +108,7 @@ else
   fail "install_packages invokes pacman for i3 (status=$status, log=$log_content)"
 fi
 
-# Case 3: prompt_de_selection maps "1" to "plasma" without log or PS3 leakage
+# Case 3: prompt_de_selection maps "1" to "xfce" without log or PS3 leakage
 unset PS3
 prompt_out="$TMP_DIR/prompt_out"
 set +e
@@ -116,15 +116,15 @@ prompt_de_selection <<<"1" >"$prompt_out" 2>/dev/null
 status=$?
 set -e
 output="$(cat "$prompt_out")"
-if [[ $status -eq 0 && "$output" == "plasma" && -z "${PS3+x}" ]]; then
-  pass "prompt_de_selection maps option 1 to plasma without leaking log or PS3"
+if [[ $status -eq 0 && "$output" == "xfce" && -z "${PS3+x}" ]]; then
+  pass "prompt_de_selection maps option 1 to xfce without leaking log or PS3"
 else
   fail "prompt_de_selection option 1 (status=$status, output=$output, PS3=${PS3-<unset>})"
 fi
 
-# Case 4: prompt_de_selection returns 2 with empty stdout on Quit ("10")
+# Case 4: prompt_de_selection returns 2 with empty stdout on Quit ("7")
 set +e
-output="$(prompt_de_selection <<<"10" 2>/dev/null)"
+output="$(prompt_de_selection <<<"7" 2>/dev/null)"
 status=$?
 set -e
 if [[ $status -eq 2 && -z "$output" ]]; then
@@ -325,6 +325,50 @@ for missing_template_mode in packages no-packages; do
     pass "main stops before installation when the session template is missing ($missing_template_mode)"
   else
     fail "main with missing session template ($missing_template_mode, status=$status, log=$log_content, output=$output)"
+  fi
+done
+
+# Case 10c: Wayland-only desktops are refused before any installation step
+for refused_de in plasma gnome budgie; do
+  for refused_mode in detected explicit skip-options; do
+    refused_args=()
+    expected_refusal_log=$'sudo -v\ndetect_de'
+    if [[ "$refused_mode" != "detected" ]]; then
+      refused_args=(--de "$refused_de")
+      expected_refusal_log="sudo -v"
+    fi
+    if [[ "$refused_mode" == "skip-options" ]]; then
+      refused_args+=(--no-packages --no-keyring --no-polkit-rule)
+    fi
+    : >"$STUB_LOG"
+    set +e
+    output="$(STUB_DETECTED_DE="$refused_de" run_main_with_stubs "$sudo_pw_dir" "${refused_args[@]}" 2>&1)"
+    status=$?
+    set -e
+    log_content="$(cat "$STUB_LOG")"
+    if [[ $status -eq 1 && "$output" == *"$refused_de now runs only on Wayland and cannot be started with startx (see README.md)."* &&
+      "$log_content" == "$expected_refusal_log" && "$output" != *"lightXDM install complete!"* ]]; then
+      pass "main refuses $refused_de before any installation step ($refused_mode)"
+    else
+      fail "main refusal of $refused_de ($refused_mode, status=$status, log=$log_content, output=$output)"
+    fi
+  done
+done
+
+# Case 10d: all six X11 desktops still run every installation step
+for supported_de in xfce lxqt lxde mate cinnamon i3; do
+  : >"$STUB_LOG"
+  set +e
+  output="$(STUB_DETECTED_DE="$supported_de" run_main_with_stubs "$sudo_pw_dir" 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -eq 0 && "$log_content" == *"install_packages $supported_de"* &&
+    "$log_content" == *"copy_dotfiles $supported_de"* && "$log_content" == *"configure_pam $supported_de"* &&
+    "$log_content" == *"install_polkit_rule"* && "$log_content" == *"disable_display_managers"* ]]; then
+    pass "main still configures $supported_de"
+  else
+    fail "main with $supported_de (status=$status, log=$log_content, output=$output)"
   fi
 done
 
@@ -1021,7 +1065,7 @@ else
 fi
 
 # Zero-padded menu numbers are read as decimal, not octal
-for padded in "08:budgie" "09:i3"; do
+for padded in "05:cinnamon" "06:i3"; do
   set +e
   output="$(prompt_de_selection <<<"${padded%%:*}" 2>/dev/null)"
   status=$?
@@ -1536,8 +1580,8 @@ for spaced in " 1" "+1"; do
   output="$(prompt_de_selection <<<"$spaced" 2>/dev/null)"
   status=$?
   set -e
-  if [[ $status -eq 0 && "$output" == "plasma" ]]; then
-    pass "prompt_de_selection maps '$spaced' to plasma"
+  if [[ $status -eq 0 && "$output" == "xfce" ]]; then
+    pass "prompt_de_selection maps '$spaced' to xfce"
   else
     fail "prompt_de_selection '$spaced' (status=$status, output=$output)"
   fi
@@ -1779,13 +1823,13 @@ fi
 # Case 42: main --de <id> overrides detect_de/prompt_de_selection and rejects invalid or missing ids
 : >"$STUB_LOG"
 set +e
-output="$(STUB_DETECTED_DE=plasma run_main_with_stubs "$sudo_pw_dir" --de i3 2>&1)"
+output="$(STUB_DETECTED_DE=xfce run_main_with_stubs "$sudo_pw_dir" --de i3 2>&1)"
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
 if [[ $status -eq 0 && "$log_content" == *"install_packages i3"* && "$log_content" == *"copy_dotfiles i3"* && "$log_content" == *"configure_pam i3"* ]] &&
-  [[ "$log_content" != *"detect_de"* && "$log_content" != *"prompt_de_selection"* && "$log_content" != *"plasma"* ]]; then
-  pass "main --de i3 configures i3 and skips detect_de even when plasma would be detected"
+  [[ "$log_content" != *"detect_de"* && "$log_content" != *"prompt_de_selection"* && "$log_content" != *"xfce"* ]]; then
+  pass "main --de i3 configures i3 and skips detect_de even when xfce would be detected"
 else
   fail "main --de i3 override (status=$status, log=$log_content, output=$output)"
 fi
@@ -1796,7 +1840,7 @@ output="$(run_main_with_stubs "$sudo_pw_dir" --de bogus 2>&1)"
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
-if [[ $status -eq 1 && "$output" == *"plasma gnome xfce lxqt lxde mate cinnamon budgie i3"* && -z "$log_content" ]]; then
+if [[ $status -eq 1 && "$output" == *"xfce lxqt lxde mate cinnamon i3"* && -z "$log_content" ]]; then
   pass "main --de bogus prints valid ids and exits 1"
 else
   fail "main --de bogus (status=$status, log=$log_content, output=$output)"
@@ -3397,7 +3441,7 @@ done
 
 no_kr_specs=(
   "detected-i3|i3|--no-keyring|i3 xterm polkit-gnome|.gpg-agent-gnome"
-  "de-plasma|plasma|--no-keyring --de plasma|plasma-desktop konsole dolphin polkit-kde-agent|.gpg-agent-kwallet"
+  "de-lxqt|lxqt|--no-keyring --de lxqt|lxqt xdg-utils lxterminal lxqt-policykit|.gpg-agent-gnome"
   "de-first-xfce|xfce|--de xfce --no-keyring|xfce4 xfce4-session xfce4-terminal polkit-gnome|.gpg-agent-gnome"
 )
 for spec in "${no_kr_specs[@]}"; do
@@ -3559,7 +3603,7 @@ fi
 
 for default_polkit_spec in \
   "default||Auto-unlock and Polkit rules are set" \
-  "de-plasma|--de plasma|Auto-unlock and Polkit rules are set" \
+  "de-lxqt|--de lxqt|Auto-unlock and Polkit rules are set" \
   "no-packages|--no-packages|Auto-unlock and Polkit rules are set" \
   "no-keyring|--no-keyring|Polkit rules are set (keyring setup skipped)"; do
   IFS='|' read -r dp_label dp_flags dp_summary <<<"$default_polkit_spec"
@@ -3584,7 +3628,7 @@ done
 
 for skip_polkit_spec in \
   "alone|--no-polkit-rule|i3|1|1|Auto-unlock is set (Polkit rule skipped)" \
-  "with-de|--no-polkit-rule --de plasma|plasma|1|1|Auto-unlock is set (Polkit rule skipped)" \
+  "with-de|--no-polkit-rule --de lxqt|lxqt|1|1|Auto-unlock is set (Polkit rule skipped)" \
   "de-first|--de xfce --no-polkit-rule|xfce|1|1|Auto-unlock is set (Polkit rule skipped)" \
   "no-packages|--no-packages --no-polkit-rule|i3|0|1|Auto-unlock is set (Polkit rule skipped)" \
   "no-keyring|--no-keyring --no-polkit-rule|i3|1|0|Keyring setup and Polkit rule skipped" \

@@ -63,8 +63,8 @@ detect_de() {
 # Prompt user to select a DE
 prompt_de_selection() {
   local PS3 opt i
-  local options=("KDE Plasma" "GNOME" "XFCE" "LXQt" "LXDE" "MATE" "Cinnamon" "Budgie" "i3" "Quit")
-  local ids=(plasma gnome xfce lxqt lxde mate cinnamon budgie i3)
+  local options=("XFCE" "LXQt" "LXDE" "MATE" "Cinnamon" "i3" "Quit")
+  local ids=(xfce lxqt lxde mate cinnamon i3)
 
   log "No supported desktop environment detected."
   PS3="Please select a desktop environment to install: "
@@ -378,7 +378,7 @@ main() {
         ;;
       --de)
         if [[ $# -lt 2 || "$2" == -* ]]; then
-          log "Missing argument for --de (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
+          log "Missing argument for --de (valid ids: xfce lxqt lxde mate cinnamon i3)"
           echo "$usage" >&2
           exit 1
         fi
@@ -399,7 +399,7 @@ main() {
       *)
         # Explicit character list: [a-z] ranges miss "i" under some locales (for example tr_TR).
         if [[ $no_packages -ne 1 || -z "$de" || "$de" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* || ! -f "$SCRIPT_DIR/dotfiles/.xinitrc-$de" ]]; then
-          log "Unsupported desktop environment: $de (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
+          log "Unsupported desktop environment: $de (valid ids: xfce lxqt lxde mate cinnamon i3)"
           exit 1
         fi
         ;;
@@ -441,6 +441,13 @@ main() {
       log "Detected desktop environment: $de"
     fi
   fi
+
+  case "$de" in
+    plasma | gnome | budgie)
+      log "$de now runs only on Wayland and cannot be started with startx (see README.md). To configure another installed desktop, pass --de <id>."
+      exit 1
+      ;;
+  esac
 
   if [[ ! -f "$SCRIPT_DIR/dotfiles/.xinitrc-$de" ]]; then
     log "No .xinitrc template for $de: $SCRIPT_DIR/dotfiles/.xinitrc-$de. Installation aborted."
