@@ -75,6 +75,43 @@ for desktop in plasma gnome xfce lxqt lxde mate cinnamon budgie i3; do
   fi
 done
 
+pacman -Fy
+
+last_exec_cmd() {
+  local file=$1 line cmd=""
+  local exec_re='^[[:space:]]*exec[[:space:]]+(--[[:space:]]+)?([^[:space:]#]+)'
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ $exec_re && "${BASH_REMATCH[2]}" != "--" ]]; then
+      cmd="${BASH_REMATCH[2]}"
+    fi
+  done <"$file"
+  printf '%s\n' "$cmd"
+}
+
+for desktop in xfce lxqt lxde mate cinnamon i3; do
+  template="$REPO_ROOT/dotfiles/.xinitrc-$desktop"
+  if [[ ! -f "$template" ]]; then
+    fail "Missing template for $desktop: $template"
+    continue
+  fi
+  exec_cmd="$(last_exec_cmd "$template")"
+  if [[ -z "$exec_cmd" || "$exec_cmd" == */ ]]; then
+    fail "No valid exec command in template for $desktop ($exec_cmd)"
+  elif pkg_out="$(pacman -F "usr/bin/$exec_cmd")" && [[ -n "${pkg_out//[[:space:]]/}" ]]; then
+    pass "Exec command for $desktop ($exec_cmd) is shipped (${pkg_out%%$'\n'*})"
+  else
+    fail "Exec command for $desktop ($exec_cmd) is not shipped by any package"
+  fi
+done
+
+for required_path in /usr/bin/startx /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1; do
+  if pkg_out="$(pacman -F "${required_path#/}")" && [[ -n "${pkg_out//[[:space:]]/}" ]]; then
+    pass "Required command $required_path is shipped (${pkg_out%%$'\n'*})"
+  else
+    fail "Required command $required_path is not shipped by any package"
+  fi
+done
+
 pam_auth() {
   local user=$1
   local pw=$2
