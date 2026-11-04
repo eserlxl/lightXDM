@@ -2647,4 +2647,46 @@ EOF
   fi
 fi
 
+# Case 56: configure_pam PAM constants stay in sync with uninstall.sh strip patterns
+rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+write_stock_login
+configure_pam "plasma" 2>/dev/null
+configure_pam "gnome" 2>/dev/null
+pam_sync_errors=()
+pam_seen_lines=()
+uninstall_active_lines="$(grep -Ev '^[[:space:]]*#' "$REPO_ROOT/uninstall.sh")"
+for pam_const in PAM_KWALLET_AUTH PAM_KWALLET_SESSION PAM_GNOME_KEYRING_AUTH PAM_GNOME_KEYRING_SESSION; do
+  pam_decl="$(declare -p "$pam_const" 2>/dev/null || true)"
+  pam_line="${!pam_const-}"
+  if [[ "$pam_decl" != "declare -r ${pam_const}="* || -z "$pam_line" ]]; then
+    pam_sync_errors+=("${pam_const}:not-readonly")
+    continue
+  fi
+  if [[ ${#pam_seen_lines[@]} -gt 0 ]]; then
+    for seen_line in "${pam_seen_lines[@]}"; do
+      if [[ "$seen_line" == "$pam_line" ]]; then
+        pam_sync_errors+=("${pam_const}:duplicate")
+        continue 2
+      fi
+    done
+  fi
+  pam_seen_lines+=("$pam_line")
+  if ! grep -Fxq -- "$pam_line" "$LOGIN_FILE"; then
+    pam_sync_errors+=("${pam_const}:not-written-by-configure_pam")
+  fi
+  pam_pattern="^${pam_line//./\\.}\$"
+  if ! grep -Fq -- "$pam_pattern" <<<"$uninstall_active_lines"; then
+    pam_sync_errors+=("${pam_const}:${pam_pattern}")
+  fi
+done
+uninstall_pam_count="$(grep -Ec '\^-?(auth|session|account|password)[[:space:]]' <<<"$uninstall_active_lines" || true)"
+if [[ "$uninstall_pam_count" -ne 4 ]]; then
+  pam_sync_errors+=("uninstall_pam_count=${uninstall_pam_count}")
+fi
+if [[ ${#pam_sync_errors[@]} -eq 0 ]]; then
+  pass "configure_pam PAM constants match uninstall.sh strip patterns"
+else
+  fail "PAM constant drift between install.sh and uninstall.sh (${pam_sync_errors[*]})"
+fi
+
 exit "$failures"

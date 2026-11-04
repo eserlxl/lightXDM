@@ -9,6 +9,10 @@ readonly DM_LIST=(sddm lightdm gdm lxdm)
 readonly DISPLAY_MANAGER_LINK="${DISPLAY_MANAGER_LINK:-/etc/systemd/system/display-manager.service}"
 readonly DM_STATE_FILE="${DM_STATE_FILE:-/etc/lightxdm/disabled-display-managers}"
 readonly LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
+readonly PAM_KWALLET_AUTH="auth       optional   pam_kwallet5.so"
+readonly PAM_KWALLET_SESSION="session    optional   pam_kwallet5.so force_run"
+readonly PAM_GNOME_KEYRING_AUTH="auth       optional   pam_gnome_keyring.so"
+readonly PAM_GNOME_KEYRING_SESSION="session    optional   pam_gnome_keyring.so auto_start"
 readonly POLKIT_RULE_SRC="$SCRIPT_DIR/polkit/49-nopasswd.rules"
 readonly POLKIT_RULE_DEST="${POLKIT_RULE_DEST:-/etc/polkit-1/rules.d/49-nopasswd.rules}"
 
@@ -226,13 +230,13 @@ configure_pam() {
   case "$de" in
     plasma)
       module="pam_kwallet5.so"
-      auth_line="auth       optional   pam_kwallet5.so"
-      session_line="session    optional   pam_kwallet5.so force_run"
+      auth_line="$PAM_KWALLET_AUTH"
+      session_line="$PAM_KWALLET_SESSION"
       ;;
     gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3)
       module="pam_gnome_keyring.so"
-      auth_line="auth       optional   pam_gnome_keyring.so"
-      session_line="session    optional   pam_gnome_keyring.so auto_start"
+      auth_line="$PAM_GNOME_KEYRING_AUTH"
+      session_line="$PAM_GNOME_KEYRING_SESSION"
       ;;
     *)
       return 0
