@@ -4036,4 +4036,175 @@ EOF
   done
 fi
 
+# Case 69: disable_display_managers records and disables an enabled ly@tty1.service while leaving ly@tty2.service untouched
+ly_dir="$TMP_DIR/ly_dm"
+ly_bin="$ly_dir/bin"
+ly_state="$ly_dir/state/disabled-display-managers"
+ly_missing_link="$ly_dir/display-manager.service"
+mkdir -p "$ly_bin"
+cat >"$ly_bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+echo "systemctl $*" >>"$STUB_LOG"
+case "${1:-}" in
+  list-unit-files)
+    printf '%s\n' "ly@.service disabled"
+    ;;
+  is-enabled)
+    case "${3:-${2:-}}" in
+      ly@tty1.service)
+        printf '%s\n' "${STUB_LY_TTY1_STATE:-enabled}"
+        [[ "${STUB_LY_TTY1_STATE:-enabled}" == "enabled" ]]
+        ;;
+      ly@tty2.service)
+        echo enabled
+        ;;
+      ly@.service)
+        echo indirect
+        ;;
+      *)
+        echo disabled
+        exit 1
+        ;;
+    esac
+    ;;
+  disable)
+    if [[ -f "${DM_STATE_FILE:-}" ]] && grep -Fxq -- "${2:-}" "$DM_STATE_FILE"; then
+      echo "recorded-before-disable ${2:-}" >>"$STUB_LOG"
+    fi
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+chmod +x "$ly_bin/systemctl"
+
+: >"$STUB_LOG"
+set +e
+# shellcheck disable=SC2016  # source with DM_STATE_FILE and DISPLAY_MANAGER_LINK set before readonly declarations
+output="$(
+  env -u SHELLOPTS \
+    PATH="$ly_bin:$STUB_BIN:$PATH" \
+    DM_STATE_FILE="$ly_state" \
+    DISPLAY_MANAGER_LINK="$ly_missing_link" \
+    bash -c 'source "$1/install.sh"; disable_display_managers' bash "$REPO_ROOT" 2>&1
+)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 0 && -f "$ly_state" ]] &&
+  [[ "$(cat "$ly_state")" == "ly@tty1.service" ]] &&
+  grep -Fxq 'recorded-before-disable ly@tty1.service' "$STUB_LOG" &&
+  [[ "$(grep -Fxc 'systemctl disable ly@tty1.service' "$STUB_LOG")" -eq 1 ]] &&
+  ! grep -Fq 'ly@tty2.service' "$ly_state" &&
+  ! grep -Fq 'ly@tty2.service' "$STUB_LOG" &&
+  [[ "$(PATH="$ly_bin:$PATH" systemctl is-enabled ly@tty2.service)" == "enabled" ]] &&
+  [[ "$output" == *"Disabled display manager(s): ly@tty1"* ]]; then
+  pass "disable_display_managers records and disables enabled ly@tty1.service and leaves ly@tty2.service alone"
+else
+  fail "disable_display_managers ly@tty1.service (status=$status, state=$(cat "$ly_state" 2>/dev/null || true), log=$log_content, output=$output)"
+fi
+
+set +e
+# shellcheck disable=SC2016
+output="$(
+  env -u SHELLOPTS \
+    PATH="$ly_bin:$STUB_BIN:$PATH" \
+    DM_STATE_FILE="$ly_state" \
+    DISPLAY_MANAGER_LINK="$ly_missing_link" \
+    bash -c 'source "$1/install.sh"; disable_display_managers' bash "$REPO_ROOT" 2>&1
+)"
+status=$?
+set -e
+if [[ $status -eq 0 && "$(cat "$ly_state")" == "ly@tty1.service" ]]; then
+  pass "disable_display_managers keeps a single ly@tty1.service entry across reruns"
+else
+  fail "disable_display_managers ly@tty1.service rerun (status=$status, state=$(cat "$ly_state" 2>/dev/null || true), output=$output)"
+fi
+
+for ly_non_enabled in disabled indirect enabled-runtime; do
+  ly_other_state="$ly_dir/state_${ly_non_enabled}/disabled-display-managers"
+  : >"$STUB_LOG"
+  set +e
+  # shellcheck disable=SC2016
+  output="$(
+    env -u SHELLOPTS \
+      PATH="$ly_bin:$STUB_BIN:$PATH" \
+      STUB_LY_TTY1_STATE="$ly_non_enabled" \
+      DM_STATE_FILE="$ly_other_state" \
+      DISPLAY_MANAGER_LINK="$ly_missing_link" \
+      bash -c 'source "$1/install.sh"; disable_display_managers' bash "$REPO_ROOT" 2>&1
+  )"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && ! -e "$ly_other_state" ]] &&
+    ! grep -Fq 'systemctl disable' "$STUB_LOG" &&
+    [[ "$output" == *"No enabled display managers found."* ]]; then
+    pass "disable_display_managers ignores ly@tty1.service when is-enabled reports $ly_non_enabled"
+  else
+    fail "disable_display_managers ly@tty1.service $ly_non_enabled (status=$status, log=$(cat "$STUB_LOG"), output=$output)"
+  fi
+done
+
+ly_readonly_dir="$ly_dir/readonly"
+mkdir -p "$ly_readonly_dir"
+chmod 555 "$ly_readonly_dir"
+if [[ -w "$ly_readonly_dir" ]]; then
+  skip "disable_display_managers ly@tty1.service state write failure (directory remains writable)"
+else
+  : >"$STUB_LOG"
+  set +e
+  # shellcheck disable=SC2016
+  output="$(
+    env -u SHELLOPTS \
+      PATH="$ly_bin:$STUB_BIN:$PATH" \
+      DM_STATE_FILE="$ly_readonly_dir/state" \
+      DISPLAY_MANAGER_LINK="$ly_missing_link" \
+      bash -c 'source "$1/install.sh"; disable_display_managers || exit $?' bash "$REPO_ROOT" 2>&1
+  )"
+  status=$?
+  set -e
+  if [[ $status -ne 0 && ! -e "$ly_readonly_dir/state" ]] &&
+    grep -Fxq 'systemctl is-enabled ly@tty1.service' "$STUB_LOG" &&
+    ! grep -Fq 'systemctl disable' "$STUB_LOG"; then
+    pass "disable_display_managers stops before disabling ly@tty1.service when state write fails"
+  else
+    fail "disable_display_managers ly@tty1.service state write failure (status=$status, log=$(cat "$STUB_LOG"), output=$output)"
+  fi
+fi
+chmod 755 "$ly_readonly_dir"
+
+if [[ $EUID -eq 0 ]]; then
+  ly_uninstall_runner=(bash)
+elif [[ $can_unshare -eq 1 ]]; then
+  ly_uninstall_runner=(unshare -r bash)
+else
+  ly_uninstall_runner=()
+fi
+if [[ ${#ly_uninstall_runner[@]} -eq 0 ]]; then
+  skip "uninstall.sh re-enables recorded ly@tty1.service (unshare -r unavailable)"
+else
+  mkdir -p "$ly_dir/home"
+  : >"$STUB_LOG"
+  set +e
+  output="$(
+    env TARGET_HOME="$ly_dir/home" \
+      LOGIN_FILE="$ly_dir/login" \
+      AUTOLOGIN_DROPIN="$ly_dir/autologin" \
+      OVERRIDE_FILE="$ly_dir/override" \
+      POLKIT_RULE="$ly_dir/polkit" \
+      DM_STATE_FILE="$ly_state" \
+      "${ly_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
+  )"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -eq 0 && ! -e "$ly_state" && "$log_content" == "systemctl enable ly@tty1.service" ]]; then
+    pass "uninstall.sh re-enables recorded ly@tty1.service and removes state"
+  else
+    fail "uninstall.sh ly@tty1.service restore (status=$status, log=$log_content, output=$output)"
+  fi
+fi
+
 exit "$failures"

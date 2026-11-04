@@ -340,6 +340,13 @@ disable_display_managers() {
       disabled_dms+=("$dm")
     fi
   fi
+  if [[ " ${disabled_dms[*]} " != *" ly@tty1 "* ]] && [[ "$(systemctl is-enabled ly@tty1.service 2>/dev/null || true)" == "enabled" ]]; then
+    if ! sudo grep -Fxq -- "ly@tty1.service" "$DM_STATE_FILE" 2>/dev/null; then
+      printf '%s\n' "ly@tty1.service" | sudo tee -a "$DM_STATE_FILE" > /dev/null || return
+    fi
+    sudo systemctl disable "ly@tty1.service" || return
+    disabled_dms+=("ly@tty1")
+  fi
   if [[ ${#disabled_dms[@]} -gt 0 ]]; then
     log "Disabled display manager(s): ${disabled_dms[*]}"
     log "Your current session will not be interrupted."
