@@ -3418,7 +3418,7 @@ else
 fi
 
 # --de followed by another flag prints usage instead of taking the flag as the id
-for flag_after_de in --help --no-packages --no-keyring --no-polkit-rule; do
+for flag_after_de in --help --list-packages --no-packages --no-keyring --no-polkit-rule; do
   : >"$STUB_LOG"
   set +e
   output="$(run_main_with_stubs "$sudo_pw_dir" --de "$flag_after_de" 2>&1)"
@@ -4614,5 +4614,229 @@ else
     fail "uninstall.sh ~/.config/lightxdm templates (c=$st_ut_custom:$out_ut_custom | o=$st_ut_override:$out_ut_override)"
   fi
 fi
+
+# Case 73: --list-packages prints the package set one per line without sudo, root/wheel checks, or side effects
+help_list_pkgs_out="$(HOME="$help_home" bash "$REPO_ROOT/install.sh" --help 2>&1)"
+if [[ "$help_list_pkgs_out" == *"--list-packages"* ]]; then
+  pass "install.sh --help documents --list-packages"
+else
+  fail "install.sh --help missing --list-packages (output=$help_list_pkgs_out)"
+fi
+
+lp_dir="$TMP_DIR/list_packages"
+lp_home="$lp_dir/home"
+lp_bin="$lp_dir/bin"
+lp_no_sudo_bin="$lp_dir/no_sudo_bin"
+lp_login="$lp_dir/login"
+lp_polkit="$lp_dir/49-nopasswd.rules"
+lp_dm_state="$lp_dir/state/disabled-display-managers"
+lp_out_file="$lp_dir/stdout"
+lp_err="$lp_dir/stderr"
+mkdir -p "$lp_home/.config/lightxdm" "$lp_bin" "$lp_no_sudo_bin"
+printf '#!/bin/sh\nexec dwm\n' >"$lp_home/.config/lightxdm/.xinitrc-dwm"
+lp_dwm_hash="$(sha256sum < "$lp_home/.config/lightxdm/.xinitrc-dwm")"
+printf '# untouched login\n' >"$lp_login"
+lp_login_hash="$(sha256sum < "$lp_login")"
+
+cat >"$lp_bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+echo "sudo $*" >>"${STUB_LOG:-/dev/null}"
+exit 1
+EOF
+cat >"$lp_bin/id" <<'EOF'
+#!/usr/bin/env bash
+echo "id $*" >>"${STUB_LOG:-/dev/null}"
+echo "users"
+EOF
+chmod +x "$lp_bin/sudo" "$lp_bin/id"
+for lp_tool in bash dirname; do
+  ln -sf "$(command -v "$lp_tool")" "$lp_no_sudo_bin/$lp_tool"
+done
+ln -sf "$lp_bin/id" "$lp_no_sudo_bin/id"
+ln -sf "$STUB_BIN/pacman" "$lp_no_sudo_bin/pacman"
+ln -sf "$STUB_BIN/systemctl" "$lp_no_sudo_bin/systemctl"
+
+for spec in "${de_pkg_specs[@]}"; do
+  IFS='|' read -r lp_de _ lp_de_pkgs <<<"$spec"
+  case "$lp_de" in
+    plasma | gnome | budgie) continue ;;
+  esac
+  read -r -a lp_expected_arr <<<"$expected_base_pkgs $lp_de_pkgs"
+  lp_expected_out="$(printf '%s\n' "${lp_expected_arr[@]}")"
+  lp_expected_sum="$(printf '%s\n' "${lp_expected_arr[@]}" | sha256sum)"
+
+  lp_no_kr_arr=()
+  for lp_pkg in "${lp_expected_arr[@]}"; do
+    case "$lp_pkg" in
+      gnome-keyring | kwallet-pam) ;;
+      *) lp_no_kr_arr+=("$lp_pkg") ;;
+    esac
+  done
+  lp_expected_no_kr_out="$(printf '%s\n' "${lp_no_kr_arr[@]}")"
+  lp_expected_no_kr_sum="$(printf '%s\n' "${lp_no_kr_arr[@]}" | sha256sum)"
+
+  : >"$STUB_LOG"
+  : >"$lp_out_file"
+  : >"$lp_err"
+  set +e
+  env -u SHELLOPTS -u SUDO_USER \
+    HOME="$lp_home" \
+    PATH="$lp_bin:$STUB_BIN:$PATH" \
+    USER="plainuser" \
+    LOGIN_FILE="$lp_login" \
+    POLKIT_RULE_DEST="$lp_polkit" \
+    DISPLAY_MANAGER_LINK="$lp_dir/display-manager.service" \
+    DM_STATE_FILE="$lp_dm_state" \
+    bash "$REPO_ROOT/install.sh" --list-packages --de "$lp_de" >"$lp_out_file" 2>"$lp_err"
+  lp_status=$?
+  set -e
+  lp_out="$(cat "$lp_out_file")"
+  lp_stderr="$(cat "$lp_err")"
+  if [[ $lp_status -eq 0 && "$lp_out" == "$lp_expected_out" &&
+    "$(sha256sum < "$lp_out_file")" == "$lp_expected_sum" &&
+    -z "$lp_stderr" && ! -s "$STUB_LOG" ]] &&
+    [[ ! -e "$lp_home/.bash_profile" && ! -e "$lp_home/.xinitrc" && ! -e "$lp_polkit" && ! -e "$lp_dm_state" ]] &&
+    [[ "$(sha256sum < "$lp_login")" == "$lp_login_hash" ]] &&
+    [[ "$(sha256sum < "$lp_home/.config/lightxdm/.xinitrc-dwm")" == "$lp_dwm_hash" ]]; then
+    pass "install.sh --list-packages --de $lp_de prints exact package list without stubs or side effects"
+  else
+    fail "install.sh --list-packages --de $lp_de (status=$lp_status, out=$lp_out, err=$lp_stderr, log=$(cat "$STUB_LOG"))"
+  fi
+
+  for lp_kr_flags in "--list-packages --no-keyring --de $lp_de" "--de $lp_de --no-keyring --list-packages"; do
+    read -r -a lp_kr_args <<<"$lp_kr_flags"
+    : >"$STUB_LOG"
+    : >"$lp_out_file"
+    : >"$lp_err"
+    set +e
+    env -u SHELLOPTS -u SUDO_USER \
+      HOME="$lp_home" \
+      PATH="$lp_bin:$STUB_BIN:$PATH" \
+      USER="plainuser" \
+      LOGIN_FILE="$lp_login" \
+      POLKIT_RULE_DEST="$lp_polkit" \
+      DISPLAY_MANAGER_LINK="$lp_dir/display-manager.service" \
+      DM_STATE_FILE="$lp_dm_state" \
+      bash "$REPO_ROOT/install.sh" "${lp_kr_args[@]}" >"$lp_out_file" 2>"$lp_err"
+    lp_kr_status=$?
+    set -e
+    lp_kr_out="$(cat "$lp_out_file")"
+    lp_kr_stderr="$(cat "$lp_err")"
+    if [[ $lp_kr_status -eq 0 && "$lp_kr_out" == "$lp_expected_no_kr_out" &&
+      "$(sha256sum < "$lp_out_file")" == "$lp_expected_no_kr_sum" &&
+      "$lp_kr_out" != *"gnome-keyring"* && "$lp_kr_out" != *"kwallet-pam"* &&
+      -z "$lp_kr_stderr" && ! -s "$STUB_LOG" ]]; then
+      pass "install.sh $lp_kr_flags omits keyring packages and calls no stub"
+    else
+      fail "install.sh $lp_kr_flags (status=$lp_kr_status, out=$lp_kr_out, err=$lp_kr_stderr, log=$(cat "$STUB_LOG"))"
+    fi
+  done
+
+  : >"$STUB_LOG"
+  set +e
+  install_packages "$lp_de" 2>/dev/null
+  lp_inst_status=$?
+  set -e
+  lp_inst_log="$(cat "$STUB_LOG")"
+  if [[ $lp_inst_status -eq 0 && "$lp_inst_log" == "pacman -S --needed --noconfirm ${lp_expected_arr[*]}" ]]; then
+    pass "install_packages $lp_de passes the exact listed packages to pacman"
+  else
+    fail "install_packages $lp_de vs list_packages (status=$lp_inst_status, log=$lp_inst_log)"
+  fi
+done
+
+: >"$STUB_LOG"
+: >"$lp_err"
+set +e
+lp_nosudo_out="$(
+  env -u SHELLOPTS -u SUDO_USER \
+    HOME="$lp_home" \
+    PATH="$lp_no_sudo_bin" \
+    USER="plainuser" \
+    "$lp_no_sudo_bin/bash" "$REPO_ROOT/install.sh" --list-packages --de i3 2>"$lp_err"
+)"
+lp_nosudo_status=$?
+lp_stub_main_out="$(STUB_DETECTED_DE=xfce run_main_with_stubs "$lp_bin" --list-packages --de i3 2>>"$lp_err")"
+lp_stub_main_status=$?
+set -e
+lp_expected_i3="$(printf '%s\n' xorg-server xorg-xinit udisks2 polkit gvfs gvfs-mtp gvfs-gphoto2 gvfs-afc i3 xterm gnome-keyring polkit-gnome)"
+if [[ $lp_nosudo_status -eq 0 && $lp_stub_main_status -eq 0 &&
+  "$lp_nosudo_out" == "$lp_expected_i3" && "$lp_stub_main_out" == "$lp_expected_i3" &&
+  ! -s "$lp_err" && ! -s "$STUB_LOG" ]]; then
+  pass "--list-packages --de i3 succeeds without sudo or wheel membership and via main"
+else
+  fail "--list-packages without sudo/wheel (ns=$lp_nosudo_status:$lp_nosudo_out | main=$lp_stub_main_status:$lp_stub_main_out | err=$(cat "$lp_err") | log=$(cat "$STUB_LOG"))"
+fi
+
+if [[ $can_unshare -eq 0 ]]; then
+  skip "--list-packages --de xfce exits 0 as root before check_root (unshare -r unavailable)"
+else
+  : >"$STUB_LOG"
+  : >"$lp_err"
+  set +e
+  lp_root_out="$(PATH="$lp_bin:$STUB_BIN:$PATH" unshare -r bash "$REPO_ROOT/install.sh" --list-packages --de xfce 2>"$lp_err")"
+  lp_root_status=$?
+  set -e
+  lp_expected_xfce="$(printf '%s\n' xorg-server xorg-xinit udisks2 polkit gvfs gvfs-mtp gvfs-gphoto2 gvfs-afc xfce4 xfce4-session xfce4-terminal gnome-keyring polkit-gnome)"
+  if [[ $lp_root_status -eq 0 && "$lp_root_out" == "$lp_expected_xfce" && ! -s "$lp_err" && ! -s "$STUB_LOG" ]]; then
+    pass "--list-packages --de xfce exits 0 before check_root even when EUID is 0"
+  else
+    fail "--list-packages as root (status=$lp_root_status, out=$lp_root_out, err=$(cat "$lp_err"), log=$(cat "$STUB_LOG"))"
+  fi
+fi
+
+for lp_missing_de_flags in "--list-packages" "--list-packages --no-keyring"; do
+  read -r -a lp_missing_de_args <<<"$lp_missing_de_flags"
+  : >"$STUB_LOG"
+  : >"$lp_err"
+  set +e
+  lp_miss_out="$(HOME="$lp_home" run_main_with_stubs "$sudo_pw_dir" "${lp_missing_de_args[@]}" 2>"$lp_err")"
+  lp_miss_status=$?
+  set -e
+  lp_miss_err="$(cat "$lp_err")"
+  if [[ $lp_miss_status -eq 1 && -z "$lp_miss_out" && "$lp_miss_err" == *"--de"* && ! -s "$STUB_LOG" ]]; then
+    pass "main $lp_missing_de_flags fails without --de before running any checks or stubs"
+  else
+    fail "main $lp_missing_de_flags (status=$lp_miss_status, out=$lp_miss_out, err=$lp_miss_err, log=$(cat "$STUB_LOG"))"
+  fi
+done
+
+for lp_wayland_de in plasma gnome budgie; do
+  : >"$STUB_LOG"
+  : >"$lp_err"
+  set +e
+  lp_wl_out="$(HOME="$lp_home" run_main_with_stubs "$sudo_pw_dir" --list-packages --de "$lp_wayland_de" 2>"$lp_err")"
+  lp_wl_status=$?
+  set -e
+  lp_wl_err="$(cat "$lp_err")"
+  if [[ $lp_wl_status -eq 1 && -z "$lp_wl_out" &&
+    "$lp_wl_err" == *"$lp_wayland_de now runs only on Wayland and cannot be started with startx (see README.md)."* &&
+    ! -s "$STUB_LOG" ]]; then
+    pass "main --list-packages --de $lp_wayland_de refuses with Wayland message before sudo -v"
+  else
+    fail "main --list-packages --de $lp_wayland_de (status=$lp_wl_status, out=$lp_wl_out, err=$lp_wl_err, log=$(cat "$STUB_LOG"))"
+  fi
+done
+
+for lp_bad_case in custom custom-no-packages unknown empty; do
+  lp_bad_args=(--list-packages --de dwm)
+  case "$lp_bad_case" in
+    custom-no-packages) lp_bad_args=(--list-packages --no-packages --de dwm) ;;
+    unknown) lp_bad_args=(--list-packages --de bogus) ;;
+    empty) lp_bad_args=(--list-packages --de "") ;;
+  esac
+  : >"$STUB_LOG"
+  : >"$lp_err"
+  set +e
+  lp_bad_out="$(HOME="$lp_home" run_main_with_stubs "$sudo_pw_dir" "${lp_bad_args[@]}" 2>"$lp_err")"
+  lp_bad_status=$?
+  set -e
+  lp_bad_err="$(cat "$lp_err")"
+  if [[ $lp_bad_status -eq 1 && -z "$lp_bad_out" && "$lp_bad_err" == *"Unsupported desktop environment:"* && ! -s "$STUB_LOG" ]]; then
+    pass "main rejects non-built-in --list-packages target ($lp_bad_case) before sudo -v"
+  else
+    fail "main --list-packages rejection ($lp_bad_case, status=$lp_bad_status, out=$lp_bad_out, err=$lp_bad_err, log=$(cat "$STUB_LOG"))"
+  fi
+done
 
 exit "$failures"

@@ -91,10 +91,9 @@ prompt_de_selection() {
   return 1
 }
 
-# Install required packages
-install_packages() {
-  local de no_keyring=0
-  de=$1
+# Print required packages for a desktop environment, one per line
+list_packages() {
+  local de="${1:-}" no_keyring=0
   if [[ "${2:-}" == "1" || "${2:-}" == "--no-keyring" ]]; then
     no_keyring=1
   fi
@@ -131,7 +130,7 @@ install_packages() {
       ;;
     *)
       log "Unsupported desktop environment: $de"
-      exit 1
+      return 1
       ;;
   esac
 
@@ -146,8 +145,17 @@ install_packages() {
     pkgs=("${filtered_pkgs[@]}")
   fi
 
+  printf '%s\n' "${base_pkgs[@]}" "${pkgs[@]}"
+}
+
+# Install required packages
+install_packages() {
+  local de="${1:-}" pkg_output pkgs=()
+  pkg_output="$(list_packages "$@")" || exit 1
+  mapfile -t pkgs <<<"$pkg_output"
+
   log "Installing required packages for $de..."
-  sudo pacman -S --needed --noconfirm "${base_pkgs[@]}" "${pkgs[@]}"
+  sudo pacman -S --needed --noconfirm "${pkgs[@]}"
 }
 
 # Back up a pre-existing dotfile once, or save post-install user edits before overwriting
@@ -370,16 +378,21 @@ disable_display_managers() {
 main() {
   local de=""
   local de_specified=0
+  local list_only=0
   local no_packages=0
   local no_keyring=0
   local no_polkit_rule=0
-  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--no-packages] [--no-keyring] [--no-polkit-rule]"
+  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--no-packages] [--no-keyring] [--no-polkit-rule]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -h | --help)
         echo "$usage"
         exit 0
+        ;;
+      --list-packages)
+        list_only=1
+        shift
         ;;
       --no-packages)
         no_packages=1
@@ -409,6 +422,32 @@ main() {
         ;;
     esac
   done
+
+  if [[ $list_only -eq 1 ]]; then
+    if [[ $de_specified -eq 0 ]]; then
+      log "--list-packages requires --de <id> (valid ids: xfce lxqt lxde mate cinnamon i3)"
+      echo "$usage" >&2
+      exit 1
+    fi
+    case "$de" in
+      plasma | gnome | budgie)
+        log "$de now runs only on Wayland and cannot be started with startx (see README.md). To configure another installed desktop, pass --de <id>."
+        exit 1
+        ;;
+      xfce | lxqt | lxde | mate | cinnamon | i3)
+        if [[ $no_keyring -eq 1 ]]; then
+          list_packages "$de" --no-keyring
+        else
+          list_packages "$de"
+        fi
+        exit 0
+        ;;
+      *)
+        log "Unsupported desktop environment: $de; --list-packages requires a built-in desktop id (valid ids: xfce lxqt lxde mate cinnamon i3)"
+        exit 1
+        ;;
+    esac
+  fi
 
   if [[ $de_specified -eq 1 ]]; then
     case "$de" in

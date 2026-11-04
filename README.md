@@ -29,6 +29,8 @@ cd lightXDM
 bash install.sh
 # Or select a desktop explicitly (skips detection and prompt):
 # bash install.sh --de i3
+# Or review the package list for a desktop without installing anything:
+# bash install.sh --list-packages --de i3
 # Or configure an existing desktop without installing packages:
 # bash install.sh --no-packages --de i3
 # Or skip keyring packages and PAM keyring setup (for autologin or keyring-free setups):
@@ -49,8 +51,9 @@ Plasma, GNOME, and Budgie now run only on Wayland on Arch Linux and cannot be st
 - Installs the minimal required packages for your chosen DE, including the correct polkit agent:
   - lxqt-policykit for LXQt
   - polkit-gnome for all other supported DEs.
+- Pass `--list-packages --de <id>` (`xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, or `i3`; combinable with `--no-keyring`) to print the package set `install.sh` would install, one per line, and exit 0 without needing `sudo` or changing anything—useful to review the packages beforehand or install them yourself before running `--no-packages`.
 - Pass `--no-packages` (optionally with `--de <id>`) to skip all package installation when you already have the required packages. Dotfiles, PAM, Polkit and display manager setup still run. For a custom session, create `~/.config/lightxdm/.xinitrc-<id>` and run, for example, `bash install.sh --no-packages --de dwm` with `~/.config/lightxdm/.xinitrc-dwm` present (`~/.config/lightxdm/.xinitrc-<id>` also overrides any bundled `dotfiles/.xinitrc-<id>` template). Custom ids must match `^[a-z0-9_-]+$` and use GNOME Keyring for PAM (pass `--no-keyring` to skip PAM setup); install the required packages yourself.
-- Pass `--no-keyring` (combinable with `--de <id>`, `--no-packages`, and `--no-polkit-rule`) to omit `gnome-keyring` and `kwallet-pam` from package installation and skip `/etc/pam.d/login` keyring setup.
+- Pass `--no-keyring` (combinable with `--de <id>`, `--list-packages`, `--no-packages`, and `--no-polkit-rule`) to omit `gnome-keyring` and `kwallet-pam` from package installation and skip `/etc/pam.d/login` keyring setup.
 - Pass `--no-polkit-rule` (combinable with `--de <id>`, `--no-packages`, and `--no-keyring`) to skip installing `/etc/polkit-1/rules.d/49-nopasswd.rules` and keep your existing Polkit authorization policy.
 - Copies dotfiles to your home, including the correct `.xinitrc-<de>` for your DE.
 - Appends PAM lines to `/etc/pam.d/login` (unless `--no-keyring` is passed; after a one-time backup at `/etc/pam.d/login.lightxdm.bak`; `uninstall.sh` removes the lines lightXDM added and restores the backup when nothing else changed, otherwise it keeps your other edits and leaves the backup for review) for GNOME Keyring (`pam_gnome_keyring.so`) auto-unlock.
