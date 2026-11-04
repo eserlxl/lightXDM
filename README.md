@@ -33,6 +33,8 @@ bash install.sh
 # bash install.sh --no-packages --de i3
 # Or skip keyring packages and PAM keyring setup (for autologin or keyring-free setups):
 # bash install.sh --no-keyring --de i3
+# Or keep your existing Polkit policy without installing the passwordless power rule:
+# bash install.sh --no-polkit-rule --de i3
 ```
 
 > **Important:**
@@ -47,10 +49,11 @@ bash install.sh
   - lxqt-policykit for LXQt
   - polkit-gnome for all other supported DEs.
 - Pass `--no-packages` (optionally with `--de <id>`) to skip all package installation when you already have the required packages. Dotfiles, PAM, Polkit and display manager setup still run. For a custom session, create `dotfiles/.xinitrc-<id>` in the installer directory and run, for example, `bash install.sh --no-packages --de dwm` with `dotfiles/.xinitrc-dwm` present. Custom ids must match `^[a-z0-9_-]+$` and use GNOME Keyring for PAM (pass `--no-keyring` to skip PAM setup); install the required packages yourself.
-- Pass `--no-keyring` (combinable with `--de <id>` and `--no-packages`) to omit `gnome-keyring` and `kwallet-pam` from package installation and skip `/etc/pam.d/login` keyring setup.
+- Pass `--no-keyring` (combinable with `--de <id>`, `--no-packages`, and `--no-polkit-rule`) to omit `gnome-keyring` and `kwallet-pam` from package installation and skip `/etc/pam.d/login` keyring setup.
+- Pass `--no-polkit-rule` (combinable with `--de <id>`, `--no-packages`, and `--no-keyring`) to skip installing `/etc/polkit-1/rules.d/49-nopasswd.rules` and keep your existing Polkit authorization policy.
 - Copies dotfiles to your home, including the correct `.xinitrc-<de>` for your DE.
 - Appends PAM lines to `/etc/pam.d/login` (unless `--no-keyring` is passed; after a one-time backup at `/etc/pam.d/login.lightxdm.bak`; `uninstall.sh` removes the lines lightXDM added and restores the backup when nothing else changed, otherwise it keeps your other edits and leaves the backup for review) for KWallet (`pam_kwallet5.so` on Plasma) or GNOME Keyring (`pam_gnome_keyring.so` on every other supported desktop) auto-unlock.
-- Configures Polkit for passwordless power-off, reboot, suspend, and hibernate for local active `wheel` users, while USB mounting uses `udisks2` defaults.
+- Configures Polkit (unless `--no-polkit-rule` is passed) for passwordless power-off, reboot, suspend, and hibernate for local active `wheel` users, while USB mounting uses `udisks2` defaults.
 - Your DE will start automatically on TTY1 after login—no need to run 'startx'.
 
 ### Two Login Modes

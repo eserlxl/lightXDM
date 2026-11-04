@@ -355,7 +355,8 @@ main() {
   local de_specified=0
   local no_packages=0
   local no_keyring=0
-  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--no-packages] [--no-keyring]"
+  local no_polkit_rule=0
+  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--no-packages] [--no-keyring] [--no-polkit-rule]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -369,6 +370,10 @@ main() {
         ;;
       --no-keyring)
         no_keyring=1
+        shift
+        ;;
+      --no-polkit-rule)
+        no_polkit_rule=1
         shift
         ;;
       --de)
@@ -471,12 +476,20 @@ main() {
   else
     configure_pam "$de"
   fi
-  install_polkit_rule
+  if [[ $no_polkit_rule -eq 1 ]]; then
+    log "Skipping Polkit rule installation (--no-polkit-rule)."
+  else
+    install_polkit_rule
+  fi
   disable_display_managers
 
   local unlock_summary="Auto-unlock and Polkit rules are set"
-  if [[ $no_keyring -eq 1 ]]; then
+  if [[ $no_keyring -eq 1 && $no_polkit_rule -eq 1 ]]; then
+    unlock_summary="Keyring setup and Polkit rule skipped"
+  elif [[ $no_keyring -eq 1 ]]; then
     unlock_summary="Polkit rules are set (keyring setup skipped)"
+  elif [[ $no_polkit_rule -eq 1 ]]; then
+    unlock_summary="Auto-unlock is set (Polkit rule skipped)"
   fi
 
   if [[ -z "$shell_profile" ]]; then

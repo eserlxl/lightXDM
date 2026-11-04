@@ -3278,7 +3278,7 @@ else
 fi
 
 # --de followed by another flag prints usage instead of taking the flag as the id
-for flag_after_de in --help --no-packages --no-keyring; do
+for flag_after_de in --help --no-packages --no-keyring --no-polkit-rule; do
   : >"$STUB_LOG"
   set +e
   output="$(run_main_with_stubs "$sudo_pw_dir" --de "$flag_after_de" 2>&1)"
@@ -3548,5 +3548,170 @@ for fail_pkg_flag in "" "--no-keyring"; do
     fail "main ${fail_pkg_args[*]} on pacman failure (status=$status, log=$log_content, output=$output)"
   fi
 done
+
+# Case 64: --no-polkit-rule skips install_polkit_rule and leaves Polkit untouched, while omitting it calls install_polkit_rule
+help_no_polkit_out="$(HOME="$help_home" bash "$REPO_ROOT/install.sh" --help 2>&1)"
+if [[ "$help_no_polkit_out" == *"--no-polkit-rule"* ]]; then
+  pass "install.sh --help documents --no-polkit-rule"
+else
+  fail "install.sh --help missing --no-polkit-rule (output=$help_no_polkit_out)"
+fi
+
+for default_polkit_spec in \
+  "default||Auto-unlock and Polkit rules are set" \
+  "de-plasma|--de plasma|Auto-unlock and Polkit rules are set" \
+  "no-packages|--no-packages|Auto-unlock and Polkit rules are set" \
+  "no-keyring|--no-keyring|Polkit rules are set (keyring setup skipped)"; do
+  IFS='|' read -r dp_label dp_flags dp_summary <<<"$default_polkit_spec"
+  dp_args=()
+  if [[ -n "$dp_flags" ]]; then
+    read -r -a dp_args <<<"$dp_flags"
+  fi
+  : >"$STUB_LOG"
+  set +e
+  output="$(USER=testuser run_main_with_stubs "$bash_stub_dir:$sudo_pw_dir" "${dp_args[@]}" 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -eq 0 ]] &&
+    grep -Fxq -- "install_polkit_rule" "$STUB_LOG" &&
+    [[ "$output" != *"Skipping Polkit rule"* && "$output" == *"- $dp_summary"* ]]; then
+    pass "main ${dp_flags:-<default>} calls install_polkit_rule and reports '$dp_summary'"
+  else
+    fail "main ${dp_label} Polkit default (status=$status, log=$log_content, output=$output)"
+  fi
+done
+
+for skip_polkit_spec in \
+  "alone|--no-polkit-rule|i3|1|1|Auto-unlock is set (Polkit rule skipped)" \
+  "with-de|--no-polkit-rule --de plasma|plasma|1|1|Auto-unlock is set (Polkit rule skipped)" \
+  "de-first|--de xfce --no-polkit-rule|xfce|1|1|Auto-unlock is set (Polkit rule skipped)" \
+  "no-packages|--no-packages --no-polkit-rule|i3|0|1|Auto-unlock is set (Polkit rule skipped)" \
+  "no-keyring|--no-keyring --no-polkit-rule|i3|1|0|Keyring setup and Polkit rule skipped" \
+  "all-flags|--de dwm --no-polkit-rule --no-keyring --no-packages|dwm|0|0|Keyring setup and Polkit rule skipped"; do
+  IFS='|' read -r sp_label sp_flags sp_de sp_expect_pkg sp_expect_pam sp_summary <<<"$skip_polkit_spec"
+  read -r -a sp_args <<<"$sp_flags"
+  : >"$STUB_LOG"
+  set +e
+  output="$(
+    # shellcheck disable=SC2034  # main uses SCRIPT_DIR from the sourced installer
+    SCRIPT_DIR="$no_kr_custom_dir"
+    USER=testuser run_main_with_stubs "$bash_stub_dir:$sudo_pw_dir" "${sp_args[@]}" 2>&1
+  )"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  pkg_ok=0
+  if [[ $sp_expect_pkg -eq 1 && "$log_content" == *"install_packages $sp_de"* ]] ||
+    [[ $sp_expect_pkg -eq 0 && "$log_content" != *"install_packages"* ]]; then
+    pkg_ok=1
+  fi
+  pam_ok=0
+  if [[ $sp_expect_pam -eq 1 && "$log_content" == *"configure_pam $sp_de"* ]] ||
+    [[ $sp_expect_pam -eq 0 && "$log_content" != *"configure_pam"* ]]; then
+    pam_ok=1
+  fi
+  if [[ $status -eq 0 && $pkg_ok -eq 1 && $pam_ok -eq 1 ]] &&
+    ! grep -Fxq -- "install_polkit_rule" "$STUB_LOG" &&
+    grep -Fxq -- "copy_dotfiles $sp_de" "$STUB_LOG" &&
+    grep -Fxq -- "disable_display_managers" "$STUB_LOG" &&
+    [[ "$output" == *"Skipping Polkit rule installation (--no-polkit-rule)."* ]] &&
+    [[ "$output" == *"- $sp_summary"* && "$output" != *"Polkit rules are set"* ]]; then
+    pass "main $sp_flags skips install_polkit_rule and reports '$sp_summary'"
+  else
+    fail "main $sp_label ($sp_flags, status=$status, log=$log_content, output=$output)"
+  fi
+done
+
+: >"$STUB_LOG"
+set +e
+out_zsh_nopolkit="$(USER=testuser run_main_with_stubs "$zsh_stub_dir:$sudo_pw_dir" --no-packages --no-polkit-rule --de i3 2>&1)"
+st_zsh_nopolkit=$?
+set -e
+if [[ $st_zsh_nopolkit -eq 0 ]] &&
+  ! grep -Fxq -- "install_polkit_rule" "$STUB_LOG" &&
+  [[ "$out_zsh_nopolkit" == *"- Auto-unlock is set (Polkit rule skipped)"* && "$out_zsh_nopolkit" != *"Polkit rules are set"* ]]; then
+  pass "main --no-polkit-rule adjusts closing summary for non-bash login shells too"
+else
+  fail "main --no-polkit-rule non-bash summary (status=$st_zsh_nopolkit, output=$out_zsh_nopolkit)"
+fi
+
+: >"$STUB_LOG"
+set +e
+output="$(
+  # shellcheck disable=SC2034  # main uses SCRIPT_DIR from the sourced installer
+  SCRIPT_DIR="$no_kr_custom_dir"
+  run_main_with_stubs "$sudo_pw_dir" --no-polkit-rule --de dwm 2>&1
+)"
+status=$?
+set -e
+if [[ $status -eq 1 && "$output" == *"Unsupported desktop environment: dwm"* && ! -s "$STUB_LOG" ]]; then
+  pass "main --no-polkit-rule --de dwm still requires --no-packages for custom sessions"
+else
+  fail "main --no-polkit-rule --de dwm without --no-packages (status=$status, log=$(cat "$STUB_LOG"), output=$output)"
+fi
+
+no_polkit_fs_home="$TMP_DIR/home_no_polkit_fs"
+mkdir -p "$no_polkit_fs_home"
+rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak" "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak" "${POLKIT_RULE_DEST}.lightxdm.absent" "${POLKIT_RULE_DEST}.lightxdm-edited"
+write_stock_login
+: >"$STUB_LOG"
+set +e
+output="$(
+  export HOME="$no_polkit_fs_home"
+  export PATH="$sudo_pw_dir:$STUB_BIN:$PATH"
+  export USER="testuser"
+  unset SUDO_USER
+  main --no-packages --no-polkit-rule --de i3 2>&1
+)"
+status=$?
+set -e
+if [[ $status -eq 0 && ! -e "$POLKIT_RULE_DEST" && ! -L "$POLKIT_RULE_DEST" &&
+  ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" && ! -e "${POLKIT_RULE_DEST}.lightxdm.absent" ]]; then
+  pass "main --no-polkit-rule creates no Polkit rule or marker when none existed"
+else
+  fail "main --no-polkit-rule on absent Polkit rule (status=$status, output=$output)"
+fi
+
+printf '// custom user polkit policy\n' >"$POLKIT_RULE_DEST"
+custom_polkit_hash="$(sha256sum < "$POLKIT_RULE_DEST")"
+set +e
+output="$(
+  # shellcheck disable=SC2034  # main uses SCRIPT_DIR from the sourced installer
+  SCRIPT_DIR="$no_kr_custom_dir"
+  export HOME="$no_polkit_fs_home"
+  export PATH="$sudo_pw_dir:$STUB_BIN:$PATH"
+  export USER="testuser"
+  unset SUDO_USER
+  main --no-packages --no-keyring --no-polkit-rule --de dwm 2>&1
+)"
+status=$?
+set -e
+if [[ $status -eq 0 && -f "$POLKIT_RULE_DEST" &&
+  "$(sha256sum < "$POLKIT_RULE_DEST")" == "$custom_polkit_hash" &&
+  ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" && ! -e "${POLKIT_RULE_DEST}.lightxdm.absent" &&
+  ! -e "${POLKIT_RULE_DEST}.lightxdm-edited" ]]; then
+  pass "main --no-polkit-rule leaves an existing Polkit rule untouched without backups"
+else
+  fail "main --no-polkit-rule with existing Polkit rule (status=$status, output=$output)"
+fi
+
+set +e
+output="$(
+  export HOME="$no_polkit_fs_home"
+  export PATH="$sudo_pw_dir:$STUB_BIN:$PATH"
+  export USER="testuser"
+  unset SUDO_USER
+  main --no-packages --de i3 2>&1
+)"
+status=$?
+set -e
+if [[ $status -eq 0 && -f "$POLKIT_RULE_DEST" && -f "${POLKIT_RULE_DEST}.lightxdm.bak" &&
+  "$(sha256sum < "$POLKIT_RULE_DEST")" == "$(sha256sum < "$POLKIT_RULE_SRC")" &&
+  "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm.bak")" == "$custom_polkit_hash" ]]; then
+  pass "main without --no-polkit-rule backs up the existing rule and installs 49-nopasswd.rules"
+else
+  fail "main default Polkit install after --no-polkit-rule (status=$status, output=$output)"
+fi
 
 exit "$failures"
