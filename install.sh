@@ -205,6 +205,15 @@ preserve_dotfile() {
   cp -P "$target" "$edited"
 }
 
+# Print the .xinitrc template path for a session id
+xinitrc_template() {
+  if [[ -f "$HOME/.config/lightxdm/.xinitrc-$1" ]]; then
+    printf '%s\n' "$HOME/.config/lightxdm/.xinitrc-$1"
+  else
+    printf '%s\n' "$SCRIPT_DIR/dotfiles/.xinitrc-$1"
+  fi
+}
+
 # Copy dotfiles to the user's home directory
 copy_dotfiles() {
   local de
@@ -224,12 +233,13 @@ copy_dotfiles() {
     install -Dm744 "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome" "$user_home/.gpg-agent-gnome"
   fi
 
-  local xinitrc_template="$SCRIPT_DIR/dotfiles/.xinitrc-$de"
-  if [[ -f "$xinitrc_template" ]]; then
-    preserve_dotfile "$user_home/.xinitrc" "$SCRIPT_DIR"/dotfiles/.xinitrc-*
-    install -Dm755 "$xinitrc_template" "$user_home/.xinitrc"
+  local template
+  template="$(xinitrc_template "$de")"
+  if [[ -f "$template" ]]; then
+    preserve_dotfile "$user_home/.xinitrc" "$HOME"/.config/lightxdm/.xinitrc-* "$SCRIPT_DIR"/dotfiles/.xinitrc-*
+    install -Dm755 "$template" "$user_home/.xinitrc"
   else
-    log "No .xinitrc template for $de. Please create $xinitrc_template for proper session startup."
+    log "No .xinitrc template for $de. Please create $template for proper session startup."
     return 1
   fi
 }
@@ -405,7 +415,7 @@ main() {
       plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
       *)
         # Explicit character list: [a-z] ranges miss "i" under some locales (for example tr_TR).
-        if [[ $no_packages -ne 1 || -z "$de" || "$de" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* || ! -f "$SCRIPT_DIR/dotfiles/.xinitrc-$de" ]]; then
+        if [[ $no_packages -ne 1 || -z "$de" || "$de" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* || ! -f "$(xinitrc_template "$de")" ]]; then
           log "Unsupported desktop environment: $de (valid ids: xfce lxqt lxde mate cinnamon i3)"
           exit 1
         fi
@@ -456,8 +466,10 @@ main() {
       ;;
   esac
 
-  if [[ ! -f "$SCRIPT_DIR/dotfiles/.xinitrc-$de" ]]; then
-    log "No .xinitrc template for $de: $SCRIPT_DIR/dotfiles/.xinitrc-$de. Installation aborted."
+  local template
+  template="$(xinitrc_template "$de")"
+  if [[ ! -f "$template" ]]; then
+    log "No .xinitrc template for $de: $template. Installation aborted."
     exit 1
   fi
 

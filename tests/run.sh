@@ -4425,4 +4425,191 @@ else
   fail "main on PAM append failure (status=$status, log=$log_content, output=$output)"
 fi
 
+# Case 72: ~/.config/lightxdm/.xinitrc-<id> supports custom sessions, overrides bundled templates, survives reruns, and is recognized by uninstall.sh
+user_tmpl_dir="$TMP_DIR/user_templates"
+ut_custom_home="$user_tmpl_dir/home_custom"
+ut_override_home="$user_tmpl_dir/home_override"
+ut_plain_home="$user_tmpl_dir/home_plain"
+ut_reject_home="$user_tmpl_dir/home_reject"
+ut_login="$user_tmpl_dir/login"
+ut_polkit="$user_tmpl_dir/49-nopasswd.rules"
+ut_dm_state="$user_tmpl_dir/state/disabled-display-managers"
+mkdir -p "$ut_custom_home/.config/lightxdm" "$ut_override_home/.config/lightxdm" "$ut_plain_home" "$ut_reject_home/.config/lightxdm"
+
+printf '#!/bin/sh\nexec dwm\n' >"$ut_custom_home/.config/lightxdm/.xinitrc-dwm"
+ut_dwm_hash="$(sha256sum < "$ut_custom_home/.config/lightxdm/.xinitrc-dwm")"
+
+ut_resolved_custom="$(HOME="$ut_custom_home" xinitrc_template "dwm")"
+ut_resolved_fallback="$(HOME="$ut_custom_home" xinitrc_template "i3")"
+if [[ "$ut_resolved_custom" == "$ut_custom_home/.config/lightxdm/.xinitrc-dwm" &&
+  "$ut_resolved_fallback" == "$REPO_ROOT/dotfiles/.xinitrc-i3" ]]; then
+  pass "xinitrc_template prefers ~/.config/lightxdm/.xinitrc-<id> and falls back to dotfiles/"
+else
+  fail "xinitrc_template resolution (custom=$ut_resolved_custom, fallback=$ut_resolved_fallback)"
+fi
+
+cp "$ut_custom_home/.config/lightxdm/.xinitrc-dwm" "$ut_reject_home/.config/lightxdm/.xinitrc-dwm"
+cp "$ut_custom_home/.config/lightxdm/.xinitrc-dwm" "$ut_reject_home/.config/lightxdm/.xinitrc-Dwm"
+for ut_reject_case in no-packages-missing invalid-id missing-template; do
+  ut_reject_args=(--no-packages --de dwm)
+  case "$ut_reject_case" in
+    no-packages-missing) ut_reject_args=(--de dwm) ;;
+    invalid-id) ut_reject_args=(--no-packages --de Dwm) ;;
+    missing-template) ut_reject_args=(--no-packages --de awesome) ;;
+  esac
+  : >"$STUB_LOG"
+  set +e
+  output="$(HOME="$ut_reject_home" run_main_with_stubs "$sudo_pw_dir" "${ut_reject_args[@]}" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 1 && "$output" == *"Unsupported desktop environment:"* && ! -s "$STUB_LOG" ]]; then
+    pass "main rejects ~/.config/lightxdm custom session when $ut_reject_case"
+  else
+    fail "main ~/.config/lightxdm rejection ($ut_reject_case, status=$status, log=$(cat "$STUB_LOG"), output=$output)"
+  fi
+done
+
+printf '#%%PAM-1.0\nauth       include      system-local-login\nsession    include      system-local-login\n' >"$ut_login"
+set +e
+output="$(
+  env -u SHELLOPTS -u SUDO_USER \
+    HOME="$ut_custom_home" \
+    PATH="$sudo_pw_dir:$STUB_BIN:$PATH" \
+    USER="testuser" \
+    LOGIN_FILE="$ut_login" \
+    POLKIT_RULE_DEST="$ut_polkit" \
+    DISPLAY_MANAGER_LINK="$user_tmpl_dir/display-manager.service" \
+    DM_STATE_FILE="$ut_dm_state" \
+    bash "$REPO_ROOT/install.sh" --no-packages --de dwm 2>&1
+)"
+status=$?
+set -e
+if [[ $status -eq 0 && ! -e "$REPO_ROOT/dotfiles/.xinitrc-dwm" ]] &&
+  [[ -x "$ut_custom_home/.xinitrc" && ! -L "$ut_custom_home/.xinitrc" ]] &&
+  [[ "$(sha256sum < "$ut_custom_home/.xinitrc")" == "$ut_dwm_hash" ]] &&
+  [[ -f "$ut_custom_home/.xinitrc.lightxdm.absent" && ! -e "$ut_custom_home/.xinitrc.lightxdm.bak" && ! -e "$ut_custom_home/.xinitrc.lightxdm-edited" ]] &&
+  [[ "$(sha256sum < "$ut_custom_home/.config/lightxdm/.xinitrc-dwm")" == "$ut_dwm_hash" ]]; then
+  pass "install.sh --no-packages --de dwm installs ~/.config/lightxdm/.xinitrc-dwm without touching checkout"
+else
+  fail "install.sh custom ~/.config/lightxdm/.xinitrc-dwm (status=$status, output=$output)"
+fi
+
+set +e
+output="$(
+  env -u SHELLOPTS -u SUDO_USER \
+    HOME="$ut_custom_home" \
+    PATH="$sudo_pw_dir:$STUB_BIN:$PATH" \
+    USER="testuser" \
+    LOGIN_FILE="$ut_login" \
+    POLKIT_RULE_DEST="$ut_polkit" \
+    DISPLAY_MANAGER_LINK="$user_tmpl_dir/display-manager.service" \
+    DM_STATE_FILE="$ut_dm_state" \
+    bash "$REPO_ROOT/install.sh" --de dwm --no-packages 2>&1
+)"
+status_rerun=$?
+set -e
+(
+  export HOME="$ut_custom_home"
+  export USER="testuser"
+  copy_dotfiles "i3" 2>/dev/null
+  copy_dotfiles "dwm" 2>/dev/null
+)
+if [[ $status_rerun -eq 0 ]] &&
+  [[ "$(sha256sum < "$ut_custom_home/.xinitrc")" == "$ut_dwm_hash" ]] &&
+  [[ ! -e "$ut_custom_home/.xinitrc.lightxdm-edited" && ! -e "$ut_custom_home/.xinitrc.lightxdm.bak" ]] &&
+  [[ "$(sha256sum < "$ut_custom_home/.config/lightxdm/.xinitrc-dwm")" == "$ut_dwm_hash" ]]; then
+  pass "rerunning install/copy_dotfiles with ~/.config/lightxdm template does not create .xinitrc.lightxdm-edited"
+else
+  fail "rerun with ~/.config/lightxdm template (status=$status_rerun, output=$output)"
+fi
+
+printf '# pre-existing user xinitrc\n' >"$ut_override_home/.xinitrc"
+printf '#!/bin/sh\nexec i3 --shmlog-size=0\n' >"$ut_override_home/.config/lightxdm/.xinitrc-i3"
+ut_i3_override_hash="$(sha256sum < "$ut_override_home/.config/lightxdm/.xinitrc-i3")"
+ut_missing_bundled_dir="$user_tmpl_dir/missing_bundled"
+mkdir -p "$ut_missing_bundled_dir"
+cp -r "$REPO_ROOT/dotfiles" "$REPO_ROOT/polkit" "$ut_missing_bundled_dir/"
+rm "$ut_missing_bundled_dir/dotfiles/.xinitrc-i3"
+
+rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak" "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak" "${POLKIT_RULE_DEST}.lightxdm.absent"
+write_stock_login
+set +e
+output="$(
+  # shellcheck disable=SC2034  # main uses SCRIPT_DIR from the sourced installer
+  SCRIPT_DIR="$ut_missing_bundled_dir"
+  export HOME="$ut_override_home"
+  export PATH="$sudo_pw_dir:$STUB_BIN:$PATH"
+  export USER="testuser"
+  unset SUDO_USER
+  main --de i3 2>&1
+)"
+status_override_missing=$?
+set -e
+(
+  export HOME="$ut_override_home"
+  export USER="testuser"
+  copy_dotfiles "i3" 2>/dev/null
+)
+(
+  export HOME="$ut_plain_home"
+  export USER="testuser"
+  copy_dotfiles "i3" 2>/dev/null
+)
+if [[ $status_override_missing -eq 0 ]] &&
+  [[ -x "$ut_override_home/.xinitrc" ]] &&
+  [[ "$(sha256sum < "$ut_override_home/.xinitrc")" == "$ut_i3_override_hash" ]] &&
+  [[ "$(sha256sum < "$ut_override_home/.xinitrc")" != "$(sha256sum < "$REPO_ROOT/dotfiles/.xinitrc-i3")" ]] &&
+  [[ -f "$ut_override_home/.xinitrc.lightxdm.bak" && "$(cat "$ut_override_home/.xinitrc.lightxdm.bak")" == "# pre-existing user xinitrc" ]] &&
+  [[ ! -e "$ut_override_home/.xinitrc.lightxdm-edited" ]] &&
+  [[ ! -e "$ut_plain_home/.config" ]]; then
+  pass "A user .config/lightxdm/.xinitrc-i3 overrides dotfiles/.xinitrc-i3 without creating ~/.config when absent"
+else
+  fail "user .config/lightxdm/.xinitrc-i3 override (status=$status_override_missing, output=$output)"
+fi
+
+if [[ $EUID -eq 0 ]]; then
+  ut_uninstall_runner=(bash)
+elif [[ $can_unshare -eq 1 ]]; then
+  ut_uninstall_runner=(unshare -r bash)
+else
+  ut_uninstall_runner=()
+fi
+if [[ ${#ut_uninstall_runner[@]} -eq 0 ]]; then
+  skip "uninstall.sh handles ~/.config/lightxdm templates (unshare -r unavailable)"
+else
+  set +e
+  out_ut_custom="$(
+    env TARGET_HOME="$ut_custom_home" \
+      LOGIN_FILE="$user_tmpl_dir/u_login1" \
+      AUTOLOGIN_DROPIN="$user_tmpl_dir/u_auto1" \
+      OVERRIDE_FILE="$user_tmpl_dir/u_over1" \
+      POLKIT_RULE="$user_tmpl_dir/u_polkit1" \
+      DM_STATE_FILE="$user_tmpl_dir/u_dm1" \
+      "${ut_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
+  )"
+  st_ut_custom=$?
+  out_ut_override="$(
+    env TARGET_HOME="$ut_override_home" \
+      LOGIN_FILE="$user_tmpl_dir/u_login2" \
+      AUTOLOGIN_DROPIN="$user_tmpl_dir/u_auto2" \
+      OVERRIDE_FILE="$user_tmpl_dir/u_over2" \
+      POLKIT_RULE="$user_tmpl_dir/u_polkit2" \
+      DM_STATE_FILE="$user_tmpl_dir/u_dm2" \
+      "${ut_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
+  )"
+  st_ut_override=$?
+  set -e
+  if [[ $st_ut_custom -eq 0 && $st_ut_override -eq 0 ]] &&
+    [[ ! -e "$ut_custom_home/.xinitrc" && ! -L "$ut_custom_home/.xinitrc" ]] &&
+    [[ ! -e "$ut_custom_home/.xinitrc.lightxdm.absent" && ! -e "$ut_custom_home/.xinitrc.lightxdm-edited" ]] &&
+    [[ -f "$ut_custom_home/.config/lightxdm/.xinitrc-dwm" && "$(sha256sum < "$ut_custom_home/.config/lightxdm/.xinitrc-dwm")" == "$ut_dwm_hash" ]] &&
+    [[ -f "$ut_override_home/.xinitrc" && "$(cat "$ut_override_home/.xinitrc")" == "# pre-existing user xinitrc" ]] &&
+    [[ ! -e "$ut_override_home/.xinitrc.lightxdm.bak" && ! -e "$ut_override_home/.xinitrc.lightxdm-edited" ]] &&
+    [[ -f "$ut_override_home/.config/lightxdm/.xinitrc-i3" && "$(sha256sum < "$ut_override_home/.config/lightxdm/.xinitrc-i3")" == "$ut_i3_override_hash" ]]; then
+    pass "uninstall.sh removes or restores ~/.xinitrc installed from ~/.config/lightxdm and leaves ~/.config/lightxdm intact"
+  else
+    fail "uninstall.sh ~/.config/lightxdm templates (c=$st_ut_custom:$out_ut_custom | o=$st_ut_override:$out_ut_override)"
+  fi
+fi
+
 exit "$failures"

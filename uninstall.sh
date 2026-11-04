@@ -175,7 +175,7 @@ matches_lightxdm_template() {
       ;;
   esac
   local tmpl
-  for tmpl in "$SCRIPT_DIR"/dotfiles/.xinitrc-*; do
+  for tmpl in "$SCRIPT_DIR"/dotfiles/.xinitrc-* "$TARGET_HOME"/.config/lightxdm/.xinitrc-*; do
     if [[ -f "$tmpl" ]] && files_match "$path" "$tmpl"; then
       return 0
     fi
