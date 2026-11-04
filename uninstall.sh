@@ -47,28 +47,35 @@ files_match() {
 
 # Remove only the exact PAM lines configure_pam appends.
 if [ -f "$BACKUP_FILE" ]; then
-  # A line already present before install (it is in the backup) is the user's, not ours.
-  pam_sed=()
-  for pam_re in \
-    '^auth       optional   pam_kwallet5\.so$' \
-    '^session    optional   pam_kwallet5\.so force_run$' \
-    '^auth       optional   pam_gnome_keyring\.so$' \
-    '^session    optional   pam_gnome_keyring\.so auto_start$'; do
-    if [[ -z "$(sed -n "/${pam_re}/p" "$BACKUP_FILE")" ]]; then
-      pam_sed+=(-e "/${pam_re}/d")
-    fi
-  done
-  if [[ ${#pam_sed[@]} -gt 0 ]]; then
-    sed -i --follow-symlinks "${pam_sed[@]}" "$LOGIN_FILE"
-  fi
-  if files_match "$LOGIN_FILE" "$BACKUP_FILE" ||
-    { [[ -s "$BACKUP_FILE" && -n "$(tail -c 1 "$BACKUP_FILE")" ]] &&
-      files_match "$LOGIN_FILE" <(cat "$BACKUP_FILE"; printf '\n'); }; then
+  if [[ ! -e "$LOGIN_FILE" ]]; then
     echo "Restoring $LOGIN_FILE from backup..."
-    cp "$BACKUP_FILE" "$LOGIN_FILE"
-    rm -f "$BACKUP_FILE"
+    rm -f -- "$LOGIN_FILE"
+    cp -- "$BACKUP_FILE" "$LOGIN_FILE"
+    rm -f -- "$BACKUP_FILE"
   else
-    echo "Removed lightXDM PAM lines from $LOGIN_FILE; backup kept for review: $BACKUP_FILE"
+    # A line already present before install (it is in the backup) is the user's, not ours.
+    pam_sed=()
+    for pam_re in \
+      '^auth       optional   pam_kwallet5\.so$' \
+      '^session    optional   pam_kwallet5\.so force_run$' \
+      '^auth       optional   pam_gnome_keyring\.so$' \
+      '^session    optional   pam_gnome_keyring\.so auto_start$'; do
+      if [[ -z "$(sed -n "/${pam_re}/p" "$BACKUP_FILE")" ]]; then
+        pam_sed+=(-e "/${pam_re}/d")
+      fi
+    done
+    if [[ ${#pam_sed[@]} -gt 0 ]]; then
+      sed -i --follow-symlinks "${pam_sed[@]}" "$LOGIN_FILE"
+    fi
+    if files_match "$LOGIN_FILE" "$BACKUP_FILE" ||
+      { [[ -s "$BACKUP_FILE" && -n "$(tail -c 1 "$BACKUP_FILE")" ]] &&
+        files_match "$LOGIN_FILE" <(cat "$BACKUP_FILE"; printf '\n'); }; then
+      echo "Restoring $LOGIN_FILE from backup..."
+      cp "$BACKUP_FILE" "$LOGIN_FILE"
+      rm -f "$BACKUP_FILE"
+    else
+      echo "Removed lightXDM PAM lines from $LOGIN_FILE; backup kept for review: $BACKUP_FILE"
+    fi
   fi
 else
   echo "No $BACKUP_FILE found; skipping PAM restore."

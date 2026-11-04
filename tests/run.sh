@@ -3155,4 +3155,56 @@ else
   skip "main custom id under tr_TR (locale not installed)"
 fi
 
+# Case 60: uninstall.sh restores missing or dangling LOGIN_FILE from backup and finishes all steps
+if [[ $EUID -eq 0 ]]; then
+  ml_runner=(bash)
+elif [[ $can_unshare -eq 1 ]]; then
+  ml_runner=(unshare -r bash)
+else
+  ml_runner=()
+fi
+if [[ ${#ml_runner[@]} -eq 0 ]]; then
+  skip "uninstall.sh restores missing or dangling LOGIN_FILE from backup (unshare -r unavailable)"
+else
+  for login_state in missing dangling; do
+    ml_dir="$TMP_DIR/missing_login_${login_state}"
+    ml_home="$ml_dir/home"
+    ml_login="$ml_dir/login"
+    ml_autologin="$ml_dir/lightxdm-autologin.conf"
+    ml_polkit="$ml_dir/49-nopasswd.rules"
+    ml_dm_state="$ml_dir/lightxdm/disabled-display-managers"
+    mkdir -p "$ml_home" "$(dirname "$ml_dm_state")"
+    (
+      export HOME="$ml_home"
+      export USER="${USER:-testuser}"
+      copy_dotfiles "i3" 2>/dev/null
+    )
+    printf '#%%PAM-1.0\nauth       include      system-local-login\n' >"${ml_login}.lightxdm.bak"
+    ml_backup_hash="$(sha256sum < "${ml_login}.lightxdm.bak")"
+    if [[ "$login_state" == "dangling" ]]; then
+      ln -s "$ml_dir/nonexistent_target" "$ml_login"
+    fi
+    # shellcheck disable=SC2016  # $TERM is literal in systemd drop-in
+    printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin testuser --noclear %%I $TERM\n' >"$ml_autologin"
+    cp "$POLKIT_RULE_SRC" "$ml_polkit"
+    printf 'sddm.service\n' >"$ml_dm_state"
+    : >"$STUB_LOG"
+    set +e
+    output="$(env TARGET_HOME="$ml_home" LOGIN_FILE="$ml_login" AUTOLOGIN_DROPIN="$ml_autologin" OVERRIDE_FILE="$ml_dir/override.conf" POLKIT_RULE="$ml_polkit" DM_STATE_FILE="$ml_dm_state" "${ml_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1)"
+    status=$?
+    set -e
+    log_content="$(cat "$STUB_LOG")"
+    if [[ $status -eq 0 && "$output" == *"Uninstall complete."* ]] &&
+      [[ -f "$ml_login" && ! -L "$ml_login" && "$(sha256sum < "$ml_login")" == "$ml_backup_hash" ]] &&
+      [[ ! -e "${ml_login}.lightxdm.bak" && ! -e "$ml_dir/nonexistent_target" ]] &&
+      [[ ! -e "$ml_autologin" && ! -e "$ml_polkit" && ! -e "$ml_dm_state" ]] &&
+      [[ ! -e "$ml_home/.bash_profile" && ! -e "$ml_home/.xinitrc" && ! -e "$ml_home/.gpg-agent-gnome" ]] &&
+      [[ "$log_content" == *"systemctl daemon-reload"* && "$log_content" == *"systemctl enable sddm.service"* ]]; then
+      pass "uninstall.sh restores $login_state LOGIN_FILE from backup and completes all cleanup steps"
+    else
+      fail "uninstall.sh $login_state LOGIN_FILE restore (status=$status, output=$output, log=$log_content)"
+    fi
+  done
+fi
+
 exit "$failures"
