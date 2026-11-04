@@ -28,11 +28,15 @@ fail() {
   failures=$((failures + 1))
 }
 
-pacman -Sy --noconfirm --needed python-pam kwallet-pam gnome-keyring
+pacman -Syu --noconfirm --needed python-pam kwallet-pam gnome-keyring
 
 for module in /usr/lib/security/pam_kwallet5.so /usr/lib/security/pam_gnome_keyring.so; do
   if [[ ! -f "$module" ]]; then
     fail "Missing PAM module: $module"
+    exit 1
+  fi
+  if ! python -c 'import ctypes, sys; ctypes.CDLL(sys.argv[1])' "$module"; then
+    fail "Cannot load PAM module: $module"
     exit 1
   fi
 done
