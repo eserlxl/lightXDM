@@ -3524,14 +3524,14 @@ for profile_case in interactive no-autostart autostart-restored non-interactive 
   profile_display=''
   profile_tty=/dev/tty1
   profile_path="$profile_bin:/usr/bin:/bin"
-  rm -f "$profile_home/.config/lightxdm/no-autostart"
+  rm -f "$profile_home/.config/lightxdm/no-autostart" "$profile_home/.local/state/lightxdm/startx-attempts"
   case "$profile_case" in
     no-autostart) touch "$profile_home/.config/lightxdm/no-autostart" ;;
     non-interactive) profile_flags=() ;;
     display) profile_display=:0 ;;
     tty2) profile_tty=/dev/tty2 ;;
     missing-startx)
-      rm "$profile_bin/startx"
+      mv "$profile_bin/startx" "$profile_bin/startx.off"
       # Exclude any host startx; tty uses only Bash builtins in this case.
       profile_path="$profile_bin"
       ;;
@@ -3561,6 +3561,153 @@ for profile_case in interactive no-autostart autostart-restored non-interactive 
     fail ".bash_profile $profile_case (status=$status, log=$actual_log, expected=$expected_log, output=$output, stderr=$(cat "$profile_home/profile.err"))"
   fi
 done
+mv "$profile_bin/startx.off" "$profile_bin/startx"
+
+run_tty1_profile() {
+  local state_home="${1:-}"
+  local env_args=(
+    HOME="$profile_home"
+    PATH="$profile_bin:/usr/bin:/bin"
+    TERM=dumb
+    DISPLAY=''
+  )
+  if [[ -n "$state_home" ]]; then
+    env_args+=(XDG_STATE_HOME="$state_home")
+  fi
+  printf '/dev/tty1\n' >"$profile_home/tty"
+  # shellcheck disable=SC2016  # expanded by the isolated child shell
+  output="$(env -i "${env_args[@]}" bash -i -c '
+    exec 2>"$HOME/profile.err"
+    PATH=$2
+    # Discard the automatic interactive .bashrc read before this command.
+    : >"$HOME/profile.log"
+    source "$1"
+    printf "after|%s\n" "${!_lightxdm_*}"
+  ' bash "$REPO_ROOT/dotfiles/.bash_profile" "$profile_bin:/usr/bin:/bin" 2>/dev/null)" && status=0 || status=$?
+  actual_log="$(cat "$profile_home/profile.log")"
+}
+
+profile_expected_bashrc="bashrc|$profile_home/.local/bin:$profile_bin:/usr/bin:/bin"
+profile_expected_startx="startx|$profile_home/.local/bin:$profile_bin:/usr/bin:/bin"
+profile_attempts="$profile_home/.local/state/lightxdm/startx-attempts"
+
+rm -rf "$profile_home/.config/lightxdm" "$profile_home/.local/state"
+mkdir -p "${profile_attempts%/*}"
+printf -v profile_now '%(%s)T' -1
+printf '%s\n' "$((profile_now - 25))" "$((profile_now - 10))" "$((profile_now - 1))" >"$profile_attempts"
+run_tty1_profile
+pause_out_lines=()
+if [[ -n "$output" ]]; then
+  mapfile -t pause_out_lines <<<"$output"
+fi
+if [[ $status -eq 0 && "$actual_log" == "$profile_expected_bashrc" && ! -s "$profile_home/profile.err" ]] &&
+  [[ -f "$profile_home/.config/lightxdm/no-autostart" && ! -s "$profile_attempts" ]] &&
+  [[ ${#pause_out_lines[@]} -eq 2 && "${pause_out_lines[0]}" == *"paused"* &&
+    "${pause_out_lines[0]}" == *"rm ~/.config/lightxdm/no-autostart"* && "${pause_out_lines[1]}" == "after|" ]]; then
+  pass ".bash_profile pauses after three recent startx attempts, creates no-autostart, clears attempts, and loads .bashrc"
+else
+  fail ".bash_profile pause on three recent attempts (status=$status, log=$actual_log, output=$output, stderr=$(cat "$profile_home/profile.err"))"
+fi
+
+rm -f "$profile_home/.config/lightxdm/no-autostart"
+run_tty1_profile
+recorded_lines=()
+if [[ -f "$profile_attempts" ]]; then
+  mapfile -t recorded_lines <"$profile_attempts"
+fi
+if [[ $status -eq 0 && "$actual_log" == "$profile_expected_startx" && -z "$output" && ! -s "$profile_home/profile.err" ]] &&
+  [[ ! -e "$profile_home/.config/lightxdm/no-autostart" && ${#recorded_lines[@]} -eq 1 ]]; then
+  pass ".bash_profile resumes exec startx after removing no-autostart"
+else
+  fail ".bash_profile resume after removing no-autostart (status=$status, log=$actual_log, count=${#recorded_lines[@]}, output=$output, stderr=$(cat "$profile_home/profile.err"))"
+fi
+
+printf -v profile_now '%(%s)T' -1
+printf '%s\n' "$((profile_now - 120))" "$((profile_now - 60))" "$((profile_now - 31))" >"$profile_attempts"
+run_tty1_profile
+recorded_lines=()
+if [[ -f "$profile_attempts" ]]; then
+  mapfile -t recorded_lines <"$profile_attempts"
+fi
+if [[ $status -eq 0 && "$actual_log" == "$profile_expected_startx" && -z "$output" && ! -s "$profile_home/profile.err" ]] &&
+  [[ ! -e "$profile_home/.config/lightxdm/no-autostart" && ${#recorded_lines[@]} -eq 1 ]]; then
+  pass ".bash_profile drops entries older than 30s and execs startx"
+else
+  fail ".bash_profile old attempts pruning (status=$status, log=$actual_log, count=${#recorded_lines[@]}, output=$output, stderr=$(cat "$profile_home/profile.err"))"
+fi
+
+printf -v profile_now '%(%s)T' -1
+printf '%s\n' "$((profile_now - 90))" "$((profile_now - 31))" "$((profile_now - 12))" "$((profile_now - 3))" >"$profile_attempts"
+run_tty1_profile
+recorded_lines=()
+if [[ -f "$profile_attempts" ]]; then
+  mapfile -t recorded_lines <"$profile_attempts"
+fi
+if [[ $status -eq 0 && "$actual_log" == "$profile_expected_startx" && -z "$output" && ! -s "$profile_home/profile.err" ]] &&
+  [[ ! -e "$profile_home/.config/lightxdm/no-autostart" && ${#recorded_lines[@]} -eq 3 ]]; then
+  pass ".bash_profile keeps only the two recent entries plus the new launch without pausing"
+else
+  fail ".bash_profile mixed old and recent attempts (status=$status, log=$actual_log, count=${#recorded_lines[@]}, output=$output, stderr=$(cat "$profile_home/profile.err"))"
+fi
+
+rm -f "$profile_home/.config/lightxdm/no-autostart" "$profile_attempts"
+rapid_launches_ok=1
+for attempt_num in 1 2 3; do
+  run_tty1_profile
+  recorded_lines=()
+  if [[ -f "$profile_attempts" ]]; then
+    mapfile -t recorded_lines <"$profile_attempts"
+  fi
+  if [[ $status -ne 0 || "$actual_log" != "$profile_expected_startx" || -n "$output" || -s "$profile_home/profile.err" ||
+    -e "$profile_home/.config/lightxdm/no-autostart" || ${#recorded_lines[@]} -ne $attempt_num ]]; then
+    rapid_launches_ok=0
+  fi
+done
+run_tty1_profile
+if [[ $rapid_launches_ok -eq 1 && $status -eq 0 && "$actual_log" == "$profile_expected_bashrc" && ! -s "$profile_home/profile.err" ]] &&
+  [[ -f "$profile_home/.config/lightxdm/no-autostart" && ! -s "$profile_attempts" &&
+    "$output" == *"rm ~/.config/lightxdm/no-autostart"* ]]; then
+  pass ".bash_profile launches startx three times then pauses on the fourth login"
+else
+  fail ".bash_profile four rapid logins (launches_ok=$rapid_launches_ok, status=$status, log=$actual_log, output=$output, stderr=$(cat "$profile_home/profile.err"))"
+fi
+
+custom_state_home="$TMP_DIR/bash_profile/xdg_state"
+rm -rf "$profile_home/.config/lightxdm/no-autostart" "$profile_home/.local/state" "$custom_state_home"
+mkdir -p "$custom_state_home/lightxdm"
+printf -v profile_now '%(%s)T' -1
+printf '%s\n' "$((profile_now - 8))" "$((profile_now - 4))" "$((profile_now - 1))" >"$custom_state_home/lightxdm/startx-attempts"
+run_tty1_profile "$custom_state_home"
+if [[ $status -eq 0 && "$actual_log" == "$profile_expected_bashrc" && ! -s "$profile_home/profile.err" ]] &&
+  [[ -f "$profile_home/.config/lightxdm/no-autostart" && ! -s "$custom_state_home/lightxdm/startx-attempts" && ! -e "$profile_home/.local/state" ]]; then
+  pass ".bash_profile uses XDG_STATE_HOME when set"
+else
+  fail ".bash_profile XDG_STATE_HOME (status=$status, log=$actual_log, output=$output, stderr=$(cat "$profile_home/profile.err"))"
+fi
+
+ro_state_home="$TMP_DIR/bash_profile/ro_state"
+rm -f "$profile_home/.config/lightxdm/no-autostart"
+mkdir -p "$ro_state_home/lightxdm"
+chmod 555 "$ro_state_home" "$ro_state_home/lightxdm"
+if [[ -w "$ro_state_home/lightxdm" ]]; then
+  chmod 755 "$ro_state_home" "$ro_state_home/lightxdm"
+  skip ".bash_profile unwritable state directory stays quiet and starts X (directory remains writable)"
+else
+  run_tty1_profile "$ro_state_home"
+  ro_existing_ok=0
+  if [[ $status -eq 0 && "$actual_log" == "$profile_expected_startx" && -z "$output" && ! -s "$profile_home/profile.err" &&
+    ! -e "$ro_state_home/lightxdm/startx-attempts" ]]; then
+    ro_existing_ok=1
+  fi
+  run_tty1_profile "$ro_state_home/missing"
+  chmod 755 "$ro_state_home" "$ro_state_home/lightxdm"
+  if [[ $ro_existing_ok -eq 1 && $status -eq 0 && "$actual_log" == "$profile_expected_startx" &&
+    -z "$output" && ! -s "$profile_home/profile.err" ]]; then
+    pass ".bash_profile stays quiet and starts X when the state directory cannot be written"
+  else
+    fail ".bash_profile unwritable state directory (existing_ok=$ro_existing_ok, status=$status, log=$actual_log, output=$output, stderr=$(cat "$profile_home/profile.err"))"
+  fi
+fi
 
 # Case 59: polkit/49-nopasswd.rules grants YES only for the eight login1 power actions on local active seat0 wheel subjects
 if ! command -v node >/dev/null 2>&1; then

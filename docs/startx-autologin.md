@@ -80,7 +80,9 @@ This prints `enabled for <user> (<file>)` for the lightXDM drop-in (or an accept
 
 ## Recovery
 
-If a broken desktop session keeps restarting on TTY1, run these commands as your user from another TTY or SSH:
+If `startx` on TTY1 exits three times within 30 seconds, the next TTY1 login automatically pauses auto-start: `.bash_profile` creates `~/.config/lightxdm/no-autostart`, clears `${XDG_STATE_HOME:-~/.local/state}/lightxdm/startx-attempts`, prints a one-line notice explaining how to resume, and loads `~/.bashrc` instead of running `startx`. (Recent launch timestamps are kept in `${XDG_STATE_HOME:-~/.local/state}/lightxdm/startx-attempts`, dropping entries older than 30 seconds.)
+
+You can also create the marker manually as your user from another TTY or SSH:
 ```sh
 mkdir -p ~/.config/lightxdm
 touch ~/.config/lightxdm/no-autostart
