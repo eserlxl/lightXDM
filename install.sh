@@ -618,14 +618,33 @@ EOF
     exit 1
   fi
 
+  # Globals, not locals: the EXIT trap runs after main's locals are gone.
+  install_step=""
+  completed_steps=()
+  # shellcheck disable=SC2154  # install_status is assigned inside the trap string
+  trap '
+    install_status=$?
+    if [[ $install_status -ne 0 && -n "${install_step:-}" ]]; then
+      log "Install stopped during $install_step; already done: ${completed_steps[*]:-none}"
+      log "After fixing the error, rerunning install.sh is safe; uninstall.sh reverts configuration changes (installed packages stay)."
+    fi
+    exit "$install_status"
+  ' EXIT
+
   if [[ $no_packages -eq 1 ]]; then
     log "Skipping package installation (--no-packages)."
-  elif [[ $no_keyring -eq 1 ]]; then
-    install_packages "$de" --no-keyring
   else
-    install_packages "$de"
+    install_step="install_packages"
+    if [[ $no_keyring -eq 1 ]]; then
+      install_packages "$de" --no-keyring
+    else
+      install_packages "$de"
+    fi
+    completed_steps+=("$install_step")
   fi
+  install_step="copy_dotfiles"
   copy_dotfiles "$de"
+  completed_steps+=("$install_step")
   local login_shell shell_profile=""
   login_shell="$(getent passwd "$real_user" | cut -d: -f7 || true)"
   if [[ -n "$login_shell" && "$login_shell" != *bash ]]; then
@@ -645,13 +664,18 @@ EOF
   if [[ $no_keyring -eq 1 ]]; then
     log "Skipping keyring PAM configuration (--no-keyring)."
   else
+    install_step="configure_pam"
     configure_pam "$de"
+    completed_steps+=("$install_step")
   fi
   if [[ $no_polkit_rule -eq 1 ]]; then
     log "Skipping Polkit rule installation (--no-polkit-rule)."
   else
+    install_step="install_polkit_rule"
     install_polkit_rule
+    completed_steps+=("$install_step")
   fi
+  install_step="disable_display_managers"
   disable_display_managers
 
   local unlock_summary="Auto-unlock and Polkit rules are set"
@@ -663,6 +687,7 @@ EOF
     unlock_summary="Auto-unlock is set (Polkit rule skipped)"
   fi
 
+  trap - EXIT
   if [[ -z "$shell_profile" && -e "$HOME/.config/lightxdm/no-autostart" ]]; then
     cat <<EOF
 

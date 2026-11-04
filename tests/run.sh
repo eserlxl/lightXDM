@@ -249,11 +249,17 @@ run_main_with_stubs() (
       return "${STUB_PROMPT_RC:-1}"
     }
   fi
-  install_packages() { echo "install_packages $*" >>"$STUB_LOG"; }
-  copy_dotfiles() { echo "copy_dotfiles $1" >>"$STUB_LOG"; }
-  configure_pam() { echo "configure_pam $1" >>"$STUB_LOG"; }
-  install_polkit_rule() { echo "install_polkit_rule" >>"$STUB_LOG"; }
-  disable_display_managers() { echo "disable_display_managers" >>"$STUB_LOG"; }
+  stub_install_step() {
+    echo "$*" >>"$STUB_LOG"
+    if [[ "$1" == "${STUB_FAIL_STEP:-}" ]]; then
+      return "${STUB_FAIL_STATUS:-1}"
+    fi
+  }
+  install_packages() { stub_install_step install_packages "$@"; }
+  copy_dotfiles() { stub_install_step copy_dotfiles "$1"; }
+  configure_pam() { stub_install_step configure_pam "$1"; }
+  install_polkit_rule() { stub_install_step install_polkit_rule; }
+  disable_display_managers() { stub_install_step disable_display_managers; }
   main "$@"
 )
 
@@ -263,10 +269,58 @@ output="$(run_main_with_stubs "$sudo_pw_dir" 2>&1)"
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
-if [[ $status -eq 0 && "$log_content" == *"sudo -v"* && "$log_content" == *"install_packages i3"* ]]; then
+if [[ $status -eq 0 && "$log_content" == *"sudo -v"* && "$log_content" == *"install_packages i3"* &&
+  "$output" != *"Install stopped during"* && "$output" != *"rerunning install.sh is safe"* ]]; then
   pass "main succeeds when sudo requires a password (-n fails, -v succeeds)"
 else
   fail "main with password sudo (status=$status, log=$log_content, output=$output)"
+fi
+
+# A failure at any install step reports only completed steps and preserves status.
+completed_install_steps=()
+recovery_hint="After fixing the error, rerunning install.sh is safe; uninstall.sh reverts configuration changes (installed packages stay)."
+for failed_install_step in install_packages copy_dotfiles configure_pam install_polkit_rule disable_display_managers; do
+  for failed_install_status in 1 23; do
+    : >"$STUB_LOG"
+    set +e
+    # exec 2>&1: main's EXIT trap runs after a per-call redirection is undone.
+    output="$(
+      exec 2>&1
+      set -e
+      STUB_FAIL_STEP="$failed_install_step" STUB_FAIL_STATUS="$failed_install_status" \
+        run_main_with_stubs "$sudo_pw_dir" --de i3
+    )"
+    status=$?
+    set -e
+    expected_stopped="=> Install stopped during $failed_install_step; already done: ${completed_install_steps[*]:-none}"
+    if [[ $status -eq $failed_install_status && "$output" == *"$recovery_hint"* &&
+      "$output" != *"lightXDM install complete!"* ]] &&
+      grep -Fxq -- "$expected_stopped" <<<"$output"; then
+      pass "main reports $failed_install_step failure and completed steps (status=$status)"
+    else
+      fail "main step failure ($failed_install_step, status=$status, output=$output)"
+    fi
+  done
+  completed_install_steps+=("$failed_install_step")
+done
+
+# Skipped steps must not appear in the completed list.
+: >"$STUB_LOG"
+set +e
+output="$(
+  exec 2>&1
+  set -e
+  STUB_FAIL_STEP=disable_display_managers run_main_with_stubs "$sudo_pw_dir" \
+    --de i3 --no-packages --no-keyring --no-polkit-rule
+)"
+status=$?
+set -e
+if [[ $status -eq 1 && "$output" == *"$recovery_hint"* &&
+  "$output" != *"lightXDM install complete!"* ]] &&
+  grep -Fxq '=> Install stopped during disable_display_managers; already done: copy_dotfiles' <<<"$output"; then
+  pass "main excludes skipped steps from failure report"
+else
+  fail "main skipped steps failure report (status=$status, output=$output)"
 fi
 
 # Case 10: main fails with clear error when sudo -v fails
@@ -288,7 +342,8 @@ status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
 if [[ $status -eq 1 && "$output" == *"ERROR: Failed to authenticate with sudo. Exiting."* &&
-  "$output" == *"uncomment %wheel ALL=(ALL:ALL) ALL"* && -z "$log_content" ]]; then
+  "$output" == *"uncomment %wheel ALL=(ALL:ALL) ALL"* && -z "$log_content" &&
+  "$output" != *"Install stopped during"* ]]; then
   pass "main exits 1 when sudo -v fails"
 else
   fail "main when sudo -v fails (status=$status, log=$log_content, output=$output)"
@@ -360,7 +415,8 @@ for refused_de in plasma gnome budgie; do
     set -e
     log_content="$(cat "$STUB_LOG")"
     if [[ $status -eq 1 && "$output" == *"$refused_de now runs only on Wayland and cannot be started with startx (see README.md)."* &&
-      "$log_content" == "$expected_refusal_log" && "$output" != *"lightXDM install complete!"* ]]; then
+      "$log_content" == "$expected_refusal_log" && "$output" != *"lightXDM install complete!"* &&
+      "$output" != *"Install stopped during"* ]]; then
       pass "main refuses $refused_de before any installation step ($refused_mode)"
     else
       fail "main refusal of $refused_de ($refused_mode, status=$status, log=$log_content, output=$output)"
@@ -1178,7 +1234,8 @@ status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
 if [[ $status -eq 1 && "$output" == *"sudo is required but not installed. Please install sudo and re-run."* &&
-  "$output" == *"su -c 'pacman -S sudo'"* && "$output" != *"command not found"* && -z "$log_content" ]]; then
+  "$output" == *"su -c 'pacman -S sudo'"* && "$output" != *"command not found"* && -z "$log_content" &&
+  "$output" != *"Install stopped during"* ]]; then
   pass "main prints check_root message when sudo is not installed"
 else
   fail "main without sudo installed (status=$status, output=$output, log=$log_content)"
@@ -1194,7 +1251,8 @@ else
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
-  if [[ $status -eq 1 && "$output" == *"Do not run this script as root. Please run as a regular user."* && -z "$log_content" ]]; then
+  if [[ $status -eq 1 && "$output" == *"Do not run this script as root. Please run as a regular user."* && -z "$log_content" &&
+    "$output" != *"Install stopped during"* ]]; then
     pass "main rejects running as root via check_root"
   else
     fail "main root check (status=$status, output=$output, log=$log_content)"
@@ -1230,7 +1288,8 @@ status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
 if [[ $status -eq 1 && "$output" == *"ERROR: User 'plainuser' is not in the 'wheel' group."* &&
-  "$output" == *"su -c 'usermod -aG wheel plainuser'"* && "$output" != *"sudo usermod"* && -z "$log_content" ]]; then
+  "$output" == *"su -c 'usermod -aG wheel plainuser'"* && "$output" != *"sudo usermod"* && -z "$log_content" &&
+  "$output" != *"Install stopped during"* ]]; then
   pass "main checks USER rather than SUDO_USER for wheel group"
 else
   fail "main wheel check with SUDO_USER set (status=$status, output=$output, log=$log_content)"
@@ -1405,7 +1464,8 @@ for flag in --help -h; do
   for help_word in --de --list-packages --no-packages --no-keyring --no-polkit-rule /etc/pam.d/login Polkit "display managers" uninstall.sh; do
     [[ "$output" == *"$help_word"*"$help_word"* || ( "$help_word" != --* && "$output" == *"$help_word"* ) ]] || help_options_ok=0
   done
-  if [[ $status -eq 0 && "$output" == *"Usage:"* && $help_options_ok -eq 1 && -z "$log_content" ]] &&
+  if [[ $status -eq 0 && "$output" == *"Usage:"* && $help_options_ok -eq 1 && -z "$log_content" &&
+    "$output" != *"Install stopped during"* && "$output" != *"rerunning install.sh is safe"* ]] &&
     [[ "$(cat "$help_home/.bash_profile")" == "# untouched bash_profile" ]] &&
     [[ "$(cat "$LOGIN_FILE")" == "# untouched login" ]]; then
     pass "install.sh $flag prints usage and the effect of every option, exits 0, and changes nothing"
@@ -1966,11 +2026,21 @@ else
     : >"$STUB_LOG"
     set +e
     # shellcheck disable=SC2016 # Expand arguments and exit status in the child shell.
-    output="$(env PATH="$dm_stub_dir:$PATH" DM_STATE_FILE="$dm_readonly_dir/state" STUB_DM_ALIAS_ONLY="$dm_alias_only" bash -c 'source "$1"; disable_display_managers || exit $?' bash "$REPO_ROOT/install.sh" 2>&1)"
+    output="$(env PATH="$dm_stub_dir:$sudo_pw_dir:$PATH" DM_STATE_FILE="$dm_readonly_dir/state" STUB_DM_ALIAS_ONLY="$dm_alias_only" bash -c '
+      source "$1"
+      check_root() { :; }
+      install_packages() { :; }
+      copy_dotfiles() { :; }
+      configure_pam() { :; }
+      install_polkit_rule() { :; }
+      main --de i3
+    ' bash "$REPO_ROOT/install.sh" 2>&1)"
     status=$?
     set -e
     log_content="$(cat "$STUB_LOG")"
-    if [[ $status -ne 0 && ! -e "$dm_readonly_dir/state" ]] &&
+    if [[ $status -ne 0 && ! -e "$dm_readonly_dir/state" &&
+      "$output" == *"$recovery_hint"* && "$output" != *"lightXDM install complete!"* ]] &&
+      grep -Fxq '=> Install stopped during disable_display_managers; already done: install_packages copy_dotfiles configure_pam install_polkit_rule' <<<"$output" &&
       grep -Fq 'systemctl is-enabled' "$STUB_LOG" &&
       ! grep -Fq 'systemctl disable' "$STUB_LOG"; then
       pass "disable_display_managers stops before disabling when state write fails (alias_only=$dm_alias_only)"
@@ -3932,7 +4002,8 @@ for fail_pkg_flag in "" "--no-keyring"; do
     [[ "$log_content" != *"configure_pam"* ]] &&
     [[ "$log_content" != *"install_polkit_rule"* ]] &&
     [[ "$log_content" != *"disable_display_managers"* ]] &&
-    [[ "$output" != *"lightXDM install complete!"* ]]; then
+    [[ "$output" == *"$recovery_hint"* && "$output" != *"lightXDM install complete!"* ]] &&
+    grep -Fxq '=> Install stopped during install_packages; already done: none' <<<"$output"; then
     pass "main ${fail_pkg_args[*]} stops on pacman failure before dotfiles, PAM, Polkit, or display managers"
   else
     fail "main ${fail_pkg_args[*]} on pacman failure (status=$status, log=$log_content, output=$output)"
@@ -4120,16 +4191,22 @@ set +e
 output="$(
   env -u SHELLOPTS -u SUDO_USER \
     HOME="$fail_cp_home" \
-    PATH="$fail_cp_bin:$STUB_BIN:$PATH" \
+    PATH="$fail_cp_bin:$sudo_pw_dir:$STUB_BIN:$PATH" \
     USER="testuser" \
     bash -c '
       source "$1/install.sh"
-      copy_dotfiles "i3"
+      check_root() { :; }
+      install_packages() { :; }
+      configure_pam() { :; }
+      install_polkit_rule() { :; }
+      disable_display_managers() { :; }
+      main --de i3
     ' bash "$REPO_ROOT" 2>&1
 )"
 status=$?
 set -e
-if [[ $status -ne 0 ]] &&
+if [[ $status -ne 0 && "$output" == *"$recovery_hint"* && "$output" != *"lightXDM install complete!"* ]] &&
+  grep -Fxq '=> Install stopped during copy_dotfiles; already done: install_packages' <<<"$output" &&
   [[ -f "$fail_cp_home/.bash_profile" && ! -L "$fail_cp_home/.bash_profile" ]] &&
   [[ "$(sha256sum < "$fail_cp_home/.bash_profile")" == "$fail_cp_hash" ]] &&
   [[ ! -e "$fail_cp_home/.bash_profile.lightxdm.bak" && ! -L "$fail_cp_home/.bash_profile.lightxdm.bak" ]] &&
@@ -4672,7 +4749,8 @@ if [[ $status -ne 0 ]] &&
   grep -Fxq -- "copy_dotfiles i3" "$STUB_LOG" &&
   grep -Fxq -- "failed PAM append" "$STUB_LOG" &&
   [[ "$log_content" != *"install_polkit_rule"* && "$log_content" != *"disable_display_managers"* &&
-    "$output" != *"lightXDM install complete!"* ]]; then
+    "$output" == *"$recovery_hint"* && "$output" != *"lightXDM install complete!"* ]] &&
+  grep -Fxq '=> Install stopped during configure_pam; already done: install_packages copy_dotfiles' <<<"$output"; then
   pass "main stops on PAM append failure before Polkit or display managers"
 else
   fail "main on PAM append failure (status=$status, log=$log_content, output=$output)"
