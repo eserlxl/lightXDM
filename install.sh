@@ -257,6 +257,42 @@ xinitrc_template() {
   fi
 }
 
+# Check startup commands before changing the user's session configuration
+check_session_commands() {
+  local template="$1" line session_line="" session_command package
+  if ! command -v startx >/dev/null 2>&1; then
+    log "Missing command: startx (normally provided by xorg-xinit). Install xorg-xinit and re-run."
+    return 1
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      "exec "*) session_line="${line#exec }" ;;
+    esac
+  done < "$template"
+  read -r session_command _ <<< "$session_line"
+  # Only inspect a literal command name; custom templates may use shell expressions or paths.
+  if [[ "$session_command" =~ ^[[:alnum:]_][[:alnum:]_.+-]*$ ]] &&
+    ! command -v "$session_command" >/dev/null 2>&1; then
+    case "$session_command" in
+      startxfce4) package="xfce4-session" ;;
+      startlxqt) package="lxqt-session" ;;
+      startlxde) package="lxde-common" ;;
+      mate-session) package="mate-session-manager" ;;
+      cinnamon-session) package="cinnamon-session" ;;
+      i3) package="i3-wm" ;;
+      *) package="" ;;
+    esac
+    if [[ -n "$package" ]]; then
+      log "Missing command: $session_command (normally provided by $package). Install $package and re-run."
+    else
+      log "Missing command: $session_command. Install your session and ensure its command is on PATH, then re-run."
+    fi
+    return 1
+  fi
+  return 0
+}
+
 # Copy dotfiles to the user's home directory
 copy_dotfiles() {
   local de
@@ -650,6 +686,8 @@ EOF
     fi
     completed_steps+=("$install_step")
   fi
+  install_step="check_session_commands"
+  check_session_commands "$template" || exit 1
   install_step="copy_dotfiles"
   copy_dotfiles "$de"
   completed_steps+=("$install_step")

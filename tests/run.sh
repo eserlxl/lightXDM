@@ -61,6 +61,9 @@ exit 0
 EOF
 
 chmod +x "$STUB_BIN/sudo" "$STUB_BIN/pacman" "$STUB_BIN/systemctl" "$STUB_BIN/id" "$STUB_BIN/chown"
+for startup_command in startx startxfce4 startlxqt startlxde mate-session cinnamon-session i3 dwm; do
+  cp "$STUB_BIN/chown" "$STUB_BIN/$startup_command"
+done
 export PATH="$STUB_BIN:$PATH"
 export STUB_LOG="$TMP_DIR/stub.log"
 export LOGIN_FILE="$TMP_DIR/login"
@@ -2188,6 +2191,93 @@ for de_id in "" i3; do
     pass "main ${no_packages_args[*]} skips packages and runs all other setup steps"
   else
     fail "main ${no_packages_args[*]} (status=$status, log=$log_content, output=$output)"
+  fi
+done
+
+# Missing startup commands stop before any configuration, even after package installation.
+startup_bin="$TMP_DIR/startup_bin"
+mkdir -p "$startup_bin"
+for startup_tool in bash id tr grep getent cut cat; do
+  ln -s "$(command -v "$startup_tool")" "$startup_bin/$startup_tool"
+done
+for missing_startup_command in startx startxfce4; do
+  for startup_command in startx startxfce4; do
+    rm -f "$startup_bin/$startup_command"
+    if [[ "$startup_command" != "$missing_startup_command" ]]; then
+      ln -s "$STUB_BIN/$startup_command" "$startup_bin/$startup_command"
+    fi
+  done
+  for startup_mode in no-packages packages; do
+    startup_args=(--de xfce)
+    expected_startup_log="sudo -v"
+    expected_startup_done="none"
+    if [[ "$startup_mode" == "no-packages" ]]; then
+      startup_args+=(--no-packages)
+    else
+      expected_startup_log+=$'\ninstall_packages xfce'
+      expected_startup_done="install_packages"
+    fi
+    expected_startup_package="xorg-xinit"
+    if [[ "$missing_startup_command" == "startxfce4" ]]; then
+      expected_startup_package="xfce4-session"
+    fi
+    : >"$STUB_LOG"
+    set +e
+    output="$(
+      exec 2>&1
+      export PATH="$startup_bin"
+      run_main_with_stubs "$sudo_pw_dir" "${startup_args[@]}"
+    )"
+    status=$?
+    set -e
+    log_content="$(cat "$STUB_LOG")"
+    if [[ $status -eq 1 && "$log_content" == "$expected_startup_log" &&
+      "$output" == *"Missing command: $missing_startup_command (normally provided by $expected_startup_package)."* &&
+      "$output" == *"Install stopped during check_session_commands; already done: $expected_startup_done"* &&
+      "$output" != *"lightXDM install complete!"* ]]; then
+      pass "main stops before configuration when $missing_startup_command is missing ($startup_mode)"
+    else
+      fail "main missing $missing_startup_command ($startup_mode, status=$status, log=$log_content, output=$output)"
+    fi
+  done
+done
+
+# Check the selected user template's last exec line without evaluating shell expressions.
+startup_home="$TMP_DIR/startup_home"
+mkdir -p "$startup_home/.config/lightxdm"
+for startup_template_case in last-exec missing-session no-exec expression path; do
+  expected_startup_status=0
+  case "$startup_template_case" in
+    last-exec) startup_template=$'exec lightxdm-missing-session\nexec startxfce4 --example' ;;
+    missing-session)
+      startup_template=$'exec startxfce4\nexec lightxdm-missing-session --example'
+      expected_startup_status=1
+      ;;
+    no-exec) startup_template='# No exec line' ;;
+    # shellcheck disable=SC2016  # a literal shell expression in the template, not expanded here
+    expression) startup_template='exec "$SESSION"' ;;
+    path) startup_template='exec /custom/session' ;;
+  esac
+  printf '%s' "$startup_template" >"$startup_home/.config/lightxdm/.xinitrc-xfce"
+  : >"$STUB_LOG"
+  set +e
+  output="$(
+    exec 2>&1
+    HOME="$startup_home" run_main_with_stubs "$sudo_pw_dir" --no-packages --de xfce
+  )"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -eq $expected_startup_status ]] && {
+    [[ $status -eq 0 && "$log_content" == $'sudo -v\ncopy_dotfiles xfce\nconfigure_pam xfce\ninstall_polkit_rule\ndisable_display_managers' &&
+      "$output" == *"lightXDM install complete!"* ]] ||
+    [[ $status -eq 1 && "$log_content" == "sudo -v" &&
+      "$output" == *"Missing command: lightxdm-missing-session. Install your session"* &&
+      "$output" == *"Install stopped during check_session_commands; already done: none"* ]];
+  }; then
+    pass "main checks the selected template's session command ($startup_template_case)"
+  else
+    fail "main selected template ($startup_template_case, status=$status, log=$log_content, output=$output)"
   fi
 done
 
