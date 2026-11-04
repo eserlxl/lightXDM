@@ -240,6 +240,13 @@ for dotfile in .bash_profile .xinitrc .gpg-agent-kwallet .gpg-agent-gnome; do
   fi
 done
 
+# The .bash_profile respawn guard keeps launch timestamps here; a copy under a custom XDG_STATE_HOME is not removed.
+attempts_dir="$TARGET_HOME/.local/state/lightxdm"
+if [[ ! -L "$attempts_dir" && -f "$attempts_dir/startx-attempts" && ! -L "$attempts_dir/startx-attempts" ]]; then
+  rm -f -- "$attempts_dir/startx-attempts"
+  rmdir --ignore-fail-on-non-empty -- "$attempts_dir" 2>/dev/null || true
+fi
+
 # Re-enable only display managers disabled by the installer
 if [[ -f "$DM_STATE_FILE" ]]; then
   failed=()

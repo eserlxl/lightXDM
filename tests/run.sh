@@ -6226,4 +6226,42 @@ else
   fi
 fi
 
+
+# uninstall.sh removes the respawn guard's startx-attempts state without following symlinks
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh removes startx-attempts state (unshare -r unavailable)"
+else
+  sa_dir="$TMP_DIR/startx_attempts_cleanup"
+  for sa_case in plain symlink nonempty; do
+    sa_home="$sa_dir/$sa_case/home"
+    mkdir -p "$sa_home/.local/state/lightxdm"
+    sa_state="$sa_home/.local/state/lightxdm/startx-attempts"
+    case "$sa_case" in
+      plain) printf '1\n' >"$sa_state" ;;
+      symlink)
+        printf 'keep\n' >"$sa_dir/$sa_case/target"
+        ln -s "$sa_dir/$sa_case/target" "$sa_state"
+        ;;
+      nonempty)
+        printf '1\n' >"$sa_state"
+        printf 'other\n' >"$sa_home/.local/state/lightxdm/other"
+        ;;
+    esac
+    set +e
+    output="$(env TARGET_HOME="$sa_home" LOGIN_FILE="$sa_dir/$sa_case/login" AUTOLOGIN_DROPIN="$sa_dir/$sa_case/autologin.conf" OVERRIDE_FILE="$sa_dir/$sa_case/override.conf" POLKIT_RULE="$sa_dir/$sa_case/polkit" DM_STATE_FILE="$sa_dir/$sa_case/dm/state" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+    status=$?
+    set -e
+    case "$sa_case" in
+      plain) [[ $status -eq 0 && ! -e "$sa_state" && ! -e "$sa_home/.local/state/lightxdm" ]] ;;
+      symlink) [[ $status -eq 0 && -L "$sa_state" && "$(cat "$sa_dir/$sa_case/target")" == keep ]] ;;
+      nonempty) [[ $status -eq 0 && ! -e "$sa_state" && -f "$sa_home/.local/state/lightxdm/other" ]] ;;
+    esac && sa_ok=1 || sa_ok=0
+    if [[ $sa_ok -eq 1 ]]; then
+      pass "uninstall.sh startx-attempts cleanup ($sa_case)"
+    else
+      fail "uninstall.sh startx-attempts cleanup ($sa_case, status=$status, output=$output)"
+    fi
+  done
+fi
+
 finish_harness
