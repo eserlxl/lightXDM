@@ -190,6 +190,7 @@ matches_lightxdm_template() {
   if [[ ! -f "$path" || -L "$path" ]]; then
     return 1
   fi
+  local templates=()
   case "$dotfile" in
     .bash_profile | .gpg-agent-gnome | .gpg-agent-kwallet)
       if [[ -f "$SCRIPT_DIR/dotfiles/$dotfile" ]] && files_match "$path" "$SCRIPT_DIR/dotfiles/$dotfile"; then
@@ -197,11 +198,19 @@ matches_lightxdm_template() {
       fi
       return 1
       ;;
+    .wayland-session)
+      templates=("$SCRIPT_DIR"/dotfiles/.wayland-session-*)
+      if [[ "$mode" != "--bundled-only" ]]; then
+        templates+=("$TARGET_HOME"/.config/lightxdm/.wayland-session-*)
+      fi
+      ;;
+    *)
+      templates=("$SCRIPT_DIR"/dotfiles/.xinitrc-*)
+      if [[ "$mode" != "--bundled-only" ]]; then
+        templates+=("$TARGET_HOME"/.config/lightxdm/.xinitrc-*)
+      fi
+      ;;
   esac
-  local templates=("$SCRIPT_DIR"/dotfiles/.xinitrc-*)
-  if [[ "$mode" != "--bundled-only" ]]; then
-    templates+=("$TARGET_HOME"/.config/lightxdm/.xinitrc-*)
-  fi
   local tmpl
   for tmpl in "${templates[@]}"; do
     [[ "$tmpl" -ef "$path" ]] && continue
@@ -212,7 +221,7 @@ matches_lightxdm_template() {
   return 1
 }
 
-for dotfile in .bash_profile .xinitrc .gpg-agent-kwallet .gpg-agent-gnome; do
+for dotfile in .bash_profile .xinitrc .wayland-session .gpg-agent-kwallet .gpg-agent-gnome; do
   if [[ -e "$TARGET_HOME/${dotfile}.lightxdm.bak" || -L "$TARGET_HOME/${dotfile}.lightxdm.bak" ]]; then
     if [[ -e "$TARGET_HOME/$dotfile" || -L "$TARGET_HOME/$dotfile" ]]; then
       if matches_lightxdm_template "$dotfile"; then

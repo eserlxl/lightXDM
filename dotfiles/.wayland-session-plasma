@@ -1,0 +1,14 @@
+#!/bin/bash
+# Wayland session for lightXDM: start KDE Plasma
+# shellcheck disable=SC1090
+
+export DESKTOP_SESSION=plasma
+export XDG_CURRENT_DESKTOP=KDE
+export XDG_SESSION_TYPE=wayland
+
+# Source GPG agent integration for KWallet
+if [[ -f ~/.gpg-agent-kwallet ]]; then
+  source ~/.gpg-agent-kwallet
+fi
+
+exec /usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland

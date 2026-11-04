@@ -67,6 +67,7 @@ detect_de() {
 # Map a desktop id to its menu label
 de_label() {
   case "$1" in
+    plasma) echo "KDE Plasma" ;;
     xfce) echo "XFCE" ;;
     lxqt) echo "LXQt" ;;
     lxde) echo "LXDE" ;;
@@ -137,6 +138,7 @@ list_packages() {
 
   case "$de" in
     plasma)
+      base_pkgs=(udisks2 polkit gvfs gvfs-mtp gvfs-gphoto2 gvfs-afc)
       pkgs=(plasma-desktop konsole dolphin kwallet-pam polkit-kde-agent)
       ;;
     gnome)
@@ -249,21 +251,28 @@ preserve_dotfile() {
   cp -P "$target" "$edited"
 }
 
-# Print the .xinitrc template path for a session id
+# Print the session template path for a session id
 xinitrc_template() {
-  if [[ -f "$HOME/.config/lightxdm/.xinitrc-$1" ]]; then
-    printf '%s\n' "$HOME/.config/lightxdm/.xinitrc-$1"
+  local name=".xinitrc-$1"
+  if [[ "$1" == "plasma" ]]; then
+    name=".wayland-session-plasma"
+  fi
+  if [[ -f "$HOME/.config/lightxdm/$name" ]]; then
+    printf '%s\n' "$HOME/.config/lightxdm/$name"
   else
-    printf '%s\n' "$SCRIPT_DIR/dotfiles/.xinitrc-$1"
+    printf '%s\n' "$SCRIPT_DIR/dotfiles/$name"
   fi
 }
 
-# Create ~/.config/lightxdm/.xinitrc-<id> to edit: a copy of the built-in template,
-# or for a custom window manager the i3 template with its session id and command swapped.
+# Create ~/.config/lightxdm/.xinitrc-<id> (or .wayland-session-plasma) to edit: a copy of the
+# built-in template, or for a custom window manager the i3 template with its session id and command swapped.
 init_xinitrc_template() {
   local id="$1" dest="$HOME/.config/lightxdm/.xinitrc-$1"
+  if [[ "$id" == "plasma" ]]; then
+    dest="$HOME/.config/lightxdm/.wayland-session-plasma"
+  fi
   case "$id" in
-    plasma | gnome | budgie)
+    gnome | budgie)
       log "$id now runs only on Wayland and cannot be started with startx (see README.md)."
       return 1
       ;;
@@ -279,13 +288,18 @@ init_xinitrc_template() {
   fi
   mkdir -p "$HOME/.config/lightxdm"
   case "$id" in
+    plasma)
+      cp -- "$SCRIPT_DIR/dotfiles/.wayland-session-plasma" "$dest"
+      chmod 755 "$dest"
+      log "Created $dest from the built-in plasma template. Edit it, then run: bash install.sh --de plasma"
+      ;;
     xfce | lxqt | lxde | mate | cinnamon | i3)
       cp -- "$SCRIPT_DIR/dotfiles/.xinitrc-$id" "$dest"
       chmod 755 "$dest"
       log "Created $dest from the built-in $id template. Edit it, then run: bash install.sh --de $id"
       ;;
     *)
-      sed -e "s/^# \.xinitrc for lightXDM: start i3 /# .xinitrc for lightXDM: start $id /" \
+      LC_ALL=C sed -e "s/^# \.xinitrc for lightXDM: start i3 /# .xinitrc for lightXDM: start $id /" \
         -e "s/^\(export [A-Z_]*\)=i3\$/\1=$id/" \
         -e "s/^# i3 does not update the activation environment itself, unlike full desktops\.\$/# Window managers often do not update the activation environment themselves./" \
         -e "s/^exec i3\$/exec $id/" "$SCRIPT_DIR/dotfiles/.xinitrc-i3" >"$dest"
@@ -297,7 +311,30 @@ init_xinitrc_template() {
 
 # Check startup commands before changing the user's session configuration
 check_session_commands() {
-  local template="$1" line session_line="" session_command package
+  local template="$1" base="${1##*/}" line session_line="" session_command package
+  if [[ "$base" == .wayland-session-* ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      case "$line" in
+        "exec "*) session_line="${line#exec }" ;;
+      esac
+    done < "$template"
+    local tokens=() token check_path
+    read -r -a tokens <<< "$session_line"
+    for token in "${tokens[@]}"; do
+      [[ "$token" == /* ]] || continue
+      check_path="${SESSION_ROOT:-}$token"
+      if [[ ! -f "$check_path" || ! -x "$check_path" ]]; then
+        if [[ "$base" == ".wayland-session-plasma" ]]; then
+          log "Missing command: $token (normally provided by plasma-workspace). Install plasma-desktop and re-run."
+        else
+          log "Missing command: $token. Install your session and ensure $token exists and is executable, then re-run."
+        fi
+        return 1
+      fi
+    done
+    return 0
+  fi
+
   if ! command -v startx >/dev/null 2>&1; then
     log "Missing command: startx (normally provided by xorg-xinit). Install xorg-xinit and re-run."
     return 1
@@ -350,18 +387,59 @@ copy_dotfiles() {
     install -Dm744 "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome" "$user_home/.gpg-agent-gnome"
   fi
 
-  local template
+  local template base
   template="$(xinitrc_template "$de")"
+  base="${template##*/}"
   if [[ -f "$template" ]]; then
-    local xinitrc_templates=("$SCRIPT_DIR"/dotfiles/.xinitrc-*)
-    if [[ -e "$user_home/.xinitrc.lightxdm.bak" || -L "$user_home/.xinitrc.lightxdm.bak" ||
-      -e "$user_home/.xinitrc.lightxdm.absent" || -L "$user_home/.xinitrc.lightxdm.absent" ]]; then
-      xinitrc_templates=("$HOME"/.config/lightxdm/.xinitrc-* "${xinitrc_templates[@]}")
+    if [[ "$base" == .wayland-session-* ]]; then
+      local wayland_templates=("$SCRIPT_DIR"/dotfiles/.wayland-session-*)
+      if [[ -e "$user_home/.wayland-session.lightxdm.bak" || -L "$user_home/.wayland-session.lightxdm.bak" ||
+        -e "$user_home/.wayland-session.lightxdm.absent" || -L "$user_home/.wayland-session.lightxdm.absent" ]]; then
+        wayland_templates=("$user_home"/.config/lightxdm/.wayland-session-* "${wayland_templates[@]}")
+      fi
+      preserve_dotfile "$user_home/.wayland-session" "${wayland_templates[@]}"
+      install -Dm755 "$template" "$user_home/.wayland-session"
+    else
+      local xinitrc_templates=("$SCRIPT_DIR"/dotfiles/.xinitrc-*)
+      if [[ -e "$user_home/.xinitrc.lightxdm.bak" || -L "$user_home/.xinitrc.lightxdm.bak" ||
+        -e "$user_home/.xinitrc.lightxdm.absent" || -L "$user_home/.xinitrc.lightxdm.absent" ]]; then
+        xinitrc_templates=("$HOME"/.config/lightxdm/.xinitrc-* "${xinitrc_templates[@]}")
+      fi
+      preserve_dotfile "$user_home/.xinitrc" "${xinitrc_templates[@]}"
+      install -Dm755 "$template" "$user_home/.xinitrc"
+
+      local wl_session="$user_home/.wayland-session"
+      if [[ -e "$wl_session" || -L "$wl_session" ]]; then
+        local wl_match=0 wl_sum wl_tmpl
+        if [[ -f "$wl_session" && ! -L "$wl_session" ]]; then
+          wl_sum="$(sha256sum < "$wl_session")"
+          for wl_tmpl in "$SCRIPT_DIR"/dotfiles/.wayland-session-* "$user_home"/.config/lightxdm/.wayland-session-*; do
+            [[ "$wl_tmpl" -ef "$wl_session" ]] && continue
+            if [[ -f "$wl_tmpl" && "$wl_sum" == "$(sha256sum < "$wl_tmpl")" ]]; then
+              wl_match=1
+              break
+            fi
+          done
+        fi
+        if [[ $wl_match -eq 1 ]]; then
+          rm -f -- "$wl_session"
+          if [[ -e "${wl_session}.lightxdm.bak" || -L "${wl_session}.lightxdm.bak" ]]; then
+            log "Restoring $wl_session from ${wl_session}.lightxdm.bak"
+            mv -- "${wl_session}.lightxdm.bak" "$wl_session"
+            log "WARNING: ~/.wayland-session takes precedence over startx at TTY1 login and must be removed for $de to start."
+          fi
+          rm -f -- "${wl_session}.lightxdm.absent"
+        else
+          log "WARNING: ~/.wayland-session takes precedence over startx at TTY1 login and must be removed for $de to start."
+        fi
+      fi
     fi
-    preserve_dotfile "$user_home/.xinitrc" "${xinitrc_templates[@]}"
-    install -Dm755 "$template" "$user_home/.xinitrc"
   else
-    log "No .xinitrc template for $de. Please create $template for proper session startup."
+    if [[ "$base" == .wayland-session-* ]]; then
+      log "No Wayland session template for $de. Please create $template for proper session startup."
+    else
+      log "No .xinitrc template for $de. Please create $template for proper session startup."
+    fi
     return 1
   fi
 }
@@ -528,19 +606,19 @@ main() {
         echo "$usage"
         cat <<'EOF'
 
-Sets up a desktop that starts with startx from a TTY1 login instead of a display manager.
+Sets up a desktop from a TTY1 login instead of a display manager: X11 desktops start with startx and Plasma starts on Wayland.
 A default run, as your regular user (it asks for sudo once):
   - installs the packages for the desktop (detected, chosen from a menu, or --de)
-  - copies ~/.bash_profile and ~/.xinitrc, backing up or saving any existing copies
+  - copies ~/.bash_profile and ~/.xinitrc (or ~/.wayland-session for Plasma), backing up or saving any existing copies
   - appends keyring unlock lines to /etc/pam.d/login (backup at /etc/pam.d/login.lightxdm.bak)
   - installs a Polkit rule for passwordless power-off, reboot, suspend and hibernate
   - disables installed display managers (uninstall.sh re-enables them)
 
 Options:
-  --de <id>         configure this desktop: xfce lxqt lxde mate cinnamon i3, or a custom
+  --de <id>         configure this desktop: plasma xfce lxqt lxde mate cinnamon i3, or a custom
                     id that has a ~/.config/lightxdm/.xinitrc-<id> template (with --no-packages)
   --list-packages   print the packages for --de <id> and exit; changes nothing
-  --init-template   create ~/.config/lightxdm/.xinitrc-<id> for --de <id> to edit, and exit
+  --init-template   create ~/.config/lightxdm/.xinitrc-<id> (or .wayland-session-plasma) for --de <id> to edit, and exit
                     (any lowercase id: a custom one starts from the i3 template)
   --no-packages     skip package installation
   --no-keyring      skip keyring packages and the PAM lines (use with autologin)
@@ -577,7 +655,7 @@ EOF
         ;;
       --de)
         if [[ $# -lt 2 || "$2" == -* ]]; then
-          log "Missing argument for --de (valid ids: xfce lxqt lxde mate cinnamon i3)"
+          log "Missing argument for --de (valid ids: plasma xfce lxqt lxde mate cinnamon i3)"
           echo "$usage" >&2
           exit 1
         fi
@@ -620,16 +698,16 @@ EOF
 
   if [[ $list_only -eq 1 ]]; then
     if [[ $de_specified -eq 0 ]]; then
-      log "--list-packages requires --de <id> (valid ids: xfce lxqt lxde mate cinnamon i3)"
+      log "--list-packages requires --de <id> (valid ids: plasma xfce lxqt lxde mate cinnamon i3)"
       echo "$usage" >&2
       exit 1
     fi
     case "$de" in
-      plasma | gnome | budgie)
+      gnome | budgie)
         log "$de now runs only on Wayland and cannot be started with startx (see README.md). To configure another installed desktop, pass --de <id>."
         exit 1
         ;;
-      xfce | lxqt | lxde | mate | cinnamon | i3)
+      plasma | xfce | lxqt | lxde | mate | cinnamon | i3)
         if [[ $no_keyring -eq 1 ]]; then
           list_packages "$de" --no-keyring
         else
@@ -638,7 +716,7 @@ EOF
         exit 0
         ;;
       *)
-        log "Unsupported desktop environment: $de; --list-packages requires a built-in desktop id (valid ids: xfce lxqt lxde mate cinnamon i3)"
+        log "Unsupported desktop environment: $de; --list-packages requires a built-in desktop id (valid ids: plasma xfce lxqt lxde mate cinnamon i3)"
         exit 1
         ;;
     esac
@@ -650,7 +728,7 @@ EOF
       *)
         # Explicit character list: [a-z] ranges miss "i" under some locales (for example tr_TR).
         if [[ $no_packages -ne 1 || -z "$de" || "$de" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* || ! -f "$(xinitrc_template "$de")" ]]; then
-          log "Unsupported desktop environment: $de (valid ids: xfce lxqt lxde mate cinnamon i3)"
+          log "Unsupported desktop environment: $de (valid ids: plasma xfce lxqt lxde mate cinnamon i3)"
           if [[ -n "$de" && "$de" != *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* ]]; then
             if [[ ! -f "$(xinitrc_template "$de")" ]]; then
               log "For a custom session, create its template first: bash install.sh --init-template --de $de"
@@ -709,7 +787,7 @@ EOF
       local candidate supported_des=() wayland_des=()
       for candidate in "${detected_des[@]}"; do
         case "$candidate" in
-          plasma | gnome | budgie)
+          gnome | budgie)
             wayland_des+=("$candidate")
             ;;
           unknown | "") ;;
@@ -744,19 +822,32 @@ EOF
   fi
 
   case "$de" in
-    plasma | gnome | budgie)
+    gnome | budgie)
       log "$de now runs only on Wayland and cannot be started with startx (see README.md). To configure another installed desktop, pass --de <id>."
       exit 1
       ;;
   esac
 
-  local template
+  local template is_wayland=0 session_dotfile=".xinitrc"
   template="$(xinitrc_template "$de")"
+  if [[ "${template##*/}" == .wayland-session-* ]]; then
+    is_wayland=1
+    session_dotfile=".wayland-session"
+  fi
   if [[ ! -f "$template" ]]; then
-    log "No .xinitrc template for $de: $template. Installation aborted."
+    if [[ $is_wayland -eq 1 ]]; then
+      log "No Wayland session template for $de: $template. Installation aborted."
+    else
+      log "No .xinitrc template for $de: $template. Installation aborted."
+    fi
     exit 1
   fi
-  if [[ ! -L "$HOME/.xinitrc" && "$template" -ef "$HOME/.xinitrc" ]]; then
+  if [[ $is_wayland -eq 1 ]]; then
+    if [[ ! -L "$HOME/.wayland-session" && "$template" -ef "$HOME/.wayland-session" ]]; then
+      log "The template for $de is ~/.wayland-session itself: $template. Installation aborted."
+      exit 1
+    fi
+  elif [[ ! -L "$HOME/.xinitrc" && "$template" -ef "$HOME/.xinitrc" ]]; then
     log "The template for $de is ~/.xinitrc itself: $template. Installation aborted."
     exit 1
   fi
@@ -847,11 +938,21 @@ EOF
     cat <<EOF
 
 lightXDM install complete!
-- $de is configured in ~/.xinitrc for $real_user
+- $de is configured in ~/$session_dotfile for $real_user
 - $unlock_summary
 - Desktop auto-start on TTY1 stays paused because ~/.config/lightxdm/no-autostart exists
 
 Run 'rm ~/.config/lightxdm/no-autostart' to start $de automatically at the next TTY1 login.
+EOF
+  elif [[ -z "$shell_profile" && $is_wayland -eq 1 ]]; then
+    cat <<EOF
+
+lightXDM install complete!
+- $de will auto-start on TTY1 for $real_user
+- $unlock_summary
+- Reboot or log out to test
+
+On next boot, after logging in, your desktop environment will start automatically on TTY1.
 EOF
   elif [[ -z "$shell_profile" ]]; then
     cat <<EOF
@@ -867,7 +968,7 @@ EOF
     cat <<EOF
 
 lightXDM install complete!
-- $de is configured in ~/.xinitrc for $real_user (auto-start requires ~/$shell_profile)
+- $de is configured in ~/$session_dotfile for $real_user (auto-start requires ~/$shell_profile)
 - $unlock_summary
 - Add the TTY1 startx block to ~/$shell_profile (see docs/startx-autologin.md), then reboot or log out to test
 

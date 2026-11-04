@@ -139,6 +139,10 @@ chmod +x "$STUB_BIN/sudo" "$STUB_BIN/pacman" "$STUB_BIN/systemctl" "$STUB_BIN/id
 for startup_command in startx startxfce4 startlxqt startlxde mate-session cinnamon-session i3 dwm; do
   cp "$STUB_BIN/chown" "$STUB_BIN/$startup_command"
 done
+export SESSION_ROOT="$TMP_DIR/session_root"
+mkdir -p "$SESSION_ROOT/usr/lib" "$SESSION_ROOT/usr/bin"
+cp "$STUB_BIN/chown" "$SESSION_ROOT/usr/lib/plasma-dbus-run-session-if-needed"
+cp "$STUB_BIN/chown" "$SESSION_ROOT/usr/bin/startplasma-wayland"
 export PATH="$STUB_BIN:$PATH"
 export STUB_LOG="$TMP_DIR/stub.log"
 export LOGIN_FILE="$TMP_DIR/login"
@@ -530,8 +534,8 @@ for missing_template_mode in packages no-packages; do
   fi
 done
 
-# Case 10c: Wayland-only desktops are refused before any installation step
-for refused_de in plasma gnome budgie; do
+# Case 10c: Wayland-only desktops without a lightXDM Wayland session are refused before any installation step
+for refused_de in gnome budgie; do
   for refused_mode in detected explicit skip-options; do
     refused_args=()
     expected_refusal_log=$'sudo -v\ndetect_de'
@@ -558,8 +562,8 @@ for refused_de in plasma gnome budgie; do
   done
 done
 
-# Case 10d: all six X11 desktops still run every installation step
-for supported_de in xfce lxqt lxde mate cinnamon i3; do
+# Case 10d: Plasma (Wayland) and all six X11 desktops run every installation step
+for supported_de in plasma xfce lxqt lxde mate cinnamon i3; do
   : >"$STUB_LOG"
   set +e
   output="$(STUB_DETECTED_DE="$supported_de" run_main_with_stubs "$sudo_pw_dir" 2>&1)"
@@ -574,6 +578,54 @@ for supported_de in xfce lxqt lxde mate cinnamon i3; do
     fail "main with $supported_de (status=$status, log=$log_content, output=$output)"
   fi
 done
+
+: >"$STUB_LOG"
+set +e
+output="$(run_main_with_stubs "$sudo_pw_dir" --de plasma 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 0 && "$log_content" == $'sudo -v\ninstall_packages plasma\ncopy_dotfiles plasma\nconfigure_pam plasma\ninstall_polkit_rule\ndisable_display_managers' &&
+  "$output" == *"lightXDM install complete!"* && "$output" != *"startx"* ]]; then
+  pass "main --de plasma proceeds through all installation steps without startx"
+else
+  fail "main --de plasma (status=$status, log=$log_content, output=$output)"
+fi
+
+plasma_dotfiles_home="$TMP_DIR/home_plasma_wayland"
+mkdir -p "$plasma_dotfiles_home"
+(
+  export HOME="$plasma_dotfiles_home"
+  export USER="${USER:-testuser}"
+  copy_dotfiles "plasma" 2>/dev/null
+)
+if [[ -f "$plasma_dotfiles_home/.wayland-session" && ! -L "$plasma_dotfiles_home/.wayland-session" &&
+  "$(stat -c '%a' "$plasma_dotfiles_home/.wayland-session")" == "755" &&
+  "$(sha256sum < "$plasma_dotfiles_home/.wayland-session")" == "$(sha256sum < "$REPO_ROOT/dotfiles/.wayland-session-plasma")" &&
+  -f "$plasma_dotfiles_home/.gpg-agent-kwallet" && ! -e "$plasma_dotfiles_home/.gpg-agent-gnome" &&
+  ! -e "$plasma_dotfiles_home/.xinitrc" && ! -L "$plasma_dotfiles_home/.xinitrc" ]]; then
+  pass "copy_dotfiles plasma installs ~/.wayland-session (mode 755) and ~/.gpg-agent-kwallet without creating ~/.xinitrc"
+else
+  fail "copy_dotfiles plasma Wayland files"
+fi
+
+plasma_keep_xinit_home="$TMP_DIR/home_plasma_keep_xinit"
+mkdir -p "$plasma_keep_xinit_home"
+printf '# existing user xinitrc\nexec i3\n' >"$plasma_keep_xinit_home/.xinitrc"
+plasma_keep_xinit_hash="$(sha256sum < "$plasma_keep_xinit_home/.xinitrc")"
+(
+  export HOME="$plasma_keep_xinit_home"
+  export USER="${USER:-testuser}"
+  copy_dotfiles "plasma" 2>/dev/null
+)
+if [[ -f "$plasma_keep_xinit_home/.xinitrc" &&
+  "$(sha256sum < "$plasma_keep_xinit_home/.xinitrc")" == "$plasma_keep_xinit_hash" &&
+  ! -e "$plasma_keep_xinit_home/.xinitrc.lightxdm.bak" &&
+  ! -e "$plasma_keep_xinit_home/.xinitrc.lightxdm.absent" ]]; then
+  pass "copy_dotfiles plasma leaves an existing ~/.xinitrc untouched"
+else
+  fail "copy_dotfiles plasma touched existing ~/.xinitrc"
+fi
 
 # Case 11: enable-autologin.sh --help and -h print usage and write nothing
 autologin_dir="$TMP_DIR/autologin"
@@ -1051,6 +1103,7 @@ echo "# user original xinitrc" >"$temp_home/.xinitrc"
 (
   export HOME="$temp_home"
   export USER="${USER:-testuser}"
+  copy_dotfiles "xfce" 2>/dev/null
   copy_dotfiles "plasma" 2>/dev/null
   copy_dotfiles "gnome" 2>/dev/null
 )
@@ -1103,8 +1156,8 @@ else
   output="$(TARGET_HOME="$temp_home_fresh" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
-  if [[ $status -eq 0 && ! -e "$temp_home_fresh/.bash_profile" && ! -e "$temp_home_fresh/.xinitrc" && ! -e "$temp_home_fresh/.gpg-agent-kwallet" ]] &&
-    [[ ! -e "$temp_home_fresh/.bash_profile.lightxdm-removed" && ! -e "$temp_home_fresh/.xinitrc.lightxdm-removed" ]]; then
+  if [[ $status -eq 0 && ! -e "$temp_home_fresh/.bash_profile" && ! -e "$temp_home_fresh/.wayland-session" && ! -e "$temp_home_fresh/.xinitrc" && ! -e "$temp_home_fresh/.gpg-agent-kwallet" ]] &&
+    [[ ! -e "$temp_home_fresh/.bash_profile.lightxdm-removed" && ! -e "$temp_home_fresh/.wayland-session.lightxdm-removed" && ! -e "$temp_home_fresh/.xinitrc.lightxdm-removed" ]]; then
     pass "uninstall.sh removes installed dotfiles when no backup exists"
   else
     fail "uninstall.sh fresh dotfile removal (status=$status, output=$output)"
@@ -1553,7 +1606,7 @@ else
   (
     export HOME="$twice_home"
     export USER="${USER:-testuser}"
-    copy_dotfiles "plasma" 2>/dev/null
+    copy_dotfiles "xfce" 2>/dev/null
   )
   set +e
   output1="$(TARGET_HOME="$twice_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
@@ -1775,6 +1828,7 @@ else
   (
     export HOME="$no_cmp_home"
     export USER="${USER:-testuser}"
+    copy_dotfiles "xfce" 2>/dev/null
     copy_dotfiles "plasma" 2>/dev/null
   )
   unshare_bin="$(command -v unshare)"
@@ -1782,8 +1836,8 @@ else
   output="$(PATH="$no_cmp_bin" TARGET_HOME="$no_cmp_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" "$unshare_bin" -r "$no_cmp_bin/bash" "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
-  if [[ $status -eq 0 && ! -e "$no_cmp_home/.bash_profile" && ! -e "$no_cmp_home/.xinitrc" ]] &&
-    [[ ! -e "$no_cmp_home/.bash_profile.lightxdm-removed" && ! -e "$no_cmp_home/.xinitrc.lightxdm-removed" ]] &&
+  if [[ $status -eq 0 && ! -e "$no_cmp_home/.bash_profile" && ! -e "$no_cmp_home/.xinitrc" && ! -e "$no_cmp_home/.wayland-session" ]] &&
+    [[ ! -e "$no_cmp_home/.bash_profile.lightxdm-removed" && ! -e "$no_cmp_home/.xinitrc.lightxdm-removed" && ! -e "$no_cmp_home/.wayland-session.lightxdm-removed" ]] &&
     [[ "$output" != *"command not found"* ]]; then
     pass "uninstall.sh removes unmodified dotfiles without cmp in PATH"
   else
@@ -1869,7 +1923,7 @@ EOF
 
   refuse_files=("$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak" "$refuse_autologin" "$refuse_override" "$refuse_polkit"
     "$sudo_user_home/.bash_profile" "$sudo_user_home/.bash_profile.lightxdm.bak"
-    "$sudo_user_home/.xinitrc" "$sudo_user_home/.gpg-agent-kwallet")
+    "$sudo_user_home/.wayland-session" "$sudo_user_home/.gpg-agent-kwallet")
   before_refusal="$(sha256sum "${refuse_files[@]}")"
   for bad_target in missing_home root; do
     : >"$STUB_LOG"
@@ -1910,7 +1964,7 @@ EOF
     [[ ! -e "$refuse_autologin" && ! -e "$refuse_override" && "$log_content" == *"systemctl daemon-reload"* ]] &&
     [[ -f "$refuse_polkit" && "$(cat "$refuse_polkit")" == "// rule" && "$output_sudo" == *"Keeping $refuse_polkit"* ]] &&
     [[ "$(cat "$sudo_user_home/.bash_profile")" == "# original bash_profile" && ! -e "$sudo_user_home/.bash_profile.lightxdm.bak" ]] &&
-    [[ ! -e "$sudo_user_home/.xinitrc" && ! -e "$sudo_user_home/.xinitrc.lightxdm-removed" && ! -e "$sudo_user_home/.gpg-agent-kwallet" ]]; then
+    [[ ! -e "$sudo_user_home/.wayland-session" && ! -e "$sudo_user_home/.wayland-session.lightxdm-removed" && ! -e "$sudo_user_home/.gpg-agent-kwallet" ]]; then
     pass "uninstall.sh resolves TARGET_HOME from SUDO_USER and completes full uninstall"
   else
     fail "uninstall.sh SUDO_USER resolution (status=$status_sudo, output=$output_sudo, log=$log_content)"
@@ -1944,7 +1998,7 @@ ln -s "$symlink_home/dotfiles/missing_xinitrc" "$symlink_home/.xinitrc"
 (
   export HOME="$symlink_home"
   export USER="${USER:-testuser}"
-  copy_dotfiles "plasma" 2>/dev/null
+  copy_dotfiles "xfce" 2>/dev/null
   copy_dotfiles "gnome" 2>/dev/null
 )
 if [[ -L "$symlink_home/.bash_profile.lightxdm.bak" && "$(readlink "$symlink_home/.bash_profile.lightxdm.bak")" == "$symlink_home/dotfiles/bash_profile" ]] &&
@@ -1985,9 +2039,11 @@ mkdir -p "$repeat_install_home"
   export USER="${USER:-testuser}"
   copy_dotfiles "plasma" 2>/dev/null
   copy_dotfiles "plasma" 2>/dev/null
+  copy_dotfiles "xfce" 2>/dev/null
   copy_dotfiles "gnome" 2>/dev/null
 )
 if [[ ! -e "$repeat_install_home/.bash_profile.lightxdm.bak" && ! -L "$repeat_install_home/.bash_profile.lightxdm.bak" ]] &&
+  [[ ! -e "$repeat_install_home/.wayland-session.lightxdm.bak" && ! -L "$repeat_install_home/.wayland-session.lightxdm.bak" ]] &&
   [[ ! -e "$repeat_install_home/.xinitrc.lightxdm.bak" && ! -L "$repeat_install_home/.xinitrc.lightxdm.bak" ]]; then
   pass "copy_dotfiles skips backing up unmodified lightXDM templates on repeated installs"
 else
@@ -2003,9 +2059,10 @@ else
   set -e
   if [[ $status -eq 0 ]] &&
     [[ ! -e "$repeat_install_home/.bash_profile" && ! -L "$repeat_install_home/.bash_profile" ]] &&
+    [[ ! -e "$repeat_install_home/.wayland-session" && ! -L "$repeat_install_home/.wayland-session" ]] &&
     [[ ! -e "$repeat_install_home/.xinitrc" && ! -L "$repeat_install_home/.xinitrc" ]] &&
-    [[ ! -e "$repeat_install_home/.bash_profile.lightxdm.bak" && ! -e "$repeat_install_home/.xinitrc.lightxdm.bak" ]] &&
-    [[ ! -e "$repeat_install_home/.bash_profile.lightxdm-removed" && ! -e "$repeat_install_home/.xinitrc.lightxdm-removed" ]] &&
+    [[ ! -e "$repeat_install_home/.bash_profile.lightxdm.bak" && ! -e "$repeat_install_home/.wayland-session.lightxdm.bak" && ! -e "$repeat_install_home/.xinitrc.lightxdm.bak" ]] &&
+    [[ ! -e "$repeat_install_home/.bash_profile.lightxdm-removed" && ! -e "$repeat_install_home/.wayland-session.lightxdm-removed" && ! -e "$repeat_install_home/.xinitrc.lightxdm-removed" ]] &&
     [[ ! -e "$repeat_install_home/.gpg-agent-kwallet" && ! -e "$repeat_install_home/.gpg-agent-gnome" ]]; then
     pass "install twice then uninstall on empty home leaves no ~/.bash_profile or ~/.xinitrc"
   else
@@ -2034,9 +2091,10 @@ else
   set -e
   if [[ $status_u1 -eq 0 && $status_u2 -eq 0 ]] &&
     [[ ! -e "$cycle_home/.bash_profile" && ! -L "$cycle_home/.bash_profile" ]] &&
+    [[ ! -e "$cycle_home/.wayland-session" && ! -L "$cycle_home/.wayland-session" ]] &&
     [[ ! -e "$cycle_home/.xinitrc" && ! -L "$cycle_home/.xinitrc" ]] &&
-    [[ ! -e "$cycle_home/.bash_profile.lightxdm.bak" && ! -e "$cycle_home/.xinitrc.lightxdm.bak" ]] &&
-    [[ ! -e "$cycle_home/.bash_profile.lightxdm-removed" && ! -e "$cycle_home/.xinitrc.lightxdm-removed" ]] &&
+    [[ ! -e "$cycle_home/.bash_profile.lightxdm.bak" && ! -e "$cycle_home/.wayland-session.lightxdm.bak" && ! -e "$cycle_home/.xinitrc.lightxdm.bak" ]] &&
+    [[ ! -e "$cycle_home/.bash_profile.lightxdm-removed" && ! -e "$cycle_home/.wayland-session.lightxdm-removed" && ! -e "$cycle_home/.xinitrc.lightxdm-removed" ]] &&
     [[ ! -e "$cycle_home/.gpg-agent-kwallet" && ! -e "$cycle_home/.gpg-agent-gnome" ]]; then
     pass "install, uninstall, install, uninstall on empty home leaves no ~/.bash_profile or ~/.xinitrc"
   else
@@ -2540,7 +2598,7 @@ echo "# orig xinitrc" >"$reinstall_edit_home/.xinitrc"
 (
   export HOME="$reinstall_edit_home"
   export USER="${USER:-testuser}"
-  copy_dotfiles "plasma" 2>/dev/null
+  copy_dotfiles "lxqt" 2>/dev/null
 )
 echo "# post-install bash edit 1" >>"$reinstall_edit_home/.bash_profile"
 echo "# post-install xinit edit 1" >>"$reinstall_edit_home/.xinitrc"
@@ -2593,7 +2651,7 @@ else
   (
     export HOME="$uninstall_edit_home"
     export USER="${USER:-testuser}"
-    copy_dotfiles "plasma" 2>/dev/null
+    copy_dotfiles "lxqt" 2>/dev/null
   )
   echo "# uninstall bash edit 1" >>"$uninstall_edit_home/.bash_profile"
   echo "# uninstall xinit edit 1" >>"$uninstall_edit_home/.xinitrc"
@@ -3249,24 +3307,24 @@ mkdir -p "$absent_home1" "$absent_home2"
 )
 absent_markers_ok=0
 if [[ -f "$absent_home1/.bash_profile.lightxdm.absent" && ! -s "$absent_home1/.bash_profile.lightxdm.absent" ]] &&
-  [[ -f "$absent_home1/.xinitrc.lightxdm.absent" && ! -s "$absent_home1/.xinitrc.lightxdm.absent" ]] &&
+  [[ -f "$absent_home1/.wayland-session.lightxdm.absent" && ! -s "$absent_home1/.wayland-session.lightxdm.absent" ]] &&
   [[ -f "$absent_home1/.gpg-agent-kwallet.lightxdm.absent" && ! -s "$absent_home1/.gpg-agent-kwallet.lightxdm.absent" ]]; then
   absent_markers_ok=1
 fi
 echo "# fresh home bash edit" >>"$absent_home1/.bash_profile"
-echo "# fresh home xinit edit" >>"$absent_home1/.xinitrc"
+echo "# fresh home wayland edit" >>"$absent_home1/.wayland-session"
 expected_absent_bash="$(cat "$absent_home1/.bash_profile")"
-expected_absent_xinit="$(cat "$absent_home1/.xinitrc")"
+expected_absent_wayland="$(cat "$absent_home1/.wayland-session")"
 (
   export HOME="$absent_home1"
   export USER="${USER:-testuser}"
   copy_dotfiles "plasma" 2>/dev/null
 )
 if [[ $absent_markers_ok -eq 1 ]] &&
-  [[ ! -e "$absent_home1/.bash_profile.lightxdm.bak" && ! -e "$absent_home1/.xinitrc.lightxdm.bak" ]] &&
-  [[ -f "$absent_home1/.bash_profile.lightxdm.absent" && -f "$absent_home1/.xinitrc.lightxdm.absent" ]] &&
+  [[ ! -e "$absent_home1/.bash_profile.lightxdm.bak" && ! -e "$absent_home1/.wayland-session.lightxdm.bak" ]] &&
+  [[ -f "$absent_home1/.bash_profile.lightxdm.absent" && -f "$absent_home1/.wayland-session.lightxdm.absent" ]] &&
   [[ -f "$absent_home1/.bash_profile.lightxdm-edited" && "$(cat "$absent_home1/.bash_profile.lightxdm-edited")" == "$expected_absent_bash" ]] &&
-  [[ -f "$absent_home1/.xinitrc.lightxdm-edited" && "$(cat "$absent_home1/.xinitrc.lightxdm-edited")" == "$expected_absent_xinit" ]]; then
+  [[ -f "$absent_home1/.wayland-session.lightxdm-edited" && "$(cat "$absent_home1/.wayland-session.lightxdm-edited")" == "$expected_absent_wayland" ]]; then
   pass "copy_dotfiles records .lightxdm.absent on fresh home and saves edits to .lightxdm-edited on reinstall"
 else
   fail "copy_dotfiles .lightxdm.absent reinstall handling"
@@ -3305,11 +3363,11 @@ else
 
   if [[ $st_abs1 -eq 0 && $st_abs2 -eq 0 ]] &&
     [[ ! -e "$absent_home1/.bash_profile" && ! -L "$absent_home1/.bash_profile" ]] &&
-    [[ ! -e "$absent_home1/.xinitrc" && ! -L "$absent_home1/.xinitrc" ]] &&
+    [[ ! -e "$absent_home1/.wayland-session" && ! -L "$absent_home1/.wayland-session" ]] &&
     [[ ! -e "$absent_home1/.gpg-agent-kwallet" && ! -L "$absent_home1/.gpg-agent-kwallet" ]] &&
-    [[ ! -e "$absent_home1/.bash_profile.lightxdm.absent" && ! -e "$absent_home1/.xinitrc.lightxdm.absent" && ! -e "$absent_home1/.gpg-agent-kwallet.lightxdm.absent" ]] &&
+    [[ ! -e "$absent_home1/.bash_profile.lightxdm.absent" && ! -e "$absent_home1/.wayland-session.lightxdm.absent" && ! -e "$absent_home1/.gpg-agent-kwallet.lightxdm.absent" ]] &&
     [[ -f "$absent_home1/.bash_profile.lightxdm-edited" && "$(cat "$absent_home1/.bash_profile.lightxdm-edited")" == "$expected_absent_bash" ]] &&
-    [[ -f "$absent_home1/.xinitrc.lightxdm-edited" && "$(cat "$absent_home1/.xinitrc.lightxdm-edited")" == "$expected_absent_xinit" ]] &&
+    [[ -f "$absent_home1/.wayland-session.lightxdm-edited" && "$(cat "$absent_home1/.wayland-session.lightxdm-edited")" == "$expected_absent_wayland" ]] &&
     [[ ! -e "$absent_home2/.bash_profile" && ! -e "$absent_home2/.xinitrc" && ! -e "$absent_home2/.gpg-agent-gnome" ]] &&
     [[ ! -e "$absent_home2/.bash_profile.lightxdm.absent" && ! -e "$absent_home2/.xinitrc.lightxdm.absent" && ! -e "$absent_home2/.gpg-agent-gnome.lightxdm.absent" ]] &&
     [[ -f "$absent_home2/.bash_profile.lightxdm-edited" && "$(cat "$absent_home2/.bash_profile.lightxdm-edited")" == "$expected_abs2_edit1" ]] &&
@@ -3590,7 +3648,6 @@ ln -sf "$xinit_bin/dbus-update-activation-environment" "$xinit_no_xtools_bin/dbu
 ln -sf "$xinit_bin/polkit-gnome-authentication-agent-1" "$xinit_no_xtools_bin/polkit-gnome-authentication-agent-1"
 
 xinit_specs=(
-  "plasma|plasma|KDE|<unset>|gpg-agent-kwallet|0|0|startplasma-x11"
   "gnome|gnome|GNOME|x11|gpg-agent-gnome|0|0|gnome-session"
   "xfce|xfce|XFCE|<unset>|gpg-agent-gnome|0|1|startxfce4"
   "lxqt|lxqt|LXQt|<unset>|gpg-agent-gnome|0|0|startlxqt"
@@ -3812,6 +3869,75 @@ for spec in "${xinit_specs[@]}"; do
   fi
 done
 
+# Case 57b: dotfiles/.wayland-session-plasma sets Plasma Wayland env, sources ~/.gpg-agent-kwallet when present, and execs plasma-dbus-run-session-if-needed startplasma-wayland
+wl_tmpl="$REPO_ROOT/dotfiles/.wayland-session-plasma"
+wl_tmpl_test_dir="$TMP_DIR/wayland_template_plasma"
+mkdir -p "$wl_tmpl_test_dir"
+wl_tmpl_stub="$wl_tmpl_test_dir/stub-dbus-run"
+cat >"$wl_tmpl_stub" <<'EOF'
+#!/bin/bash
+printf 'dbus-run:%s|pid=%s|DESKTOP_SESSION=%s|XDG_CURRENT_DESKTOP=%s|XDG_SESSION_TYPE=%s|SSH_AUTH_SOCK=%s\n' \
+  "$*" \
+  "$$" \
+  "${DESKTOP_SESSION-<unset>}" \
+  "${XDG_CURRENT_DESKTOP-<unset>}" \
+  "${XDG_SESSION_TYPE-<unset>}" \
+  "${SSH_AUTH_SOCK-<unset>}" >>"$XINITRC_LOG"
+EOF
+chmod +x "$wl_tmpl_stub"
+wl_tmpl_copy="$wl_tmpl_test_dir/.wayland-session-plasma"
+sed "s|^exec /usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland\$|exec $wl_tmpl_stub /usr/bin/startplasma-wayland|" "$wl_tmpl" >"$wl_tmpl_copy"
+chmod 755 "$wl_tmpl_copy"
+
+: >"$xinit_log"
+: >"$xinit_err"
+: >"$xinit_pid_file"
+set +e
+(
+  exec 2>"$xinit_err"
+  echo "$BASHPID" >"$xinit_pid_file"
+  export HOME="$xinit_home"
+  export XINITRC_LOG="$xinit_log"
+  unset DESKTOP_SESSION XDG_CURRENT_DESKTOP XDG_SESSION_TYPE SSH_AUTH_SOCK
+  exec bash "$wl_tmpl_copy"
+)
+wl_with_kw_status=$?
+wl_with_kw_pid="$(cat "$xinit_pid_file")"
+wl_with_kw_log="$(cat "$xinit_log")"
+wl_with_kw_err="$(cat "$xinit_err")"
+
+: >"$xinit_log"
+: >"$xinit_err"
+: >"$xinit_pid_file"
+(
+  exec 2>"$xinit_err"
+  echo "$BASHPID" >"$xinit_pid_file"
+  export HOME="$xinit_empty_home"
+  export XINITRC_LOG="$xinit_log"
+  unset DESKTOP_SESSION XDG_CURRENT_DESKTOP XDG_SESSION_TYPE SSH_AUTH_SOCK
+  exec bash "$wl_tmpl_copy"
+)
+wl_empty_status=$?
+set -e
+wl_empty_pid="$(cat "$xinit_pid_file")"
+wl_empty_log="$(cat "$xinit_log")"
+wl_empty_err="$(cat "$xinit_err")"
+wl_last_line="$(tail -n 1 "$wl_tmpl")"
+
+# Git records only the executable bit, so the checkout's umask decides the other permission bits.
+if [[ -x "$wl_tmpl" && "$(git -C "$REPO_ROOT" ls-files -s dotfiles/.wayland-session-plasma 2>/dev/null)" != 100644* && ! -e "$REPO_ROOT/dotfiles/.xinitrc-plasma" ]] &&
+  [[ "$(head -n 1 "$wl_tmpl")" == "#!/bin/bash" ]] &&
+  grep -Fxq '# Wayland session for lightXDM: start KDE Plasma' "$wl_tmpl" &&
+  [[ "$wl_last_line" == "exec /usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland" ]] &&
+  [[ $wl_with_kw_status -eq 0 && -z "$wl_with_kw_err" ]] &&
+  [[ "$wl_with_kw_log" == $'gpg-agent-kwallet\ndbus-run:/usr/bin/startplasma-wayland|pid='"$wl_with_kw_pid"'|DESKTOP_SESSION=plasma|XDG_CURRENT_DESKTOP=KDE|XDG_SESSION_TYPE=wayland|SSH_AUTH_SOCK=/tmp/kwallet-gpg-ssh.sock' ]] &&
+  [[ $wl_empty_status -eq 0 && -z "$wl_empty_err" ]] &&
+  [[ "$wl_empty_log" == "dbus-run:/usr/bin/startplasma-wayland|pid=${wl_empty_pid}|DESKTOP_SESSION=plasma|XDG_CURRENT_DESKTOP=KDE|XDG_SESSION_TYPE=wayland|SSH_AUTH_SOCK=<unset>" ]]; then
+  pass ".wayland-session-plasma sets Wayland env, sources ~/.gpg-agent-kwallet when present, and execs startplasma-wayland via plasma-dbus-run-session-if-needed"
+else
+  fail ".wayland-session-plasma behavior (kw=$wl_with_kw_status:$wl_with_kw_err:$wl_with_kw_log | empty=$wl_empty_status:$wl_empty_err:$wl_empty_log | last=$wl_last_line)"
+fi
+
 # Case 58: .bash_profile starts X only on interactive tty1 outside X without the marker, before .bashrc
 profile_home="$TMP_DIR/bash_profile/home"
 profile_bin="$TMP_DIR/bash_profile/bin"
@@ -3913,9 +4039,10 @@ if [[ -n "$output" ]]; then
 fi
 if [[ $status -eq 0 && "$actual_log" == "$profile_expected_bashrc" && ! -s "$profile_home/profile.err" ]] &&
   [[ -f "$profile_home/.config/lightxdm/no-autostart" && ! -s "$profile_attempts" ]] &&
-  [[ ${#pause_out_lines[@]} -eq 2 && "${pause_out_lines[0]}" == *"paused"* &&
-    "${pause_out_lines[0]}" == *"rm ~/.config/lightxdm/no-autostart"* && "${pause_out_lines[1]}" == "after|" ]]; then
-  pass ".bash_profile pauses after three recent startx attempts, creates no-autostart, clears attempts, and loads .bashrc"
+  [[ ${#pause_out_lines[@]} -eq 2 &&
+    "${pause_out_lines[0]}" == "TTY1 auto-start paused: the session was started 3 times within 30s; run 'rm ~/.config/lightxdm/no-autostart' to resume." &&
+    "${pause_out_lines[1]}" == "after|" ]]; then
+  pass ".bash_profile pauses after three recent session attempts, creates no-autostart, clears attempts, and loads .bashrc"
 else
   fail ".bash_profile pause on three recent attempts (status=$status, log=$actual_log, output=$output, stderr=$(cat "$profile_home/profile.err"))"
 fi
@@ -4030,6 +4157,94 @@ else
     fail ".bash_profile unwritable state directory (existing_ok=$ro_existing_ok, status=$status, log=$actual_log, output=$output, stderr=$(cat "$profile_home/profile.err"))"
   fi
 fi
+
+# Case 58b: .bash_profile prefers executable ~/.wayland-session over startx, works without startx, and skips launch when WAYLAND_DISPLAY is set
+cat >"$profile_home/.wayland-session" <<'EOF'
+#!/bin/bash
+printf 'wayland-session|%s\n' "$PATH" >>"$HOME/profile.log"
+EOF
+chmod 755 "$profile_home/.wayland-session"
+rm -f "$profile_home/.config/lightxdm/no-autostart" "$profile_attempts"
+run_tty1_profile
+profile_expected_wl="wayland-session|$profile_home/.local/bin:$profile_bin:/usr/bin:/bin"
+if [[ $status -eq 0 && "$actual_log" == "$profile_expected_wl" && -z "$output" && ! -s "$profile_home/profile.err" ]]; then
+  pass ".bash_profile execs ~/.wayland-session instead of startx when ~/.wayland-session is executable"
+else
+  fail ".bash_profile wayland-session over startx (status=$status, log=$actual_log, output=$output, stderr=$(cat "$profile_home/profile.err"))"
+fi
+
+# Without startx on PATH, an executable ~/.wayland-session still launches
+mv "$profile_bin/startx" "$profile_bin/startx.off"
+rm -f "$profile_home/.config/lightxdm/no-autostart" "$profile_attempts"
+printf '/dev/tty1\n' >"$profile_home/tty"
+# shellcheck disable=SC2016
+output="$(env -i HOME="$profile_home" PATH="$profile_bin:/usr/bin:/bin" TERM=dumb DISPLAY='' bash -i -c '
+  exec 2>"$HOME/profile.err"
+  PATH=$2
+  : >"$HOME/profile.log"
+  source "$1"
+  printf "after|%s\n" "${!_lightxdm_*}"
+' bash "$REPO_ROOT/dotfiles/.bash_profile" "$profile_bin" 2>/dev/null)" && status=0 || status=$?
+actual_log="$(cat "$profile_home/profile.log")"
+if [[ $status -eq 0 && "$actual_log" == "wayland-session|$profile_home/.local/bin:$profile_bin" &&
+  -z "$output" && ! -s "$profile_home/profile.err" ]]; then
+  pass ".bash_profile execs ~/.wayland-session on tty1 even when startx is not on PATH"
+else
+  fail ".bash_profile wayland-session without startx (status=$status, log=$actual_log, output=$output, stderr=$(cat "$profile_home/profile.err"))"
+fi
+
+# Non-executable ~/.wayland-session without startx does nothing and leaves no _lightxdm_* vars; with startx it falls back to startx
+chmod 644 "$profile_home/.wayland-session"
+rm -f "$profile_home/.config/lightxdm/no-autostart" "$profile_attempts"
+# shellcheck disable=SC2016
+output="$(env -i HOME="$profile_home" PATH="$profile_bin:/usr/bin:/bin" TERM=dumb DISPLAY='' bash -i -c '
+  exec 2>"$HOME/profile.err"
+  PATH=$2
+  : >"$HOME/profile.log"
+  source "$1"
+  printf "after|%s\n" "${!_lightxdm_*}"
+' bash "$REPO_ROOT/dotfiles/.bash_profile" "$profile_bin" 2>/dev/null)" && status=0 || status=$?
+actual_log="$(cat "$profile_home/profile.log")"
+no_launcher_ok=0
+if [[ $status -eq 0 && "$actual_log" == "bashrc|$profile_home/.local/bin:$profile_bin" &&
+  "$output" == "after|" && ! -s "$profile_home/profile.err" ]]; then
+  no_launcher_ok=1
+fi
+mv "$profile_bin/startx.off" "$profile_bin/startx"
+rm -f "$profile_home/.config/lightxdm/no-autostart" "$profile_attempts"
+run_tty1_profile
+if [[ $no_launcher_ok -eq 1 && $status -eq 0 && "$actual_log" == "$profile_expected_startx" &&
+  -z "$output" && ! -s "$profile_home/profile.err" ]]; then
+  pass ".bash_profile ignores non-executable ~/.wayland-session (falls back to startx or loads .bashrc cleanly)"
+else
+  fail ".bash_profile non-executable ~/.wayland-session (no_launcher=$no_launcher_ok, status=$status, log=$actual_log, output=$output)"
+fi
+
+# When WAYLAND_DISPLAY is set, .bash_profile skips launch for both Wayland and X11 setups
+chmod 755 "$profile_home/.wayland-session"
+for wl_disp_mode in with-wayland-session startx-only; do
+  if [[ "$wl_disp_mode" == startx-only ]]; then
+    rm -f "$profile_home/.wayland-session"
+  fi
+  rm -f "$profile_home/.config/lightxdm/no-autostart" "$profile_attempts"
+  printf '/dev/tty1\n' >"$profile_home/tty"
+  # shellcheck disable=SC2016
+  output="$(env -i HOME="$profile_home" PATH="$profile_bin:/usr/bin:/bin" TERM=dumb \
+    DISPLAY='' WAYLAND_DISPLAY=wayland-0 bash -i -c '
+      exec 2>"$HOME/profile.err"
+      PATH=$2
+      : >"$HOME/profile.log"
+      source "$1"
+      printf "after|%s\n" "${!_lightxdm_*}"
+    ' bash "$REPO_ROOT/dotfiles/.bash_profile" "$profile_bin:/usr/bin:/bin" 2>/dev/null)" && status=0 || status=$?
+  actual_log="$(cat "$profile_home/profile.log")"
+  if [[ $status -eq 0 && "$actual_log" == "$profile_expected_bashrc" &&
+    "$output" == "after|" && ! -s "$profile_home/profile.err" ]]; then
+    pass ".bash_profile skips session launch when WAYLAND_DISPLAY is set ($wl_disp_mode)"
+  else
+    fail ".bash_profile WAYLAND_DISPLAY skip ($wl_disp_mode, status=$status, log=$actual_log, output=$output, stderr=$(cat "$profile_home/profile.err"))"
+  fi
+done
 
 # Case 59: polkit/49-nopasswd.rules grants YES only for the eight login1 power actions on local active seat0 wheel subjects
 if ! command -v node >/dev/null 2>&1; then
@@ -4235,6 +4450,7 @@ fi
 
 # Case 61: install_packages and detect_de cover all nine desktops' package lists and detection pairs
 expected_base_pkgs="xorg-server xorg-xinit udisks2 polkit gvfs gvfs-mtp gvfs-gphoto2 gvfs-afc"
+expected_wayland_base_pkgs="udisks2 polkit gvfs gvfs-mtp gvfs-gphoto2 gvfs-afc"
 de_pkg_specs=(
   "plasma|plasma-desktop|plasma-desktop konsole dolphin kwallet-pam polkit-kde-agent"
   "gnome|gnome-shell|gnome-shell gnome-session gnome-control-center nautilus gnome-terminal gnome-keyring polkit-gnome"
@@ -4246,6 +4462,13 @@ de_pkg_specs=(
   "budgie|budgie-desktop|budgie-desktop gnome-terminal gnome-keyring polkit-gnome"
   "i3|i3-wm|i3 xterm dex gnome-keyring polkit-gnome"
 )
+
+plasma_pkg_list="$(list_packages plasma)"
+if ! grep -Fxq 'xorg-server' <<<"$plasma_pkg_list" && ! grep -Fxq 'xorg-xinit' <<<"$plasma_pkg_list"; then
+  pass "list_packages plasma omits xorg-server and xorg-xinit"
+else
+  fail "list_packages plasma unexpectedly included Xorg packages ($plasma_pkg_list)"
+fi
 
 detect_pair_bin="$TMP_DIR/pacman_detect_pair"
 mkdir -p "$detect_pair_bin"
@@ -4261,6 +4484,10 @@ chmod +x "$detect_pair_bin/pacman"
 
 for spec in "${de_pkg_specs[@]}"; do
   IFS='|' read -r de detect_pkg de_pkgs <<<"$spec"
+  de_base_pkgs="$expected_base_pkgs"
+  if [[ "$de" == "plasma" ]]; then
+    de_base_pkgs="$expected_wayland_base_pkgs"
+  fi
 
   : >"$STUB_LOG"
   set +e
@@ -4268,7 +4495,7 @@ for spec in "${de_pkg_specs[@]}"; do
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
-  expected_pacman_log="pacman -S --needed --noconfirm $expected_base_pkgs $de_pkgs"
+  expected_pacman_log="pacman -S --needed --noconfirm $de_base_pkgs $de_pkgs"
   if [[ $status -eq 0 && "$log_content" == "$expected_pacman_log" ]]; then
     pass "install_packages installs base and $de packages"
   else
@@ -4301,6 +4528,10 @@ fi
 
 for spec in "${de_pkg_specs[@]}"; do
   IFS='|' read -r de _ de_pkgs <<<"$spec"
+  de_base_pkgs="$expected_base_pkgs"
+  if [[ "$de" == "plasma" ]]; then
+    de_base_pkgs="$expected_wayland_base_pkgs"
+  fi
   expected_no_kr_pkgs=()
   for pkg in $de_pkgs; do
     case "$pkg" in
@@ -4308,7 +4539,7 @@ for spec in "${de_pkg_specs[@]}"; do
       *) expected_no_kr_pkgs+=("$pkg") ;;
     esac
   done
-  expected_no_kr_log="pacman -S --needed --noconfirm $expected_base_pkgs ${expected_no_kr_pkgs[*]}"
+  expected_no_kr_log="pacman -S --needed --noconfirm $de_base_pkgs ${expected_no_kr_pkgs[*]}"
 
   : >"$STUB_LOG"
   set +e
@@ -5798,9 +6029,13 @@ ln -sf "$STUB_BIN/systemctl" "$lp_no_sudo_bin/systemctl"
 for spec in "${de_pkg_specs[@]}"; do
   IFS='|' read -r lp_de _ lp_de_pkgs <<<"$spec"
   case "$lp_de" in
-    plasma | gnome | budgie) continue ;;
+    gnome | budgie) continue ;;
   esac
-  read -r -a lp_expected_arr <<<"$expected_base_pkgs $lp_de_pkgs"
+  lp_base_pkgs="$expected_base_pkgs"
+  if [[ "$lp_de" == "plasma" ]]; then
+    lp_base_pkgs="$expected_wayland_base_pkgs"
+  fi
+  read -r -a lp_expected_arr <<<"$lp_base_pkgs $lp_de_pkgs"
   lp_expected_out="$(printf '%s\n' "${lp_expected_arr[@]}")"
   lp_expected_sum="$(printf '%s\n' "${lp_expected_arr[@]}" | sha256sum)"
 
@@ -5940,7 +6175,7 @@ for lp_missing_de_flags in "--list-packages" "--list-packages --no-keyring"; do
   fi
 done
 
-for lp_wayland_de in plasma gnome budgie; do
+for lp_wayland_de in gnome budgie; do
   : >"$STUB_LOG"
   : >"$lp_err"
   set +e
@@ -6032,23 +6267,23 @@ fi
 
 : >"$STUB_LOG"
 set +e
-output="$(STUB_DETECTED_DE=$'plasma\nxfce' run_main_with_stubs "$sudo_pw_dir" 2>&1)"
+output="$(STUB_DETECTED_DE=$'gnome\nxfce' run_main_with_stubs "$sudo_pw_dir" 2>&1)"
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
 expected_px_log=$'sudo -v\ndetect_de\ninstall_packages xfce\ncopy_dotfiles xfce\nconfigure_pam xfce\ninstall_polkit_rule\ndisable_display_managers'
 if [[ $status -eq 0 && "$log_content" == "$expected_px_log" &&
-  "$output" == *"Wayland-only"* && "$output" == *"plasma"* &&
+  "$output" == *"Skipping Wayland-only desktop environment(s): gnome"* &&
   "$output" == *"Detected desktop environment: xfce"* &&
   "$output" == *"lightXDM install complete!"* && "$output" == *"- xfce "* ]]; then
-  pass "main skips Wayland-only plasma and configures xfce when plasma and xfce are detected"
+  pass "main skips Wayland-only gnome and configures xfce when gnome and xfce are detected"
 else
-  fail "main plasma+xfce (status=$status, log=$log_content, output=$output)"
+  fail "main gnome+xfce (status=$status, log=$log_content, output=$output)"
 fi
 
 : >"$STUB_LOG"
 set +e
-output="$(STUB_DETECTED_DE=$'plasma\ngnome\nlxqt' run_main_with_stubs "$sudo_pw_dir" 2>&1)"
+output="$(STUB_DETECTED_DE=$'gnome\nbudgie\nlxqt' run_main_with_stubs "$sudo_pw_dir" 2>&1)"
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
@@ -6056,14 +6291,14 @@ wayland_line_count="$(grep -Fc 'Wayland-only' <<<"$output" || true)"
 expected_pgl_log=$'sudo -v\ndetect_de\ninstall_packages lxqt\ncopy_dotfiles lxqt\nconfigure_pam lxqt\ninstall_polkit_rule\ndisable_display_managers'
 if [[ $status -eq 0 && "$log_content" == "$expected_pgl_log" &&
   "$wayland_line_count" -eq 1 &&
-  "$output" == *"plasma gnome"* &&
+  "$output" == *"gnome budgie"* &&
   "$output" == *"Detected desktop environment: lxqt"* ]]; then
   pass "main logs multiple Wayland-only desktops once and configures remaining lxqt"
 else
-  fail "main plasma+gnome+lxqt (status=$status, count=$wayland_line_count, log=$log_content, output=$output)"
+  fail "main gnome+budgie+lxqt (status=$status, count=$wayland_line_count, log=$log_content, output=$output)"
 fi
 
-for all_wl_detected in $'plasma\ngnome' $'gnome\nbudgie'; do
+for all_wl_detected in $'gnome\nbudgie' $'budgie\ngnome'; do
   first_wl="${all_wl_detected%%$'\n'*}"
   : >"$STUB_LOG"
   set +e
@@ -6074,13 +6309,13 @@ for all_wl_detected in $'plasma\ngnome' $'gnome\nbudgie'; do
   if [[ $status -eq 1 && "$log_content" == $'sudo -v\ndetect_de' &&
     "$output" == *"$first_wl now runs only on Wayland and cannot be started with startx (see README.md)."* &&
     "$output" != *"lightXDM install complete!"* ]]; then
-    pass "main keeps Wayland refusal when only Wayland desktops are detected (${all_wl_detected//$'\n'/+})"
+    pass "main keeps Wayland refusal when only unsupported Wayland desktops are detected (${all_wl_detected//$'\n'/+})"
   else
     fail "main all-Wayland multi-detect (${all_wl_detected//$'\n'/+}, status=$status, log=$log_content, output=$output)"
   fi
 done
 
-for multi_choice_detected in $'xfce\ni3' $'plasma\nxfce\ni3'; do
+for multi_choice_detected in $'xfce\ni3' $'gnome\nxfce\ni3'; do
   : >"$STUB_LOG"
   set +e
   output="$(STUB_DETECTED_DE="$multi_choice_detected" STUB_REAL_PROMPT=1 run_main_with_stubs "$sudo_pw_dir" <<<"2" 2>&1)"
@@ -6089,8 +6324,8 @@ for multi_choice_detected in $'xfce\ni3' $'plasma\nxfce\ni3'; do
   log_content="$(cat "$STUB_LOG")"
   expected_i3_log=$'sudo -v\ndetect_de\ninstall_packages i3\ncopy_dotfiles i3\nconfigure_pam i3\ninstall_polkit_rule\ndisable_display_managers'
   wl_note_ok=0
-  if [[ "$multi_choice_detected" == plasma* && "$output" == *"Wayland-only"* && "$output" == *"plasma"* ]] ||
-    [[ "$multi_choice_detected" != plasma* && "$output" != *"Wayland-only"* ]]; then
+  if [[ "$multi_choice_detected" == gnome* && "$output" == *"Wayland-only"* && "$output" == *"gnome"* ]] ||
+    [[ "$multi_choice_detected" != gnome* && "$output" != *"Wayland-only"* ]]; then
     wl_note_ok=1
   fi
   if [[ $status -eq 0 && $wl_note_ok -eq 1 && "$log_content" == "$expected_i3_log" &&
@@ -6101,6 +6336,39 @@ for multi_choice_detected in $'xfce\ni3' $'plasma\nxfce\ni3'; do
     fail "main multi-detect select i3 (${multi_choice_detected//$'\n'/+}, status=$status, log=$log_content, output=$output)"
   fi
 done
+
+# plasma is a supported candidate in detection alongside X11 desktops and when paired with gnome
+: >"$STUB_LOG"
+set +e
+output="$(STUB_DETECTED_DE=$'plasma\ngnome' run_main_with_stubs "$sudo_pw_dir" 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+expected_pg_log=$'sudo -v\ndetect_de\ninstall_packages plasma\ncopy_dotfiles plasma\nconfigure_pam plasma\ninstall_polkit_rule\ndisable_display_managers'
+if [[ $status -eq 0 && "$log_content" == "$expected_pg_log" &&
+  "$output" == *"Skipping Wayland-only desktop environment(s): gnome"* &&
+  "$output" == *"Detected desktop environment: plasma"* &&
+  "$output" == *"lightXDM install complete!"* && "$output" == *"- plasma "* &&
+  "$output" != *"No need to run 'startx'."* ]]; then
+  pass "main skips Wayland-only gnome and configures detected plasma"
+else
+  fail "main plasma+gnome (status=$status, log=$log_content, output=$output)"
+fi
+
+: >"$STUB_LOG"
+set +e
+output="$(STUB_DETECTED_DE=$'plasma\nxfce' STUB_REAL_PROMPT=1 run_main_with_stubs "$sudo_pw_dir" <<<"1" 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 0 && "$log_content" == "$expected_pg_log" &&
+  "$output" != *"Wayland-only"* &&
+  "$output" == *"1) KDE Plasma"* && "$output" == *"2) XFCE"* && "$output" == *"3) Quit"* &&
+  "$output" == *"- plasma "* ]]; then
+  pass "main offers KDE Plasma as a normal candidate in multi-desktop detection"
+else
+  fail "main plasma+xfce chooser (status=$status, log=$log_content, output=$output)"
+fi
 
 : >"$STUB_LOG"
 set +e
@@ -6151,10 +6419,16 @@ out_builtin="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/inst
 status_builtin=$?
 out_again="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de xfce 2>&1)"
 status_again=$?
+out_plasma_init="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de plasma 2>&1)"
+status_plasma_init=$?
+out_plasma_again="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de plasma 2>&1)"
+status_plasma_again=$?
 out_custom="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de dwm 2>&1)"
 status_custom=$?
 out_wayland="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de gnome 2>&1)"
 status_wayland=$?
+out_budgie_wl="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de budgie 2>&1)"
+status_budgie_wl=$?
 out_badid="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de Dwm 2>&1)"
 status_badid=$?
 out_asroot=""
@@ -6167,12 +6441,26 @@ out_no_de="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/instal
 status_no_de=$?
 set -e
 init_xfce="$init_home/.config/lightxdm/.xinitrc-xfce"
+init_plasma="$init_home/.config/lightxdm/.wayland-session-plasma"
 init_dwm="$init_home/.config/lightxdm/.xinitrc-dwm"
 if [[ $status_builtin -eq 0 && "$out_builtin" == *"Created $init_xfce"* ]] && cmp -s "$init_xfce" "$REPO_ROOT/dotfiles/.xinitrc-xfce" &&
   [[ "$(stat -c '%a' "$init_xfce")" == 755 && $status_again -eq 1 && "$out_again" == *"already exists"* ]]; then
   pass "install.sh --init-template copies a built-in template once and refuses to overwrite it"
 else
   fail "install.sh --init-template built-in (status=$status_builtin/$status_again, output=$out_builtin / $out_again)"
+fi
+resolved_plasma_override="$(HOME="$init_home" xinitrc_template plasma)"
+resolved_plasma_bundled="$(HOME="$TMP_DIR/empty_plasma_home" xinitrc_template plasma)"
+if [[ $status_plasma_init -eq 0 && "$out_plasma_init" == *"Created $init_plasma"* &&
+  "$out_plasma_init" == *"bash install.sh --de plasma"* ]] &&
+  cmp -s "$init_plasma" "$REPO_ROOT/dotfiles/.wayland-session-plasma" &&
+  [[ "$(stat -c '%a' "$init_plasma")" == 755 && ! -e "$init_home/.config/lightxdm/.xinitrc-plasma" &&
+    $status_plasma_again -eq 1 && "$out_plasma_again" == *"already exists"* &&
+    "$resolved_plasma_override" == "$init_plasma" &&
+    "$resolved_plasma_bundled" == "$REPO_ROOT/dotfiles/.wayland-session-plasma" ]]; then
+  pass "install.sh --init-template --de plasma creates ~/.config/lightxdm/.wayland-session-plasma (755), refuses overwrite, and xinitrc_template prefers it"
+else
+  fail "install.sh --init-template --de plasma (status=$status_plasma_init/$status_plasma_again, resolved=$resolved_plasma_override/$resolved_plasma_bundled, output=$out_plasma_init / $out_plasma_again)"
 fi
 if [[ $status_custom -eq 0 && "$(stat -c '%a' "$init_dwm" 2>/dev/null)" == 755 ]] && bash -n "$init_dwm" &&
   grep -qx 'exec dwm' "$init_dwm" && grep -qx 'export DESKTOP_SESSION=dwm' "$init_dwm" &&
@@ -6182,11 +6470,14 @@ if [[ $status_custom -eq 0 && "$(stat -c '%a' "$init_dwm" 2>/dev/null)" == 755 ]
 else
   fail "install.sh --init-template custom (status=$status_custom, output=$out_custom, content=$(cat "$init_dwm" 2>/dev/null))"
 fi
-if [[ $status_wayland -eq 1 && ! -e "$init_home/.config/lightxdm/.xinitrc-gnome" && $status_no_de -eq 1 &&
-  "$out_no_de" == *"--init-template requires --de"* && ! -s "$STUB_LOG" ]]; then
+if [[ $status_wayland -eq 1 && $status_budgie_wl -eq 1 &&
+  "$out_wayland" == *"gnome now runs only on Wayland and cannot be started with startx (see README.md)."* &&
+  "$out_budgie_wl" == *"budgie now runs only on Wayland and cannot be started with startx (see README.md)."* &&
+  ! -e "$init_home/.config/lightxdm/.xinitrc-gnome" && ! -e "$init_home/.config/lightxdm/.xinitrc-budgie" &&
+  $status_no_de -eq 1 && "$out_no_de" == *"--init-template requires --de"* && ! -s "$STUB_LOG" ]]; then
   pass "install.sh --init-template refuses Wayland-only ids and a missing --de, and never calls sudo"
 else
-  fail "install.sh --init-template refusals (status=$status_wayland/$status_no_de, log=$(cat "$STUB_LOG"), output=$out_wayland / $out_no_de)"
+  fail "install.sh --init-template refusals (status=$status_wayland/$status_budgie_wl/$status_no_de, log=$(cat "$STUB_LOG"), output=$out_wayland / $out_budgie_wl / $out_no_de)"
 fi
 if [[ $status_badid -eq 1 && "$out_badid" == *"Invalid desktop id: Dwm"* && ! -e "$init_home/.config/lightxdm/.xinitrc-Dwm" ]]; then
   pass "install.sh --init-template rejects an id with uppercase letters"
@@ -6307,6 +6598,313 @@ else
       fail "uninstall.sh startx-attempts cleanup ($sa_case, status=$status, output=$output)"
     fi
   done
+fi
+
+# Case 75: --help states X11 desktops start with startx and Plasma starts on Wayland
+help_wl_out="$(HOME="$help_home" bash "$REPO_ROOT/install.sh" --help 2>&1)"
+if [[ "$help_wl_out" == *"startx"* && "$help_wl_out" == *"Plasma"* && "$help_wl_out" == *"Wayland"* ]]; then
+  pass "install.sh --help documents X11 startx and Plasma Wayland startup"
+else
+  fail "install.sh --help Wayland description (output=$help_wl_out)"
+fi
+
+# Case 76: check_session_commands validates Wayland templates' absolute exec paths without requiring startx
+wl_chk_dir="$TMP_DIR/wayland_check_cmd"
+wl_chk_nostartx_bin="$wl_chk_dir/nostartx_bin"
+mkdir -p "$wl_chk_dir/bin" "$wl_chk_nostartx_bin"
+for wl_tool in bash grep tail; do
+  ln -sf "$(command -v "$wl_tool")" "$wl_chk_nostartx_bin/$wl_tool"
+done
+
+printf '#!/bin/bash\nexit 0\n' >"$wl_chk_dir/bin/wrapper"
+cp "$wl_chk_dir/bin/wrapper" "$wl_chk_dir/bin/compositor"
+chmod 755 "$wl_chk_dir/bin/wrapper" "$wl_chk_dir/bin/compositor"
+printf '#!/bin/bash\nexit 0\n' >"$wl_chk_dir/bin/nonexec"
+chmod 644 "$wl_chk_dir/bin/nonexec"
+mkdir -p "$wl_chk_dir/bin/adir" "$wl_chk_dir/missing_dir" "$wl_chk_dir/nonexec_dir" "$wl_chk_dir/isdir_dir"
+
+printf '#!/bin/bash\nexec %s --flag %s\n' "$wl_chk_dir/bin/wrapper" "$wl_chk_dir/bin/compositor" >"$wl_chk_dir/.wayland-session-plasma"
+printf '#!/bin/bash\nexec %s %s\n' "$wl_chk_dir/bin/wrapper" "$wl_chk_dir/bin/missing-plasma" >"$wl_chk_dir/missing_dir/.wayland-session-plasma"
+printf '#!/bin/bash\nexec %s\n' "$wl_chk_dir/bin/nonexec" >"$wl_chk_dir/nonexec_dir/.wayland-session-plasma"
+printf '#!/bin/bash\nexec %s\n' "$wl_chk_dir/bin/adir" >"$wl_chk_dir/isdir_dir/.wayland-session-plasma"
+printf '#!/bin/bash\nexec %s --arg\n' "$wl_chk_dir/bin/compositor" >"$wl_chk_dir/.wayland-session-sway"
+printf '#!/bin/bash\nexec %s\n' "$wl_chk_dir/bin/missing-sway" >"$wl_chk_dir/.wayland-session-sway-bad"
+
+set +e
+wl_ok_out="$(
+  SESSION_ROOT="" PATH="$wl_chk_nostartx_bin" check_session_commands "$wl_chk_dir/.wayland-session-plasma" 2>&1
+)"
+wl_ok_st=$?
+wl_bundled_ok_out="$(
+  SESSION_ROOT="$SESSION_ROOT" PATH="$wl_chk_nostartx_bin" check_session_commands "$REPO_ROOT/dotfiles/.wayland-session-plasma" 2>&1
+)"
+wl_bundled_ok_st=$?
+wl_custom_ok_out="$(
+  SESSION_ROOT="" PATH="$wl_chk_nostartx_bin" check_session_commands "$wl_chk_dir/.wayland-session-sway" 2>&1
+)"
+wl_custom_ok_st=$?
+wl_miss_out="$(
+  SESSION_ROOT="" PATH="$wl_chk_nostartx_bin" check_session_commands "$wl_chk_dir/missing_dir/.wayland-session-plasma" 2>&1
+)"
+wl_miss_st=$?
+wl_nonexec_out="$(
+  SESSION_ROOT="" PATH="$wl_chk_nostartx_bin" check_session_commands "$wl_chk_dir/nonexec_dir/.wayland-session-plasma" 2>&1
+)"
+wl_nonexec_st=$?
+wl_isdir_out="$(
+  SESSION_ROOT="" PATH="$wl_chk_nostartx_bin" check_session_commands "$wl_chk_dir/isdir_dir/.wayland-session-plasma" 2>&1
+)"
+wl_isdir_st=$?
+wl_generic_out="$(
+  SESSION_ROOT="" PATH="$wl_chk_nostartx_bin" check_session_commands "$wl_chk_dir/.wayland-session-sway-bad" 2>&1
+)"
+wl_generic_st=$?
+set -e
+
+if [[ $wl_ok_st -eq 0 && -z "$wl_ok_out" &&
+  $wl_bundled_ok_st -eq 0 && -z "$wl_bundled_ok_out" &&
+  $wl_custom_ok_st -eq 0 && -z "$wl_custom_ok_out" ]]; then
+  pass "check_session_commands accepts Wayland templates whose absolute exec paths exist without startx on PATH"
+else
+  fail "check_session_commands Wayland valid (ok=$wl_ok_st:$wl_ok_out | bundled=$wl_bundled_ok_st:$wl_bundled_ok_out | custom=$wl_custom_ok_st:$wl_custom_ok_out)"
+fi
+
+if [[ $wl_miss_st -eq 1 &&
+  "$wl_miss_out" == *"Missing command: $wl_chk_dir/bin/missing-plasma (normally provided by plasma-workspace). Install plasma-desktop and re-run."* &&
+  $wl_nonexec_st -eq 1 &&
+  "$wl_nonexec_out" == *"Missing command: $wl_chk_dir/bin/nonexec (normally provided by plasma-workspace). Install plasma-desktop and re-run."* &&
+  $wl_isdir_st -eq 1 &&
+  "$wl_isdir_out" == *"Missing command: $wl_chk_dir/bin/adir (normally provided by plasma-workspace). Install plasma-desktop and re-run."* &&
+  $wl_generic_st -eq 1 &&
+  "$wl_generic_out" == *"Missing command: $wl_chk_dir/bin/missing-sway"* &&
+  "$wl_generic_out" != *"plasma-workspace"* ]]; then
+  pass "check_session_commands rejects missing, non-executable, or directory Wayland exec paths with plasma and generic messages"
+else
+  fail "check_session_commands Wayland rejection (miss=$wl_miss_st:$wl_miss_out | nonexec=$wl_nonexec_st:$wl_nonexec_out | dir=$wl_isdir_st:$wl_isdir_out | gen=$wl_generic_st:$wl_generic_out)"
+fi
+
+# main --no-packages --de plasma stops in check_session_commands before copy_dotfiles when startplasma-wayland is missing
+wl_incomplete_root="$wl_chk_dir/incomplete_root"
+mkdir -p "$wl_incomplete_root/usr/lib"
+printf '#!/bin/bash\nexit 0\n' >"$wl_incomplete_root/usr/lib/plasma-dbus-run-session-if-needed"
+chmod 755 "$wl_incomplete_root/usr/lib/plasma-dbus-run-session-if-needed"
+: >"$STUB_LOG"
+set +e
+wl_main_miss_out="$(SESSION_ROOT="$wl_incomplete_root" run_main_with_stubs "$sudo_pw_dir" --no-packages --de plasma 2>&1)"
+wl_main_miss_st=$?
+set -e
+wl_main_miss_log="$(cat "$STUB_LOG")"
+if [[ $wl_main_miss_st -ne 0 &&
+  "$wl_main_miss_out" == *"Missing command: /usr/bin/startplasma-wayland (normally provided by plasma-workspace). Install plasma-desktop and re-run."* &&
+  "$wl_main_miss_log" != *"copy_dotfiles"* ]]; then
+  pass "main --no-packages --de plasma stops before copy_dotfiles when a Wayland session command is missing"
+else
+  fail "main plasma missing session command (status=$wl_main_miss_st, log=$wl_main_miss_log, output=$wl_main_miss_out)"
+fi
+
+# Case 77: X11 copy_dotfiles removes lightXDM-owned ~/.wayland-session (restoring .bak if present) and warns on foreign ~/.wayland-session
+wl_switch_dir="$TMP_DIR/wayland_to_x11"
+
+# 77a: bundled lightXDM ~/.wayland-session without backup -> removed cleanly
+wl_sw_bundled="$wl_switch_dir/home_bundled"
+mkdir -p "$wl_sw_bundled"
+(
+  export HOME="$wl_sw_bundled"
+  export USER="testuser"
+  copy_dotfiles "plasma" 2>/dev/null
+)
+wl_sw_bundled_out="$(
+  export HOME="$wl_sw_bundled"
+  export USER="testuser"
+  copy_dotfiles "xfce" 2>&1
+)"
+if [[ ! -e "$wl_sw_bundled/.wayland-session" && ! -L "$wl_sw_bundled/.wayland-session" &&
+  ! -e "$wl_sw_bundled/.wayland-session.lightxdm.absent" &&
+  -x "$wl_sw_bundled/.xinitrc" &&
+  "$wl_sw_bundled_out" != *"WARNING:"* ]]; then
+  pass "copy_dotfiles xfce removes a bundled lightXDM ~/.wayland-session and its .absent marker without warning"
+else
+  fail "copy_dotfiles xfce after bundled plasma (output=$wl_sw_bundled_out)"
+fi
+
+# 77b: user ~/.config/lightxdm/.wayland-session-plasma override + pre-existing ~/.wayland-session.lightxdm.bak -> restores backup
+wl_sw_bak="$wl_switch_dir/home_with_bak"
+mkdir -p "$wl_sw_bak/.config/lightxdm"
+printf '#!/bin/bash\nexec custom-user-compositor\n' >"$wl_sw_bak/.wayland-session"
+chmod 755 "$wl_sw_bak/.wayland-session"
+wl_sw_orig_hash="$(sha256sum < "$wl_sw_bak/.wayland-session")"
+printf '#!/bin/bash\n# custom plasma override\nexec /usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland\n' >"$wl_sw_bak/.config/lightxdm/.wayland-session-plasma"
+chmod 755 "$wl_sw_bak/.config/lightxdm/.wayland-session-plasma"
+(
+  export HOME="$wl_sw_bak"
+  export USER="testuser"
+  copy_dotfiles "plasma" 2>/dev/null
+)
+wl_sw_bak_out="$(
+  export HOME="$wl_sw_bak"
+  export USER="testuser"
+  copy_dotfiles "i3" 2>&1
+)"
+if [[ -f "$wl_sw_bak/.wayland-session" && ! -L "$wl_sw_bak/.wayland-session" &&
+  "$(sha256sum < "$wl_sw_bak/.wayland-session")" == "$wl_sw_orig_hash" &&
+  ! -e "$wl_sw_bak/.wayland-session.lightxdm.bak" &&
+  ! -e "$wl_sw_bak/.wayland-session.lightxdm.absent" &&
+  -x "$wl_sw_bak/.xinitrc" &&
+  "$wl_sw_bak_out" == *"WARNING: ~/.wayland-session takes precedence over startx"* ]]; then
+  pass "copy_dotfiles i3 restores ~/.wayland-session.lightxdm.bak over a user-template lightXDM ~/.wayland-session and warns that it takes precedence"
+else
+  fail "copy_dotfiles i3 restore wayland backup (output=$wl_sw_bak_out)"
+fi
+
+# 77c: foreign regular file and symlink ~/.wayland-session -> preserved with warning naming ~/.wayland-session and <de>
+for wl_foreign_kind in regular symlink; do
+  wl_sw_foreign="$wl_switch_dir/home_foreign_$wl_foreign_kind"
+  mkdir -p "$wl_sw_foreign"
+  if [[ "$wl_foreign_kind" == regular ]]; then
+    printf '#!/bin/bash\nexec sway\n' >"$wl_sw_foreign/.wayland-session"
+    chmod 755 "$wl_sw_foreign/.wayland-session"
+  else
+    ln -s "$REPO_ROOT/dotfiles/.wayland-session-plasma" "$wl_sw_foreign/.wayland-session"
+  fi
+  wl_sw_foreign_out="$(
+    export HOME="$wl_sw_foreign"
+    export USER="testuser"
+    copy_dotfiles "lxqt" 2>&1
+  )"
+  wl_foreign_intact=0
+  if [[ "$wl_foreign_kind" == regular && -f "$wl_sw_foreign/.wayland-session" && ! -L "$wl_sw_foreign/.wayland-session" &&
+    "$(cat "$wl_sw_foreign/.wayland-session")" == $'#!/bin/bash\nexec sway' ]]; then
+    wl_foreign_intact=1
+  elif [[ "$wl_foreign_kind" == symlink && -L "$wl_sw_foreign/.wayland-session" ]]; then
+    wl_foreign_intact=1
+  fi
+  if [[ $wl_foreign_intact -eq 1 && -x "$wl_sw_foreign/.xinitrc" &&
+    "$wl_sw_foreign_out" == *"WARNING:"* &&
+    "$wl_sw_foreign_out" == *"~/.wayland-session"* &&
+    "$wl_sw_foreign_out" == *"lxqt"* ]]; then
+    pass "copy_dotfiles lxqt keeps foreign $wl_foreign_kind ~/.wayland-session and logs precedence warning"
+  else
+    fail "copy_dotfiles lxqt foreign $wl_foreign_kind ~/.wayland-session (intact=$wl_foreign_intact, output=$wl_sw_foreign_out)"
+  fi
+done
+
+# Case 78: main refuses when Wayland template is ~/.wayland-session itself, and backs up a symlink ~/.wayland-session pointing to the template
+wl_self_dir="$TMP_DIR/wayland_self_guard"
+wl_self_home="$wl_self_dir/home_self"
+mkdir -p "$wl_self_home/.config/lightxdm"
+cp "$REPO_ROOT/dotfiles/.wayland-session-plasma" "$wl_self_home/.wayland-session"
+wl_self_hash="$(sha256sum < "$wl_self_home/.wayland-session")"
+ln -s ../../.wayland-session "$wl_self_home/.config/lightxdm/.wayland-session-plasma"
+: >"$STUB_LOG"
+set +e
+wl_self_out="$(HOME="$wl_self_home" run_main_with_stubs "$sudo_pw_dir" --no-packages --de plasma 2>&1)"
+wl_self_st=$?
+set -e
+wl_self_log="$(cat "$STUB_LOG")"
+if [[ $wl_self_st -eq 1 && "$wl_self_out" == *"template for plasma is ~/.wayland-session itself"* &&
+  ! -L "$wl_self_home/.wayland-session" &&
+  "$(sha256sum < "$wl_self_home/.wayland-session")" == "$wl_self_hash" &&
+  ! -e "$wl_self_home/.wayland-session.lightxdm.bak" && ! -e "$wl_self_home/.wayland-session.lightxdm.absent" &&
+  "$wl_self_log" == "sudo -v" ]]; then
+  pass "main rejects a Wayland user template pointing to ~/.wayland-session itself without changing ~/.wayland-session"
+else
+  fail "main self-guard for ~/.wayland-session (status=$wl_self_st, log=$wl_self_log, output=$wl_self_out)"
+fi
+
+wl_link_home="$wl_self_dir/home_link_to_tmpl"
+mkdir -p "$wl_link_home"
+ln -s "$REPO_ROOT/dotfiles/.wayland-session-plasma" "$wl_link_home/.wayland-session"
+printf '#%%PAM-1.0\n' >"$wl_self_dir/login"
+set +e
+wl_link_out="$(
+  env -u SHELLOPTS -u SUDO_USER \
+    HOME="$wl_link_home" \
+    SESSION_ROOT="$SESSION_ROOT" \
+    PATH="$sudo_pw_dir:$STUB_BIN:$PATH" \
+    USER="testuser" \
+    LOGIN_FILE="$wl_self_dir/login" \
+    POLKIT_RULE_DEST="$wl_self_dir/polkit" \
+    DISPLAY_MANAGER_LINK="$wl_self_dir/display-manager.service" \
+    DM_STATE_FILE="$wl_self_dir/state/disabled-display-managers" \
+    bash "$REPO_ROOT/install.sh" --no-packages --de plasma 2>&1
+)"
+wl_link_st=$?
+set -e
+if [[ $wl_link_st -eq 0 && -x "$wl_link_home/.wayland-session" && ! -L "$wl_link_home/.wayland-session" &&
+  -L "$wl_link_home/.wayland-session.lightxdm.bak" &&
+  "$(readlink "$wl_link_home/.wayland-session.lightxdm.bak")" == "$REPO_ROOT/dotfiles/.wayland-session-plasma" ]]; then
+  pass "install.sh replaces ~/.wayland-session linked to the selected Wayland template and backs up the symlink"
+else
+  fail "install.sh ~/.wayland-session linked to selected template (status=$wl_link_st, output=$wl_link_out)"
+fi
+
+# Case 79: uninstall.sh removes lightXDM ~/.wayland-session, restores backed-up ~/.wayland-session, and keeps foreign ~/.wayland-session
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh ~/.wayland-session remove/restore/keep handling (unshare -r unavailable)"
+else
+  wl_u_dir="$TMP_DIR/uninstall_wayland_session"
+  wl_u_bundled="$wl_u_dir/home_bundled"
+  wl_u_user="$wl_u_dir/home_user_override"
+  wl_u_bak="$wl_u_dir/home_bak"
+  wl_u_foreign="$wl_u_dir/home_foreign"
+  mkdir -p "$wl_u_bundled" "$wl_u_user/.config/lightxdm" "$wl_u_bak" "$wl_u_foreign"
+
+  # Bundled template without markers (legacy / direct copy) and with .absent marker
+  cp "$REPO_ROOT/dotfiles/.wayland-session-plasma" "$wl_u_bundled/.wayland-session"
+  chmod 755 "$wl_u_bundled/.wayland-session"
+
+  # User override template with .absent marker
+  printf '#!/bin/bash\n# user plasma override\nexec /usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland\n' >"$wl_u_user/.config/lightxdm/.wayland-session-plasma"
+  chmod 755 "$wl_u_user/.config/lightxdm/.wayland-session-plasma"
+  (
+    export HOME="$wl_u_user"
+    export USER="testuser"
+    copy_dotfiles "plasma" 2>/dev/null
+  )
+
+  # Backed-up pre-existing ~/.wayland-session with a post-install edit
+  printf '#!/bin/bash\nexec river\n' >"$wl_u_bak/.wayland-session"
+  chmod 755 "$wl_u_bak/.wayland-session"
+  (
+    export HOME="$wl_u_bak"
+    export USER="testuser"
+    copy_dotfiles "plasma" 2>/dev/null
+  )
+  echo "# post-install wayland edit" >>"$wl_u_bak/.wayland-session"
+  wl_u_expected_edit="$(cat "$wl_u_bak/.wayland-session")"
+
+  # Foreign ~/.wayland-session with no backup/marker
+  printf '#!/bin/bash\nexec hyprland\n' >"$wl_u_foreign/.wayland-session"
+  chmod 755 "$wl_u_foreign/.wayland-session"
+
+  set +e
+  out_wlu_bundled="$(env TARGET_HOME="$wl_u_bundled" LOGIN_FILE="$wl_u_dir/l1" AUTOLOGIN_DROPIN="$wl_u_dir/a1" OVERRIDE_FILE="$wl_u_dir/o1" POLKIT_RULE="$wl_u_dir/p1" DM_STATE_FILE="$wl_u_dir/d1" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  st_wlu_bundled=$?
+  out_wlu_user="$(env TARGET_HOME="$wl_u_user" LOGIN_FILE="$wl_u_dir/l2" AUTOLOGIN_DROPIN="$wl_u_dir/a2" OVERRIDE_FILE="$wl_u_dir/o2" POLKIT_RULE="$wl_u_dir/p2" DM_STATE_FILE="$wl_u_dir/d2" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  st_wlu_user=$?
+  out_wlu_bak1="$(env TARGET_HOME="$wl_u_bak" LOGIN_FILE="$wl_u_dir/l3" AUTOLOGIN_DROPIN="$wl_u_dir/a3" OVERRIDE_FILE="$wl_u_dir/o3" POLKIT_RULE="$wl_u_dir/p3" DM_STATE_FILE="$wl_u_dir/d3" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  st_wlu_bak1=$?
+  out_wlu_bak2="$(env TARGET_HOME="$wl_u_bak" LOGIN_FILE="$wl_u_dir/l3" AUTOLOGIN_DROPIN="$wl_u_dir/a3" OVERRIDE_FILE="$wl_u_dir/o3" POLKIT_RULE="$wl_u_dir/p3" DM_STATE_FILE="$wl_u_dir/d3" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  st_wlu_bak2=$?
+  out_wlu_foreign="$(env TARGET_HOME="$wl_u_foreign" LOGIN_FILE="$wl_u_dir/l4" AUTOLOGIN_DROPIN="$wl_u_dir/a4" OVERRIDE_FILE="$wl_u_dir/o4" POLKIT_RULE="$wl_u_dir/p4" DM_STATE_FILE="$wl_u_dir/d4" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  st_wlu_foreign=$?
+  set -e
+
+  if [[ $st_wlu_bundled -eq 0 && ! -e "$wl_u_bundled/.wayland-session" ]] &&
+    [[ $st_wlu_user -eq 0 && ! -e "$wl_u_user/.wayland-session" && ! -e "$wl_u_user/.wayland-session.lightxdm.absent" &&
+      -f "$wl_u_user/.config/lightxdm/.wayland-session-plasma" ]] &&
+    [[ $st_wlu_bak1 -eq 0 && $st_wlu_bak2 -eq 0 &&
+      -f "$wl_u_bak/.wayland-session" && "$(cat "$wl_u_bak/.wayland-session")" == $'#!/bin/bash\nexec river' &&
+      ! -e "$wl_u_bak/.wayland-session.lightxdm.bak" &&
+      -f "$wl_u_bak/.wayland-session.lightxdm-edited" && "$(cat "$wl_u_bak/.wayland-session.lightxdm-edited")" == "$wl_u_expected_edit" &&
+      "$out_wlu_bak2" == *"Keeping $wl_u_bak/.wayland-session"* ]] &&
+    [[ $st_wlu_foreign -eq 0 && -f "$wl_u_foreign/.wayland-session" &&
+      "$(cat "$wl_u_foreign/.wayland-session")" == $'#!/bin/bash\nexec hyprland' &&
+      "$out_wlu_foreign" == *"Keeping $wl_u_foreign/.wayland-session"* ]]; then
+    pass "uninstall.sh removes lightXDM ~/.wayland-session, restores backed-up ~/.wayland-session (saving edits), and keeps foreign ~/.wayland-session"
+  else
+    fail "uninstall.sh ~/.wayland-session handling (b=$st_wlu_bundled:$out_wlu_bundled | u=$st_wlu_user:$out_wlu_user | bak1=$st_wlu_bak1:$out_wlu_bak1 | bak2=$st_wlu_bak2:$out_wlu_bak2 | f=$st_wlu_foreign:$out_wlu_foreign)"
+  fi
 fi
 
 finish_harness

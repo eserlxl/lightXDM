@@ -14,6 +14,7 @@ scripts=(
   dotfiles/.bash_profile
   dotfiles/.gpg-agent-gnome
   dotfiles/.gpg-agent-kwallet
+  dotfiles/.wayland-session-plasma
   dotfiles/.xinitrc-budgie
   dotfiles/.xinitrc-cinnamon
   dotfiles/.xinitrc-gnome
@@ -21,7 +22,6 @@ scripts=(
   dotfiles/.xinitrc-lxde
   dotfiles/.xinitrc-lxqt
   dotfiles/.xinitrc-mate
-  dotfiles/.xinitrc-plasma
   dotfiles/.xinitrc-xfce
 )
 
