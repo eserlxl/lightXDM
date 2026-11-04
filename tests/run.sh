@@ -3261,4 +3261,62 @@ else
   fail "main Quit (status=$status, log=$log_content, output=$output)"
 fi
 
+# Case 61: install_packages and detect_de cover all nine desktops' package lists and detection pairs
+expected_base_pkgs="xorg-server xorg-xinit udisks2 polkit gvfs gvfs-mtp gvfs-gphoto2 gvfs-afc"
+de_pkg_specs=(
+  "plasma|plasma-desktop|plasma-desktop konsole dolphin kwallet-pam polkit-kde-agent"
+  "gnome|gnome-shell|gnome-shell gnome-session gnome-control-center nautilus gnome-terminal gnome-keyring polkit-gnome"
+  "xfce|xfce4-session|xfce4 xfce4-session xfce4-terminal gnome-keyring polkit-gnome"
+  "lxqt|lxqt-session|lxqt xdg-utils lxterminal gnome-keyring lxqt-policykit"
+  "lxde|lxde-common|lxde-common lxsession lxpanel openbox pcmanfm lxterminal gnome-keyring polkit-gnome"
+  "mate|mate-session-manager|mate mate-terminal gnome-keyring polkit-gnome"
+  "cinnamon|cinnamon|cinnamon gnome-terminal gnome-keyring polkit-gnome"
+  "budgie|budgie-desktop|budgie-desktop gnome-terminal gnome-keyring polkit-gnome"
+  "i3|i3-wm|i3 xterm gnome-keyring polkit-gnome"
+)
+
+detect_pair_bin="$TMP_DIR/pacman_detect_pair"
+mkdir -p "$detect_pair_bin"
+cat >"$detect_pair_bin/pacman" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-Qq" && $# -eq 2 && "$2" == "${STUB_DETECT_PKG:-}" ]]; then
+  echo "$2"
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$detect_pair_bin/pacman"
+
+for spec in "${de_pkg_specs[@]}"; do
+  IFS='|' read -r de detect_pkg de_pkgs <<<"$spec"
+
+  : >"$STUB_LOG"
+  set +e
+  output="$(install_packages "$de" 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  expected_pacman_log="pacman -S --needed --noconfirm $expected_base_pkgs $de_pkgs"
+  if [[ $status -eq 0 && "$log_content" == "$expected_pacman_log" ]]; then
+    pass "install_packages installs base and $de packages"
+  else
+    fail "install_packages $de (status=$status, log=$log_content, expected=$expected_pacman_log, output=$output)"
+  fi
+
+  set +e
+  output="$(
+    set -e
+    export PATH="$detect_pair_bin:$PATH"
+    export STUB_DETECT_PKG="$detect_pkg"
+    detect_de
+  )"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && "$output" == "$de" ]]; then
+    pass "detect_de maps $detect_pkg to $de"
+  else
+    fail "detect_de $detect_pkg -> $de (status=$status, output=$output)"
+  fi
+done
+
 exit "$failures"
