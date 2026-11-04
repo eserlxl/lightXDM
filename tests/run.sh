@@ -1607,7 +1607,11 @@ cat >"$dm_stub_dir/systemctl" <<'EOF'
 #!/usr/bin/env bash
 echo "systemctl $*" >>"$STUB_LOG"
 case "$1" in
-  list-unit-files) printf '%s\n' "sddm.service enabled" "lightdm.service disabled" "gdm.service indirect" "lxdm.service static" "greetd.service enabled" ;;
+  list-unit-files)
+    if [[ "${STUB_DM_ALIAS_ONLY:-0}" != 1 ]]; then
+      printf '%s\n' "sddm.service enabled" "lightdm.service disabled" "gdm.service indirect" "lxdm.service static" "greetd.service enabled"
+    fi
+    ;;
   is-enabled)
     case "${3:-$2}" in
       greetd.service | sddm.service) echo enabled ;;
@@ -1676,6 +1680,33 @@ if [[ $status -eq 0 && -f "$DM_STATE_FILE" ]] &&
 else
   fail "disable_display_managers duplicate state (status=$status, output=$output)"
 fi
+
+# State write failures must prevent disabling units through either path.
+dm_readonly_dir="$TMP_DIR/dm_readonly"
+mkdir -p "$dm_readonly_dir"
+chmod 555 "$dm_readonly_dir"
+if [[ -w "$dm_readonly_dir" ]]; then
+  skip "disable_display_managers state write failure (directory remains writable)"
+else
+  ln -sf "$TMP_DIR/greetd.service" "$DISPLAY_MANAGER_LINK"
+  for dm_alias_only in 0 1; do
+    : >"$STUB_LOG"
+    set +e
+    # shellcheck disable=SC2016 # Expand arguments and exit status in the child shell.
+    output="$(env PATH="$dm_stub_dir:$PATH" DM_STATE_FILE="$dm_readonly_dir/state" STUB_DM_ALIAS_ONLY="$dm_alias_only" bash -c 'source "$1"; disable_display_managers || exit $?' bash "$REPO_ROOT/install.sh" 2>&1)"
+    status=$?
+    set -e
+    log_content="$(cat "$STUB_LOG")"
+    if [[ $status -ne 0 && ! -e "$dm_readonly_dir/state" ]] &&
+      grep -Fq 'systemctl is-enabled' "$STUB_LOG" &&
+      ! grep -Fq 'systemctl disable' "$STUB_LOG"; then
+      pass "disable_display_managers stops before disabling when state write fails (alias_only=$dm_alias_only)"
+    else
+      fail "disable_display_managers state write failure (alias_only=$dm_alias_only, status=$status, log=$log_content, output=$output)"
+    fi
+  done
+fi
+chmod 755 "$dm_readonly_dir"
 
 # Case 41b: uninstall preserves state on failure, then restores exactly its units
 if [[ $can_unshare -eq 0 ]]; then
