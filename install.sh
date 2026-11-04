@@ -93,8 +93,11 @@ prompt_de_selection() {
 
 # Install required packages
 install_packages() {
-  local de
+  local de no_keyring=0
   de=$1
+  if [[ "${2:-}" == "1" || "${2:-}" == "--no-keyring" ]]; then
+    no_keyring=1
+  fi
   local pkgs=()
   local base_pkgs=(xorg-server xorg-xinit udisks2 polkit gvfs gvfs-mtp gvfs-gphoto2 gvfs-afc)
 
@@ -131,6 +134,17 @@ install_packages() {
       exit 1
       ;;
   esac
+
+  if [[ $no_keyring -eq 1 ]]; then
+    local pkg filtered_pkgs=()
+    for pkg in "${pkgs[@]}"; do
+      case "$pkg" in
+        gnome-keyring | kwallet-pam) ;;
+        *) filtered_pkgs+=("$pkg") ;;
+      esac
+    done
+    pkgs=("${filtered_pkgs[@]}")
+  fi
 
   log "Installing required packages for $de..."
   sudo pacman -S --needed --noconfirm "${base_pkgs[@]}" "${pkgs[@]}"
@@ -340,7 +354,8 @@ main() {
   local de=""
   local de_specified=0
   local no_packages=0
-  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--no-packages]"
+  local no_keyring=0
+  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--no-packages] [--no-keyring]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -350,6 +365,10 @@ main() {
         ;;
       --no-packages)
         no_packages=1
+        shift
+        ;;
+      --no-keyring)
+        no_keyring=1
         shift
         ;;
       --de)
@@ -425,6 +444,8 @@ main() {
 
   if [[ $no_packages -eq 1 ]]; then
     log "Skipping package installation (--no-packages)."
+  elif [[ $no_keyring -eq 1 ]]; then
+    install_packages "$de" --no-keyring
   else
     install_packages "$de"
   fi
@@ -445,16 +466,25 @@ main() {
     esac
     log "WARNING: Login shell for $real_user is $login_shell, which does not read ~/.bash_profile. Add the TTY1 startx block to ~/$shell_profile."
   fi
-  configure_pam "$de"
+  if [[ $no_keyring -eq 1 ]]; then
+    log "Skipping keyring PAM configuration (--no-keyring)."
+  else
+    configure_pam "$de"
+  fi
   install_polkit_rule
   disable_display_managers
+
+  local unlock_summary="Auto-unlock and Polkit rules are set"
+  if [[ $no_keyring -eq 1 ]]; then
+    unlock_summary="Polkit rules are set (keyring setup skipped)"
+  fi
 
   if [[ -z "$shell_profile" ]]; then
     cat <<EOF
 
 lightXDM install complete!
 - $de will auto-start on TTY1 for $real_user
-- Auto-unlock and Polkit rules are set
+- $unlock_summary
 - Reboot or log out to test
 
 On next boot, after logging in, your desktop environment will start automatically on TTY1. No need to run 'startx'.
@@ -464,7 +494,7 @@ EOF
 
 lightXDM install complete!
 - $de is configured in ~/.xinitrc for $real_user (auto-start requires ~/$shell_profile)
-- Auto-unlock and Polkit rules are set
+- $unlock_summary
 - Add the TTY1 startx block to ~/$shell_profile, then reboot or log out to test
 
 Your login shell ($login_shell) does not read ~/.bash_profile, so $de will not auto-start on TTY1 until you add a startx block to ~/$shell_profile (or run 'startx' manually).

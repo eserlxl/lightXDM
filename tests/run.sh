@@ -237,7 +237,7 @@ run_main_with_stubs() (
     echo "prompt_de_selection" >>"$STUB_LOG"
     return "${STUB_PROMPT_RC:-1}"
   }
-  install_packages() { echo "install_packages $1" >>"$STUB_LOG"; }
+  install_packages() { echo "install_packages $*" >>"$STUB_LOG"; }
   copy_dotfiles() { echo "copy_dotfiles $1" >>"$STUB_LOG"; }
   configure_pam() { echo "configure_pam $1" >>"$STUB_LOG"; }
   install_polkit_rule() { echo "install_polkit_rule" >>"$STUB_LOG"; }
@@ -3235,7 +3235,7 @@ else
 fi
 
 # --de followed by another flag prints usage instead of taking the flag as the id
-for flag_after_de in --help --no-packages; do
+for flag_after_de in --help --no-packages --no-keyring; do
   : >"$STUB_LOG"
   set +e
   output="$(run_main_with_stubs "$sudo_pw_dir" --de "$flag_after_de" 2>&1)"
@@ -3318,5 +3318,148 @@ for spec in "${de_pkg_specs[@]}"; do
     fail "detect_de $detect_pkg -> $de (status=$status, output=$output)"
   fi
 done
+
+# Case 62: --no-keyring skips configure_pam and omits gnome-keyring and kwallet-pam from packages
+help_no_keyring_out="$(HOME="$help_home" bash "$REPO_ROOT/install.sh" --help 2>&1)"
+if [[ "$help_no_keyring_out" == *"--no-keyring"* ]]; then
+  pass "install.sh --help documents --no-keyring"
+else
+  fail "install.sh --help missing --no-keyring (output=$help_no_keyring_out)"
+fi
+
+for spec in "${de_pkg_specs[@]}"; do
+  IFS='|' read -r de _ de_pkgs <<<"$spec"
+  expected_no_kr_pkgs=()
+  for pkg in $de_pkgs; do
+    case "$pkg" in
+      gnome-keyring | kwallet-pam) ;;
+      *) expected_no_kr_pkgs+=("$pkg") ;;
+    esac
+  done
+  expected_no_kr_log="pacman -S --needed --noconfirm $expected_base_pkgs ${expected_no_kr_pkgs[*]}"
+
+  : >"$STUB_LOG"
+  set +e
+  output="$(install_packages "$de" --no-keyring 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -eq 0 && "$log_content" == "$expected_no_kr_log" ]] &&
+    [[ "$log_content" != *"gnome-keyring"* && "$log_content" != *"kwallet-pam"* ]]; then
+    pass "install_packages $de --no-keyring omits keyring packages"
+  else
+    fail "install_packages $de --no-keyring (status=$status, log=$log_content, expected=$expected_no_kr_log, output=$output)"
+  fi
+done
+
+no_kr_specs=(
+  "detected-i3|i3|--no-keyring|i3 xterm polkit-gnome|.gpg-agent-gnome"
+  "de-plasma|plasma|--no-keyring --de plasma|plasma-desktop konsole dolphin polkit-kde-agent|.gpg-agent-kwallet"
+  "de-first-xfce|xfce|--de xfce --no-keyring|xfce4 xfce4-session xfce4-terminal polkit-gnome|.gpg-agent-gnome"
+)
+for spec in "${no_kr_specs[@]}"; do
+  IFS='|' read -r label exp_de flag_str exp_de_pkgs exp_gpg_file <<<"$spec"
+  read -r -a no_kr_args <<<"$flag_str"
+  no_kr_home="$TMP_DIR/home_no_kr_${label}"
+  mkdir -p "$no_kr_home"
+  rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak" "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak" "${POLKIT_RULE_DEST}.lightxdm.absent"
+  write_stock_login
+  stock_kr_hash="$(sha256sum < "$LOGIN_FILE")"
+  : >"$STUB_LOG"
+  set +e
+  output="$(
+    export HOME="$no_kr_home"
+    export PATH="$sudo_pw_dir:$STUB_BIN:$PATH"
+    export USER="testuser"
+    unset SUDO_USER
+    # shellcheck disable=SC2317,SC2329
+    detect_de() { echo "i3"; }
+    # shellcheck disable=SC2317,SC2329
+    configure_pam() { echo "configure_pam $*" >>"$STUB_LOG"; }
+    main "${no_kr_args[@]}" 2>&1
+  )"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  expected_kr_pacman="pacman -S --needed --noconfirm $expected_base_pkgs $exp_de_pkgs"
+  if [[ $status -eq 0 ]] &&
+    [[ "$log_content" != *"configure_pam"* ]] &&
+    [[ "$log_content" != *"gnome-keyring"* && "$log_content" != *"kwallet-pam"* ]] &&
+    grep -Fxq -- "$expected_kr_pacman" "$STUB_LOG" &&
+    grep -Fxq -- "sudo -v" "$STUB_LOG" &&
+    grep -Fq -- "systemctl list-unit-files" "$STUB_LOG" &&
+    [[ "$(sha256sum < "$LOGIN_FILE")" == "$stock_kr_hash" && ! -e "${LOGIN_FILE}.lightxdm.bak" ]] &&
+    [[ -f "$no_kr_home/.bash_profile" && -f "$no_kr_home/.xinitrc" && -f "$no_kr_home/$exp_gpg_file" ]] &&
+    [[ "$(sha256sum < "$no_kr_home/.xinitrc")" == "$(sha256sum < "$REPO_ROOT/dotfiles/.xinitrc-$exp_de")" ]] &&
+    [[ -f "$POLKIT_RULE_DEST" && "$(sha256sum < "$POLKIT_RULE_DEST")" == "$(sha256sum < "$POLKIT_RULE_SRC")" ]]; then
+    pass "main $flag_str skips configure_pam, omits keyring packages, and completes remaining setup"
+  else
+    fail "main $flag_str (status=$status, log=$log_content, output=$output)"
+  fi
+done
+
+no_kr_custom_dir="$TMP_DIR/no_kr_custom"
+mkdir -p "$no_kr_custom_dir"
+cp -r "$REPO_ROOT/dotfiles" "$REPO_ROOT/polkit" "$no_kr_custom_dir/"
+cp "$no_kr_custom_dir/dotfiles/.xinitrc-i3" "$no_kr_custom_dir/dotfiles/.xinitrc-dwm"
+
+for combo_spec in \
+  "detected|--no-keyring --no-packages|i3" \
+  "custom-np-first|--no-packages --no-keyring --de dwm|dwm" \
+  "custom-de-first|--de dwm --no-keyring --no-packages|dwm"; do
+  IFS='|' read -r combo_label combo_flags combo_de <<<"$combo_spec"
+  read -r -a combo_args <<<"$combo_flags"
+  combo_home="$TMP_DIR/home_no_kr_combo_${combo_label}"
+  mkdir -p "$combo_home"
+  rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak" "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak" "${POLKIT_RULE_DEST}.lightxdm.absent"
+  write_stock_login
+  stock_combo_hash="$(sha256sum < "$LOGIN_FILE")"
+  : >"$STUB_LOG"
+  set +e
+  output="$(
+    # shellcheck disable=SC2034  # main uses SCRIPT_DIR from the sourced installer
+    SCRIPT_DIR="$no_kr_custom_dir"
+    export HOME="$combo_home"
+    export PATH="$sudo_pw_dir:$STUB_BIN:$PATH"
+    export USER="testuser"
+    unset SUDO_USER
+    # shellcheck disable=SC2317,SC2329
+    detect_de() { echo "i3"; }
+    # shellcheck disable=SC2317,SC2329
+    configure_pam() { echo "configure_pam $*" >>"$STUB_LOG"; }
+    main "${combo_args[@]}" 2>&1
+  )"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -eq 0 ]] &&
+    [[ "$log_content" != *"configure_pam"* && "$log_content" != *"pacman"* ]] &&
+    [[ "$log_content" != *"gnome-keyring"* && "$log_content" != *"kwallet-pam"* ]] &&
+    grep -Fxq -- "sudo -v" "$STUB_LOG" &&
+    grep -Fq -- "systemctl list-unit-files" "$STUB_LOG" &&
+    [[ "$(sha256sum < "$LOGIN_FILE")" == "$stock_combo_hash" && ! -e "${LOGIN_FILE}.lightxdm.bak" ]] &&
+    [[ -f "$combo_home/.bash_profile" && -f "$combo_home/.xinitrc" ]] &&
+    [[ "$(sha256sum < "$combo_home/.xinitrc")" == "$(sha256sum < "$no_kr_custom_dir/dotfiles/.xinitrc-$combo_de")" ]] &&
+    [[ -f "$POLKIT_RULE_DEST" && "$(sha256sum < "$POLKIT_RULE_DEST")" == "$(sha256sum < "$POLKIT_RULE_SRC")" ]]; then
+    pass "main $combo_flags skips packages and configure_pam while configuring $combo_de"
+  else
+    fail "main $combo_flags (status=$status, log=$log_content, output=$output)"
+  fi
+done
+
+: >"$STUB_LOG"
+set +e
+output="$(
+  # shellcheck disable=SC2034  # main uses SCRIPT_DIR from the sourced installer
+  SCRIPT_DIR="$no_kr_custom_dir"
+  run_main_with_stubs "$sudo_pw_dir" --no-keyring --de dwm 2>&1
+)"
+status=$?
+set -e
+if [[ $status -eq 1 && "$output" == *"Unsupported desktop environment: dwm"* && ! -s "$STUB_LOG" ]]; then
+  pass "main --no-keyring --de dwm still requires --no-packages for custom sessions"
+else
+  fail "main --no-keyring --de dwm without --no-packages (status=$status, log=$(cat "$STUB_LOG"), output=$output)"
+fi
 
 exit "$failures"

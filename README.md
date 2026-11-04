@@ -31,6 +31,8 @@ bash install.sh
 # bash install.sh --de i3
 # Or configure an existing desktop without installing packages:
 # bash install.sh --no-packages --de i3
+# Or skip keyring packages and PAM keyring setup (for autologin or keyring-free setups):
+# bash install.sh --no-keyring --de i3
 ```
 
 > **Important:**
@@ -44,15 +46,16 @@ bash install.sh
   - polkit-kde-agent for KDE Plasma
   - lxqt-policykit for LXQt
   - polkit-gnome for all other supported DEs.
-- Pass `--no-packages` (optionally with `--de <id>`) to skip all package installation when you already have the required packages. Dotfiles, PAM, Polkit and display manager setup still run. For a custom session, create `dotfiles/.xinitrc-<id>` in the installer directory and run, for example, `bash install.sh --no-packages --de dwm` with `dotfiles/.xinitrc-dwm` present. Custom ids must match `^[a-z0-9_-]+$` and use GNOME Keyring for PAM; install the required packages yourself.
+- Pass `--no-packages` (optionally with `--de <id>`) to skip all package installation when you already have the required packages. Dotfiles, PAM, Polkit and display manager setup still run. For a custom session, create `dotfiles/.xinitrc-<id>` in the installer directory and run, for example, `bash install.sh --no-packages --de dwm` with `dotfiles/.xinitrc-dwm` present. Custom ids must match `^[a-z0-9_-]+$` and use GNOME Keyring for PAM (pass `--no-keyring` to skip PAM setup); install the required packages yourself.
+- Pass `--no-keyring` (combinable with `--de <id>` and `--no-packages`) to omit `gnome-keyring` and `kwallet-pam` from package installation and skip `/etc/pam.d/login` keyring setup.
 - Copies dotfiles to your home, including the correct `.xinitrc-<de>` for your DE.
-- Appends PAM lines to `/etc/pam.d/login` (after a one-time backup at `/etc/pam.d/login.lightxdm.bak`; `uninstall.sh` removes the lines lightXDM added and restores the backup when nothing else changed, otherwise it keeps your other edits and leaves the backup for review) for KWallet (`pam_kwallet5.so` on Plasma) or GNOME Keyring (`pam_gnome_keyring.so` on every other supported desktop) auto-unlock.
+- Appends PAM lines to `/etc/pam.d/login` (unless `--no-keyring` is passed; after a one-time backup at `/etc/pam.d/login.lightxdm.bak`; `uninstall.sh` removes the lines lightXDM added and restores the backup when nothing else changed, otherwise it keeps your other edits and leaves the backup for review) for KWallet (`pam_kwallet5.so` on Plasma) or GNOME Keyring (`pam_gnome_keyring.so` on every other supported desktop) auto-unlock.
 - Configures Polkit for passwordless power-off, reboot, suspend, and hibernate for local active `wheel` users, while USB mounting uses `udisks2` defaults.
 - Your DE will start automatically on TTY1 after login—no need to run 'startx'.
 
 ### Two Login Modes
 1. **Default (Password Login + Keyring Auto-Unlock):** Type your password on TTY1; the desktop starts automatically and your keyring (KWallet on Plasma, GNOME Keyring on all other desktops) unlocks through PAM.
-2. **Optional Autologin (`enable-autologin.sh`):** Run `sudo bash enable-autologin.sh YOURUSER` (`--disable` to revert; changes apply at the next login or reboot) to log in on TTY1 without a password. Because login happens without a password, PAM cannot unlock the keyring automatically—the keyring stays locked and asks for its password in the desktop unless its password is empty (`enable-autologin.sh` prints this warning).
+2. **Optional Autologin (`enable-autologin.sh`):** Run `sudo bash enable-autologin.sh YOURUSER` (`--disable` to revert; changes apply at the next login or reboot) to log in on TTY1 without a password. Because login happens without a password, PAM cannot unlock the keyring automatically—the keyring stays locked and asks for its password in the desktop unless its password is empty (`enable-autologin.sh` prints this warning). Pass `--no-keyring` to `install.sh` (combinable with `--de <id>` and `--no-packages`) to skip installing `gnome-keyring` / `kwallet-pam` and skip adding keyring lines to `/etc/pam.d/login`—recommended for autologin users who do not use a keyring and for window-manager setups without one.
 
 ## Features
 
