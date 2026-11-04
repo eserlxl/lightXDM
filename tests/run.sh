@@ -1401,10 +1401,14 @@ for flag in --help -h; do
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
-  if [[ $status -eq 0 && "$output" == *"Usage:"* && -z "$log_content" ]] &&
+  help_options_ok=1
+  for help_word in --de --list-packages --no-packages --no-keyring --no-polkit-rule /etc/pam.d/login Polkit "display managers" uninstall.sh; do
+    [[ "$output" == *"$help_word"*"$help_word"* || ( "$help_word" != --* && "$output" == *"$help_word"* ) ]] || help_options_ok=0
+  done
+  if [[ $status -eq 0 && "$output" == *"Usage:"* && $help_options_ok -eq 1 && -z "$log_content" ]] &&
     [[ "$(cat "$help_home/.bash_profile")" == "# untouched bash_profile" ]] &&
     [[ "$(cat "$LOGIN_FILE")" == "# untouched login" ]]; then
-    pass "install.sh $flag prints usage, exits 0, and changes nothing"
+    pass "install.sh $flag prints usage and the effect of every option, exits 0, and changes nothing"
   else
     fail "install.sh $flag (status=$status, output=$output, log=$log_content)"
   fi

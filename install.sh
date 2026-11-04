@@ -428,6 +428,25 @@ main() {
     case "$1" in
       -h | --help)
         echo "$usage"
+        cat <<'EOF'
+
+Sets up a desktop that starts with startx from a TTY1 login instead of a display manager.
+A default run, as your regular user (it asks for sudo once):
+  - installs the packages for the desktop (detected, chosen from a menu, or --de)
+  - copies ~/.bash_profile and ~/.xinitrc, backing up or saving any existing copies
+  - appends keyring unlock lines to /etc/pam.d/login (backup at /etc/pam.d/login.lightxdm.bak)
+  - installs a Polkit rule for passwordless power-off, reboot, suspend and hibernate
+  - disables installed display managers (uninstall.sh re-enables them)
+
+Options:
+  --de <id>         configure this desktop: xfce lxqt lxde mate cinnamon i3
+  --list-packages   print the packages for --de <id> and exit; changes nothing
+  --no-packages     skip package installation
+  --no-keyring      skip keyring packages and the PAM lines (use with autologin)
+  --no-polkit-rule  keep your Polkit policy; do not install the rule
+
+uninstall.sh reverts these changes; installed packages stay.
+EOF
         exit 0
         ;;
       --list-packages)
