@@ -3881,4 +3881,62 @@ EOF
   done
 fi
 
+# Case 67: a failing backup copy stops configure_pam and install_polkit_rule before modifying targets
+fail_sys_cp_dir="$TMP_DIR/sys_fail_cp"
+mkdir -p "$fail_sys_cp_dir"
+fail_pam_login="$fail_sys_cp_dir/login"
+printf '#%%PAM-1.0\nauth       include      system-local-login\nsession    include      system-local-login\n' >"$fail_pam_login"
+fail_pam_hash="$(sha256sum < "$fail_pam_login")"
+set +e
+# shellcheck disable=SC2016  # expand inside the child shell so install.sh owns errexit
+output="$(
+  env -u SHELLOPTS -u SUDO_USER \
+    LOGIN_FILE="$fail_pam_login" \
+    PATH="$fail_cp_bin:$STUB_BIN:$PATH" \
+    bash -c '
+      source "$1/install.sh"
+      configure_pam "i3"
+    ' bash "$REPO_ROOT" 2>&1
+)"
+status=$?
+set -e
+if [[ $status -ne 0 ]] &&
+  [[ -f "$fail_pam_login" && ! -L "$fail_pam_login" ]] &&
+  [[ "$(sha256sum < "$fail_pam_login")" == "$fail_pam_hash" ]] &&
+  [[ ! -e "${fail_pam_login}.lightxdm.bak" && ! -L "${fail_pam_login}.lightxdm.bak" ]]; then
+  pass "configure_pam aborts on failed backup without modifying LOGIN_FILE"
+else
+  fail "configure_pam on failed backup (status=$status, output=$output)"
+fi
+
+for polkit_cp_case in backup edited; do
+  fail_polkit_rule="$fail_sys_cp_dir/${polkit_cp_case}.rules"
+  printf '// foreign administrator rule (%s)\n' "$polkit_cp_case" >"$fail_polkit_rule"
+  fail_polkit_hash="$(sha256sum < "$fail_polkit_rule")"
+  if [[ "$polkit_cp_case" == "edited" ]]; then
+    : >"${fail_polkit_rule}.lightxdm.absent"
+  fi
+  set +e
+  # shellcheck disable=SC2016  # expand inside the child shell so install.sh owns errexit
+  output="$(
+    env -u SHELLOPTS -u SUDO_USER \
+      POLKIT_RULE_DEST="$fail_polkit_rule" \
+      PATH="$fail_cp_bin:$STUB_BIN:$PATH" \
+      bash -c '
+        source "$1/install.sh"
+        install_polkit_rule
+      ' bash "$REPO_ROOT" 2>&1
+  )"
+  status=$?
+  set -e
+  if [[ $status -ne 0 ]] &&
+    [[ -f "$fail_polkit_rule" && ! -L "$fail_polkit_rule" ]] &&
+    [[ "$(sha256sum < "$fail_polkit_rule")" == "$fail_polkit_hash" ]] &&
+    [[ ! -e "${fail_polkit_rule}.lightxdm.bak" && ! -e "${fail_polkit_rule}.lightxdm-edited" ]]; then
+    pass "install_polkit_rule aborts on failed $polkit_cp_case copy without overwriting POLKIT_RULE_DEST"
+  else
+    fail "install_polkit_rule on failed $polkit_cp_case copy (status=$status, output=$output)"
+  fi
+done
+
 exit "$failures"
