@@ -517,7 +517,7 @@ main() {
     log "No .xinitrc template for $de: $template. Installation aborted."
     exit 1
   fi
-  if [[ "$template" -ef "$HOME/.xinitrc" ]]; then
+  if [[ ! -L "$HOME/.xinitrc" && "$template" -ef "$HOME/.xinitrc" ]]; then
     log "The template for $de is ~/.xinitrc itself: $template. Installation aborted."
     exit 1
   fi

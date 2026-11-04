@@ -4652,7 +4652,7 @@ for ut_link_de in xfce dwm; do
       fail "install.sh backup with linked user template (status=$status, output=$output)"
     fi
   else
-    if [[ $status -eq 1 && "$output" == *"template for dwm is ~/.xinitrc itself"* ]] &&
+    if [[ $status -eq 1 && "$output" == *"template for dwm is ~/.xinitrc itself"* && ! -L "$ut_link_home/.xinitrc" ]] &&
       [[ "$(sha256sum < "$ut_link_home/.xinitrc")" == "$ut_link_hash" ]] &&
       [[ "$ut_link_home/.config/lightxdm/.xinitrc-dwm" -ef "$ut_link_home/.xinitrc" ]] &&
       [[ ! -e "$ut_link_home/.xinitrc.lightxdm.bak" && ! -e "$ut_link_home/.xinitrc.lightxdm.absent" && ! -e "$ut_link_home/.xinitrc.lightxdm-edited" ]]; then
@@ -4691,6 +4691,71 @@ else
     fail "uninstall.sh with linked user template (status=$status, output=$output)"
   fi
 fi
+
+# A ~/.xinitrc symlink to the selected user or bundled template is replaced and restored
+for ut_selected_kind in user bundled; do
+  ut_selected_dir="$user_tmpl_dir/selected_$ut_selected_kind"
+  ut_selected_home="$ut_selected_dir/home"
+  mkdir -p "$ut_selected_home/.config/lightxdm"
+  if [[ "$ut_selected_kind" == user ]]; then
+    ut_selected_de=dwm
+    ut_selected_target=.config/lightxdm/.xinitrc-dwm
+    printf '#!/bin/sh\nexec dwm\n' >"$ut_selected_home/$ut_selected_target"
+    ut_selected_template="$ut_selected_home/$ut_selected_target"
+  else
+    ut_selected_de=xfce
+    ut_selected_target="$REPO_ROOT/dotfiles/.xinitrc-xfce"
+    ut_selected_template="$ut_selected_target"
+  fi
+  ut_selected_hash="$(sha256sum < "$ut_selected_template")"
+  ln -s "$ut_selected_target" "$ut_selected_home/.xinitrc"
+  printf '#%%PAM-1.0\n' >"$ut_selected_dir/login"
+  set +e
+  output="$(
+    env -u SHELLOPTS -u SUDO_USER \
+      HOME="$ut_selected_home" \
+      PATH="$sudo_pw_dir:$STUB_BIN:$PATH" \
+      USER="testuser" \
+      LOGIN_FILE="$ut_selected_dir/login" \
+      POLKIT_RULE_DEST="$ut_selected_dir/polkit" \
+      DISPLAY_MANAGER_LINK="$ut_selected_dir/display-manager.service" \
+      DM_STATE_FILE="$ut_selected_dir/state/disabled-display-managers" \
+      bash "$REPO_ROOT/install.sh" --no-packages --de "$ut_selected_de" 2>&1
+  )"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && -x "$ut_selected_home/.xinitrc" && ! -L "$ut_selected_home/.xinitrc" ]] &&
+    [[ "$(sha256sum < "$ut_selected_home/.xinitrc")" == "$ut_selected_hash" ]] &&
+    [[ -L "$ut_selected_home/.xinitrc.lightxdm.bak" && "$(readlink "$ut_selected_home/.xinitrc.lightxdm.bak")" == "$ut_selected_target" ]] &&
+    [[ "$(sha256sum < "$ut_selected_template")" == "$ut_selected_hash" ]]; then
+    pass "install.sh replaces ~/.xinitrc linked to the selected $ut_selected_kind template and backs up the link"
+  else
+    fail "install.sh with ~/.xinitrc linked to selected $ut_selected_kind template (status=$status, output=$output)"
+  fi
+  if [[ ${#ut_uninstall_runner[@]} -eq 0 ]]; then
+    skip "uninstall.sh restores ~/.xinitrc linked to selected $ut_selected_kind template (unshare -r unavailable)"
+  else
+    set +e
+    output="$(
+      env TARGET_HOME="$ut_selected_home" \
+        LOGIN_FILE="$ut_selected_dir/u_login" \
+        AUTOLOGIN_DROPIN="$ut_selected_dir/u_auto" \
+        OVERRIDE_FILE="$ut_selected_dir/u_over" \
+        POLKIT_RULE="$ut_selected_dir/u_polkit" \
+        DM_STATE_FILE="$ut_selected_dir/u_dm" \
+        "${ut_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
+    )"
+    status=$?
+    set -e
+    if [[ $status -eq 0 && -L "$ut_selected_home/.xinitrc" && "$(readlink "$ut_selected_home/.xinitrc")" == "$ut_selected_target" ]] &&
+      [[ ! -e "$ut_selected_home/.xinitrc.lightxdm.bak" && ! -L "$ut_selected_home/.xinitrc.lightxdm.bak" ]] &&
+      [[ "$(sha256sum < "$ut_selected_template")" == "$ut_selected_hash" ]]; then
+      pass "uninstall.sh restores ~/.xinitrc linked to selected $ut_selected_kind template"
+    else
+      fail "uninstall.sh with ~/.xinitrc linked to selected $ut_selected_kind template (status=$status, output=$output)"
+    fi
+  fi
+done
 
 # Case 72c: a pre-existing ~/.xinitrc copied to ~/.config/lightxdm is backed up on first install, restored by uninstall, and kept without markers
 for ut_copy_de in xfce dwm; do
