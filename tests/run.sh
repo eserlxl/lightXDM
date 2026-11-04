@@ -236,10 +236,12 @@ run_main_with_stubs() (
     echo "detect_de" >>"$STUB_LOG"
     echo "${STUB_DETECTED_DE:-i3}"
   }
-  prompt_de_selection() {
-    echo "prompt_de_selection" >>"$STUB_LOG"
-    return "${STUB_PROMPT_RC:-1}"
-  }
+  if [[ "${STUB_REAL_PROMPT:-0}" != "1" ]]; then
+    prompt_de_selection() {
+      echo "prompt_de_selection" >>"$STUB_LOG"
+      return "${STUB_PROMPT_RC:-1}"
+    }
+  fi
   install_packages() { echo "install_packages $*" >>"$STUB_LOG"; }
   copy_dotfiles() { echo "copy_dotfiles $1" >>"$STUB_LOG"; }
   configure_pam() { echo "configure_pam $1" >>"$STUB_LOG"; }
@@ -4205,6 +4207,52 @@ else
   else
     fail "uninstall.sh ly@tty1.service restore (status=$status, log=$log_content, output=$output)"
   fi
+fi
+
+# Case 70: desktop menu options 1-6, invalid-then-valid retry, and end-to-end selection through main
+menu_out="$TMP_DIR/menu_out"
+menu_ids=(xfce lxqt lxde mate cinnamon i3)
+for menu_idx in "${!menu_ids[@]}"; do
+  menu_choice=$((menu_idx + 1))
+  expected_menu_id="${menu_ids[menu_idx]}"
+  set +e
+  prompt_de_selection <<<"$menu_choice" >"$menu_out" 2>/dev/null
+  status=$?
+  set -e
+  output="$(cat "$menu_out")"
+  if [[ $status -eq 0 && "$output" == "$expected_menu_id" &&
+    "$(sha256sum < "$menu_out")" == "$(printf '%s\n' "$expected_menu_id" | sha256sum)" ]]; then
+    pass "prompt_de_selection maps option $menu_choice to $expected_menu_id"
+  else
+    fail "prompt_de_selection option $menu_choice (status=$status, output=$output)"
+  fi
+done
+
+set +e
+prompt_de_selection <<<$'99\n2\n' >"$menu_out" 2>/dev/null
+status=$?
+set -e
+output="$(cat "$menu_out")"
+if [[ $status -eq 0 && "$output" == "lxqt" &&
+  "$(sha256sum < "$menu_out")" == "$(printf 'lxqt\n' | sha256sum)" ]]; then
+  pass "prompt_de_selection retries after invalid option 99 and outputs lxqt"
+else
+  fail "prompt_de_selection retry 99->2 (status=$status, output=$output)"
+fi
+
+: >"$STUB_LOG"
+set +e
+output="$(STUB_DETECTED_DE=unknown STUB_REAL_PROMPT=1 run_main_with_stubs "$sudo_pw_dir" <<<"2" 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+expected_menu_main_log=$'sudo -v\ndetect_de\ninstall_packages lxqt\ncopy_dotfiles lxqt\nconfigure_pam lxqt\ninstall_polkit_rule\ndisable_display_managers'
+if [[ $status -eq 0 && "$log_content" == "$expected_menu_main_log" &&
+  "$output" == *"No supported desktop environment detected."* &&
+  "$output" == *"lightXDM install complete!"* && "$output" == *"- lxqt "* ]]; then
+  pass "main runs install steps for lxqt when selected interactively from the desktop menu"
+else
+  fail "main interactive desktop menu selection (status=$status, log=$log_content, output=$output)"
 fi
 
 exit "$failures"
