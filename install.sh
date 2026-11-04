@@ -651,6 +651,13 @@ EOF
         # Explicit character list: [a-z] ranges miss "i" under some locales (for example tr_TR).
         if [[ $no_packages -ne 1 || -z "$de" || "$de" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* || ! -f "$(xinitrc_template "$de")" ]]; then
           log "Unsupported desktop environment: $de (valid ids: xfce lxqt lxde mate cinnamon i3)"
+          if [[ -n "$de" && "$de" != *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* ]]; then
+            if [[ ! -f "$(xinitrc_template "$de")" ]]; then
+              log "For a custom session, create its template first: bash install.sh --init-template --de $de"
+            else
+              log "Custom sessions need --no-packages (install their packages yourself): bash install.sh --no-packages --de $de"
+            fi
+          fi
           exit 1
         fi
         ;;

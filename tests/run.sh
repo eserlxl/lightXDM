@@ -4428,10 +4428,22 @@ output="$(
 )"
 status=$?
 set -e
-if [[ $status -eq 1 && "$output" == *"Unsupported desktop environment: dwm"* && ! -s "$STUB_LOG" ]]; then
+if [[ $status -eq 1 && "$output" == *"Unsupported desktop environment: dwm"* && "$output" == *"need --no-packages"* && ! -s "$STUB_LOG" ]]; then
   pass "main --no-keyring --de dwm still requires --no-packages for custom sessions"
 else
   fail "main --no-keyring --de dwm without --no-packages (status=$status, log=$(cat "$STUB_LOG"), output=$output)"
+fi
+
+# A custom id without a template points at --init-template
+: >"$STUB_LOG"
+set +e
+output="$(run_main_with_stubs "$sudo_pw_dir" --no-packages --de notemplate 2>&1)"
+status=$?
+set -e
+if [[ $status -eq 1 && "$output" == *"--init-template --de notemplate"* && ! -s "$STUB_LOG" ]]; then
+  pass "main suggests --init-template for a custom id without a template"
+else
+  fail "main custom id without template (status=$status, log=$(cat "$STUB_LOG"), output=$output)"
 fi
 
 # Case 63: a failing pacman run stops main before dotfiles, PAM, Polkit, or display managers
