@@ -71,9 +71,8 @@ polkit.addRule(function(action, subject) {
 This hybrid rule balances usability and security: trusted local users can power off or reboot without a password, but other privileged actions still require authentication.
 
 > **Note:** The correct polkit agent is installed automatically for your desktop environment:
-> - KDE Plasma: polkit-kde-agent
 > - LXQt: lxqt-policykit
-> - All others: polkit-gnome
+> - All other supported desktops: polkit-gnome
 
 ---
 

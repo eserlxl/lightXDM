@@ -14,6 +14,8 @@ These scripts do not configure a `pinentry-program` or desktop keyring integrati
 
 ### For KDE Plasma
 
+`install.sh` currently refuses Plasma (Wayland-only on Arch Linux); this helper is kept for future Wayland support.
+
 -   **`~/.gpg-agent-kwallet` Script**: Sourced by `.xinitrc-plasma` to start `gpg-agent`, set `SSH_AUTH_SOCK` when `enable-ssh-support` is enabled, and refresh the agent's tty.
 
 ### For GNOME, XFCE, and other non-Plasma environments

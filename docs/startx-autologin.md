@@ -10,7 +10,7 @@ lightXDM provides a display-manager-free autologin experience by:
 - You get a full desktop environment session with minimal RAM and boot time.
 
 ## Keyring Unlock Trade-Off
-- **Default mode (password login on TTY1):** You type your password on TTY1, your desktop starts automatically, and PAM unlocks your keyring (KWallet on Plasma, GNOME Keyring on all other supported desktops) using that password.
+- **Default mode (password login on TTY1):** You type your password on TTY1, your desktop starts automatically, and PAM unlocks your keyring (GNOME Keyring on every supported desktop) using that password.
 - **Autologin mode (`agetty --autologin`):** Login happens without a password, so the PAM keyring module cannot unlock your keyring automatically. The keyring stays locked and asks for its password in the desktop unless its password is empty (`enable-autologin.sh` prints a warning when PAM keyring unlock is configured).
 
 ## zsh and fish users
