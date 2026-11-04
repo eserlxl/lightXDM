@@ -99,9 +99,10 @@ Maintainer docs:
 bash lint.sh               # ShellCheck on every script
 bash tests/run.sh          # behavior suite (--strict also fails on skipped checks)
 bash tests/docker-arch.sh  # package lists and real PAM checks in an Arch container (needs Docker)
+bash tests/qemu-arch.sh    # real TTY1 password logins in QEMU VMs (needs Docker and KVM; slow)
 ```
 
-All three must pass before a change is sent.
+`lint.sh` and `tests/run.sh` must pass for every change; run the Docker and QEMU tests too before a release. [docs/development.md](docs/development.md) describes the QEMU test.
 
 ## License
 

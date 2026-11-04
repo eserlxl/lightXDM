@@ -13,6 +13,8 @@ scripts=(
   lint.sh
   tests/run.sh
   tests/docker-arch.sh
+  tests/qemu-arch.sh
+  tests/qemu/build-image.sh
   dotfiles/.bash_profile
   dotfiles/.gpg-agent-gnome
   dotfiles/.gpg-agent-kwallet
