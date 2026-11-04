@@ -31,6 +31,7 @@ check_root() {
   fi
   if ! command -v sudo >/dev/null; then
     log "sudo is required but not installed. Please install sudo and re-run."
+    log "Install it as root, then re-run: su -c 'pacman -S sudo'"
     exit 1
   fi
 }
@@ -509,7 +510,7 @@ main() {
 
   if ! id -nG "$real_user" | tr ' ' '\n' | grep -qx wheel; then
     log "ERROR: User '$real_user' is not in the 'wheel' group. Sudo and polkit rules will not work."
-    log "Add the user to the wheel group and re-login: sudo usermod -aG wheel $real_user"
+    log "Add the user to the wheel group as root, then log out and back in: su -c 'usermod -aG wheel $real_user'"
     exit 1
   fi
 
@@ -517,6 +518,7 @@ main() {
   log "Requesting sudo credentials upfront (sudo -v)..."
   if ! sudo -v; then
     log "ERROR: Failed to authenticate with sudo. Exiting."
+    log "On Arch the wheel rule in /etc/sudoers ships commented out: run visudo as root (for example su -c 'EDITOR=nano visudo') and uncomment %wheel ALL=(ALL:ALL) ALL"
     exit 1
   fi
 

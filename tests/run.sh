@@ -287,7 +287,8 @@ output="$(run_main_with_stubs "$sudo_fail_dir" 2>&1)"
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
-if [[ $status -eq 1 && "$output" == *"ERROR: Failed to authenticate with sudo. Exiting."* && -z "$log_content" ]]; then
+if [[ $status -eq 1 && "$output" == *"ERROR: Failed to authenticate with sudo. Exiting."* &&
+  "$output" == *"uncomment %wheel ALL=(ALL:ALL) ALL"* && -z "$log_content" ]]; then
   pass "main exits 1 when sudo -v fails"
 else
   fail "main when sudo -v fails (status=$status, log=$log_content, output=$output)"
@@ -1176,7 +1177,8 @@ output="$(
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
-if [[ $status -eq 1 && "$output" == *"sudo is required but not installed. Please install sudo and re-run."* && "$output" != *"command not found"* && -z "$log_content" ]]; then
+if [[ $status -eq 1 && "$output" == *"sudo is required but not installed. Please install sudo and re-run."* &&
+  "$output" == *"su -c 'pacman -S sudo'"* && "$output" != *"command not found"* && -z "$log_content" ]]; then
   pass "main prints check_root message when sudo is not installed"
 else
   fail "main without sudo installed (status=$status, output=$output, log=$log_content)"
@@ -1227,7 +1229,8 @@ output="$(
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
-if [[ $status -eq 1 && "$output" == *"ERROR: User 'plainuser' is not in the 'wheel' group."* && -z "$log_content" ]]; then
+if [[ $status -eq 1 && "$output" == *"ERROR: User 'plainuser' is not in the 'wheel' group."* &&
+  "$output" == *"su -c 'usermod -aG wheel plainuser'"* && "$output" != *"sudo usermod"* && -z "$log_content" ]]; then
   pass "main checks USER rather than SUDO_USER for wheel group"
 else
   fail "main wheel check with SUDO_USER set (status=$status, output=$output, log=$log_content)"
