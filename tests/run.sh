@@ -702,13 +702,15 @@ else
   perm_target="$perm_dir/elsewhere.conf"
   : >"$perm_target"
   ln -s "$perm_target" "$perm_dir/getty.d/lightxdm-autologin.conf"
+  chmod 700 "$perm_dir/getty.d"
   set +e
   output="$(umask 077; env OVERRIDE_DIR="$perm_dir/getty.d" LOGIN_FILE="$perm_dir/login" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$real_test_user" 2>&1)"
   status=$?
   set -e
   perm_dropin="$perm_dir/getty.d/lightxdm-autologin.conf"
   if [[ $status -eq 0 && -f "$perm_dropin" && ! -L "$perm_dropin" && ! -s "$perm_target" ]] &&
-    [[ "$(stat -c '%a' "$perm_dropin")" == 644 ]] && grep -q -- "--autologin $real_test_user" "$perm_dropin"; then
+    [[ "$(stat -c '%a' "$perm_dropin")" == 644 && "$(stat -c '%a' "$perm_dir/getty.d")" == 755 ]] &&
+    grep -q -- "--autologin $real_test_user" "$perm_dropin"; then
     pass "enable-autologin.sh replaces a symlinked drop-in with a 0644 regular file under umask 077"
   else
     fail "enable-autologin.sh drop-in mode/symlink (status=$status, mode=$(stat -c '%a' "$perm_dropin" 2>/dev/null), link=$([[ -L "$perm_dropin" ]] && echo yes || echo no), output=$output)"
@@ -728,10 +730,26 @@ set -e
 chmod 644 "$unread_dir/getty.d/lightxdm-autologin.conf"
 if [[ $(id -u) -eq 0 ]]; then
   skip "enable-autologin.sh --status with an unreadable drop-in (running as root)"
-elif [[ $status -eq 0 && "$output" == *"cannot read $unread_dir/getty.d/lightxdm-autologin.conf"* ]]; then
+elif [[ $status -eq 0 && "$output" == *"cannot read $unread_dir/getty.d/lightxdm-autologin.conf"* && "$output" != *"Permission denied"* ]]; then
   pass "enable-autologin.sh --status notes an unreadable drop-in and exits 0"
 else
   fail "enable-autologin.sh --status unreadable drop-in (status=$status, output=$output)"
+fi
+
+# --status notes an unreadable drop-in directory instead of silently reporting disabled
+chmod 700 "$unread_dir/getty.d"
+chmod 000 "$unread_dir/getty.d"
+set +e
+output="$(env OVERRIDE_DIR="$unread_dir/getty.d" LOGIN_FILE="$unread_dir/login" bash "$REPO_ROOT/enable-autologin.sh" --status 2>&1)"
+status=$?
+set -e
+chmod 755 "$unread_dir/getty.d"
+if [[ $(id -u) -eq 0 ]]; then
+  skip "enable-autologin.sh --status with an unreadable drop-in directory (running as root)"
+elif [[ $status -eq 0 && "$output" == *"cannot read $unread_dir/getty.d;"* ]]; then
+  pass "enable-autologin.sh --status notes an unreadable drop-in directory"
+else
+  fail "enable-autologin.sh --status unreadable drop-in directory (status=$status, output=$output)"
 fi
 
 # Case 15b: only later drop-ins with an active ExecStart setting warn about overriding autologin
@@ -4709,7 +4727,8 @@ for autologin_pam_case in without with; do
   status=$?
   set -e
   if [[ $status -eq 0 ]] && {
-    [[ "$autologin_pam_case" == with && "$output" == *"TTY1 autologin is enabled"* && "$output" == *"--no-keyring"* ]] ||
+    [[ "$autologin_pam_case" == with && "$output" == *"TTY1 autologin is enabled"* && "$output" == *"enable-autologin.sh --disable"* &&
+      "$output" == *"uninstall.sh', then reinstall with --no-keyring"* ]] ||
     [[ "$autologin_pam_case" == without && "$output" != *"TTY1 autologin is enabled"* ]];
   }; then
     pass "configure_pam autologin warning ($autologin_pam_case autologin drop-in)"

@@ -386,7 +386,7 @@ configure_pam() {
   local drop_in
   for drop_in in "$AUTOLOGIN_DROPIN_DIR"/*.conf; do
     if [[ -f "$drop_in" ]] && grep -Eqs '^[[:space:]]*ExecStart[[:space:]]*=.*--autologin' "$drop_in"; then
-      log "WARNING: TTY1 autologin is enabled ($drop_in); it cannot unlock the keyring. Rerun with --no-keyring, or run 'sudo bash enable-autologin.sh --disable'."
+      log "WARNING: TTY1 autologin is enabled ($drop_in); it cannot unlock the keyring. Disable it with 'sudo bash enable-autologin.sh --disable', or keep autologin without keyring unlock: run 'sudo bash uninstall.sh', then reinstall with --no-keyring."
       break
     fi
   done

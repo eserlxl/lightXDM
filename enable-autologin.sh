@@ -32,6 +32,9 @@ warn_keyring_unlock() {
 show_status() {
   local file line status_file="" target_user="" reset_file="" foreign_autologin=0 LC_ALL=C
   local exec_re='^[[:space:]]*ExecStart[[:space:]]*=.*--autologin[[:space:]]+([^[:space:]]+)'
+  if [[ -d "$OVERRIDE_DIR" && ! ( -r "$OVERRIDE_DIR" && -x "$OVERRIDE_DIR" ) ]]; then
+    echo "Note: cannot read $OVERRIDE_DIR; run --status with sudo for an exact result." >&2
+  fi
   # The accepted legacy override sorts after the current lightXDM drop-in.
   for file in "$OVERRIDE_FILE" "$LEGACY_OVERRIDE_FILE"; do
     [[ -f "$file" ]] || continue
@@ -62,7 +65,7 @@ show_status() {
     echo "disabled"
   fi
   for file in "$OVERRIDE_DIR"/*.conf; do
-    [[ -f "$file" && "$file" != "$status_file" && "$file" != "$reset_file" ]] || continue
+    [[ -f "$file" && -r "$file" && "$file" != "$status_file" && "$file" != "$reset_file" ]] || continue
     if grep -Eq '^[[:space:]]*ExecStart[[:space:]]*=.*--autologin' "$file"; then
       echo "Warning: $file still enables autologin."
       foreign_autologin=1
@@ -158,6 +161,8 @@ main() {
   # --status reads the drop-in without sudo, so never inherit a stricter root umask.
   umask 022
   mkdir -p "$OVERRIDE_DIR"
+  # A directory left 0700 by an earlier strict umask would still hide the drop-in from --status.
+  chmod 755 "$OVERRIDE_DIR"
   # An older lightXDM override.conf sorts after our drop-in and would keep the previous user.
   if is_legacy_autologin_override "$LEGACY_OVERRIDE_FILE"; then
     echo "Removing legacy autologin override..."
