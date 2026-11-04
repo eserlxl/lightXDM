@@ -19,3 +19,6 @@
 *.tmp 
 .planwright/
 .qb/
+
+# Local audit reports
+docs/audits/
