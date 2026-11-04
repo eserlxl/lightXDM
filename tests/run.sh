@@ -235,7 +235,7 @@ run_main_with_stubs() (
   }
   prompt_de_selection() {
     echo "prompt_de_selection" >>"$STUB_LOG"
-    return 1
+    return "${STUB_PROMPT_RC:-1}"
   }
   install_packages() { echo "install_packages $1" >>"$STUB_LOG"; }
   copy_dotfiles() { echo "copy_dotfiles $1" >>"$STUB_LOG"; }
@@ -3232,6 +3232,33 @@ else
       fail "uninstall.sh $login_state LOGIN_FILE restore (status=$status, output=$output, log=$log_content)"
     fi
   done
+fi
+
+# --de followed by another flag prints usage instead of taking the flag as the id
+for flag_after_de in --help --no-packages; do
+  : >"$STUB_LOG"
+  set +e
+  output="$(run_main_with_stubs "$sudo_pw_dir" --de "$flag_after_de" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 1 && "$output" == *"Usage:"* && "$output" == *"Missing argument for --de"* && "$(cat "$STUB_LOG")" != *"sudo -v"* ]]; then
+    pass "main --de $flag_after_de prints usage and exits 1"
+  else
+    fail "main --de $flag_after_de (status=$status, output=$output)"
+  fi
+done
+
+# Quit in the desktop menu exits 0 without running any install step
+: >"$STUB_LOG"
+set +e
+output="$(STUB_DETECTED_DE=unknown STUB_PROMPT_RC=2 run_main_with_stubs "$sudo_pw_dir" 2>&1)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 0 && "$log_content" == *"prompt_de_selection"* && "$log_content" != *"install_packages"* && "$log_content" != *"copy_dotfiles"* && "$log_content" != *"configure_pam"* ]]; then
+  pass "main exits 0 with no install step when Quit is chosen"
+else
+  fail "main Quit (status=$status, log=$log_content, output=$output)"
 fi
 
 exit "$failures"

@@ -353,7 +353,7 @@ main() {
         shift
         ;;
       --de)
-        if [[ $# -lt 2 ]]; then
+        if [[ $# -lt 2 || "$2" == -* ]]; then
           log "Missing argument for --de (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
           echo "$usage" >&2
           exit 1
@@ -406,7 +406,8 @@ main() {
 
     if [[ "$de" == "unknown" ]]; then
       de=$(prompt_de_selection) || {
-        if [[ $? -eq 2 ]]; then
+        local menu_rc=$?
+        if [[ $menu_rc -eq 2 ]]; then
           exit 0
         fi
         log "No desktop environment was chosen. Exiting."
