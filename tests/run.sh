@@ -2918,4 +2918,62 @@ for spec in "${xinit_specs[@]}"; do
   fi
 done
 
+# Case 58: .bash_profile starts X only on interactive tty1 outside X, before .bashrc
+profile_home="$TMP_DIR/bash_profile/home"
+profile_bin="$TMP_DIR/bash_profile/bin"
+mkdir -p "$profile_home/.local/bin" "$profile_bin"
+cat >"$profile_home/.bashrc" <<'EOF'
+printf 'bashrc|%s\n' "$PATH" >>"$HOME/profile.log"
+EOF
+cat >"$profile_bin/tty" <<'EOF'
+#!/bin/bash
+IFS= read -r device <"$HOME/tty"
+printf '%s\n' "$device"
+EOF
+cat >"$profile_bin/startx" <<'EOF'
+#!/bin/bash
+printf 'startx|%s\n' "$PATH" >>"$HOME/profile.log"
+EOF
+chmod +x "$profile_bin/tty" "$profile_bin/startx"
+
+for profile_case in interactive non-interactive display tty2 missing-startx; do
+  profile_flags=(-i)
+  profile_display=''
+  profile_tty=/dev/tty1
+  profile_path="$profile_bin:/usr/bin:/bin"
+  case "$profile_case" in
+    non-interactive) profile_flags=() ;;
+    display) profile_display=:0 ;;
+    tty2) profile_tty=/dev/tty2 ;;
+    missing-startx)
+      rm "$profile_bin/startx"
+      # Exclude any host startx; tty uses only Bash builtins in this case.
+      profile_path="$profile_bin"
+      ;;
+  esac
+  printf '%s\n' "$profile_tty" >"$profile_home/tty"
+  # shellcheck disable=SC2016  # expanded by the isolated child shell
+  output="$(env -i HOME="$profile_home" PATH="$profile_bin:/usr/bin:/bin" TERM=dumb \
+    DISPLAY="$profile_display" bash "${profile_flags[@]}" -c '
+      exec 2>"$HOME/profile.err"
+      PATH=$2
+      # Discard the automatic interactive .bashrc read before this command.
+      : >"$HOME/profile.log"
+      source "$1"
+      echo after
+    ' bash "$REPO_ROOT/dotfiles/.bash_profile" "$profile_path" 2>/dev/null)" && status=0 || status=$?
+  actual_log="$(cat "$profile_home/profile.log")"
+  expected_log="bashrc|$profile_home/.local/bin:$profile_path"
+  if [[ "$profile_case" == interactive ]]; then
+    expected_log="startx|$profile_home/.local/bin:$profile_path"
+  fi
+  if [[ $status -eq 0 && "$actual_log" == "$expected_log" && ! -s "$profile_home/profile.err" ]] &&
+    { [[ "$profile_case" == interactive && -z "$output" ]] ||
+      [[ "$profile_case" != interactive && "$output" == after ]]; }; then
+    pass ".bash_profile $profile_case preserves PATH and startup order"
+  else
+    fail ".bash_profile $profile_case (status=$status, log=$actual_log, expected=$expected_log, output=$output, stderr=$(cat "$profile_home/profile.err"))"
+  fi
+done
+
 exit "$failures"
