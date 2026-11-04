@@ -5013,6 +5013,31 @@ else
   else
     fail "uninstall.sh with linked user template (status=$status, output=$output)"
   fi
+
+  # With an install marker, user templates count; the linked one must still not match ~/.xinitrc itself.
+  ut_link_marker_home="$user_tmpl_dir/home_link_marker"
+  mkdir -p "$ut_link_marker_home/.config/lightxdm"
+  printf '# user xinitrc\nexec dwm\n' >"$ut_link_marker_home/.xinitrc"
+  : >"$ut_link_marker_home/.xinitrc.lightxdm.absent"
+  ln -s ../../.xinitrc "$ut_link_marker_home/.config/lightxdm/.xinitrc-dwm"
+  set +e
+  output="$(
+    env TARGET_HOME="$ut_link_marker_home" \
+      LOGIN_FILE="$user_tmpl_dir/u_link_marker_login" \
+      AUTOLOGIN_DROPIN="$user_tmpl_dir/u_link_marker_auto" \
+      OVERRIDE_FILE="$user_tmpl_dir/u_link_marker_over" \
+      POLKIT_RULE="$user_tmpl_dir/u_link_marker_polkit" \
+      DM_STATE_FILE="$user_tmpl_dir/u_link_marker_dm" \
+      "${ut_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
+  )"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && -f "$ut_link_marker_home/.xinitrc.lightxdm-edited" ]] &&
+    [[ "$(sha256sum < "$ut_link_marker_home/.xinitrc.lightxdm-edited")" == "$ut_link_keep_hash" ]]; then
+    pass "uninstall.sh saves a marker-backed ~/.xinitrc that a user template links to instead of deleting it"
+  else
+    fail "uninstall.sh with marker and linked user template (status=$status, output=$output)"
+  fi
 fi
 
 # A ~/.xinitrc symlink to the selected user or bundled template is replaced and restored
