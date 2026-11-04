@@ -233,13 +233,10 @@ configure_pam() {
       auth_line="$PAM_KWALLET_AUTH"
       session_line="$PAM_KWALLET_SESSION"
       ;;
-    gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3)
+    *)
       module="pam_gnome_keyring.so"
       auth_line="$PAM_GNOME_KEYRING_AUTH"
       session_line="$PAM_GNOME_KEYRING_SESSION"
-      ;;
-    *)
-      return 0
       ;;
   esac
 
@@ -341,6 +338,7 @@ disable_display_managers() {
 
 main() {
   local de=""
+  local de_specified=0
   local no_packages=0
   local usage="Usage: bash $0 [-h|--help] [--de <id>] [--no-packages]"
 
@@ -360,15 +358,8 @@ main() {
           echo "$usage" >&2
           exit 1
         fi
-        case "$2" in
-          plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3)
-            de="$2"
-            ;;
-          *)
-            log "Unsupported desktop environment: $2 (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
-            exit 1
-            ;;
-        esac
+        de="$2"
+        de_specified=1
         shift 2
         ;;
       *)
@@ -377,6 +368,19 @@ main() {
         ;;
     esac
   done
+
+  if [[ $de_specified -eq 1 ]]; then
+    case "$de" in
+      plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
+      *)
+        # Explicit character list: [a-z] ranges miss "i" under some locales (for example tr_TR).
+        if [[ $no_packages -ne 1 || -z "$de" || "$de" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* || ! -f "$SCRIPT_DIR/dotfiles/.xinitrc-$de" ]]; then
+          log "Unsupported desktop environment: $de (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
+          exit 1
+        fi
+        ;;
+    esac
+  fi
 
   check_root
 

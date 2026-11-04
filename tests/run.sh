@@ -191,7 +191,7 @@ else
 fi
 
 # Case 8: configure_pam appends GNOME Keyring lines for non-Plasma desktops
-for non_plasma_de in xfce lxqt lxde mate cinnamon budgie i3; do
+for non_plasma_de in xfce lxqt lxde mate cinnamon budgie i3 dwm; do
   write_stock_login
   configure_pam "$non_plasma_de" 2>/dev/null
   first_run="$(cat "$LOGIN_FILE")"
@@ -1766,6 +1766,62 @@ for de_id in "" i3; do
   fi
 done
 
+# Case 43a: custom session templates work with --no-packages in either option order
+custom_template_dir="$TMP_DIR/custom_template"
+mkdir -p "$custom_template_dir"
+cp -r "$REPO_ROOT/dotfiles" "$REPO_ROOT/polkit" "$custom_template_dir/"
+cp "$custom_template_dir/dotfiles/.xinitrc-i3" "$custom_template_dir/dotfiles/.xinitrc-dwm"
+for custom_order in packages-first de-first; do
+  custom_args=(--no-packages --de dwm)
+  if [[ "$custom_order" == "de-first" ]]; then
+    custom_args=(--de dwm --no-packages)
+  fi
+  : >"$STUB_LOG"
+  set +e
+  output="$(
+    # shellcheck disable=SC2034  # main uses SCRIPT_DIR from the sourced installer
+    SCRIPT_DIR="$custom_template_dir"
+    run_main_with_stubs "$sudo_pw_dir" "${custom_args[@]}" 2>&1
+  )"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -eq 0 && "$log_content" == *"copy_dotfiles dwm"* &&
+    "$log_content" == *"configure_pam dwm"* && "$log_content" != *"install_packages"* &&
+    "$log_content" != *"detect_de"* && "$log_content" != *"prompt_de_selection"* ]]; then
+    pass "main accepts a custom session template ($custom_order)"
+  else
+    fail "main custom session ($custom_order, status=$status, log=$log_content, output=$output)"
+  fi
+done
+
+# Case 43b: custom ids require --no-packages, a template, and the allowed characters
+cp "$custom_template_dir/dotfiles/.xinitrc-dwm" "$custom_template_dir/dotfiles/.xinitrc-Dwm"
+for custom_rejection in packages missing-template invalid-id empty-id; do
+  custom_args=(--no-packages --de dwm)
+  case "$custom_rejection" in
+    packages) custom_args=(--de dwm) ;;
+    missing-template) rm "$custom_template_dir/dotfiles/.xinitrc-dwm" ;;
+    invalid-id) custom_args=(--no-packages --de Dwm) ;;
+    empty-id) custom_args=(--no-packages --de "") ;;
+  esac
+  : >"$STUB_LOG"
+  set +e
+  output="$(
+    # shellcheck disable=SC2034  # main uses SCRIPT_DIR from the sourced installer
+    SCRIPT_DIR="$custom_template_dir"
+    run_main_with_stubs "$sudo_pw_dir" "${custom_args[@]}" 2>&1
+  )"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -eq 1 && "$output" == *"Unsupported desktop environment:"* && -z "$log_content" ]]; then
+    pass "main rejects a custom session ($custom_rejection)"
+  else
+    fail "main custom session rejection ($custom_rejection, status=$status, log=$log_content, output=$output)"
+  fi
+done
+
 # Case 44: copy_dotfiles and uninstall.sh preserve post-install user edits in <file>.lightxdm-edited without overwriting existing ones
 reinstall_edit_home="$TMP_DIR/home_reinstall_edited"
 mkdir -p "$reinstall_edit_home"
@@ -3074,6 +3130,29 @@ EOF
   else
     fail "polkit/49-nopasswd.rules evaluation (status=$status, output=$output)"
   fi
+fi
+
+# A custom id containing "i" is accepted under the Turkish locale too
+if locale -a 2>/dev/null | grep -qi '^tr_TR\.utf-\?8$'; then
+  cp "$custom_template_dir/dotfiles/.xinitrc-i3" "$custom_template_dir/dotfiles/.xinitrc-qtile"
+  : >"$STUB_LOG"
+  set +e
+  output="$(
+    # shellcheck disable=SC2034  # main uses SCRIPT_DIR from the sourced installer
+    SCRIPT_DIR="$custom_template_dir"
+    export LC_ALL=tr_TR.UTF-8
+    run_main_with_stubs "$sudo_pw_dir" --no-packages --de qtile 2>&1
+  )"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -eq 0 && "$log_content" == *"copy_dotfiles qtile"* ]]; then
+    pass "main accepts custom id qtile under LC_ALL=tr_TR.UTF-8"
+  else
+    fail "main custom id under tr_TR (status=$status, log=$log_content, output=$output)"
+  fi
+else
+  skip "main custom id under tr_TR (locale not installed)"
 fi
 
 exit "$failures"
