@@ -4288,4 +4288,53 @@ else
   fail "main interactive desktop menu selection (status=$status, log=$log_content, output=$output)"
 fi
 
+# Case 71: a failed PAM append stops main before Polkit or display managers
+fail_pam_append_dir="$TMP_DIR/fail_pam_append"
+mkdir -p "$fail_pam_append_dir"
+printf '#%%PAM-1.0\nauth include system-local-login\nsession include system-local-login\n' >"$fail_pam_append_dir/login"
+cat >"$fail_pam_append_dir/sudo" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-v" ]]; then
+  echo "sudo -v" >>"$STUB_LOG"
+  exit 0
+fi
+if [[ "${1:-}" == "tee" && "${2:-}" == "-a" && "${3:-}" == "$LOGIN_FILE" ]]; then
+  echo "failed PAM append" >>"$STUB_LOG"
+  exit 1
+fi
+exec "$@"
+EOF
+chmod +x "$fail_pam_append_dir/sudo"
+: >"$STUB_LOG"
+set +e
+# shellcheck disable=SC2016  # expand inside the child shell so install.sh owns errexit
+output="$(
+  env -u SHELLOPTS -u SUDO_USER \
+    LOGIN_FILE="$fail_pam_append_dir/login" \
+    PATH="$fail_pam_append_dir:$STUB_BIN:$PATH" \
+    USER="testuser" \
+    bash -c '
+      source "$1/install.sh"
+      check_root() { echo "check_root" >>"$STUB_LOG"; }
+      install_packages() { echo "install_packages $*" >>"$STUB_LOG"; }
+      copy_dotfiles() { echo "copy_dotfiles $*" >>"$STUB_LOG"; }
+      install_polkit_rule() { echo "install_polkit_rule" >>"$STUB_LOG"; }
+      disable_display_managers() { echo "disable_display_managers" >>"$STUB_LOG"; }
+      main --de i3
+    ' bash "$REPO_ROOT" 2>&1
+)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -ne 0 ]] &&
+  grep -Fxq -- "install_packages i3" "$STUB_LOG" &&
+  grep -Fxq -- "copy_dotfiles i3" "$STUB_LOG" &&
+  grep -Fxq -- "failed PAM append" "$STUB_LOG" &&
+  [[ "$log_content" != *"install_polkit_rule"* && "$log_content" != *"disable_display_managers"* &&
+    "$output" != *"lightXDM install complete!"* ]]; then
+  pass "main stops on PAM append failure before Polkit or display managers"
+else
+  fail "main on PAM append failure (status=$status, log=$log_content, output=$output)"
+fi
+
 exit "$failures"
