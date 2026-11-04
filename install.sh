@@ -598,6 +598,11 @@ EOF
   fi
 
   if [[ $init_template -eq 1 ]]; then
+    if [[ $list_only -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || $no_polkit_rule -eq 1 || $autologin -eq 1 ]]; then
+      log "--init-template takes only --de <id>; it creates the template and exits without installing."
+      echo "$usage" >&2
+      exit 1
+    fi
     if [[ $de_specified -eq 0 ]]; then
       log "--init-template requires --de <id>"
       echo "$usage" >&2

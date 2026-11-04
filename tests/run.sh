@@ -6090,6 +6090,16 @@ else
   fail "install.sh --init-template refusals (status=$status_wayland/$status_no_de, log=$(cat "$STUB_LOG"), output=$out_wayland / $out_no_de)"
 fi
 
+set +e
+out_mixed="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --list-packages --init-template --de lxqt 2>&1)"
+status_mixed=$?
+set -e
+if [[ $status_mixed -eq 1 && "$out_mixed" == *"--init-template takes only --de"* && ! -e "$init_home/.config/lightxdm/.xinitrc-lxqt" ]]; then
+  pass "install.sh --init-template refuses other options before writing"
+else
+  fail "install.sh --init-template with --list-packages (status=$status_mixed, output=$out_mixed)"
+fi
+
 # uninstall.sh --keyring-only removes lightXDM's PAM lines and leaves everything else in place
 if [[ $can_unshare -eq 0 ]]; then
   skip "uninstall.sh --keyring-only (unshare -r unavailable)"
@@ -6104,7 +6114,7 @@ else
   printf 'rule\n' >"$ko_dir/polkit.rules"
   printf 'xfce\n' >"$ko_dir/home/.xinitrc"
   set +e
-  output="$(env TARGET_HOME="$ko_dir/home" LOGIN_FILE="$ko_dir/login" AUTOLOGIN_DROPIN="$ko_dir/autologin.conf" POLKIT_RULE="$ko_dir/polkit.rules" DM_STATE_FILE="$ko_dir/dm" unshare -r bash "$REPO_ROOT/uninstall.sh" --keyring-only 2>&1)"
+  output="$(env -u SUDO_USER TARGET_HOME= LOGIN_FILE="$ko_dir/login" AUTOLOGIN_DROPIN="$ko_dir/autologin.conf" POLKIT_RULE="$ko_dir/polkit.rules" DM_STATE_FILE="$ko_dir/dm" unshare -r bash "$REPO_ROOT/uninstall.sh" --keyring-only 2>&1)"
   status=$?
   set -e
   if [[ $status -eq 0 && "$output" == *"Done (--keyring-only)"* && -f "$ko_dir/autologin.conf" && -f "$ko_dir/polkit.rules" && -f "$ko_dir/home/.xinitrc" ]] &&

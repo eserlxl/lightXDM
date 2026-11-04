@@ -21,24 +21,27 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-if [[ -z "${TARGET_HOME:-}" && -n "${SUDO_USER:-}" && "$SUDO_USER" != -* ]]; then
-  if passwd_entry="$(getent passwd "$SUDO_USER")"; then
-    IFS=: read -r _ _ target_uid _ _ TARGET_HOME _ <<<"$passwd_entry"
-    if [[ "$target_uid" == "0" ]]; then
-      echo "Error: Refusing to uninstall for root. Run with sudo from your user account, or set TARGET_HOME." >&2
-      exit 1
+# --keyring-only touches only PAM, so it needs no target home.
+if [[ $keyring_only -eq 0 ]]; then
+  if [[ -z "${TARGET_HOME:-}" && -n "${SUDO_USER:-}" && "$SUDO_USER" != -* ]]; then
+    if passwd_entry="$(getent passwd "$SUDO_USER")"; then
+      IFS=: read -r _ _ target_uid _ _ TARGET_HOME _ <<<"$passwd_entry"
+      if [[ "$target_uid" == "0" ]]; then
+        echo "Error: Refusing to uninstall for root. Run with sudo from your user account, or set TARGET_HOME." >&2
+        exit 1
+      fi
     fi
   fi
-fi
 
-if [[ -z "${TARGET_HOME:-}" ]]; then
-  echo "Error: Could not determine target user home directory. Run with sudo from your user account, or set TARGET_HOME." >&2
-  exit 1
-fi
+  if [[ -z "${TARGET_HOME:-}" ]]; then
+    echo "Error: Could not determine target user home directory. Run with sudo from your user account, or set TARGET_HOME." >&2
+    exit 1
+  fi
 
-if [[ ! -d "$TARGET_HOME" ]]; then
-  echo "Error: Target home directory does not exist: $TARGET_HOME" >&2
-  exit 1
+  if [[ ! -d "$TARGET_HOME" ]]; then
+    echo "Error: Target home directory does not exist: $TARGET_HOME" >&2
+    exit 1
+  fi
 fi
 
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
