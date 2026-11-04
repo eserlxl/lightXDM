@@ -794,7 +794,7 @@ output="$(env OVERRIDE_DIR="$unread_dir/getty.d" LOGIN_FILE="$unread_dir/login" 
 status=$?
 set -e
 chmod 644 "$unread_dir/getty.d/lightxdm-autologin.conf"
-if [[ $(id -u) -eq 0 ]]; then
+if [[ $EUID -eq 0 ]]; then
   skip "enable-autologin.sh --status with an unreadable drop-in (running as root)"
 elif [[ $status -eq 0 && "$output" == *"cannot read $unread_dir/getty.d/lightxdm-autologin.conf"* && "$output" != *"Permission denied"* ]]; then
   pass "enable-autologin.sh --status notes an unreadable drop-in and exits 0"
@@ -810,7 +810,7 @@ output="$(env OVERRIDE_DIR="$unread_dir/getty.d" LOGIN_FILE="$unread_dir/login" 
 status=$?
 set -e
 chmod 755 "$unread_dir/getty.d"
-if [[ $(id -u) -eq 0 ]]; then
+if [[ $EUID -eq 0 ]]; then
   skip "enable-autologin.sh --status with an unreadable drop-in directory (running as root)"
 elif [[ $status -eq 0 && "$output" == *"cannot read $unread_dir/getty.d;"* ]]; then
   pass "enable-autologin.sh --status notes an unreadable drop-in directory"
