@@ -9,8 +9,8 @@ export XDG_SESSION_TYPE=x11
 [[ -f ~/.Xresources ]] && xrdb -merge ~/.Xresources
 [[ -f ~/.xprofile ]] && source ~/.xprofile
 
-if [ -d /etc/X11/xinit/xinitrc.d ]; then
-  for f in /etc/X11/xinit/xinitrc.d/?*.sh; do
+if [ -d "${XINITRC_D:-/etc/X11/xinit/xinitrc.d}" ]; then
+  for f in "${XINITRC_D:-/etc/X11/xinit/xinitrc.d}"/?*.sh; do
     [ -x "$f" ] && . "$f"
   done
   unset f
@@ -21,8 +21,8 @@ if [[ -f ~/.gpg-agent-gnome ]]; then
   source ~/.gpg-agent-gnome
 fi
 
-if [ -x /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1 ]; then
-  /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1 &
+if [ -x "${POLKIT_GNOME_AGENT:-/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1}" ]; then
+  "${POLKIT_GNOME_AGENT:-/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1}" &
 fi
 
 exec startxfce4

@@ -2732,4 +2732,190 @@ else
   fail "PAM constant drift between install.sh and uninstall.sh (${pam_sync_errors[*]})"
 fi
 
+# Case 57: .xinitrc-* templates export session vars, source xinitrc.d before gpg-agent, manage activation/polkit per DE, and exec the session command
+xinit_test_dir="$TMP_DIR/xinitrc_templates"
+xinit_home="$xinit_test_dir/home"
+xinit_empty_home="$xinit_test_dir/empty_home"
+xinit_d="$xinit_test_dir/xinitrc.d"
+xinit_empty_d="$xinit_test_dir/empty_xinitrc.d"
+xinit_bin="$xinit_test_dir/bin"
+xinit_log="$xinit_test_dir/calls.log"
+xinit_pid_file="$xinit_test_dir/subshell.pid"
+mkdir -p "$xinit_home" "$xinit_empty_home" "$xinit_d" "$xinit_empty_d" "$xinit_bin"
+
+: >"$xinit_home/.Xresources"
+cat >"$xinit_home/.xprofile" <<'EOF'
+echo "xprofile" >>"$XINITRC_LOG"
+EOF
+cat >"$xinit_home/.gpg-agent-kwallet" <<'EOF'
+export SSH_AUTH_SOCK="/tmp/kwallet-gpg-ssh.sock"
+echo "gpg-agent-kwallet" >>"$XINITRC_LOG"
+EOF
+cat >"$xinit_home/.gpg-agent-gnome" <<'EOF'
+export SSH_AUTH_SOCK="/tmp/gnome-gpg-ssh.sock"
+echo "gpg-agent-gnome" >>"$XINITRC_LOG"
+EOF
+
+cat >"$xinit_d/50-test.sh" <<'EOF'
+#!/usr/bin/env bash
+export SSH_AUTH_SOCK="/tmp/xinitrcd-ssh.sock"
+echo "xinitrc.d" >>"$XINITRC_LOG"
+EOF
+chmod +x "$xinit_d/50-test.sh"
+
+cat >"$xinit_bin/xrdb" <<'EOF'
+#!/usr/bin/env bash
+echo "xrdb $*" >>"$XINITRC_LOG"
+EOF
+cat >"$xinit_bin/dbus-update-activation-environment" <<'EOF'
+#!/usr/bin/env bash
+printf 'dbus-update-activation-environment %s|DESKTOP_SESSION=%s|XDG_CURRENT_DESKTOP=%s|XDG_SESSION_TYPE=%s|SSH_AUTH_SOCK=%s\n' \
+  "$*" \
+  "${DESKTOP_SESSION-<unset>}" \
+  "${XDG_CURRENT_DESKTOP-<unset>}" \
+  "${XDG_SESSION_TYPE-<unset>}" \
+  "${SSH_AUTH_SOCK-<unset>}" >>"$XINITRC_LOG"
+EOF
+cat >"$xinit_bin/polkit-gnome-authentication-agent-1" <<'EOF'
+#!/usr/bin/env bash
+echo "polkit-gnome-authentication-agent-1${*:+ $*}" >>"$XINITRC_LOG"
+EOF
+chmod +x "$xinit_bin/xrdb" "$xinit_bin/dbus-update-activation-environment" "$xinit_bin/polkit-gnome-authentication-agent-1"
+
+xinit_specs=(
+  "plasma|plasma|KDE|<unset>|gpg-agent-kwallet|0|0|startplasma-x11"
+  "gnome|gnome|GNOME|x11|gpg-agent-gnome|0|0|gnome-session"
+  "xfce|xfce|XFCE|<unset>|gpg-agent-gnome|0|1|startxfce4"
+  "lxqt|lxqt|LXQt|<unset>|gpg-agent-gnome|0|0|lxqt-session"
+  "lxde|lxde|LXDE|<unset>|gpg-agent-gnome|1|0|startlxde"
+  "mate|mate|MATE|<unset>|gpg-agent-gnome|0|0|mate-session"
+  "cinnamon|cinnamon|X-Cinnamon|<unset>|gpg-agent-gnome|0|0|cinnamon-session"
+  "budgie|budgie|Budgie:GNOME|<unset>|gpg-agent-gnome|0|0|budgie-desktop"
+  "i3|i3|i3|<unset>|gpg-agent-gnome|1|1|i3"
+)
+
+for spec in "${xinit_specs[@]}"; do
+  IFS='|' read -r _ _ _ _ _ _ _ session_cmd <<<"$spec"
+  cat >"$xinit_bin/$session_cmd" <<EOF
+#!/usr/bin/env bash
+for ((_i = 0; _i < 200; _i++)); do
+  [[ -r "/proc/\$\$/task/\$\$/children" ]] || break
+  IFS= read -r _children <"/proc/\$\$/task/\$\$/children" || true
+  [[ -n "\$_children" ]] || break
+  sleep 0.01
+done
+printf 'session:%s|pid=%s|DESKTOP_SESSION=%s|XDG_CURRENT_DESKTOP=%s|XDG_SESSION_TYPE=%s|GDK_BACKEND=%s|SSH_AUTH_SOCK=%s\n' \
+  "$session_cmd" \
+  "\$\$" \
+  "\${DESKTOP_SESSION-<unset>}" \
+  "\${XDG_CURRENT_DESKTOP-<unset>}" \
+  "\${XDG_SESSION_TYPE-<unset>}" \
+  "\${GDK_BACKEND-<unset>}" \
+  "\${SSH_AUTH_SOCK-<unset>}" >>"\$XINITRC_LOG"
+EOF
+  chmod +x "$xinit_bin/$session_cmd"
+done
+
+xinit_template_files=("$REPO_ROOT"/dotfiles/.xinitrc-*)
+if [[ ${#xinit_template_files[@]} -eq ${#xinit_specs[@]} ]]; then
+  pass "all .xinitrc-* templates are covered by behavior specs"
+else
+  fail "expected ${#xinit_specs[@]} .xinitrc-* templates, found ${#xinit_template_files[@]}"
+fi
+
+for spec in "${xinit_specs[@]}"; do
+  IFS='|' read -r de exp_ds exp_desktop exp_gdk exp_gpg exp_dbus exp_polkit exp_cmd <<<"$spec"
+  tmpl="$REPO_ROOT/dotfiles/.xinitrc-$de"
+  exp_ssh="/tmp/gnome-gpg-ssh.sock"
+  if [[ "$exp_gpg" == "gpg-agent-kwallet" ]]; then
+    exp_ssh="/tmp/kwallet-gpg-ssh.sock"
+  fi
+
+  : >"$xinit_log"
+  : >"$xinit_pid_file"
+  set +e
+  (
+    echo "$BASHPID" >"$xinit_pid_file"
+    export HOME="$xinit_home"
+    export PATH="$xinit_bin:$PATH"
+    export XINITRC_D="$xinit_d"
+    export POLKIT_GNOME_AGENT="$xinit_bin/polkit-gnome-authentication-agent-1"
+    export XINITRC_LOG="$xinit_log"
+    unset DESKTOP_SESSION XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GDK_BACKEND SSH_AUTH_SOCK
+    exec bash "$tmpl"
+  )
+  status=$?
+  set -e
+
+  subshell_pid="$(cat "$xinit_pid_file")"
+  expected_lines=(
+    "xrdb -merge $xinit_home/.Xresources"
+    "xprofile"
+    "xinitrc.d"
+    "$exp_gpg"
+  )
+  if [[ "$exp_dbus" -eq 1 ]]; then
+    expected_lines+=(
+      "dbus-update-activation-environment --systemd XDG_CURRENT_DESKTOP DESKTOP_SESSION XDG_SESSION_TYPE SSH_AUTH_SOCK|DESKTOP_SESSION=$exp_ds|XDG_CURRENT_DESKTOP=$exp_desktop|XDG_SESSION_TYPE=x11|SSH_AUTH_SOCK=$exp_ssh"
+    )
+  fi
+  if [[ "$exp_polkit" -eq 1 ]]; then
+    expected_lines+=("polkit-gnome-authentication-agent-1")
+  fi
+  expected_lines+=(
+    "session:$exp_cmd|pid=$subshell_pid|DESKTOP_SESSION=$exp_ds|XDG_CURRENT_DESKTOP=$exp_desktop|XDG_SESSION_TYPE=x11|GDK_BACKEND=$exp_gdk|SSH_AUTH_SOCK=$exp_ssh"
+  )
+  expected_log="$(printf '%s\n' "${expected_lines[@]}")"
+  actual_log="$(cat "$xinit_log")"
+
+  : >"$xinit_log"
+  : >"$xinit_pid_file"
+  set +e
+  (
+    echo "$BASHPID" >"$xinit_pid_file"
+    export HOME="$xinit_empty_home"
+    export PATH="$xinit_bin:$PATH"
+    export XINITRC_D="$xinit_empty_d"
+    export POLKIT_GNOME_AGENT="$xinit_test_dir/missing_polkit_agent"
+    export XINITRC_LOG="$xinit_log"
+    unset DESKTOP_SESSION XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GDK_BACKEND SSH_AUTH_SOCK
+    exec bash "$tmpl"
+  )
+  empty_status=$?
+  set -e
+
+  empty_pid="$(cat "$xinit_pid_file")"
+  expected_empty_lines=()
+  if [[ "$exp_dbus" -eq 1 ]]; then
+    expected_empty_lines+=(
+      "dbus-update-activation-environment --systemd XDG_CURRENT_DESKTOP DESKTOP_SESSION XDG_SESSION_TYPE|DESKTOP_SESSION=$exp_ds|XDG_CURRENT_DESKTOP=$exp_desktop|XDG_SESSION_TYPE=x11|SSH_AUTH_SOCK=<unset>"
+    )
+  fi
+  expected_empty_lines+=(
+    "session:$exp_cmd|pid=$empty_pid|DESKTOP_SESSION=$exp_ds|XDG_CURRENT_DESKTOP=$exp_desktop|XDG_SESSION_TYPE=x11|GDK_BACKEND=$exp_gdk|SSH_AUTH_SOCK=<unset>"
+  )
+  expected_empty_log="$(printf '%s\n' "${expected_empty_lines[@]}")"
+  actual_empty_log="$(cat "$xinit_log")"
+
+  # shellcheck disable=SC2016  # matching literal parameter default expressions in templates
+  {
+    tmpl_active="$(grep -Ev '^[[:space:]]*#' "$tmpl")"
+    defaults_ok=1
+    if [[ "$tmpl_active" != *'${XINITRC_D:-/etc/X11/xinit/xinitrc.d}'* ]]; then
+      defaults_ok=0
+    fi
+    if [[ "$exp_polkit" -eq 1 && "$tmpl_active" != *'${POLKIT_GNOME_AGENT:-/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1}'* ]]; then
+      defaults_ok=0
+    fi
+  }
+
+  if [[ $status -eq 0 && "$actual_log" == "$expected_log" &&
+    $empty_status -eq 0 && "$actual_empty_log" == "$expected_empty_log" &&
+    $defaults_ok -eq 1 ]]; then
+    pass ".xinitrc-$de exports session env, runs xinitrc.d before $exp_gpg, and execs $exp_cmd"
+  else
+    fail ".xinitrc-$de (status=$status, log=$actual_log, expected=$expected_log, empty_status=$empty_status, empty_log=$actual_empty_log, defaults_ok=$defaults_ok)"
+  fi
+done
+
 exit "$failures"
