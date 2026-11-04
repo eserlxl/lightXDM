@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/docker-arch.sh: Test configure_pam and uninstall.sh against real Arch Linux PAM in Docker
+# tests/docker-arch.sh: Test package lists, configure_pam and uninstall.sh against Arch Linux in Docker
 set -euo pipefail
 
 REPO_ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,7 +11,7 @@ if [[ "${1:-}" != "--in-container" ]]; then
   fi
 
   if ! docker run --rm -v "$REPO_ROOT:/repo:ro" archlinux:latest bash /repo/tests/docker-arch.sh --in-container; then
-    echo "FAIL: Docker Arch PAM test failed"
+    echo "FAIL: Docker Arch package/PAM test failed"
     exit 1
   fi
   exit 0
@@ -53,11 +53,27 @@ trap 'rm -f "$orig_login"' EXIT
 cp /etc/pam.d/login "$orig_login"
 
 # shellcheck disable=SC2317,SC2329  # invoked indirectly by sourced install.sh
-sudo() { "$@"; }
+sudo() {
+  if [[ "${1:-}" == "pacman" && "${2:-}" == "-S" ]]; then
+    shift 2
+    pacman -Sp "$@"
+  else
+    "$@"
+  fi
+}
 
 unset LOGIN_FILE SUDO_USER
 # shellcheck source=install.sh disable=SC1091
 source "$REPO_ROOT/install.sh"
+
+# Resolve every desktop's full package list without installing it.
+for desktop in plasma gnome xfce lxqt lxde mate cinnamon budgie i3; do
+  if install_packages "$desktop"; then
+    pass "Package list resolves for $desktop"
+  else
+    fail "Package list cannot be resolved for $desktop"
+  fi
+done
 
 pam_auth() {
   local user=$1
