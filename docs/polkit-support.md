@@ -120,10 +120,14 @@ Desktop environments such as KDE Plasma, GNOME, LXQt, LXDE, MATE, Cinnamon, and 
 Ensure the following packages are installed:
 
 ```
-sudo pacman -S polkit udisks2 kde-cli-tools kio-extras gvfs
+sudo pacman -S polkit udisks2 gvfs
+# plus the GUI agent for your desktop:
+sudo pacman -S polkit-kde-agent   # KDE Plasma
+sudo pacman -S lxqt-policykit     # LXQt
+sudo pacman -S polkit-gnome       # every other supported desktop
 ```
 
-These provide the necessary backend support for KDE to interact with Polkit.
+These provide the Polkit backend and the authentication dialog for your desktop.
 
 ---
 
@@ -134,7 +138,7 @@ These provide the necessary backend support for KDE to interact with Polkit.
 | USB automount  | `udisks2` defaults + polkit agent   |
 | Reboot/Suspend/Hibernate | `login1` rule              |
 | Brightness     | `UPower` defaults                   |
-| GUI prompt     | `polkit-kde-authentication-agent-1` |
+| GUI prompt     | polkit-kde-agent (Plasma), lxqt-policykit (LXQt), polkit-gnome (others) |
 
 Use the default secure rules for best safety, and only loosen them if you're fully aware of the consequences.
 
