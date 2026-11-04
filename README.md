@@ -37,6 +37,10 @@ bash install.sh
 # bash install.sh --no-keyring --de i3
 # Or keep your existing Polkit policy without installing the passwordless power rule:
 # bash install.sh --no-polkit-rule --de i3
+# Or log in on TTY1 without a password (no keyring unlock) in the same run:
+# bash install.sh --no-keyring --autologin --de i3
+# Or create ~/.config/lightxdm/.xinitrc-<id> to customize before installing (no sudo):
+# bash install.sh --init-template --de i3
 ```
 
 > **Important:**
