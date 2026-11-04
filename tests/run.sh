@@ -3181,10 +3181,10 @@ for spec in "${xinit_specs[@]}"; do
   fi
 done
 
-# Case 58: .bash_profile starts X only on interactive tty1 outside X, before .bashrc
+# Case 58: .bash_profile starts X only on interactive tty1 outside X without the marker, before .bashrc
 profile_home="$TMP_DIR/bash_profile/home"
 profile_bin="$TMP_DIR/bash_profile/bin"
-mkdir -p "$profile_home/.local/bin" "$profile_bin"
+mkdir -p "$profile_home/.local/bin" "$profile_home/.config/lightxdm" "$profile_bin"
 cat >"$profile_home/.bashrc" <<'EOF'
 printf 'bashrc|%s\n' "$PATH" >>"$HOME/profile.log"
 EOF
@@ -3199,12 +3199,14 @@ printf 'startx|%s\n' "$PATH" >>"$HOME/profile.log"
 EOF
 chmod +x "$profile_bin/tty" "$profile_bin/startx"
 
-for profile_case in interactive non-interactive display tty2 missing-startx; do
+for profile_case in interactive no-autostart autostart-restored non-interactive display tty2 missing-startx; do
   profile_flags=(-i)
   profile_display=''
   profile_tty=/dev/tty1
   profile_path="$profile_bin:/usr/bin:/bin"
+  rm -f "$profile_home/.config/lightxdm/no-autostart"
   case "$profile_case" in
+    no-autostart) touch "$profile_home/.config/lightxdm/no-autostart" ;;
     non-interactive) profile_flags=() ;;
     display) profile_display=:0 ;;
     tty2) profile_tty=/dev/tty2 ;;
@@ -3227,12 +3229,13 @@ for profile_case in interactive non-interactive display tty2 missing-startx; do
     ' bash "$REPO_ROOT/dotfiles/.bash_profile" "$profile_path" 2>/dev/null)" && status=0 || status=$?
   actual_log="$(cat "$profile_home/profile.log")"
   expected_log="bashrc|$profile_home/.local/bin:$profile_path"
-  if [[ "$profile_case" == interactive ]]; then
+  expected_output=after
+  if [[ "$profile_case" == interactive || "$profile_case" == autostart-restored ]]; then
     expected_log="startx|$profile_home/.local/bin:$profile_path"
+    expected_output=''
   fi
-  if [[ $status -eq 0 && "$actual_log" == "$expected_log" && ! -s "$profile_home/profile.err" ]] &&
-    { [[ "$profile_case" == interactive && -z "$output" ]] ||
-      [[ "$profile_case" != interactive && "$output" == after ]]; }; then
+  if [[ $status -eq 0 && "$actual_log" == "$expected_log" && ! -s "$profile_home/profile.err" &&
+    "$output" == "$expected_output" ]]; then
     pass ".bash_profile $profile_case preserves PATH and startup order"
   else
     fail ".bash_profile $profile_case (status=$status, log=$actual_log, expected=$expected_log, output=$output, stderr=$(cat "$profile_home/profile.err"))"

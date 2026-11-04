@@ -32,6 +32,7 @@ end
 
 ## Setup
 - The installer copies `.bash_profile` and `.xinitrc` to your home.
+- With the installed Bash profile, you can keep autologin enabled and temporarily skip the desktop using `~/.config/lightxdm/no-autostart` (see Recovery below).
 - To enable TTY1 autologin, set up a systemd override for `agetty` on tty1 for your user:
 
 ### Example: Enable Autologin on TTY1 (systemd)
@@ -76,3 +77,17 @@ To inspect the saved configuration without sudo, run:
 bash enable-autologin.sh --status
 ```
 This prints `enabled for <user> (<file>)` for the lightXDM drop-in (or an accepted legacy `override.conf`), otherwise `disabled`. It warns about other drop-ins that enable autologin or override it with a later `ExecStart=`, and about PAM keyring unlock lines. It exits successfully without changing files or calling `systemctl`. The status describes the saved configuration; changes take effect at the next login or reboot.
+
+## Recovery
+
+If a broken desktop session keeps restarting on TTY1, run these commands as your user from another TTY or SSH:
+```sh
+mkdir -p ~/.config/lightxdm
+touch ~/.config/lightxdm/no-autostart
+```
+While the marker exists, the installed `.bash_profile` skips `startx` and loads `~/.bashrc`, giving you an interactive shell on the next TTY1 login. Other TTYs are unchanged, and no edit to `~/.bash_profile` is needed.
+
+To restore desktop auto-start at the next TTY1 login:
+```sh
+rm ~/.config/lightxdm/no-autostart
+```
