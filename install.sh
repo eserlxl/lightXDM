@@ -312,6 +312,15 @@ install_polkit_rule() {
   sudo install -Dm644 "$POLKIT_RULE_SRC" "$POLKIT_RULE_DEST"
 }
 
+# Record a display manager before disabling it
+record_and_disable_unit() {
+  local unit="$1"
+  if ! sudo grep -Fxq -- "$unit" "$DM_STATE_FILE" 2>/dev/null; then
+    printf '%s\n' "$unit" | sudo tee -a "$DM_STATE_FILE" > /dev/null || return
+  fi
+  sudo systemctl disable "$unit"
+}
+
 # Disable any installed display managers
 disable_display_managers() {
   log "Disabling any installed display managers..."
@@ -321,10 +330,7 @@ disable_display_managers() {
   for dm in "${DM_LIST[@]}"; do
     if systemctl list-unit-files | grep -q "${dm}.service"; then
       if [[ "$(systemctl is-enabled "${dm}.service" 2>/dev/null || true)" == "enabled" ]]; then
-        if ! sudo grep -Fxq -- "${dm}.service" "$DM_STATE_FILE" 2>/dev/null; then
-          printf '%s\n' "${dm}.service" | sudo tee -a "$DM_STATE_FILE" > /dev/null || return
-        fi
-        sudo systemctl disable "${dm}.service" || return
+        record_and_disable_unit "${dm}.service" || return
         disabled_dms+=("$dm")
       fi
     fi
@@ -333,18 +339,12 @@ disable_display_managers() {
     dm_unit="${dm_unit##*/}"
     dm="${dm_unit%.service}"
     if [[ " ${disabled_dms[*]} " != *" $dm "* ]] && [[ "$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)" == "enabled" ]]; then
-      if ! sudo grep -Fxq -- "$dm_unit" "$DM_STATE_FILE" 2>/dev/null; then
-        printf '%s\n' "$dm_unit" | sudo tee -a "$DM_STATE_FILE" > /dev/null || return
-      fi
-      sudo systemctl disable "$dm_unit" || return
+      record_and_disable_unit "$dm_unit" || return
       disabled_dms+=("$dm")
     fi
   fi
   if [[ " ${disabled_dms[*]} " != *" ly@tty1 "* ]] && [[ "$(systemctl is-enabled ly@tty1.service 2>/dev/null || true)" == "enabled" ]]; then
-    if ! sudo grep -Fxq -- "ly@tty1.service" "$DM_STATE_FILE" 2>/dev/null; then
-      printf '%s\n' "ly@tty1.service" | sudo tee -a "$DM_STATE_FILE" > /dev/null || return
-    fi
-    sudo systemctl disable "ly@tty1.service" || return
+    record_and_disable_unit "ly@tty1.service" || return
     disabled_dms+=("ly@tty1")
   fi
   if [[ ${#disabled_dms[@]} -gt 0 ]]; then
