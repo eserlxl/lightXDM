@@ -400,13 +400,13 @@ fi
 
 # Status runs directly, without unshare -r, so normal users exercise the read-only path.
 status_dir="$TMP_DIR/autologin_status"
-for status_case in disabled missing enabled legacy both foreign later kwallet gnome commented reset keyring-disabled foreign-keyring; do
+for status_case in disabled missing enabled legacy both foreign later kwallet gnome commented reset keyring-disabled foreign-keyring reset-legacy; do
   rm -rf "$status_dir"
   mkdir -p "$status_dir/getty.d"
   printf '# PAM login\n' >"$status_dir/login"
   expected_status="disabled"
   case "$status_case" in
-    enabled|both|later|kwallet|gnome|commented|reset)
+    enabled|both|later|kwallet|gnome|commented|reset|reset-legacy)
       # shellcheck disable=SC2016  # $TERM is literal systemd syntax
       printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin testuser --noclear %%I $TERM\n' >"$status_dir/getty.d/lightxdm-autologin.conf"
       expected_status="enabled for testuser ($status_dir/getty.d/lightxdm-autologin.conf)"
@@ -437,6 +437,13 @@ for status_case in disabled missing enabled legacy both foreign later kwallet gn
     foreign-keyring)
       printf '[Service]\nExecStart=\nExecStart=/usr/bin/agetty --autologin foreignuser tty1\n' >"$status_dir/getty.d/00-foreign.conf"
       printf 'auth optional pam_gnome_keyring.so\n' >"$status_dir/login"
+      ;;
+    reset-legacy)
+      # shellcheck disable=SC2016
+      printf 'ExecStart=\nExecStart=-/usr/bin/agetty --noclear %%I $TERM\n' >>"$status_dir/getty.d/lightxdm-autologin.conf"
+      # shellcheck disable=SC2016
+      printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin legacyuser --noclear %%I $TERM\n' >"$status_dir/getty.d/override.conf"
+      expected_status="enabled for legacyuser ($status_dir/getty.d/override.conf)"
       ;;
     keyring-disabled)
       printf 'auth optional pam_gnome_keyring.so\n' >"$status_dir/login"

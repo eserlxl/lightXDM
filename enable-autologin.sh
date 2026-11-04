@@ -43,7 +43,7 @@ show_status() {
       if [[ "$line" =~ $exec_re ]]; then
         status_file="$file"
         target_user="${BASH_REMATCH[1]}"
-        reset_file=""
+        [[ "$reset_file" == "$file" ]] && reset_file=""
       elif [[ "$line" =~ ^[[:space:]]*ExecStart[[:space:]]*= && "$status_file" == "$file" ]]; then
         # A later plain ExecStart in the same file replaces the autologin command.
         status_file=""
