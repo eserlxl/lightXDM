@@ -4937,6 +4937,19 @@ else
   fail ".bash_profile wayland-session over startx (status=$status, log=$actual_log, output=$output, stderr=$(cat "$profile_home/profile.err"))"
 fi
 
+# With the session-journal marker, systemd-cat wraps the selected ~/.wayland-session, not startx
+mkdir -p "$profile_home/.config/lightxdm"
+touch "$profile_home/.config/lightxdm/session-journal"
+rm -f "$profile_home/.config/lightxdm/no-autostart" "$profile_attempts"
+run_tty1_profile
+rm -f "$profile_home/.config/lightxdm/session-journal"
+if [[ $status -eq 0 && "$actual_log" == "systemd-cat|-t lightxdm $profile_home/.wayland-session"$'\n'"$profile_expected_wl" &&
+  -z "$output" && ! -s "$profile_home/profile.err" ]]; then
+  pass ".bash_profile runs ~/.wayland-session through systemd-cat when session-journal exists"
+else
+  fail ".bash_profile wayland-session journal (status=$status, log=$actual_log, output=$output, stderr=$(cat "$profile_home/profile.err"))"
+fi
+
 # Without startx on PATH, an executable ~/.wayland-session still launches
 mv "$profile_bin/startx" "$profile_bin/startx.off"
 rm -f "$profile_home/.config/lightxdm/no-autostart" "$profile_attempts"
