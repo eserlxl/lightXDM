@@ -10,5 +10,5 @@ lightXDM uses pam_kwallet5 to automatically unlock your KDE Wallet (KWallet) at 
 
 ## Troubleshooting
 - Make sure your wallet password matches your login password.
-- If you enable passwordless autologin (`enable-autologin.sh`), PAM does not receive a login password, so KWallet will stay locked and ask for its password in the desktop unless its password is empty.
+- If you enable passwordless autologin (`enable-autologin.sh`), PAM does not receive a login password, so KWallet will stay locked and ask for its password in the desktop unless its password is empty; to keep autologin, remove the keyring lines lightXDM added with `sudo bash uninstall.sh --keyring-only`.
 - If you use a custom PAM stack, adjust the `pam_kwallet5.so` lines in `/etc/pam.d/login` accordingly.
