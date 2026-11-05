@@ -35,6 +35,8 @@ You need Arch Linux (or a derivative) with systemd, and a user in the `wheel` gr
 
 - `--de <id>`: configure this desktop (`plasma`, `gnome`, `budgie`, `xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, `i3`, or a custom id with `--no-packages`)
 - `--list-packages --de <id>`: print the packages it would install, change nothing
+- `--dry-run --de <id>`: preview every change the install would make (dotfiles, packages, PAM, display managers), change nothing
+- `--non-interactive --de <id>`: for unattended installs, fail instead of prompting for sudo
 - `--no-packages`, `--no-keyring`: skip packages or PAM keyring setup
 - `--no-keyring --autologin`: log in on TTY1 without a password, in the same run
 - `--init-template --de <id>`: create `~/.config/lightxdm/.xinitrc-<id>` (or `.wayland-session-<id>` for Plasma, GNOME, and Budgie) to edit first (no sudo)
