@@ -14,13 +14,13 @@ Polkit (PolicyKit) is a framework for defining and handling **authorization** fo
 
 ...these actions are controlled by `polkit` rules.
 
-In systems with no display manager (like SDDM or GDM), some polkit agents and privileges may not work unless explicitly enabled. `lightXDM` solves this by manually starting a polkit agent and installing scoped rules.
+Without a display manager nothing else starts the desktop's authentication agent, so lightXDM makes sure one runs; power actions are allowed by systemd's own policy in an active local session, and lightXDM adds a rule that keeps them allowed (next section).
 
 ---
 
 ## 🔒 The Default Polkit Rule (Hybrid: Secure & Usable)
 
-By default, `lightXDM` now installs a hybrid rule at (pass `--no-polkit-rule` to `install.sh` to keep your existing policy instead; packages and the desktop's authentication agent are still set up):
+By default, `lightXDM` now installs a hybrid rule at (pass `--no-polkit-rule` to `install.sh` to keep the system's own policy instead; packages and the desktop's authentication agent are still set up):
 
 ```
 /etc/polkit-1/rules.d/49-nopasswd.rules
@@ -58,7 +58,7 @@ polkit.addRule(function(action, subject) {
 
 ### ✅ What this allows:
 
-* **Shutdown, reboot, suspend, hibernate** from the GUI for local, active users in the `wheel` group on seat0 (no password required), including while other sessions (SSH, another tty) are open
+* **Shutdown, reboot, suspend, hibernate** from the GUI: systemd's defaults already allow these actions (including while other sessions are open) for active local sessions; the rule keeps them allowed without a password for local, active users in the `wheel` group on seat0 if those defaults are tightened later (by changed action defaults or a rule that sorts after `49-nopasswd.rules`)
 * **Mounting removable drives** (`udisks2` defaults) and **power management** (`UPower` defaults) for active local users without overriding upstream policies
 
 ### ❌ What it doesn't allow:
@@ -68,7 +68,7 @@ polkit.addRule(function(action, subject) {
 * Actions from unknown services
 * Remote or inactive users, or sessions on other seats, to shutdown/reboot/suspend
 
-This hybrid rule balances usability and security: trusted local users can power off or reboot without a password, but other privileged actions still require authentication.
+This hybrid rule balances usability and security: systemd already allows power actions for active local sessions and the rule keeps them allowed for local active wheel users on seat0 if those defaults are tightened later, but other privileged actions still require authentication.
 
 > **Note:** The correct polkit agent is installed automatically for your desktop environment:
 > - Plasma: polkit-kde-agent

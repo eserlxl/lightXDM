@@ -5,7 +5,7 @@ Why lightXDM exists and what it sets up for each desktop.
 ## Purpose & Target Users
 - **Minimal RAM/boot time**: No display manager, no bloat, just your DE.
 - **Session auto-start, with Keyring auto-unlock or optional Autologin**: Choose between password login on TTY1 with automatic keyring unlock via PAM (default) or passwordless TTY1 autologin via `enable-autologin.sh` across KDE Plasma, GNOME, and Budgie (Wayland), plus XFCE, LXQt, LXDE, MATE, Cinnamon, and i3 (X11).
-- **Full Polkit & PAM integration**: `udisks2` defaults for USB mounting, passwordless power actions for local active `wheel` users on seat0, and PAM keyring unlock.
+- **Full Polkit & PAM integration**: `udisks2` defaults for USB mounting, keeping passwordless power actions for local active `wheel` users on seat0 (systemd's default), and PAM keyring unlock.
 - **Systemd compatible**: Works on Arch Linux and derivatives.
 
 **Target users:**
@@ -37,7 +37,7 @@ lightXDM has recently expanded to support many desktop environments and improved
 - **Auto-Start on TTY1:** After login on TTY1, your desktop environment starts automatically—no need to run `startx` manually. Optional passwordless autologin is available via `enable-autologin.sh` (with the trade-off that the keyring cannot unlock automatically unless its password is empty).
 
 ### System Integration
-- **Polkit & PAM:** The installer installs a Polkit rule granting passwordless power-off, reboot, suspend, and hibernate to local active `wheel` users on seat0 (leaving USB mounting to `udisks2` defaults), and appends PAM lines to `/etc/pam.d/login` (with a one-time backup `/etc/pam.d/login.lightxdm.bak`; `uninstall.sh` removes only the lines lightXDM added and keeps the backup for review if you changed anything else) for keyring auto-unlock (`pam_kwallet5.so` on Plasma, `pam_gnome_keyring.so` elsewhere).
+- **Polkit & PAM:** Systemd already allows power actions for active local sessions; the installer installs a Polkit rule that keeps power-off, reboot, suspend, and hibernate allowed for local active `wheel` users on seat0 if those defaults are tightened later (leaving USB mounting to `udisks2` defaults), and appends PAM lines to `/etc/pam.d/login` (with a one-time backup `/etc/pam.d/login.lightxdm.bak`; `uninstall.sh` removes only the lines lightXDM added and keeps the backup for review if you changed anything else) for keyring auto-unlock (`pam_kwallet5.so` on Plasma, `pam_gnome_keyring.so` elsewhere).
 - **GNOME session type:** A separate PAM block in `/etc/pam.d/login` reads `/etc/lightxdm/gnome-session-type.conf` to register a Wayland login only for the installing user on TTY1, including with `--no-keyring`. Installing another desktop or uninstalling removes it and the config; `--keyring-only` keeps them. See [the block and its purpose](installation.md#gnome-session-requirements).
 - **GPG Agent Integration**: Starts `gpg-agent` at session startup, points `SSH_AUTH_SOCK` at it when `enable-ssh-support` is set in `~/.gnupg/gpg-agent.conf`, and refreshes its startup tty (see [gpg-agent.md](gpg-agent.md) for optional keyring-backed `pinentry` setup).
 - **Documentation:** See the `docs/` directory for technical details on KWallet auto-unlock, Polkit integration, and autologin setup.
@@ -58,7 +58,7 @@ lightXDM has recently expanded to support many desktop environments and improved
 | No DE installed                | Prompts user, installs selected DE                                |
 | Display manager free           | disables SDDM, LightDM, GDM, LXDM, ly@tty1 and the display-manager.service unit |
 | Auto-start & optional autologin| TTY1 auto-start via `.bash_profile` (`~/.xinitrc` or `~/.wayland-session`); optional autologin via `enable-autologin.sh` |
-| Polkit integration             | passwordless power-off/reboot/suspend/hibernate for local active `wheel` users on seat0, `udisks2` defaults for USB, correct agent for each DE |
+| Polkit integration             | keeps passwordless power actions for local active wheel users on seat0 (systemd's default), `udisks2` defaults for USB, correct agent for each DE |
 | PAM integration                | appends `pam_kwallet5.so` (Plasma) or `pam_gnome_keyring.so` to `/etc/pam.d/login` with one-time backup |
 | GPG Agent Integration          | starts `gpg-agent`, sets `SSH_AUTH_SOCK` when `enable-ssh-support` is set, and refreshes its tty via `~/.gpg-agent-kwallet` (Plasma) or `~/.gpg-agent-gnome` |
 | Documentation                  | `README.md`, `docs/`                                        |
