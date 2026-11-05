@@ -1,18 +1,20 @@
-# Autologin on TTY1 with startx
+# Autologin on TTY1 with startx or Wayland
 
 lightXDM provides a display-manager-free autologin experience by:
 - Logging in to TTY1 (via systemd or getty autologin)
-- Using `.bash_profile` to auto-launch the desktop only on TTY1: `~/.wayland-session` when it is executable (Plasma on Wayland), otherwise `startx`
+- Using `.bash_profile` to auto-launch the desktop only on TTY1: `~/.wayland-session` when it is executable (Plasma, GNOME, and Budgie on Wayland), otherwise `startx`
 
 ## How it works
-- If you log in on TTY1 (an interactive login shell), `.bash_profile` runs `~/.wayland-session` or `startx` automatically (never from inside an X11 or Wayland session). Non-interactive login shells such as `su - user -c cmd` on TTY1 run their command and do not start X.
+- If you log in on TTY1 (an interactive login shell), `.bash_profile` runs `~/.wayland-session` or `startx` automatically (never from inside an X11 or Wayland session). Non-interactive login shells such as `su - user -c cmd` on TTY1 run their command and do not start a desktop.
 - No graphical login screen, no display manager needed.
 - You get a full desktop environment session with minimal RAM and boot time.
+
+GNOME also needs the installer's [session-type PAM block](installation.md#gnome-session-requirements), which applies only to the installing user on TTY1, including with `--no-keyring`. GNOME cannot lock the screen without GDM.
 
 ## Keyring Unlock Trade-Off
 - **Default mode (password login on TTY1):** You type your password on TTY1, your desktop starts automatically, and PAM unlocks your keyring (KWallet on Plasma, GNOME Keyring on the other supported desktops) using that password.
 - **Autologin mode (`agetty --autologin`):** Login happens without a password, so the PAM keyring module cannot unlock your keyring automatically. The keyring stays locked and asks for its password in the desktop unless its password is empty (`enable-autologin.sh` prints a warning when PAM keyring unlock is configured).
-- **Choosing autologin without keyring unlock:** on a new install, `bash install.sh --no-keyring --autologin` skips the keyring setup and enables autologin in the same run. On an existing default install, `sudo bash uninstall.sh --keyring-only` removes only the keyring lines lightXDM added to `/etc/pam.d/login`; then run `sudo bash enable-autologin.sh YOURUSER`.
+- **Choosing autologin without keyring unlock:** on a new install, `bash install.sh --no-keyring --autologin` skips the keyring setup and enables autologin in the same run. On an existing default install, `sudo bash uninstall.sh --keyring-only` removes only the keyring lines lightXDM added to `/etc/pam.d/login`, keeping GNOME's session-type block and config; then run `sudo bash enable-autologin.sh YOURUSER`.
 
 ## zsh and fish users
 The installer only writes `~/.bash_profile`. If your login shell is zsh or fish, add the equivalent block yourself (the installer warns you when this applies). These snippets honor the `~/.config/lightxdm/no-autostart` marker (see Recovery below), but only the Bash profile pauses auto-start on its own after repeated crashes.
@@ -40,7 +42,7 @@ end
 ```
 
 ## Setup
-- The installer copies `.bash_profile` and `.xinitrc` (or `.wayland-session` for Plasma) to your home.
+- The installer copies `.bash_profile` and `.xinitrc` (or `.wayland-session` for Plasma, GNOME, and Budgie) to your home. Installing an X11 desktop moves any `.wayland-session` aside and removes it so `startx` can run; uninstall restores the original backup. See [session files and backups](installation.md#session-files-and-backups).
 - With the installed Bash profile, you can keep autologin enabled and temporarily skip the desktop using `~/.config/lightxdm/no-autostart` (see Recovery below).
 - To enable TTY1 autologin, set up a systemd override for `agetty` on tty1 for your user:
 

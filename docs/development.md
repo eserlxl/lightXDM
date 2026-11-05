@@ -21,19 +21,24 @@ lightXDM/
 │   ├── .gpg-agent-gnome
 │   ├── .gpg-agent-kwallet
 │   ├── .wayland-session-plasma
-│   ├── .xinitrc-gnome
+│   ├── .wayland-session-gnome
+│   ├── .wayland-session-budgie
 │   ├── .xinitrc-xfce
 │   ├── .xinitrc-lxqt
 │   ├── .xinitrc-lxde
 │   ├── .xinitrc-mate
 │   ├── .xinitrc-cinnamon
-│   ├── .xinitrc-budgie
 │   ├── .xinitrc-i3
 │   └── .bash_profile
+├── pam/
+│   └── gnome-session-type.conf
 ├── polkit/
 │   └── 49-nopasswd.rules
 ├── docs/
+│   ├── development.md
+│   ├── features.md
 │   ├── gpg-agent.md
+│   ├── installation.md
 │   ├── kwallet-autounlock.md
 │   ├── polkit-support.md
 │   └── startx-autologin.md

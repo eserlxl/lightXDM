@@ -698,7 +698,7 @@ main() {
         cat <<'EOF'
 
 Sets up a desktop from a TTY1 login instead of a display manager: X11 desktops start with startx and Plasma, GNOME and Budgie start on Wayland.
-A default run, as your regular user (it asks for sudo once):
+A default run, as your regular user, asks for your sudo password up front (again only if the package download outlasts sudo's timeout):
   - installs the packages for the desktop (detected, chosen from a menu, or --de)
   - copies ~/.bash_profile and ~/.xinitrc (or ~/.wayland-session for Plasma, GNOME and Budgie), backing up or saving any existing copies
   - appends keyring unlock lines to /etc/pam.d/login (backup at /etc/pam.d/login.lightxdm.bak)

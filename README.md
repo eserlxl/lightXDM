@@ -3,7 +3,7 @@
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![Platform: Arch Linux](https://img.shields.io/badge/platform-Arch%20Linux-1793d1.svg)](https://archlinux.org)
 
-A lightweight, display-manager-free desktop environment for minimalists, Arch Linux users, and those who prefer a TTY1 login over SDDM/LightDM: X11 desktops start with `startx`, and KDE Plasma starts on Wayland. Log in on TTY1 and your desktop starts; the installer sets up keyring unlock through PAM, a Polkit rule for power actions, and turns off display managers. `uninstall.sh` reverts these configuration changes; the packages it installed stay.
+A lightweight, display-manager-free desktop environment for minimalists, Arch Linux users, and those who prefer a TTY1 login over SDDM/LightDM: X11 desktops start with `startx`; KDE Plasma, GNOME, and Budgie start on Wayland. Log in on TTY1 and your desktop starts; the installer sets up keyring unlock through PAM, a Polkit rule for power actions, and turns off display managers. `uninstall.sh` reverts these configuration changes; the packages it installed stay.
 
 ## Contents
 
@@ -22,8 +22,10 @@ A lightweight, display-manager-free desktop environment for minimalists, Arch Li
 ```sh
 git clone https://github.com/eserlxl/lightXDM.git
 cd lightXDM
-bash install.sh   # as your regular user, not root; it asks for sudo once
+bash install.sh   # as your regular user, not root
 ```
+
+It asks for your sudo password up front (again only if the package download outlasts sudo's timeout).
 
 Reboot (or log out), log in on TTY1, and your desktop starts automatically.
 
@@ -31,11 +33,11 @@ Reboot (or log out), log in on TTY1, and your desktop starts automatically.
 
 You need Arch Linux (or a derivative) with systemd, and a user in the `wheel` group with working `sudo`. Without options, the installer detects your desktop (or asks which one to install). The common options:
 
-- `--de <id>`: configure this desktop (`plasma`, `xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, `i3`, or a custom id with `--no-packages`)
+- `--de <id>`: configure this desktop (`plasma`, `gnome`, `budgie`, `xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, `i3`, or a custom id with `--no-packages`)
 - `--list-packages --de <id>`: print the packages it would install, change nothing
 - `--no-packages`, `--no-keyring`, `--no-polkit-rule`: skip packages, PAM keyring setup, or the Polkit rule
 - `--no-keyring --autologin`: log in on TTY1 without a password, in the same run
-- `--init-template --de <id>`: create `~/.config/lightxdm/.xinitrc-<id>` to edit first (no sudo)
+- `--init-template --de <id>`: create `~/.config/lightxdm/.xinitrc-<id>` (or `.wayland-session-<id>` for Wayland desktops) to edit first (no sudo)
 
 `bash install.sh --help` lists every option. [docs/installation.md](docs/installation.md) explains each step and option in full.
 
@@ -44,11 +46,13 @@ You need Arch Linux (or a derivative) with systemd, and a user in the `wheel` gr
 | Desktop | Starts with | Keyring unlocked by PAM | Polkit agent |
 |---|---|---|---|
 | KDE Plasma (`plasma`) | Wayland, through `~/.wayland-session` | KWallet | polkit-kde-agent |
+| GNOME (`gnome`) | Wayland, through `~/.wayland-session`; **no screen lock without GDM** | GNOME Keyring | polkit-gnome |
+| Budgie (`budgie`) | Wayland, through `~/.wayland-session` | GNOME Keyring | polkit-gnome |
 | XFCE, LXDE, MATE, Cinnamon, i3 | `startx`, through `~/.xinitrc` | GNOME Keyring | polkit-gnome |
 | LXQt (`lxqt`) | `startx`, through `~/.xinitrc` | GNOME Keyring | lxqt-policykit |
 | Your own window manager | `startx`, with your template and `--no-packages` | GNOME Keyring (or `--no-keyring`) | your choice |
 
-GNOME and Budgie now run only on Wayland on Arch Linux and are not supported yet (Wayland support for them is planned): the installer refuses them before changing anything.
+Wayland desktops do not install `xorg-server` or `xorg-xinit`. See [GNOME session requirements](docs/installation.md#gnome-session-requirements) before choosing GNOME.
 
 ## Login modes
 
@@ -56,6 +60,8 @@ GNOME and Budgie now run only on Wayland on Arch Linux and are not supported yet
 2. **Autologin:** `sudo bash enable-autologin.sh YOURUSER` (or `bash install.sh --no-keyring --autologin`) logs you in without a password, so the keyring cannot unlock automatically. See [docs/startx-autologin.md](docs/startx-autologin.md).
 
 ## Before you install
+
+**GNOME cannot lock the screen without GDM.** It shows “Screen Lock disabled — Screen Locking requires the GNOME display manager”. lightXDM disables GDM along with other display managers.
 
 > **Important:**
 > - **Do NOT run `install.sh` as root or with `sudo`.** Run it as your regular user. The script will use `sudo` internally when needed.
@@ -66,9 +72,10 @@ What the installer changes outside your home, so nothing comes as a surprise:
 
 - It **disables enabled display managers** (SDDM, LightDM, GDM, LXDM, `ly@tty1`, and whatever `display-manager.service` points to), so the next boot ends at a TTY1 login. `uninstall.sh` re-enables them.
 - It **appends keyring lines to `/etc/pam.d/login`** (backup at `/etc/pam.d/login.lightxdm.bak`) unless you pass `--no-keyring`.
+- For **GNOME only**, it inserts a PAM block before the first session line in `/etc/pam.d/login`, using `/etc/lightxdm/gnome-session-type.conf` to register a Wayland session **only for the installing user on TTY1**, including with `--no-keyring`. Installing another desktop or running `uninstall.sh` removes the block and config; `uninstall.sh --keyring-only` keeps them. See [why GNOME needs this](docs/installation.md#gnome-session-requirements).
 - It installs `/etc/polkit-1/rules.d/49-nopasswd.rules`, which lets local active `wheel` users on seat0 **power off, reboot, suspend and hibernate without a password**, unless you pass `--no-polkit-rule`.
 
-In your home it replaces `~/.bash_profile` and `~/.xinitrc` (or `~/.wayland-session` for Plasma), keeping your copies as `*.lightxdm.bak`. An executable `~/.wayland-session` takes precedence over `startx` at login. If your desktop keeps crashing, TTY1 auto-start pauses itself; see [Recovery](docs/startx-autologin.md#recovery).
+In your home it replaces `~/.bash_profile` and `~/.xinitrc` (or `~/.wayland-session` for Plasma, GNOME, and Budgie), keeping your copies as `*.lightxdm.bak`. An executable `~/.wayland-session` takes precedence over `startx`; installing an X11 desktop moves it aside and removes it, and uninstall restores it. See [session backups](docs/installation.md#session-files-and-backups). If your desktop keeps crashing, TTY1 auto-start pauses itself; see [Recovery](docs/startx-autologin.md#recovery).
 
 ## Uninstall
 
