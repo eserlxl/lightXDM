@@ -95,6 +95,8 @@ def wait_ssh(limit=300):
 class Qmp:
     def __init__(self, path):
         self.s = socket.socket(socket.AF_UNIX)
+        # A monitor that stops answering must raise into main's handler, not hang the run.
+        self.s.settimeout(60)
         self.s.connect(path)
         self.f = self.s.makefile("rwb")
         self.f.readline()
