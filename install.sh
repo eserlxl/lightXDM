@@ -766,7 +766,7 @@ enable_autologin() {
 disable_display_managers() {
   log "Disabling any installed display managers..."
   sudo mkdir -p "$(dirname -- "$DM_STATE_FILE")"
-  local dm dm_unit
+  local dm dm_unit recorded_units
   local disabled_dms=()
   for dm in "${DM_LIST[@]}"; do
     if systemctl list-unit-files | grep -q "${dm}.service"; then
@@ -795,14 +795,13 @@ disable_display_managers() {
   else
     log "No enabled display managers found."
   fi
-  if [[ -f "$DM_STATE_FILE" ]]; then
-    while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
-      if [[ -n "$dm_unit" ]] && systemctl is-active --quiet "$dm_unit"; then
-        display_manager_disabled=1
-        break
-      fi
-    done <"$DM_STATE_FILE"
-  fi
+  recorded_units="$(sudo cat -- "$DM_STATE_FILE" 2>/dev/null)" || recorded_units=""
+  while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
+    if [[ -n "$dm_unit" ]] && systemctl is-active --quiet "$dm_unit"; then
+      display_manager_disabled=1
+      break
+    fi
+  done <<<"$recorded_units"
 }
 
 # --- Main ---

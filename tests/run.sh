@@ -2506,6 +2506,37 @@ for dm_active in 1 0; do
   fi
 done
 
+# A recorded unit remains detectable when only sudo can read the state file.
+if [[ $EUID -eq 0 ]]; then
+  skip "disable_display_managers reads a protected state file (running as root)"
+elif [[ $can_unshare -eq 0 ]]; then
+  skip "disable_display_managers reads a protected state file (unshare -r unavailable)"
+else
+  dm_protected_dir="$TMP_DIR/dm_protected"
+  dm_protected_stub_dir="$TMP_DIR/dm_protected_bin"
+  mkdir -p "$dm_protected_dir" "$dm_protected_stub_dir"
+  printf '%s\n' sddm.service >"$dm_protected_dir/state"
+  chmod 000 "$dm_protected_dir/state"
+  cat >"$dm_protected_stub_dir/sudo" <<'EOF'
+#!/usr/bin/env bash
+exec unshare -r "$@"
+EOF
+  chmod +x "$dm_protected_stub_dir/sudo"
+  set +e
+  # shellcheck disable=SC2016  # expand inside the child shell
+  output="$(env PATH="$dm_protected_stub_dir:$dm_rerun_stub_dir:$PATH" STUB_DM_ACTIVE=1 DM_STATE_FILE="$dm_protected_dir/state" \
+    bash -c 'source "$1/install.sh" && display_manager_disabled=0 && disable_display_managers 2>&1 &&
+      echo "display_manager_disabled=$display_manager_disabled"' bash "$REPO_ROOT")"
+  status=$?
+  set -e
+  chmod 600 "$dm_protected_dir/state"
+  if [[ $status -eq 0 && "$output" == *"display_manager_disabled=1"* ]]; then
+    pass "disable_display_managers reads a protected state file"
+  else
+    fail "disable_display_managers protected state file (status=$status, output=$output)"
+  fi
+fi
+
 # State write failures must prevent disabling units through either path.
 dm_readonly_dir="$TMP_DIR/dm_readonly"
 mkdir -p "$dm_readonly_dir"
