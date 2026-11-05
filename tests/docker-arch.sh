@@ -6,10 +6,32 @@ set -euo pipefail
 
 REPO_ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if [[ "${1:-}" != "--in-container" ]]; then
+usage() {
+  cat <<EOF
+Usage: bash $0 [-h|--help] [--strict]
+Run package list and real PAM checks in an Arch Linux Docker container.
+--strict fails on SKIP (also enabled by LIGHTXDM_STRICT_TESTS=1).
+EOF
+}
+
+strict=0
+in_container=0
+if [[ "${LIGHTXDM_STRICT_TESTS:-0}" == "1" ]]; then
+  strict=1
+fi
+for arg in "$@"; do
+  case "$arg" in
+    -h | --help) usage; exit 0 ;;
+    --strict) strict=1 ;;
+    --in-container) in_container=1 ;;
+    *) echo "Unknown argument: $arg" >&2; usage >&2; exit 1 ;;
+  esac
+done
+
+if [[ $in_container -eq 0 ]]; then
   if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
     echo "SKIP: docker is unavailable"
-    exit 0
+    exit "$strict"
   fi
 
   if ! docker run --rm -v "$REPO_ROOT:/repo:ro" archlinux:latest bash /repo/tests/docker-arch.sh --in-container; then

@@ -10,7 +10,7 @@ JOBS="${LIGHTXDM_VM_JOBS:-2}"
 
 usage() {
   cat <<EOF
-Usage: bash $0 [-h|--help] [desktop | <from>:<to> | <desktop>+autologin | <desktop>+lightdm | <desktop>+relogin ...]   (default: plasma xfce)
+Usage: bash $0 [-h|--help] [--strict] [desktop | <from>:<to> | <desktop>+autologin | <desktop>+lightdm | <desktop>+relogin ...]   (default: plasma xfce)
 
 Builds an Arch Linux VM image in Docker (once per package set), then for each desktop boots a
 VM, runs install.sh --de <desktop> as a test user, reboots, types the password at the TTY1
@@ -20,6 +20,7 @@ An argument <desktop>+autologin installs with --no-keyring --autologin and boots
 An argument <desktop>+lightdm checks that install.sh disables LightDM and uninstall.sh restores it after both logins.
 An argument <desktop>+relogin logs out and back in on TTY1 in the same boot instead of rebooting for the second login.
 Prints one PASS/FAIL line per check; exits 1 if any check fails, 0 with SKIP if a tool is missing.
+--strict exits 1 on any SKIP (also enabled by LIGHTXDM_STRICT_TESTS=1).
 
 Environment:
   LIGHTXDM_VM_DIR   image, cache and logs (default: \${XDG_CACHE_HOME:-~/.cache}/lightxdm-vm)
@@ -42,8 +43,16 @@ is_mode() {
   esac
 }
 
+strict=0
+if [[ "${LIGHTXDM_STRICT_TESTS:-0}" == "1" ]]; then
+  strict=1
+fi
 desktops=()
 for arg in "$@"; do
+  if [[ "$arg" == "--strict" ]]; then
+    strict=1
+    continue
+  fi
   for desktop in "${desktops[@]}"; do
     if [[ "$arg" == "$desktop" ]]; then
       echo "Duplicate desktop: $arg" >&2; usage >&2; exit 1
@@ -84,16 +93,16 @@ fi
 for tool in docker qemu-system-x86_64 python3 ssh ssh-keygen git tar; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "SKIP: $tool is unavailable"
-    exit 0
+    exit "$strict"
   fi
 done
 if ! docker info >/dev/null 2>&1; then
   echo "SKIP: docker is unavailable"
-  exit 0
+  exit "$strict"
 fi
 if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
   echo "SKIP: /dev/kvm is not accessible"
-  exit 0
+  exit "$strict"
 fi
 
 mkdir -p "$VM_DIR/pkgcache"

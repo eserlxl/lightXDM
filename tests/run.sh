@@ -7868,4 +7868,48 @@ else
   fail "qemu-arch.sh duplicate desktop (status=$status, stdout=$output, stderr=$(cat "$TMP_DIR/qemu-duplicate-stderr"))"
 fi
 
+# Missing integration prerequisites skip by default and fail in strict mode.
+strict_int_dir="$TMP_DIR/strict_int"
+mkdir -p "$strict_int_dir/bin"
+cat >"$strict_int_dir/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+echo "docker $*" >>"$STRICT_INT_DOCKER_LOG"
+exit 1
+EOF
+chmod +x "$strict_int_dir/bin/docker"
+strict_int_env=(env PATH="$strict_int_dir/bin:$PATH" LIGHTXDM_VM_DIR="$strict_int_dir/vm"
+  STRICT_INT_DOCKER_LOG="$strict_int_dir/docker.log")
+
+set +e
+strict_default_output="$("${strict_int_env[@]}" bash "$REPO_ROOT/tests/docker-arch.sh" 2>&1)"
+strict_default_status=$?
+strict_flag_output="$("${strict_int_env[@]}" bash "$REPO_ROOT/tests/docker-arch.sh" --strict 2>&1)"
+strict_flag_status=$?
+strict_env_output="$("${strict_int_env[@]}" LIGHTXDM_STRICT_TESTS=1 bash "$REPO_ROOT/tests/docker-arch.sh" 2>&1)"
+strict_env_status=$?
+rm -f "$strict_int_dir/docker.log"
+strict_help_output="$("${strict_int_env[@]}" bash "$REPO_ROOT/tests/docker-arch.sh" --help 2>&1)"
+strict_help_status=$?
+strict_help_no_docker=0
+[[ ! -e "$strict_int_dir/docker.log" ]] && strict_help_no_docker=1
+strict_unknown_output="$("${strict_int_env[@]}" bash "$REPO_ROOT/tests/docker-arch.sh" --bogus 2>&1)"
+strict_unknown_status=$?
+strict_unknown_no_docker=0
+[[ ! -e "$strict_int_dir/docker.log" ]] && strict_unknown_no_docker=1
+strict_qemu_output="$("${strict_int_env[@]}" bash "$REPO_ROOT/tests/qemu-arch.sh" --strict xfce 2>&1)"
+strict_qemu_status=$?
+set -e
+if [[ $strict_default_status -eq 0 && "$strict_default_output" == *"SKIP: docker is unavailable"* &&
+  $strict_flag_status -eq 1 && "$strict_flag_output" == *"SKIP: docker is unavailable"* &&
+  $strict_env_status -eq 1 && "$strict_env_output" == *"SKIP: docker is unavailable"* &&
+  $strict_help_status -eq 0 && "$strict_help_output" == *"Usage"* && $strict_help_no_docker -eq 1 &&
+  $strict_unknown_status -eq 1 && "$strict_unknown_output" == *"Unknown argument: --bogus"* &&
+  "$strict_unknown_output" == *"Usage"* && $strict_unknown_no_docker -eq 1 &&
+  $strict_qemu_status -eq 1 && "$strict_qemu_output" == *"SKIP: "* &&
+  "$strict_qemu_output" != *"Unknown desktop"* ]]; then
+  pass "Docker and QEMU strict mode fails on skips; Docker help and unknown arguments avoid Docker"
+else
+  fail "Integration strict mode (default=$strict_default_status: $strict_default_output; flag=$strict_flag_status: $strict_flag_output; env=$strict_env_status: $strict_env_output; help=$strict_help_status, no Docker=$strict_help_no_docker: $strict_help_output; unknown=$strict_unknown_status, no Docker=$strict_unknown_no_docker: $strict_unknown_output; qemu=$strict_qemu_status: $strict_qemu_output)"
+fi
+
 finish_harness
