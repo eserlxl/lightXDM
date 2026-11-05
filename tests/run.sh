@@ -2600,7 +2600,9 @@ else
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
-  if [[ $status -eq 0 && ! -e "$DM_STATE_FILE" && "$log_content" == 'systemctl enable sddm.service' ]]; then
+  if [[ $status -eq 0 && ! -e "$DM_STATE_FILE" && "$log_content" == 'systemctl enable sddm.service' &&
+    "$output" == *"Uninstall complete. Reboot to return to sddm.service: they are enabled for the next boot, not started now."* &&
+    "$output" != *"Changes will take effect at the next login or reboot."* ]]; then
     pass "uninstall.sh enables only recorded display managers and removes state"
   else
     fail "uninstall.sh display manager restore (status=$status, log=$log_content, output=$output)"
@@ -2611,7 +2613,9 @@ else
   output="$(env TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" OVERRIDE_DIR="$TMP_DIR/dm_getty.d" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
-  if [[ $status -eq 0 && ! -s "$STUB_LOG" ]]; then
+  if [[ $status -eq 0 && ! -s "$STUB_LOG" &&
+    "$output" == *"Uninstall complete. Changes will take effect at the next login or reboot."* &&
+    "$output" != *"Reboot to return to"* ]]; then
     pass "uninstall.sh enables nothing when display manager state is absent"
   else
     fail "uninstall.sh missing display manager state (status=$status, output=$output)"

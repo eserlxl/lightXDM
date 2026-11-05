@@ -324,11 +324,14 @@ if [[ ! -L "$attempts_dir" && -f "$attempts_dir/startx-attempts" && ! -L "$attem
 fi
 
 # Re-enable only display managers disabled by the installer
+re_enabled=()
 if [[ -f "$DM_STATE_FILE" ]]; then
   failed=()
   while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
     [[ -n "$dm_unit" ]] || continue
-    if ! systemctl enable "$dm_unit"; then
+    if systemctl enable "$dm_unit"; then
+      re_enabled+=("$dm_unit")
+    else
       # A unit removed or masked since install cannot be re-enabled; do not block uninstall on it.
       case "$(systemctl is-enabled "$dm_unit" 2>/dev/null)" in
         not-found) echo "Warning: $dm_unit is not installed any more; skipping it." >&2 ;;
@@ -348,4 +351,8 @@ fi
 # install.sh creates the state directory even when it disables nothing.
 rmdir --ignore-fail-on-non-empty "$(dirname -- "$DM_STATE_FILE")" 2>/dev/null || true
 
-echo "Uninstall complete. Changes will take effect at the next login or reboot."
+if [[ ${#re_enabled[@]} -gt 0 ]]; then
+  echo "Uninstall complete. Reboot to return to ${re_enabled[*]}: they are enabled for the next boot, not started now."
+else
+  echo "Uninstall complete. Changes will take effect at the next login or reboot."
+fi
