@@ -233,6 +233,26 @@ else
   echo "No Polkit rule found; skipping."
 fi
 
+# True when $1 is a regular file equal to any version of the bundled template for home dotfile $2
+# in this checkout's git history (a file an older lightXDM installed); false without .git or git.
+is_past_lightxdm_template() {
+  local file="$1" pathspec blob history
+  case "$2" in
+    .bash_profile) pathspec='dotfiles/.bash_profile' ;;
+    .xinitrc) pathspec='dotfiles/.xinitrc*' ;;
+    .wayland-session) pathspec='dotfiles/.wayland-session-*' ;;
+    .gpg-agent-*) pathspec='dotfiles/.gpg-agent-*' ;;
+    *) return 1 ;;
+  esac
+  [[ -f "$file" && ! -L "$file" && -e "$SCRIPT_DIR/.git" ]] || return 1
+  command -v git >/dev/null || return 1
+  # safe.directory: uninstall.sh runs as root on a clone the user owns.
+  blob="$(git -c safe.directory="$SCRIPT_DIR" -C "$SCRIPT_DIR" hash-object --no-filters --stdin <"$file" 2>/dev/null)" || return 1
+  history="$(git -c safe.directory="$SCRIPT_DIR" -C "$SCRIPT_DIR" log --format= --raw --no-abbrev -- "$pathspec" 2>/dev/null)" || return 1
+  # Raw lines read ":<mode> <mode> <old-blob> <new-blob> <status>\t<path>".
+  [[ -n "$blob" && "$history" == *" $blob "* ]]
+}
+
 # Restore or remove user dotfiles
 matches_lightxdm_template() {
   local dotfile="$1"
@@ -244,10 +264,7 @@ matches_lightxdm_template() {
   local templates=()
   case "$dotfile" in
     .bash_profile | .gpg-agent-gnome | .gpg-agent-kwallet)
-      if [[ -f "$SCRIPT_DIR/dotfiles/$dotfile" ]] && files_match "$path" "$SCRIPT_DIR/dotfiles/$dotfile"; then
-        return 0
-      fi
-      return 1
+      templates=("$SCRIPT_DIR/dotfiles/$dotfile")
       ;;
     .wayland-session)
       templates=("$SCRIPT_DIR"/dotfiles/.wayland-session-*)
@@ -269,10 +286,18 @@ matches_lightxdm_template() {
       return 0
     fi
   done
-  return 1
+  is_past_lightxdm_template "$path" "$dotfile"
 }
 
 for dotfile in .bash_profile .xinitrc .wayland-session .gpg-agent-kwallet .gpg-agent-gnome; do
+  past_backup=0
+  # A backup equal to an older bundled template is a lightXDM file an earlier install backed up
+  # as the user's original: drop it and treat the dotfile as one lightXDM created.
+  if is_past_lightxdm_template "$TARGET_HOME/${dotfile}.lightxdm.bak" "$dotfile"; then
+    echo "Removing $TARGET_HOME/${dotfile}.lightxdm.bak (a file from an earlier lightXDM version)..."
+    rm -f -- "$TARGET_HOME/${dotfile}.lightxdm.bak"
+    past_backup=1
+  fi
   if [[ -e "$TARGET_HOME/${dotfile}.lightxdm.bak" || -L "$TARGET_HOME/${dotfile}.lightxdm.bak" ]]; then
     if [[ -e "$TARGET_HOME/$dotfile" || -L "$TARGET_HOME/$dotfile" ]]; then
       if matches_lightxdm_template "$dotfile"; then
@@ -284,7 +309,7 @@ for dotfile in .bash_profile .xinitrc .wayland-session .gpg-agent-kwallet .gpg-a
     echo "Restoring $TARGET_HOME/$dotfile from backup..."
     mv -- "$TARGET_HOME/${dotfile}.lightxdm.bak" "$TARGET_HOME/$dotfile"
     rm -f -- "$TARGET_HOME/${dotfile}.lightxdm.absent"
-  elif [[ -e "$TARGET_HOME/${dotfile}.lightxdm.absent" || -L "$TARGET_HOME/${dotfile}.lightxdm.absent" ]]; then
+  elif [[ $past_backup -eq 1 || -e "$TARGET_HOME/${dotfile}.lightxdm.absent" || -L "$TARGET_HOME/${dotfile}.lightxdm.absent" ]]; then
     if [[ -e "$TARGET_HOME/$dotfile" || -L "$TARGET_HOME/$dotfile" ]]; then
       if matches_lightxdm_template "$dotfile"; then
         echo "Removing $TARGET_HOME/$dotfile..."

@@ -7922,4 +7922,109 @@ else
   fail "Integration strict mode (default=$strict_default_status: $strict_default_output; flag=$strict_flag_status: $strict_flag_output; env=$strict_env_status: $strict_env_output; help=$strict_help_status, no Docker=$strict_help_no_docker: $strict_help_output; unknown=$strict_unknown_status, no Docker=$strict_unknown_no_docker: $strict_unknown_output; qemu=$strict_qemu_status: $strict_qemu_output)"
 fi
 
+# Dotfiles from older lightXDM templates (git history of a temporary clone) count as lightXDM's own
+if ! command -v git >/dev/null; then
+  skip "install.sh and uninstall.sh recognize dotfiles from older lightXDM templates (git unavailable)"
+else
+  past_dir="$TMP_DIR/past_templates"
+  past_repo="$past_dir/repo"
+  rm -rf "$past_dir"
+  mkdir -p "$past_repo"
+  cp -- "$REPO_ROOT/install.sh" "$REPO_ROOT/uninstall.sh" "$past_repo/"
+  cp -r -- "$REPO_ROOT/dotfiles" "$REPO_ROOT/polkit" "$past_repo/"
+  past_git=(git -C "$past_repo" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false)
+  cp -- "$past_repo/dotfiles/.bash_profile" "$past_dir/old_bash_profile"
+  "${past_git[@]}" init -q
+  "${past_git[@]}" add -A
+  "${past_git[@]}" commit -q -m "old templates"
+  echo "# newer lightXDM template line" >>"$past_repo/dotfiles/.bash_profile"
+  "${past_git[@]}" commit -q -am "new bash_profile template"
+
+  # Case A: install neither backs up nor saves as edited an unedited older template
+  past_install_ok=1
+  for past_marker in "" .lightxdm.absent; do
+    past_home="$past_dir/install_home${past_marker}"
+    mkdir -p "$past_home"
+    cp -- "$past_dir/old_bash_profile" "$past_home/.bash_profile"
+    [[ -z "$past_marker" ]] || : >"$past_home/.bash_profile$past_marker"
+    (
+      export HOME="$past_home"
+      # shellcheck disable=SC2034  # copy_dotfiles uses SCRIPT_DIR from the sourced installer
+      SCRIPT_DIR="$past_repo"
+      copy_dotfiles "plasma" 2>/dev/null
+    )
+    if [[ -e "$past_home/.bash_profile.lightxdm.bak" ]] || compgen -G "$past_home/.bash_profile.lightxdm-edited*" >/dev/null ||
+      ! cmp -s "$past_home/.bash_profile" "$past_repo/dotfiles/.bash_profile"; then
+      past_install_ok=0
+    fi
+  done
+  if [[ $past_install_ok -eq 1 ]]; then
+    pass "copy_dotfiles replaces an unedited older lightXDM ~/.bash_profile without a backup or an edited copy"
+  else
+    fail "copy_dotfiles older lightXDM template ($(ls -A "$past_dir"/install_home*))"
+  fi
+
+  if [[ $can_unshare -eq 0 ]]; then
+    skip "uninstall.sh removes dotfiles and backups from older lightXDM templates (unshare -r unavailable)"
+  else
+    past_uninstall() {
+      env TARGET_HOME="$1" LOGIN_FILE="$past_dir/login" DM_STATE_FILE="$past_dir/dm-state" \
+        GNOME_SESSION_TYPE_DEST="$past_dir/gnome-session-type.conf" AUTOLOGIN_DROPIN="$past_dir/autologin.conf" \
+        OVERRIDE_FILE="$past_dir/override.conf" POLKIT_RULE="$past_dir/49-nopasswd.rules" \
+        unshare -r bash "$past_repo/uninstall.sh" 2>&1
+    }
+
+    # Case B: a marker-less older template is removed
+    past_home="$past_dir/home_b"
+    mkdir -p "$past_home"
+    cp -- "$past_dir/old_bash_profile" "$past_home/.bash_profile"
+    set +e
+    output="$(past_uninstall "$past_home")"
+    status=$?
+    set -e
+    if [[ $status -eq 0 && ! -e "$past_home/.bash_profile" && "$output" == *"Removing $past_home/.bash_profile..."* ]] &&
+      ! compgen -G "$past_home/.bash_profile.*" >/dev/null; then
+      pass "uninstall.sh removes a marker-less ~/.bash_profile from an older lightXDM template"
+    else
+      fail "uninstall.sh older template removal (status=$status, output=$output)"
+    fi
+
+    # Case C: a backup equal to an older template is not restored
+    past_home="$past_dir/home_c"
+    mkdir -p "$past_home"
+    cp -- "$past_repo/dotfiles/.bash_profile" "$past_home/.bash_profile"
+    cp -- "$past_dir/old_bash_profile" "$past_home/.bash_profile.lightxdm.bak"
+    set +e
+    output="$(past_uninstall "$past_home")"
+    status=$?
+    set -e
+    if [[ $status -eq 0 && ! -e "$past_home/.bash_profile" && ! -e "$past_home/.bash_profile.lightxdm.bak" &&
+      "$output" != *"Restoring"* && "$output" == *"Removing $past_home/.bash_profile..."* ]] &&
+      ! compgen -G "$past_home/.bash_profile.*" >/dev/null; then
+      pass "uninstall.sh removes a ~/.bash_profile.lightxdm.bak from an older lightXDM template instead of restoring it"
+    else
+      fail "uninstall.sh older template backup (status=$status, output=$output)"
+    fi
+
+    # Case D: an edited older template is still kept
+    past_home="$past_dir/home_d"
+    mkdir -p "$past_home"
+    cp -- "$past_dir/old_bash_profile" "$past_home/.bash_profile"
+    echo "# user customization" >>"$past_home/.bash_profile"
+    cp -- "$past_home/.bash_profile" "$past_dir/edited_bash_profile"
+    set +e
+    output="$(past_uninstall "$past_home")"
+    status=$?
+    set -e
+    if [[ $status -eq 0 && "$output" == *"Keeping $past_home/.bash_profile (not an unmodified lightXDM template)."* ]] &&
+      cmp -s "$past_home/.bash_profile" "$past_dir/edited_bash_profile"; then
+      pass "uninstall.sh keeps an edited ~/.bash_profile from an older lightXDM template"
+    else
+      fail "uninstall.sh edited older template (status=$status, output=$output)"
+    fi
+    unset -f past_uninstall
+  fi
+  rm -rf "$past_dir"
+fi
+
 finish_harness

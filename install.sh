@@ -200,6 +200,26 @@ install_packages() {
   sudo pacman -S --needed --noconfirm "${pkgs[@]}"
 }
 
+# True when $1 is a regular file equal to any version of the bundled template for home dotfile $2
+# in this checkout's git history (a file an older lightXDM installed); false without .git or git.
+is_past_lightxdm_template() {
+  local file="$1" pathspec blob history
+  case "$2" in
+    .bash_profile) pathspec='dotfiles/.bash_profile' ;;
+    .xinitrc) pathspec='dotfiles/.xinitrc*' ;;
+    .wayland-session) pathspec='dotfiles/.wayland-session-*' ;;
+    .gpg-agent-*) pathspec='dotfiles/.gpg-agent-*' ;;
+    *) return 1 ;;
+  esac
+  [[ -f "$file" && ! -L "$file" && -e "$SCRIPT_DIR/.git" ]] || return 1
+  command -v git >/dev/null || return 1
+  # safe.directory: uninstall.sh runs as root on a clone the user owns.
+  blob="$(git -c safe.directory="$SCRIPT_DIR" -C "$SCRIPT_DIR" hash-object --no-filters --stdin <"$file" 2>/dev/null)" || return 1
+  history="$(git -c safe.directory="$SCRIPT_DIR" -C "$SCRIPT_DIR" log --format= --raw --no-abbrev -- "$pathspec" 2>/dev/null)" || return 1
+  # Raw lines read ":<mode> <mode> <old-blob> <new-blob> <status>\t<path>".
+  [[ -n "$blob" && "$history" == *" $blob "* ]]
+}
+
 # Back up a pre-existing dotfile once, or save post-install user edits before overwriting
 preserve_dotfile() {
   local target="$1"
@@ -225,6 +245,9 @@ preserve_dotfile() {
         return 0
       fi
     done
+    if is_past_lightxdm_template "$target" "${target##*/}"; then
+      return 0
+    fi
   fi
 
   if [[ ! -e "$absent" && ! -L "$absent" ]]; then
