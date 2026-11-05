@@ -1,9 +1,11 @@
 #!/bin/bash
 #
-# GPG agent session initialization for non-Plasma desktops
+# GPG agent session initialization for every desktop
 #
-# This script is sourced from .xinitrc files to start gpg-agent,
-# point SSH_AUTH_SOCK at it when enable-ssh-support is set, and refresh its tty.
+# This script is sourced from the session templates (~/.xinitrc on X11 desktops,
+# ~/.wayland-session on Plasma, GNOME and Budgie) to start gpg-agent, point SSH_AUTH_SOCK
+# at it when enable-ssh-support is set, and refresh its tty. install.sh installs it as
+# ~/.gpg-agent-kwallet for Plasma and ~/.gpg-agent-gnome for every other desktop.
 
 # Start the GPG agent
 gpg-connect-agent /bye

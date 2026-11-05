@@ -22,7 +22,6 @@ lightXDM/
 ├── lint.sh
 ├── dotfiles/
 │   ├── .gpg-agent-gnome
-│   ├── .gpg-agent-kwallet
 │   ├── .wayland-session-plasma
 │   ├── .wayland-session-gnome
 │   ├── .wayland-session-budgie

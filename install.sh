@@ -464,8 +464,8 @@ copy_dotfiles() {
   install -Dm644 "$SCRIPT_DIR/dotfiles/.bash_profile" "$user_home/.bash_profile"
 
   if [[ "$de" == "plasma" ]]; then
-    preserve_dotfile "$user_home/.gpg-agent-kwallet" "$SCRIPT_DIR/dotfiles/.gpg-agent-kwallet"
-    install -Dm744 "$SCRIPT_DIR/dotfiles/.gpg-agent-kwallet" "$user_home/.gpg-agent-kwallet"
+    preserve_dotfile "$user_home/.gpg-agent-kwallet" "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome"
+    install -Dm744 "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome" "$user_home/.gpg-agent-kwallet"
   else
     preserve_dotfile "$user_home/.gpg-agent-gnome" "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome"
     install -Dm744 "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome" "$user_home/.gpg-agent-gnome"

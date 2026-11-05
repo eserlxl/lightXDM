@@ -238,8 +238,11 @@ matches_lightxdm_template() {
   fi
   local templates=()
   case "$dotfile" in
-    .bash_profile | .gpg-agent-gnome | .gpg-agent-kwallet)
+    .bash_profile)
       templates=("$SCRIPT_DIR/dotfiles/$dotfile")
+      ;;
+    .gpg-agent-gnome | .gpg-agent-kwallet)
+      templates=("$SCRIPT_DIR/dotfiles/.gpg-agent-gnome")
       ;;
     .wayland-session)
       templates=("$SCRIPT_DIR"/dotfiles/.wayland-session-*)

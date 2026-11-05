@@ -17,7 +17,6 @@ scripts=(
   tests/qemu/build-image.sh
   dotfiles/.bash_profile
   dotfiles/.gpg-agent-gnome
-  dotfiles/.gpg-agent-kwallet
   dotfiles/.wayland-session-budgie
   dotfiles/.wayland-session-gnome
   dotfiles/.wayland-session-plasma

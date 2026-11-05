@@ -1356,7 +1356,8 @@ fi
 EOF
 chmod +x "$STUB_BIN/gpg-connect-agent" "$STUB_BIN/gpgconf"
 
-for gpg_dotfile in .gpg-agent-gnome .gpg-agent-kwallet; do
+# shellcheck disable=SC2043  # one helper ships; the loop keeps the body unchanged
+for gpg_dotfile in .gpg-agent-gnome; do
   gpg_home="$TMP_DIR/gpg_home_${gpg_dotfile#.}"
   rm -rf "$gpg_home"
   gpg_runtime="$gpg_home/runtime"
@@ -3506,7 +3507,7 @@ if [[ $unmodified_kwallet_clean -eq 1 ]] &&
   [[ -f "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm.bak" && "$(cat "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm.bak")" == "# pre-existing gnome helper" ]] &&
   [[ -f "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm-edited" && "$(cat "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm-edited")" == "$expected_gn_edit1" ]] &&
   [[ -f "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm-edited.1" && "$(cat "$gpg_reinstall_home/.gpg-agent-gnome.lightxdm-edited.1")" == "# gnome edit 2" ]] &&
-  [[ "$(sha256sum < "$REPO_ROOT/dotfiles/.gpg-agent-kwallet")" == "$(sha256sum < "$gpg_reinstall_home/.gpg-agent-kwallet")" ]] &&
+  [[ "$(sha256sum < "$REPO_ROOT/dotfiles/.gpg-agent-gnome")" == "$(sha256sum < "$gpg_reinstall_home/.gpg-agent-kwallet")" ]] &&
   [[ "$(sha256sum < "$REPO_ROOT/dotfiles/.gpg-agent-gnome")" == "$(sha256sum < "$gpg_reinstall_home/.gpg-agent-gnome")" ]]; then
   pass "copy_dotfiles preserves edited gpg-agent helpers across reinstalls without overwriting backups or prior edits"
 else
@@ -7970,12 +7971,16 @@ else
   mkdir -p "$past_repo"
   cp -- "$REPO_ROOT/install.sh" "$REPO_ROOT/uninstall.sh" "$REPO_ROOT/enable-autologin.sh" "$past_repo/"
   cp -r -- "$REPO_ROOT/dotfiles" "$REPO_ROOT/polkit" "$past_repo/"
+  # The removed separate kwallet helper: present in the first commit only
+  { echo "#!/bin/bash"; echo "# old kwallet header"; tail -n +3 "$past_repo/dotfiles/.gpg-agent-gnome"; } >"$past_repo/dotfiles/.gpg-agent-kwallet"
   past_git=(git -C "$past_repo" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false)
   cp -- "$past_repo/dotfiles/.bash_profile" "$past_dir/old_bash_profile"
   "${past_git[@]}" init -q
   "${past_git[@]}" add -A
   "${past_git[@]}" commit -q -m "old templates"
   echo "# newer lightXDM template line" >>"$past_repo/dotfiles/.bash_profile"
+  cp -- "$past_repo/dotfiles/.gpg-agent-kwallet" "$past_dir/old_gpg_agent_kwallet"
+  rm -- "$past_repo/dotfiles/.gpg-agent-kwallet"
   "${past_git[@]}" commit -q -am "new bash_profile template"
 
   # Case A: install neither backs up nor saves as edited an unedited older template
@@ -8059,6 +8064,20 @@ else
       pass "uninstall.sh keeps an edited ~/.bash_profile from an older lightXDM template"
     else
       fail "uninstall.sh edited older template (status=$status, output=$output)"
+    fi
+
+    # Case E: an installed copy of the removed separate kwallet helper is still recognized
+    past_home="$past_dir/home_e"
+    mkdir -p "$past_home"
+    cp -- "$past_dir/old_gpg_agent_kwallet" "$past_home/.gpg-agent-kwallet"
+    set +e
+    output="$(past_uninstall "$past_home")"
+    status=$?
+    set -e
+    if [[ $status -eq 0 && ! -e "$past_home/.gpg-agent-kwallet" && "$output" == *"Removing $past_home/.gpg-agent-kwallet..."* ]]; then
+      pass "uninstall.sh removes a marker-less ~/.gpg-agent-kwallet from the removed separate kwallet helper"
+    else
+      fail "uninstall.sh removed kwallet helper (status=$status, output=$output)"
     fi
     unset -f past_uninstall
   fi
