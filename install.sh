@@ -1164,7 +1164,7 @@ lightXDM install complete!
 - $unlock_summary
 - Desktop auto-start on TTY1 stays paused because ~/.config/lightxdm/no-autostart exists
 
-Run 'rm ~/.config/lightxdm/no-autostart' to start $de automatically at the next TTY1 login.
+Run 'rm ~/.config/lightxdm/no-autostart' to start $de automatically at the next TTY1 login, then $test_summary_after_then.
 EOF
   elif [[ -z "$shell_profile" && $is_wayland -eq 1 ]]; then
     cat <<EOF

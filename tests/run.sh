@@ -3402,13 +3402,18 @@ mkdir -p "$paused_home/.config/lightxdm"
 set +e
 out_paused="$(HOME="$paused_home" USER=testuser run_main_with_stubs "$bash_stub_dir:$sudo_pw_dir" --no-packages --de i3 2>&1)"
 status_paused=$?
+out_paused_dm="$(HOME="$paused_home" USER=testuser STUB_DM_DISABLED=1 run_main_with_stubs "$bash_stub_dir:$sudo_pw_dir" --no-packages --de i3 2>&1)"
+status_paused_dm=$?
 set -e
 if [[ $status_paused -eq 0 && "$out_paused" == *"auto-start on TTY1 stays paused"* &&
-  "$out_paused" == *"rm ~/.config/lightxdm/no-autostart"* && "$out_paused" != *"will auto-start on TTY1"* &&
+  "$out_paused" == *"rm ~/.config/lightxdm/no-autostart"*"then reboot or log out to test"* &&
+  "$out_paused" != *"will auto-start on TTY1"* &&
+  $status_paused_dm -eq 0 && "$out_paused_dm" == *"auto-start on TTY1 stays paused"* &&
+  "$out_paused_dm" == *"rm ~/.config/lightxdm/no-autostart"*"then reboot to test"* &&
   -e "$paused_home/.config/lightxdm/no-autostart" ]]; then
   pass "main reports paused auto-start and keeps the no-autostart marker"
 else
-  fail "main with no-autostart marker (status=$status_paused, output=$out_paused)"
+  fail "main with no-autostart marker (status=$status_paused, output=$out_paused | disabled DM status=$status_paused_dm, output=$out_paused_dm)"
 fi
 
 # A PAM line that existed before install survives uninstall
