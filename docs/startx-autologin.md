@@ -17,11 +17,12 @@ GNOME also needs the installer's [session-type PAM block](installation.md#gnome-
 - **Choosing autologin without keyring unlock:** on a new install, `bash install.sh --no-keyring --autologin` skips the keyring setup and enables autologin in the same run. On an existing default install, `sudo bash uninstall.sh --keyring-only` removes only the keyring lines lightXDM added to `/etc/pam.d/login`, keeping GNOME's session-type block and config; then run `sudo bash enable-autologin.sh YOURUSER`.
 
 ## zsh and fish users
-The installer only writes `~/.bash_profile`. If your login shell is zsh or fish, add the equivalent block yourself (the installer warns you when this applies). These snippets honor the `~/.config/lightxdm/no-autostart` marker (see Recovery below), but only the Bash profile pauses auto-start on its own after repeated crashes.
+The installer only writes `~/.bash_profile`. If your login shell is zsh or fish, add the equivalent block yourself (the installer warns you when this applies). These snippets honor the `~/.config/lightxdm/no-autostart` marker (see Recovery below), but only the Bash profile pauses auto-start on its own after repeated crashes and honors `~/.config/lightxdm/session-journal`.
 
 zsh, in `~/.zprofile`:
 ```zsh
 if [[ -o interactive && -z $DISPLAY && -z $WAYLAND_DISPLAY && $(tty) == /dev/tty1 && ! -e ~/.config/lightxdm/no-autostart ]]; then
+  export PATH="$HOME/.local/bin:$PATH"
   if [[ -f ~/.wayland-session && -x ~/.wayland-session ]]; then
     exec ~/.wayland-session
   elif command -v startx >/dev/null 2>&1; then
@@ -33,6 +34,7 @@ fi
 fish, in `~/.config/fish/config.fish`:
 ```fish
 if status is-login; and status is-interactive; and test -z "$DISPLAY"; and test -z "$WAYLAND_DISPLAY"; and test (tty) = /dev/tty1; and not test -e ~/.config/lightxdm/no-autostart
+  set -gx PATH $HOME/.local/bin $PATH
   if test -f ~/.wayland-session; and test -x ~/.wayland-session
     exec ~/.wayland-session
   else if command -q startx

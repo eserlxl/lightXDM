@@ -3633,6 +3633,46 @@ else
   fail "main login shell check (zsh=$status_zsh:$out_zsh | fish=$status_fish:$out_fish | bash=$status_bash:$out_bash)"
 fi
 
+for snippet_shell in zsh fish; do
+  if ! snippet_shell_path="$(command -v "$snippet_shell")"; then
+    skip "$snippet_shell TTY1 snippet starts a session from ~/.local/bin (shell missing)"
+    continue
+  fi
+  snippet_dir="$TMP_DIR/snippet_$snippet_shell"
+  snippet_home="$snippet_dir/home"
+  mkdir -p "$snippet_home/.local/bin" "$snippet_dir/bin"
+  awk -v fence="\`\`\`$snippet_shell" '$0 == fence { in_snippet = 1; next } in_snippet && $0 == "```" { exit } in_snippet { print }' \
+    "$REPO_ROOT/docs/startx-autologin.md" >"$snippet_dir/snippet"
+  cat >"$snippet_home/.local/bin/lightxdm-test-session" <<'EOF'
+#!/bin/sh
+touch "$HOME/session-started"
+EOF
+  cat >"$snippet_home/.wayland-session" <<'EOF'
+#!/bin/sh
+exec lightxdm-test-session
+EOF
+  cat >"$snippet_dir/bin/tty" <<'EOF'
+#!/bin/sh
+echo /dev/tty1
+EOF
+  chmod +x "$snippet_home/.local/bin/lightxdm-test-session" "$snippet_home/.wayland-session" "$snippet_dir/bin/tty"
+  snippet_status=0
+  if [[ "$snippet_shell" == zsh ]]; then
+    # shellcheck disable=SC2016  # expand inside the child shell
+    timeout 20 env -i HOME="$snippet_home" PATH="$snippet_dir/bin:/usr/bin:/bin" TERM=dumb \
+      "$snippet_shell_path" -f -o interactive -c 'source "$1"' zsh "$snippet_dir/snippet" || snippet_status=$?
+  else
+    # shellcheck disable=SC2016  # expand inside the child shell
+    timeout 20 env -i HOME="$snippet_home" PATH="$snippet_dir/bin:/usr/bin:/bin" TERM=dumb \
+      "$snippet_shell_path" --no-config -l -i -c 'source $argv[1]' "$snippet_dir/snippet" || snippet_status=$?
+  fi
+  if [[ $snippet_status -eq 0 && -f "$snippet_home/session-started" ]]; then
+    pass "$snippet_shell TTY1 snippet starts a session from ~/.local/bin"
+  else
+    fail "$snippet_shell TTY1 snippet did not start a session from ~/.local/bin (status=$snippet_status)"
+  fi
+done
+
 for summary_shell in bash zsh fish; do
   summary_stub_dir="$TMP_DIR/getent_$summary_shell"
   for summary_dm in 0 1; do
