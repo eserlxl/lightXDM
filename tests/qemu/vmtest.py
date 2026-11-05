@@ -139,20 +139,57 @@ def boot():
 
 
 def reboot_and_login(qmp, tag):
-    ssh("systemctl reboot", timeout=20)
-    time.sleep(10)
-    check(f"{tag}: VM back after reboot", wait_ssh())
+    try:
+        rc, out, err = ssh("cat /proc/sys/kernel/random/boot_id", timeout=15)
+        old_id = out.strip()
+    except subprocess.TimeoutExpired:
+        rc, old_id, err = -1, "", "ssh timed out"
+    if rc != 0 or not old_id:
+        check(f"{tag}: VM back after reboot", False, (err or out).strip() or "failed to read boot_id")
+        return False
+
+    try:
+        ssh("systemctl reboot", timeout=20)
+    except subprocess.TimeoutExpired:
+        pass
+
+    end = time.time() + 300
+    ok = False
+    detail = "timed out waiting for reboot"
+    while time.time() < end:
+        try:
+            rc, out, err = ssh("cat /proc/sys/kernel/random/boot_id", timeout=15)
+            new_id = out.strip()
+            if rc == 0 and new_id and new_id != old_id:
+                ok = True
+                detail = ""
+                break
+            if rc == 0 and new_id == old_id:
+                detail = "boot id did not change"
+            elif rc == 0:
+                detail = "empty boot id"
+            else:
+                detail = (err or out).strip() or f"ssh returned {rc}"
+        except subprocess.TimeoutExpired:
+            detail = "ssh timed out"
+        time.sleep(3)
+
+    check(f"{tag}: VM back after reboot", ok, detail)
+    if not ok:
+        return False
+
     for _ in range(60):
         if ssh("systemctl is-active getty@tty1")[1].strip() == "active":
             break
         time.sleep(2)
     if MODE == "autologin":
-        return
+        return True
     time.sleep(5)
     qmp.type(USER + "\n")
     time.sleep(3)
     qmp.type(PASSWORD + "\n")
     log(f"{tag}: typed the TTY1 login")
+    return True
 
 
 def wait_proc(name, limit=240):
@@ -265,14 +302,15 @@ def main():
             _, out, err = ssh(f"bash /home/{USER}/lightXDM/enable-autologin.sh --status")
             check(f"enable-autologin.sh --status reports enabled for {USER}",
                   out.startswith(f"enabled for {USER}"), (out + err).strip())
-        reboot_and_login(qmp, "login1")
-        session_checks("login1", qmp)
+        login1_ok = reboot_and_login(qmp, "login1")
+        if login1_ok:
+            session_checks("login1", qmp)
         if os.environ.get("LIGHTXDM_VM_KEEP") == "1":
             kept = True
             log(f"LIGHTXDM_VM_KEEP=1: VM left running (qemu pid {proc.pid})")
             return
-        reboot_and_login(qmp, "login2")
-        session_checks("login2", qmp)
+        if login1_ok and reboot_and_login(qmp, "login2"):
+            session_checks("login2", qmp)
         if MODE == "lightdm":
             rc, out, err = ssh(f"su - {USER} -c 'cd ~/lightXDM && sudo bash uninstall.sh' 2>&1", timeout=600)
             with open(os.path.join(RUN, "uninstall.log"), "w") as f:
