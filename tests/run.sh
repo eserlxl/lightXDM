@@ -7563,6 +7563,23 @@ else
   fail "init from session (status=$status, output=$output)"
 fi
 
+# Wayland entries can name a command and desktop independently of the custom id.
+printf '%s\n' '[Desktop Entry]' 'Exec=Hyprland' 'DesktopNames=Hyprland Desktop;Ignored;' >"$init_session_entry"
+set +e
+output="$(HOME="$init_session_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --wayland --de hyprland --from-session "$init_session_entry" 2>&1)"
+status=$?
+set -e
+init_session_wayland="$init_session_home/.config/lightxdm/.wayland-session-hyprland"
+if [[ $status -eq 0 && "$(stat -c '%a' "$init_session_wayland" 2>/dev/null)" == 755 && ! -s "$STUB_LOG" ]] &&
+  grep -Fxq 'exec Hyprland' "$init_session_wayland" &&
+  grep -Fxq 'export DESKTOP_SESSION=hyprland' "$init_session_wayland" &&
+  grep -Fxq 'export XDG_CURRENT_DESKTOP=Hyprland\ Desktop' "$init_session_wayland" &&
+  grep -Fxq 'export XDG_SESSION_TYPE=wayland' "$init_session_wayland"; then
+  pass "--from-session initializes a custom Wayland template from its entry"
+else
+  fail "Wayland init from session (status=$status, output=$output)"
+fi
+
 # Imported templates keep the existing overwrite refusal, including user edits.
 printf '# user edit\n' >>"$init_session_template"
 init_session_before="$(sha256sum < "$init_session_template")"
@@ -7623,7 +7640,7 @@ done
 printf '%s\n' '[Desktop Entry]' 'Exec=startfluxbox' >"$init_session_entry"
 session_reject_home="$TMP_DIR/session_reject_home"
 mkdir -p "$session_reject_home"
-for session_reject_case in no-init no-id empty-id missing-path empty-path option-path wayland \
+for session_reject_case in no-init no-id empty-id missing-path empty-path option-path \
   plasma gnome budgie xfce lxqt lxde mate cinnamon i3 \
   --list-packages --dry-run --non-interactive --no-packages --no-keyring --keyring --no-polkit-rule --autologin; do
   session_reject_args=(--init-template --de rejected --from-session "$init_session_entry")
@@ -7648,10 +7665,6 @@ for session_reject_case in no-init no-id empty-id missing-path empty-path option
         option-path) session_reject_args+=(--wayland) ;;
       esac
       session_reject_message='Missing argument for --from-session'
-      ;;
-    wayland)
-      session_reject_args+=(--wayland)
-      session_reject_message='--from-session cannot be combined with --wayland'
       ;;
     plasma | gnome | budgie | xfce | lxqt | lxde | mate | cinnamon | i3)
       session_reject_args=(--init-template --de "$session_reject_case" --from-session "$init_session_entry")

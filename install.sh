@@ -318,10 +318,6 @@ init_xinitrc_template() {
     return 1
   fi
   if [[ -n "$from_session" ]]; then
-    if [[ $wayland -eq 1 ]]; then
-      log "--from-session cannot be combined with --wayland."
-      return 1
-    fi
     case "$id" in
       plasma | gnome | budgie | xfce | lxqt | lxde | mate | cinnamon | i3)
         log "--from-session is only for custom ids; $id has a built-in template."
@@ -445,19 +441,21 @@ init_xinitrc_template() {
       ;;
     *)
       if [[ $wayland -eq 1 ]]; then
+        local quoted_desktop
+        printf -v quoted_desktop '%q' "$current_desktop"
         cat >"$dest" <<EOF
 #!/bin/bash
 # Wayland session for lightXDM: start $id
 
 export DESKTOP_SESSION=$id
-export XDG_CURRENT_DESKTOP=$id
+export XDG_CURRENT_DESKTOP=$quoted_desktop
 export XDG_SESSION_TYPE=wayland
 
 if [[ -f ~/.gpg-agent-gnome ]]; then
   source ~/.gpg-agent-gnome
 fi
 
-exec $id
+$exec_line
 EOF
       else
         local template_line
@@ -1091,7 +1089,7 @@ main() {
   local init_template=0
   local wayland=0
   local from_session=""
-  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland|--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--no-keyring] [--autologin]"
+  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--no-keyring] [--autologin]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1116,9 +1114,9 @@ Options:
   --non-interactive require --de and fail instead of prompting for sudo credentials
   --init-template   create ~/.config/lightxdm/.xinitrc-<id> (or .wayland-session-<id> for Plasma, GNOME and Budgie) for --de <id> to edit, and exit
                     (any lowercase id: a custom one starts from the i3 template unless --wayland is used)
-  --from-session <path> with --init-template --de <custom-id>, use an X11 session entry's Exec and first DesktopNames entry
-                    (literal arguments or plain double-quoted words only; no field codes, backslash escapes or --wayland)
-  --wayland         with --init-template --de <custom-id>, create a minimal Wayland template ending in exec <id>
+  --from-session <path> with --init-template --de <custom-id>, use a session entry's Exec and first DesktopNames entry
+                    (literal arguments or plain double-quoted words only; no field codes or backslash escapes)
+  --wayland         with --init-template --de <custom-id>, create a minimal Wayland template (default command: exec <id>)
   --no-packages     skip package installation
   --keyring <gnome|kwallet> choose the PAM keyring backend for a custom id (requires --no-packages;
                     cannot combine with --no-keyring or --init-template)
@@ -1213,10 +1211,6 @@ EOF
       echo "$usage" >&2
       exit 1
     fi
-    if [[ $wayland -eq 1 ]]; then
-      log "--from-session cannot be combined with --wayland."
-      exit 1
-    fi
     case "$de" in
       plasma | gnome | budgie | xfce | lxqt | lxde | mate | cinnamon | i3)
         log "--from-session is only for custom ids; $de has a built-in template."
@@ -1239,7 +1233,7 @@ EOF
 
   if [[ $init_template -eq 1 ]]; then
     if [[ $list_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ]]; then
-      log "--init-template takes only --de <id> and optional --wayland or --from-session <path> for custom ids; it creates the template and exits without installing."
+      log "--init-template takes only --de <id> and optional --wayland and --from-session <path> for custom ids; it creates the template and exits without installing."
       echo "$usage" >&2
       exit 1
     fi
