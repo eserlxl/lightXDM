@@ -795,6 +795,14 @@ disable_display_managers() {
   else
     log "No enabled display managers found."
   fi
+  if [[ -f "$DM_STATE_FILE" ]]; then
+    while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
+      if [[ -n "$dm_unit" ]] && systemctl is-active --quiet "$dm_unit"; then
+        display_manager_disabled=1
+        break
+      fi
+    done <"$DM_STATE_FILE"
+  fi
 }
 
 # --- Main ---

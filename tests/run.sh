@@ -2476,6 +2476,36 @@ else
   fail "disable_display_managers duplicate state (status=$status, output=$output)"
 fi
 
+# A previously disabled display manager can still be running on an install rerun.
+dm_rerun_stub_dir="$TMP_DIR/dm_rerun_bin"
+mkdir -p "$dm_rerun_stub_dir"
+cat >"$dm_rerun_stub_dir/systemctl" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  is-enabled) echo disabled; exit 1 ;;
+  is-active) [[ "${3:-}" == sddm.service && "${STUB_DM_ACTIVE:-0}" == 1 ]] ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$dm_rerun_stub_dir/systemctl"
+printf '%s\n' sddm.service >"$TMP_DIR/dm_rerun_state"
+for dm_active in 1 0; do
+  set +e
+  # DM_STATE_FILE is readonly once install.sh is sourced, so pass it to a child shell.
+  # shellcheck disable=SC2016  # expand inside the child shell
+  output="$(env PATH="$dm_rerun_stub_dir:$PATH" STUB_DM_ACTIVE="$dm_active" DM_STATE_FILE="$TMP_DIR/dm_rerun_state" \
+    bash -c 'source "$1/install.sh" && display_manager_disabled=0 && disable_display_managers 2>&1 &&
+      echo "display_manager_disabled=$display_manager_disabled"' bash "$REPO_ROOT")"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && "$output" == *"display_manager_disabled=$dm_active"* &&
+    "$(cat "$TMP_DIR/dm_rerun_state")" == sddm.service ]]; then
+    pass "disable_display_managers detects recorded display manager active=$dm_active"
+  else
+    fail "disable_display_managers recorded display manager active=$dm_active (status=$status, output=$output)"
+  fi
+done
+
 # State write failures must prevent disabling units through either path.
 dm_readonly_dir="$TMP_DIR/dm_readonly"
 mkdir -p "$dm_readonly_dir"
