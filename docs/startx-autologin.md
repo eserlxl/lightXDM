@@ -81,7 +81,7 @@ You can use the provided `enable-autologin.sh` script to automate this setup (ch
 ```sh
 sudo bash enable-autologin.sh YOURUSER
 ```
-This will create the override for you. To remove autologin, run:
+This will create the override for you. If `getty@tty1.service` is masked, the script changes nothing and asks you to run `systemctl unmask getty@tty1.service`. To remove autologin, run:
 ```sh
 sudo bash enable-autologin.sh --disable
 ```

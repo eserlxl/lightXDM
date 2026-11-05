@@ -189,6 +189,14 @@ main() {
     exit 1
   fi
 
+  local state
+  state="$(systemctl is-enabled getty@tty1.service 2>/dev/null || true)"
+  if [[ "$state" == masked ]]; then
+    echo "getty@tty1.service is masked; autologin cannot start a TTY1 login." >&2
+    echo "Run systemctl unmask getty@tty1.service and re-run this script." >&2
+    exit 1
+  fi
+
   # --status reads the drop-in without sudo, so never inherit a stricter root umask.
   umask 022
   mkdir -p "$OVERRIDE_DIR"

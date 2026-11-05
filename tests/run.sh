@@ -6085,6 +6085,54 @@ else
   fail "copy_dotfiles on failed edit save (status=$status, output=$output)"
 fi
 
+# A persistently masked TTY1 getty must be unmasked before enabling autologin.
+if [[ $EUID -eq 0 ]]; then
+  masked_runner=(bash)
+elif [[ $can_unshare -eq 1 ]]; then
+  masked_runner=(unshare -r bash)
+else
+  masked_runner=()
+fi
+if [[ ${#masked_runner[@]} -eq 0 ]]; then
+  skip "enable-autologin.sh masked getty handling (unshare -r unavailable)"
+else
+  masked_bin="$TMP_DIR/masked_getty_bin"
+  mkdir -p "$masked_bin"
+  cat >"$masked_bin/getent" <<'EOF'
+#!/usr/bin/env bash
+echo 'testuser:x:1000:1000::/home/testuser:/bin/bash'
+EOF
+  cat >"$masked_bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == 'is-enabled getty@tty1.service' ]]; then
+  echo "$GETTY_STATE"
+else
+  echo "$*" >>"$GETTY_LOG"
+fi
+EOF
+  chmod +x "$masked_bin/getent" "$masked_bin/systemctl"
+  for getty_state in masked masked-runtime enabled; do
+    masked_dir="$TMP_DIR/getty_state_$getty_state"
+    mkdir -p "$masked_dir"
+    : >"$masked_dir/log"
+    set +e
+    output="$(env PATH="$masked_bin:$PATH" GETTY_STATE="$getty_state" GETTY_LOG="$masked_dir/log" OVERRIDE_DIR="$masked_dir/getty.d" SYSTEMD_RUN_DIR="$masked_dir/run" LOGIN_FILE="$masked_dir/login" "${masked_runner[@]}" "$REPO_ROOT/enable-autologin.sh" testuser 2>&1)"
+    status=$?
+    set -e
+    if [[ "$getty_state" == masked ]]; then
+      if [[ $status -eq 1 && "$output" == *"systemctl unmask getty@tty1.service"* && ! -e "$masked_dir/getty.d" && ! -s "$masked_dir/log" ]]; then
+        pass "enable-autologin.sh refuses a masked getty without changes"
+      else
+        fail "enable-autologin.sh masked getty (status=$status, output=$output)"
+      fi
+    elif [[ $status -eq 0 && -f "$masked_dir/getty.d/lightxdm-autologin.conf" && "$(cat "$masked_dir/log")" == daemon-reload && "$output" == *"Autologin enabled for user testuser"* ]]; then
+      pass "enable-autologin.sh enables autologin with getty $getty_state"
+    else
+      fail "enable-autologin.sh getty $getty_state (status=$status, output=$output)"
+    fi
+  done
+fi
+
 # Case 66: reload failures are tolerated only when systemd is not running
 if [[ $EUID -eq 0 ]]; then
   reload_runner=(bash)
