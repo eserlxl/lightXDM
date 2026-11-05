@@ -3019,6 +3019,21 @@ for syntax_session_type in x11 wayland; do
   else
     fail "valid $syntax_session_type template (status=$status, output=$output)"
   fi
+
+  # Extended globs are valid once the template enables them, so parsing must not reject them.
+  # shellcheck disable=SC2016  # expand inside the child shell
+  printf '%s\n' '#!/bin/bash' 'printf executed > "$HOME/template-executed"' 'shopt -s extglob' \
+    'case "$XDG_SESSION_TYPE" in @(x11|wayland)) : ;; esac' 'exec dwm' >"$syntax_template"
+  set +e
+  # shellcheck disable=SC2016  # expand inside the child shell
+  output="$(HOME="$syntax_home" bash -c 'source "$1/install.sh"; check_template_syntax "$2"' bash "$REPO_ROOT" "$syntax_template" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && -z "$output" && ! -e "$syntax_home/template-executed" ]]; then
+    pass "check_template_syntax accepts a valid $syntax_session_type template that uses extended globs"
+  else
+    fail "extglob $syntax_session_type template (status=$status, output=$output)"
+  fi
 done
 
 # A malformed built-in override must also stop before the real package helper reaches pacman.

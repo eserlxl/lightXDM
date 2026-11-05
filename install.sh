@@ -512,7 +512,8 @@ check_template_syntax() {
   local first_line="" parse_error
   IFS= read -r first_line < "$template" || true
   if [[ "$first_line" =~ ^('#!/bin/bash'|'#!/usr/bin/bash'|'#!/usr/bin/env bash')[[:blank:]]*$ ]]; then
-    if ! parse_error="$(bash -n -- "$template" 2>&1)"; then
+    # Templates may enable extglob before using it; -n never runs that shopt, so enable it here.
+    if ! parse_error="$(bash -O extglob -n -- "$template" 2>&1)"; then
       log "Invalid Bash syntax in $template: ${parse_error//$'\n'/ }"
       return 1
     fi
