@@ -363,6 +363,7 @@ check_session_commands() {
     local tokens=() token check_path
     read -r -a tokens <<< "$session_line"
     for token in "${tokens[@]}"; do
+      [[ "$token" == -* ]] && break
       [[ "$token" == /* ]] || continue
       check_path="${SESSION_ROOT:-}$token"
       if [[ ! -f "$check_path" || ! -x "$check_path" ]]; then

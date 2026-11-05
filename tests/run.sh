@@ -7092,6 +7092,34 @@ else
   fail "check_session_commands Wayland rejection (miss=$wl_miss_st:$wl_miss_out | nonexec=$wl_nonexec_st:$wl_nonexec_out | dir=$wl_isdir_st:$wl_isdir_out | gen=$wl_generic_st:$wl_generic_out)"
 fi
 
+printf '#!/bin/bash\nexec compositor -C %s\n' "$wl_chk_dir/bin/adir" >"$wl_chk_dir/.wayland-session-labwc"
+printf '#!/bin/bash\nexec %s --config %s\n' "$wl_chk_dir/bin/compositor" "$wl_chk_dir/bin/nonexec" >"$wl_chk_dir/.wayland-session-sway-cfg"
+printf '#!/bin/bash\nexec %s -c x\n' "$wl_chk_dir/bin/missing-sway" >"$wl_chk_dir/.wayland-session-sway-opt-bad"
+
+set +e
+wl_opt_dir_out="$(
+  SESSION_ROOT="" PATH="$wl_chk_dir/bin:$wl_chk_nostartx_bin" check_session_commands "$wl_chk_dir/.wayland-session-labwc" 2>&1
+)"
+wl_opt_dir_st=$?
+wl_opt_file_out="$(
+  SESSION_ROOT="" PATH="$wl_chk_nostartx_bin" check_session_commands "$wl_chk_dir/.wayland-session-sway-cfg" 2>&1
+)"
+wl_opt_file_st=$?
+wl_opt_miss_out="$(
+  SESSION_ROOT="" PATH="$wl_chk_nostartx_bin" check_session_commands "$wl_chk_dir/.wayland-session-sway-opt-bad" 2>&1
+)"
+wl_opt_miss_st=$?
+set -e
+
+if [[ $wl_opt_dir_st -eq 0 && -z "$wl_opt_dir_out" &&
+  $wl_opt_file_st -eq 0 && -z "$wl_opt_file_out" &&
+  $wl_opt_miss_st -eq 1 &&
+  "$wl_opt_miss_out" == *"Missing command: $wl_chk_dir/bin/missing-sway"* ]]; then
+  pass "check_session_commands stops checking Wayland absolute paths at the first option argument"
+else
+  fail "check_session_commands Wayland option arguments (dir=$wl_opt_dir_st:$wl_opt_dir_out | file=$wl_opt_file_st:$wl_opt_file_out | miss=$wl_opt_miss_st:$wl_opt_miss_out)"
+fi
+
 for wl_check_spec in "gnome|/usr/bin/gnome-session|gnome-session" "budgie|/usr/bin/startbudgielabwc|budgie-desktop"; do
   IFS='|' read -r wl_check_de wl_check_command wl_check_package <<<"$wl_check_spec"
   set +e
