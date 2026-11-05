@@ -66,6 +66,8 @@ Plasma, GNOME, and Budgie start on Wayland through `~/.wayland-session`, which `
 
 Custom ids use `~/.config/lightxdm/.wayland-session-<id>` when present, otherwise `~/.config/lightxdm/.xinitrc-<id>` for X11. If both exist, the installer refuses before making changes and names both files; keep only the template you want. Custom ids must contain only lowercase ASCII letters, digits, `_` and `-`, with no leading hyphen. They require `--no-packages`: install the compositor or window manager and its dependencies yourself. PAM uses GNOME Keyring by default (also selectable with `--keyring gnome`), or choose `--keyring kwallet` for KWallet. Install the matching `gnome-keyring` or `kwallet-pam` package yourself; the installer warns if its PAM module is missing. Pass `--no-keyring` to skip keyring setup instead.
 
+Before changing dotfiles, PAM or display managers, `install.sh` checks a Bash template's syntax with `bash -n` without executing it.
+
 For example, create and edit a Sway template, then install it:
 
 ```sh

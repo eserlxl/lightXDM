@@ -511,6 +511,14 @@ check_session_commands() {
     log "Cannot read $template; fix its permissions and re-run."
     return 1
   fi
+  local first_line="" parse_error
+  IFS= read -r first_line < "$template" || true
+  if [[ "$first_line" =~ ^('#!/bin/bash'|'#!/usr/bin/bash'|'#!/usr/bin/env bash')[[:blank:]]*$ ]]; then
+    if ! parse_error="$(bash -n -- "$template" 2>&1)"; then
+      log "Invalid Bash syntax in $template: ${parse_error//$'\n'/ }"
+      return 1
+    fi
+  fi
   if [[ "$base" == .wayland-session-* ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
       case "$line" in

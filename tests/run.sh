@@ -2919,6 +2919,88 @@ for startup_template_case in last-exec missing-session no-exec expression path l
   fi
 done
 
+# Bash syntax errors stop both session types before configuration, without running the template.
+for syntax_session_type in x11 wayland; do
+  syntax_home="$TMP_DIR/syntax_${syntax_session_type}_home"
+  mkdir -p "$syntax_home/.config/lightxdm"
+  syntax_id=dwm
+  syntax_template="$syntax_home/.config/lightxdm/.xinitrc-$syntax_id"
+  if [[ "$syntax_session_type" == wayland ]]; then
+    syntax_id=sway
+    syntax_template="$syntax_home/.config/lightxdm/.wayland-session-$syntax_id"
+  fi
+  # shellcheck disable=SC2016  # expand inside the child shell
+  syntax_template_body=$'printf executed > "$HOME/template-executed"\nif true; then\nexec dwm'
+  for syntax_shebang in '#!/bin/bash' '#!/usr/bin/bash' '#!/usr/bin/env bash' '#!/bin/bash   '; do
+    printf '%s\n' "$syntax_shebang" "$syntax_template_body" >"$syntax_template"
+    set +e
+    # shellcheck disable=SC2016  # expand inside the child shell
+    output="$(HOME="$syntax_home" bash -c 'source "$1/install.sh"; check_session_commands "$2"' bash "$REPO_ROOT" "$syntax_template" 2>&1)"
+    status=$?
+    set -e
+    if [[ $status -eq 1 && "$output" == *"Invalid Bash syntax in $syntax_template:"* &&
+      "$output" == *"syntax error: unexpected end of file"* && "$output" != *$'\n'* &&
+      ! -e "$syntax_home/template-executed" ]]; then
+      pass "check_session_commands refuses malformed $syntax_session_type Bash syntax ($syntax_shebang)"
+    else
+      fail "malformed $syntax_session_type template ($syntax_shebang, status=$status, output=$output)"
+    fi
+  done
+
+  printf 'existing profile\n' >"$syntax_home/.bash_profile"
+  : >"$STUB_LOG"
+  set +e
+  output="$(
+    HOME="$syntax_home" STUB_REAL_COPY_DOTFILES=1 STUB_RECORD_GNOME_STEP=1 \
+      run_main_with_stubs "$sudo_pw_dir" --no-packages --no-keyring --de "$syntax_id" 2>&1
+  )"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  if [[ $status -eq 1 && "$log_content" == "sudo -v" &&
+    "$output" == *"Invalid Bash syntax in $syntax_template:"* &&
+    "$output" == *"syntax error: unexpected end of file"* &&
+    "$output" == *"Install stopped during check_session_commands; already done: none"* &&
+    "$output" != *"lightXDM install complete!"* &&
+    "$(cat "$syntax_home/.bash_profile")" == 'existing profile' &&
+    ! -e "$syntax_home/.bash_profile.lightxdm.bak" && ! -e "$syntax_home/.xinitrc" &&
+    ! -e "$syntax_home/.wayland-session" && ! -e "$syntax_home/.gpg-agent-gnome" &&
+    ! -e "$syntax_home/.config/autostart/lightxdm-gpg-agent-tty.desktop" &&
+    ! -e "$syntax_home/template-executed" ]]; then
+    pass "main refuses malformed $syntax_session_type Bash syntax before dotfile, PAM or display-manager changes"
+  else
+    fail "main malformed $syntax_session_type template (status=$status, log=$log_content, output=$output)"
+  fi
+
+  # Other interpreters retain the existing command checks even with the same malformed body.
+  printf '%s\n' '#!/bin/sh' "$syntax_template_body" >"$syntax_template"
+  set +e
+  # shellcheck disable=SC2016  # expand inside the child shell
+  output="$(HOME="$syntax_home" bash -c 'source "$1/install.sh"; check_session_commands "$2"' bash "$REPO_ROOT" "$syntax_template" 2>&1)"
+  status=$?
+  set -e
+  if [[ "$output" != *"Invalid Bash syntax"* && "$output" != *"syntax error"* &&
+    ! -e "$syntax_home/template-executed" ]]; then
+    pass "check_session_commands skips Bash parsing for a non-Bash $syntax_session_type template"
+  else
+    fail "non-Bash $syntax_session_type template (status=$status, output=$output)"
+  fi
+
+  # A valid Bash template also stays unexecuted during preflight.
+  # shellcheck disable=SC2016  # expand inside the child shell
+  printf '%s\n' '#!/bin/bash' 'printf executed > "$HOME/template-executed"' 'exec dwm' >"$syntax_template"
+  set +e
+  # shellcheck disable=SC2016  # expand inside the child shell
+  output="$(HOME="$syntax_home" bash -c 'source "$1/install.sh"; check_session_commands "$2"' bash "$REPO_ROOT" "$syntax_template" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && -z "$output" && ! -e "$syntax_home/template-executed" ]]; then
+    pass "check_session_commands accepts valid $syntax_session_type Bash syntax without executing it"
+  else
+    fail "valid $syntax_session_type template (status=$status, output=$output)"
+  fi
+done
+
 # An unreadable custom template must stop before changing session dotfiles.
 if [[ $EUID -eq 0 ]]; then
   skip "main stops before changing dotfiles when a custom template is unreadable"
