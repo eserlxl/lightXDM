@@ -10,13 +10,14 @@ JOBS="${LIGHTXDM_VM_JOBS:-2}"
 
 usage() {
   cat <<EOF
-Usage: bash $0 [-h|--help] [desktop | <from>:<to> | <desktop>+autologin ...]   (default: plasma xfce)
+Usage: bash $0 [-h|--help] [desktop | <from>:<to> | <desktop>+autologin | <desktop>+lightdm ...]   (default: plasma xfce)
 
 Builds an Arch Linux VM image in Docker (once per package set), then for each desktop boots a
 VM, runs install.sh --de <desktop> as a test user, reboots, types the password at the TTY1
 login and checks that the desktop session starts and PAM unlocks the keyring, twice.
 An argument <from>:<to> installs <from>, then <to> in the same VM, and checks <to>.
 An argument <desktop>+autologin installs with --no-keyring --autologin and boots without typing a password.
+An argument <desktop>+lightdm checks that install.sh disables LightDM and uninstall.sh restores it after both logins.
 Prints one PASS/FAIL line per check; exits 1 if any check fails, 0 with SKIP if a tool is missing.
 
 Environment:
@@ -35,7 +36,7 @@ is_desktop() {
 
 is_mode() {
   case "$1" in
-    autologin) return 0 ;;
+    autologin | lightdm) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -99,6 +100,9 @@ pkgs="$(
   # shellcheck source=install.sh disable=SC1091
   source "$REPO_ROOT/install.sh"
   for de in "${desktops[@]}"; do
+    if [[ "${de#*+}" == lightdm ]]; then
+      printf '%s\n' lightdm lightdm-gtk-greeter
+    fi
     de="${de%+*}"
     for part in ${de/:/ }; do list_packages "$part"; done
   done | sort -u | tr '\n' ' '

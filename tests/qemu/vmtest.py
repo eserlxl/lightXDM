@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Real TTY1 login test for one desktop in a QEMU VM (driven by tests/qemu-arch.sh).
 
-Usage: vmtest.py <desktop|from:to|desktop+autologin> <repo> <vm-dir> <ssh-port>
+Usage: vmtest.py <desktop|from:to|desktop+autologin|desktop+lightdm> <repo> <vm-dir> <ssh-port>
 Boots <vm-dir>/root.img with -snapshot (the image stays unchanged), copies the repo's
 working tree into the VM, runs install.sh --de <desktop> as user 'tester' (or <from> then
 <to> when given <from>:<to>), reboots, types the login at the TTY1 getty through QMP, and
@@ -239,6 +239,9 @@ def main():
         rc, _, err = ssh(f"mkdir -p /home/{USER}/lightXDM && tar -x -C /home/{USER}/lightXDM && "
                          f"chown -R {USER}: /home/{USER}/lightXDM", stdin=tar)
         check("working tree copied into the VM", rc == 0, err)
+        if MODE == "lightdm":
+            rc, out, err = ssh("systemctl enable lightdm.service")
+            check("lightdm.service enabled before install", rc == 0, (out + err).strip())
         if FROM:
             rc, out, err = ssh(f"su - {USER} -c 'cd ~/lightXDM && bash install.sh --de {FROM}' 2>&1", timeout=1800)
             with open(os.path.join(RUN, f"install-{FROM}.log"), "w") as f:
@@ -253,6 +256,11 @@ def main():
         check(f"install.sh {install_args} exits 0", rc == 0, out[-400:])
         if rc != 0:
             return
+        if MODE == "lightdm":
+            _, out, err = ssh("systemctl is-enabled lightdm.service")
+            check("install.sh disabled lightdm.service", out.strip() == "disabled", (out + err).strip())
+            rc, _, err = ssh("grep -Fxq lightdm.service /etc/lightxdm/disabled-display-managers")
+            check("install.sh recorded lightdm.service", rc == 0, err.strip())
         if MODE == "autologin":
             _, out, err = ssh(f"bash /home/{USER}/lightXDM/enable-autologin.sh --status")
             check(f"enable-autologin.sh --status reports enabled for {USER}",
@@ -265,6 +273,18 @@ def main():
             return
         reboot_and_login(qmp, "login2")
         session_checks("login2", qmp)
+        if MODE == "lightdm":
+            rc, out, err = ssh(f"su - {USER} -c 'cd ~/lightXDM && sudo bash uninstall.sh' 2>&1", timeout=600)
+            with open(os.path.join(RUN, "uninstall.log"), "w") as f:
+                f.write(out + err)
+            check("uninstall.sh exits 0", rc == 0, out[-400:])
+            _, out, err = ssh("systemctl is-enabled lightdm.service")
+            check("uninstall.sh re-enabled lightdm.service", out.strip() == "enabled", (out + err).strip())
+            _, out, err = ssh("readlink -f /etc/systemd/system/display-manager.service")
+            check("display-manager.service points to lightdm.service", out.strip().endswith("/lightdm.service"),
+                  (out + err).strip())
+            rc, _, err = ssh("test ! -e /etc/lightxdm/disabled-display-managers")
+            check("uninstall.sh removed the display-manager state file", rc == 0, err.strip())
     except Exception as exc:  # report and shut down, never hang the harness
         check("driver ran without errors", False, repr(exc))
     finally:
