@@ -7917,6 +7917,73 @@ else
   skip "qemu-arch.sh stale result after early driver exit (/dev/kvm is not accessible)"
 fi
 
+# qemu-arch.sh reuses a matching image and rebuilds when given --rebuild-image.
+if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+  qemu_rebuild_bin="$TMP_DIR/qemu_rebuild/bin"
+  qemu_rebuild_vm="$TMP_DIR/qemu_rebuild/vm"
+  qemu_rebuild_log="$TMP_DIR/qemu_rebuild/docker-runs.log"
+  mkdir -p "$qemu_rebuild_bin" "$qemu_rebuild_vm"
+
+  cat >"$qemu_rebuild_bin/docker" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == info ]]; then
+  exit 0
+elif [[ "\$1" == run ]]; then
+  echo "run" >>"$qemu_rebuild_log"
+  touch "\$LIGHTXDM_VM_DIR/BUILD_DONE"
+  exit 0
+fi
+exit 1
+EOF
+  for qemu_rebuild_tool in qemu-system-x86_64 ssh; do
+    cat >"$qemu_rebuild_bin/$qemu_rebuild_tool" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  done
+  cat >"$qemu_rebuild_bin/ssh-keygen" <<'EOF'
+#!/usr/bin/env bash
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -f ]]; then
+    touch "$2"
+    exit 0
+  fi
+  shift
+done
+exit 0
+EOF
+  cat >"$qemu_rebuild_bin/python3" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$qemu_rebuild_bin/docker" "$qemu_rebuild_bin/qemu-system-x86_64" \
+    "$qemu_rebuild_bin/ssh" "$qemu_rebuild_bin/ssh-keygen" "$qemu_rebuild_bin/python3"
+
+  set +e
+  PATH="$qemu_rebuild_bin:$PATH" LIGHTXDM_VM_DIR="$qemu_rebuild_vm" \
+    bash "$REPO_ROOT/tests/qemu-arch.sh" xfce >/dev/null 2>&1
+  touch "$qemu_rebuild_vm/root.img"
+  rm -f "$qemu_rebuild_log"
+  PATH="$qemu_rebuild_bin:$PATH" LIGHTXDM_VM_DIR="$qemu_rebuild_vm" \
+    bash "$REPO_ROOT/tests/qemu-arch.sh" xfce >/dev/null 2>&1
+  reused_without_docker=0
+  [[ ! -e "$qemu_rebuild_log" ]] && reused_without_docker=1
+  PATH="$qemu_rebuild_bin:$PATH" LIGHTXDM_VM_DIR="$qemu_rebuild_vm" \
+    bash "$REPO_ROOT/tests/qemu-arch.sh" --rebuild-image xfce >/dev/null 2>&1
+  rebuilt_with_docker=0
+  if [[ -f "$qemu_rebuild_log" ]] && grep -Fxq "run" "$qemu_rebuild_log"; then
+    rebuilt_with_docker=1
+  fi
+  set -e
+  if [[ $reused_without_docker -eq 1 && $rebuilt_with_docker -eq 1 ]]; then
+    pass "qemu-arch.sh --rebuild-image forces image rebuild while a plain run reuses it"
+  else
+    fail "qemu-arch.sh --rebuild-image (reused=$reused_without_docker, rebuilt=$rebuilt_with_docker)"
+  fi
+else
+  skip "qemu-arch.sh --rebuild-image (/dev/kvm is not accessible)"
+fi
+
 # A failing docker stub and a temporary VM dir keep a missed duplicate check from reaching real VMs.
 qemu_dup_bin="$TMP_DIR/qemu_dup/bin"
 mkdir -p "$qemu_dup_bin"

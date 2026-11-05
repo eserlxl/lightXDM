@@ -10,7 +10,7 @@ JOBS="${LIGHTXDM_VM_JOBS:-2}"
 
 usage() {
   cat <<EOF
-Usage: bash $0 [-h|--help] [--strict] [desktop | <from>:<to> | <desktop>+autologin | <desktop>+lightdm | <desktop>+relogin ...]   (default: plasma xfce)
+Usage: bash $0 [-h|--help] [--strict] [--rebuild-image] [desktop | <from>:<to> | <desktop>+autologin | <desktop>+lightdm | <desktop>+relogin ...]   (default: plasma xfce)
 
 Builds an Arch Linux VM image in Docker (once per package set), then for each desktop boots a
 VM, runs install.sh --de <desktop> as a test user, reboots, types the password at the TTY1
@@ -21,6 +21,7 @@ An argument <desktop>+lightdm checks that install.sh disables LightDM and uninst
 An argument <desktop>+relogin logs out and back in on TTY1 in the same boot instead of rebooting for the second login.
 Prints one PASS/FAIL line per check; exits 1 if any check fails, 0 with SKIP if a tool is missing.
 --strict exits 1 on any SKIP (also enabled by LIGHTXDM_STRICT_TESTS=1).
+--rebuild-image rebuilds the VM image even when the package set is unchanged, to test current Arch packages.
 
 Environment:
   LIGHTXDM_VM_DIR   image, cache and logs (default: \${XDG_CACHE_HOME:-~/.cache}/lightxdm-vm)
@@ -44,6 +45,7 @@ is_mode() {
 }
 
 strict=0
+rebuild_image=0
 if [[ "${LIGHTXDM_STRICT_TESTS:-0}" == "1" ]]; then
   strict=1
 fi
@@ -51,6 +53,10 @@ desktops=()
 for arg in "$@"; do
   if [[ "$arg" == "--strict" ]]; then
     strict=1
+    continue
+  fi
+  if [[ "$arg" == "--rebuild-image" ]]; then
+    rebuild_image=1
     continue
   fi
   for desktop in "${desktops[@]}"; do
@@ -123,7 +129,7 @@ pkgs="$(
   done | sort -u | tr '\n' ' '
 )"
 stamp="$(printf '%s\n' "$pkgs" | cat - "$REPO_ROOT/tests/qemu/build-image.sh" | sha256sum | cut -d' ' -f1)"
-if [[ "$(cat "$VM_DIR/image.stamp" 2>/dev/null || true)" != "$stamp" || ! -f "$VM_DIR/root.img" ]]; then
+if [[ "$(cat "$VM_DIR/image.stamp" 2>/dev/null || true)" != "$stamp" || ! -f "$VM_DIR/root.img" || $rebuild_image -eq 1 ]]; then
   echo "Building the VM image for: ${desktops[*]} (a few minutes; packages are cached in $VM_DIR/pkgcache)"
   printf '%s\n' "$pkgs" >"$VM_DIR/pkgs.txt"
   cp "$REPO_ROOT/tests/qemu/build-image.sh" "$VM_DIR/build-image.sh"
