@@ -10,12 +10,13 @@ JOBS="${LIGHTXDM_VM_JOBS:-2}"
 
 usage() {
   cat <<EOF
-Usage: bash $0 [-h|--help] [desktop | <from>:<to> ...]   (default: plasma xfce)
+Usage: bash $0 [-h|--help] [desktop | <from>:<to> | <desktop>+autologin ...]   (default: plasma xfce)
 
 Builds an Arch Linux VM image in Docker (once per package set), then for each desktop boots a
 VM, runs install.sh --de <desktop> as a test user, reboots, types the password at the TTY1
 login and checks that the desktop session starts and PAM unlocks the keyring, twice.
 An argument <from>:<to> installs <from>, then <to> in the same VM, and checks <to>.
+An argument <desktop>+autologin installs with --no-keyring --autologin and boots without typing a password.
 Prints one PASS/FAIL line per check; exits 1 if any check fails, 0 with SKIP if a tool is missing.
 
 Environment:
@@ -32,11 +33,25 @@ is_desktop() {
   esac
 }
 
+is_mode() {
+  case "$1" in
+    autologin) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 desktops=()
 for arg in "$@"; do
   case "$arg" in
     -h | --help) usage; exit 0 ;;
     *:*:*) echo "Unknown desktop: $arg" >&2; usage >&2; exit 1 ;;
+    *+*)
+      if is_desktop "${arg%%+*}" && is_mode "${arg#*+}"; then
+        desktops+=("$arg")
+      else
+        echo "Unknown desktop: $arg" >&2; usage >&2; exit 1
+      fi
+      ;;
     *:*)
       if is_desktop "${arg%%:*}" && is_desktop "${arg#*:}"; then
         desktops+=("$arg")
@@ -84,6 +99,7 @@ pkgs="$(
   # shellcheck source=install.sh disable=SC1091
   source "$REPO_ROOT/install.sh"
   for de in "${desktops[@]}"; do
+    de="${de%+*}"
     for part in ${de/:/ }; do list_packages "$part"; done
   done | sort -u | tr '\n' ' '
 )"
@@ -110,7 +126,7 @@ for de in "${desktops[@]}"; do
     running=$((running - 1))
   fi
   port=$((port + 1))
-  run_dir="$VM_DIR/run-${de/:/-}"
+  run_dir="$VM_DIR/run-${de//[:+]/-}"
   mkdir -p "$run_dir"
   rm -f -- "$run_dir/result"
   echo "Testing $de (log: $run_dir/driver.log)"
@@ -121,7 +137,7 @@ wait || true
 
 failures=0
 for de in "${desktops[@]}"; do
-  run_dir="$VM_DIR/run-${de/:/-}"
+  run_dir="$VM_DIR/run-${de//[:+]/-}"
   result="$run_dir/result"
   if [[ -f "$result" ]] && grep -q '^DONE' "$result"; then
     grep -E '^(PASS|FAIL)' "$result" || true

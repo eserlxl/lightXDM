@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Real TTY1 login test for one desktop in a QEMU VM (driven by tests/qemu-arch.sh).
 
-Usage: vmtest.py <desktop|from:to> <repo> <vm-dir> <ssh-port>
+Usage: vmtest.py <desktop|from:to|desktop+autologin> <repo> <vm-dir> <ssh-port>
 Boots <vm-dir>/root.img with -snapshot (the image stays unchanged), copies the repo's
 working tree into the VM, runs install.sh --de <desktop> as user 'tester' (or <from> then
 <to> when given <from>:<to>), reboots, types the login at the TTY1 getty through QMP, and
@@ -20,8 +20,9 @@ import sys
 import time
 
 DESKTOP, REPO, VM_DIR, PORT = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
-FROM, TARGET = DESKTOP.split(":") if ":" in DESKTOP else (None, DESKTOP)
-RUN = os.path.join(VM_DIR, f"run-{DESKTOP.replace(':', '-')}")
+spec, _, MODE = DESKTOP.partition("+")
+FROM, TARGET = spec.split(":") if ":" in spec else (None, spec)
+RUN = os.path.join(VM_DIR, f"run-{DESKTOP.replace(':', '-').replace('+', '-')}")
 RESULT = os.path.join(RUN, "result")
 QMP_SOCK = os.path.join(RUN, "qmp.sock")
 USER, PASSWORD = "tester", "lightxdm-test"  # throwaway account inside the disposable VM
@@ -145,6 +146,8 @@ def reboot_and_login(qmp, tag):
         if ssh("systemctl is-active getty@tty1")[1].strip() == "active":
             break
         time.sleep(2)
+    if MODE == "autologin":
+        return
     time.sleep(5)
     qmp.type(USER + "\n")
     time.sleep(3)
@@ -187,16 +190,17 @@ def session_checks(tag, qmp):
     else:
         check(f"{tag}: Xorg server runs", has_xorg)
     time.sleep(15)
-    if KEYRING == "kwallet":
-        # KDE Frameworks 6.31+: PAM starts ksecretd --pam-login, which serves org.freedesktop.secrets.
-        check(f"{tag}: ksecretd was started by PAM", ssh(f"pgrep -u {USER} -f 'ksecretd --pam-login'")[0] == 0)
-        collection = "kdewallet"
-    else:
-        collection = "login"
-    _, out, err = user_bus("busctl --user get-property org.freedesktop.secrets "
-                           f"/org/freedesktop/secrets/collection/{collection} org.freedesktop.Secret.Collection Locked")
-    check(f"{tag}: keyring collection '{collection}' is unlocked without a prompt", out.strip() == "b false",
-          (out + err).strip())
+    if MODE != "autologin":
+        if KEYRING == "kwallet":
+            # KDE Frameworks 6.31+: PAM starts ksecretd --pam-login, which serves org.freedesktop.secrets.
+            check(f"{tag}: ksecretd was started by PAM", ssh(f"pgrep -u {USER} -f 'ksecretd --pam-login'")[0] == 0)
+            collection = "kdewallet"
+        else:
+            collection = "login"
+        _, out, err = user_bus("busctl --user get-property org.freedesktop.secrets "
+                               f"/org/freedesktop/secrets/collection/{collection} org.freedesktop.Secret.Collection Locked")
+        check(f"{tag}: keyring collection '{collection}' is unlocked without a prompt", out.strip() == "b false",
+              (out + err).strip())
     # Ask polkitd for an action that needs authentication on behalf of a session process: with an
     # agent registered for the session it opens a dialog and pkcheck waits (timeout -> 124); without
     # one polkitd answers at once "no agent is available" (exit 2). Shell-integrated agents
@@ -242,12 +246,17 @@ def main():
             check(f"install.sh --de {FROM} exits 0", rc == 0, out[-400:])
             if rc != 0:
                 return
-        rc, out, err = ssh(f"su - {USER} -c 'cd ~/lightXDM && bash install.sh --de {TARGET}' 2>&1", timeout=1800)
+        install_args = f"--no-keyring --autologin --de {TARGET}" if MODE == "autologin" else f"--de {TARGET}"
+        rc, out, err = ssh(f"su - {USER} -c 'cd ~/lightXDM && bash install.sh {install_args}' 2>&1", timeout=1800)
         with open(os.path.join(RUN, "install.log"), "w") as f:
             f.write(out + err)
-        check(f"install.sh --de {TARGET} exits 0", rc == 0, out[-400:])
+        check(f"install.sh {install_args} exits 0", rc == 0, out[-400:])
         if rc != 0:
             return
+        if MODE == "autologin":
+            _, out, err = ssh(f"bash /home/{USER}/lightXDM/enable-autologin.sh --status")
+            check(f"enable-autologin.sh --status reports enabled for {USER}",
+                  out.startswith(f"enabled for {USER}"), (out + err).strip())
         reboot_and_login(qmp, "login1")
         session_checks("login1", qmp)
         if os.environ.get("LIGHTXDM_VM_KEEP") == "1":
