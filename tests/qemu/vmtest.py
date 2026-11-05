@@ -33,9 +33,9 @@ DESKTOPS = {
     "gnome": ("wayland", ["gnome-shell"], "gnome"),
     "budgie": ("wayland", ["labwc", "budgie-panel"], "gnome"),
     "xfce": ("x11", ["xfce4-session", "xfwm4"], "gnome"),
-    "lxqt": ("x11", ["lxqt-session"], "gnome"),
-    "lxde": ("x11", ["lxsession"], "gnome"),
-    "mate": ("x11", ["mate-session"], "gnome"),
+    "lxqt": ("x11", ["lxqt-session", "lxqt-panel"], "gnome"),
+    "lxde": ("x11", ["lxsession", "openbox", "lxpanel"], "gnome"),
+    "mate": ("x11", ["mate-session", "marco", "mate-panel"], "gnome"),
     # cinnamon-session-binary shows as a truncated 15-character comm; check the shell instead.
     "cinnamon": ("x11", ["cinnamon"], "gnome"),
     "i3": ("x11", ["i3"], "gnome"),
@@ -271,13 +271,15 @@ def user_bus(cmd):
 
 
 def session_checks(tag, qmp):
-    for proc in PROCS:
-        check(f"{tag}: {proc} runs for {USER}", wait_proc(proc))
+    check(f"{tag}: {PROCS[0]} runs for {USER}", wait_proc(PROCS[0]))
     if tag == "login1" and TARGET in FIRST_LOGIN_KEYS:
         time.sleep(8)
         qmp.type(FIRST_LOGIN_KEYS[TARGET])
         log(f"{tag}: answered the first-login prompt")
         time.sleep(5)
+    # LXQt starts its panel only after the first-login prompt is answered.
+    for proc in PROCS[1:]:
+        check(f"{tag}: {proc} runs for {USER}", wait_proc(proc))
     _, sessions, _ = ssh(f"for s in $(loginctl list-sessions --no-legend | awk '$3==\"{USER}\"{{print $1}}'); do "
                          "loginctl show-session $s -p TTY -p Service -p Active; echo; done")
     log(f"{tag}: sessions\n{sessions}")
