@@ -735,7 +735,7 @@ gnome_session_type_block() {
 
 # Register GNOME's TTY1 login as Wayland before the session stack runs pam_systemd.
 configure_gnome_session_type() (
-  local de="$1" user="$2" preview="${3:-0}"
+  local de="$1" user="$2" preview="${3:-0}" no_keyring="${4:-0}"
   if [[ -z "$user" || "$user" == -* || "$user" == *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]* ]]; then
     log "ERROR: Invalid user name: $user (use letters, digits, ., _ and -; do not start with -)"
     return 1
@@ -773,6 +773,11 @@ configure_gnome_session_type() (
   }
   if [[ $preview -eq 1 ]]; then
     validate_gnome_block || return 1
+    if [[ "$de" == gnome && $no_keyring -eq 1 && -r "$LOGIN_FILE" ]] &&
+      ! grep -Eq '^[[:space:]]*-?session[[:space:]]' "$LOGIN_FILE"; then
+      log "ERROR: No session line in $LOGIN_FILE; lightXDM will not change it."
+      return 1
+    fi
     printf 'GNOME session type: %s\n' "$LOGIN_FILE"
     if [[ ! -r "$LOGIN_FILE" ]]; then
       printf '  existing block: unknown (needs root)\n'
@@ -964,7 +969,7 @@ preview_install() {
   else
     configure_pam "$de" 1 "$keyring" || return 1
   fi
-  configure_gnome_session_type "$de" "$real_user" 1 || return 1
+  configure_gnome_session_type "$de" "$real_user" 1 "$no_keyring" || return 1
   disable_display_managers 1 || return 1
   if [[ $autologin -eq 1 ]]; then
     printf 'TTY1 autologin: enable for %s (--autologin)\n' "$real_user"

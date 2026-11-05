@@ -8532,6 +8532,24 @@ if [[ $status -eq 1 && "$output" == *"ERROR:"* && "$output" == *"$LOGIN_FILE"* &
 else
   fail "GNOME missing session line (status=$status, output=$output)"
 fi
+: >"$STUB_LOG"
+set +e
+output="$(env -u SHELLOPTS -u SUDO_USER HOME="$dr_preview_home" USER="$gnome_user" \
+  PATH="$dr_bin:$PATH" LOGIN_FILE="$LOGIN_FILE" \
+  GNOME_SESSION_TYPE_DEST="$GNOME_SESSION_TYPE_DEST" DM_STATE_FILE="$TMP_DIR/gnome-no-session-dm" \
+  DISPLAY_MANAGER_LINK="$TMP_DIR/gnome-no-session-display-manager" \
+  AUTOLOGIN_DROPIN_DIR="$TMP_DIR/gnome-no-session-getty.d" \
+  bash "$REPO_ROOT/install.sh" --dry-run --no-keyring --de gnome 2>&1)"
+status=$?
+set -e
+if [[ $status -ne 0 && "$output" == *"ERROR: No session line in $LOGIN_FILE; lightXDM will not change it."* &&
+  ! -e "${LOGIN_FILE}.lightxdm.bak" && ! -e "$GNOME_SESSION_TYPE_DEST" &&
+  ! -e "$TMP_DIR/gnome-no-session-dm" && ! -e "$TMP_DIR/gnome-no-session-getty.d" ]] &&
+  ! grep -q '^sudo ' "$STUB_LOG" && cmp -s "$LOGIN_FILE" "$TMP_DIR/gnome-no-session"; then
+  pass "GNOME dry-run without keyring refuses a missing session line without sudo or file changes"
+else
+  fail "GNOME dry-run missing session line (status=$status, output=$output)"
+fi
 
 # Preserve whitespace and a missing final newline, including with a -session entry.
 printf '#%%PAM-1.0\n\tauth include system-local-login\n  -session include system-local-login\npassword include system-local-login' >"$LOGIN_FILE"
