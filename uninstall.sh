@@ -49,12 +49,38 @@ fi
 
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
+readonly GNOME_SESSION_TYPE_DEST="${GNOME_SESSION_TYPE_DEST:-/etc/lightxdm/gnome-session-type.conf}"
 DM_STATE_FILE="${DM_STATE_FILE:-/etc/lightxdm/disabled-display-managers}"
 BACKUP_FILE="${LOGIN_FILE}.lightxdm.bak"
 
 files_match() {
   [[ "$(sha256sum < "$1")" == "$(sha256sum < "$2")" ]]
 }
+
+# Remove GNOME session-type lines before comparing the login file with its backup.
+if [[ $keyring_only -eq 0 ]]; then
+  gnome_marker='# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)'
+  gnome_tty_gate='session    [success=2 default=ignore] pam_succeed_if.so quiet tty notin tty1:/dev/tty1'
+  gnome_user_gate_re='^session    \[success=1 default=ignore\] pam_succeed_if\.so quiet user != [abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*$'
+  # Only lightXDM's own conffile: a user's pam_env line for another file stays.
+  gnome_env_line="session    optional   pam_env.so readenv=0 user_readenv=0 conffile=$GNOME_SESSION_TYPE_DEST"
+  gnome_pam_sed=()
+  if [[ -f "$LOGIN_FILE" ]]; then
+    line_number=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line_number=$((line_number + 1))
+      if [[ "$line" == "$gnome_marker" || "$line" == "$gnome_tty_gate" || "$line" =~ $gnome_user_gate_re || "$line" == "$gnome_env_line" ]]; then
+        if [[ ! -f "$BACKUP_FILE" ]] || ! grep -Fxq -- "$line" "$BACKUP_FILE"; then
+          gnome_pam_sed+=(-e "${line_number}d")
+        fi
+      fi
+    done < "$LOGIN_FILE"
+    if [[ ${#gnome_pam_sed[@]} -gt 0 ]]; then
+      sed -i --follow-symlinks "${gnome_pam_sed[@]}" "$LOGIN_FILE"
+    fi
+  fi
+  rm -f -- "$GNOME_SESSION_TYPE_DEST"
+fi
 
 # Remove only the exact PAM lines configure_pam appends.
 if [ -f "$BACKUP_FILE" ]; then

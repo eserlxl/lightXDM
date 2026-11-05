@@ -11,6 +11,7 @@ readonly DM_LIST=(sddm lightdm gdm lxdm)
 readonly DISPLAY_MANAGER_LINK="${DISPLAY_MANAGER_LINK:-/etc/systemd/system/display-manager.service}"
 readonly DM_STATE_FILE="${DM_STATE_FILE:-/etc/lightxdm/disabled-display-managers}"
 readonly LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
+readonly GNOME_SESSION_TYPE_DEST="${GNOME_SESSION_TYPE_DEST:-/etc/lightxdm/gnome-session-type.conf}"
 readonly AUTOLOGIN_DROPIN_DIR="${AUTOLOGIN_DROPIN_DIR:-/etc/systemd/system/getty@tty1.service.d}"
 readonly PAM_KWALLET_AUTH="auth       optional   pam_kwallet5.so"
 readonly PAM_KWALLET_SESSION="session    optional   pam_kwallet5.so force_run"
@@ -70,6 +71,8 @@ detect_de() {
 de_label() {
   case "$1" in
     plasma) echo "KDE Plasma" ;;
+    gnome) echo "GNOME" ;;
+    budgie) echo "Budgie" ;;
     xfce) echo "XFCE" ;;
     lxqt) echo "LXQt" ;;
     lxde) echo "LXDE" ;;
@@ -144,6 +147,7 @@ list_packages() {
       pkgs=(plasma-desktop konsole dolphin kwallet-pam polkit-kde-agent)
       ;;
     gnome)
+      base_pkgs=(udisks2 polkit gvfs gvfs-mtp gvfs-gphoto2 gvfs-afc)
       pkgs=(gnome-shell gnome-session gnome-control-center nautilus gnome-terminal gnome-keyring polkit-gnome)
       ;;
     xfce)
@@ -162,6 +166,7 @@ list_packages() {
       pkgs=(cinnamon gnome-terminal gnome-keyring polkit-gnome)
       ;;
     budgie)
+      base_pkgs=(udisks2 polkit gvfs gvfs-mtp gvfs-gphoto2 gvfs-afc)
       pkgs=(budgie-desktop gnome-terminal gnome-keyring polkit-gnome)
       ;;
     i3)
@@ -256,9 +261,9 @@ preserve_dotfile() {
 # Print the session template path for a session id
 xinitrc_template() {
   local name=".xinitrc-$1"
-  if [[ "$1" == "plasma" ]]; then
-    name=".wayland-session-plasma"
-  fi
+  case "$1" in
+    plasma | gnome | budgie) name=".wayland-session-$1" ;;
+  esac
   if [[ -f "$HOME/.config/lightxdm/$name" ]]; then
     printf '%s\n' "$HOME/.config/lightxdm/$name"
   else
@@ -266,18 +271,12 @@ xinitrc_template() {
   fi
 }
 
-# Create ~/.config/lightxdm/.xinitrc-<id> (or .wayland-session-plasma) to edit: a copy of the
+# Create ~/.config/lightxdm/.xinitrc-<id> (or .wayland-session-<id>) to edit: a copy of the
 # built-in template, or for a custom window manager the i3 template with its session id and command swapped.
 init_xinitrc_template() {
   local id="$1" dest="$HOME/.config/lightxdm/.xinitrc-$1"
-  if [[ "$id" == "plasma" ]]; then
-    dest="$HOME/.config/lightxdm/.wayland-session-plasma"
-  fi
   case "$id" in
-    gnome | budgie)
-      log "$id now runs only on Wayland and cannot be started with startx (see README.md)."
-      return 1
-      ;;
+    plasma | gnome | budgie) dest="$HOME/.config/lightxdm/.wayland-session-$id" ;;
   esac
   # Explicit character list: [a-z] ranges miss "i" under some locales (for example tr_TR).
   if [[ -z "$id" || "$id" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* ]]; then
@@ -290,10 +289,10 @@ init_xinitrc_template() {
   fi
   mkdir -p "$HOME/.config/lightxdm"
   case "$id" in
-    plasma)
-      cp -- "$SCRIPT_DIR/dotfiles/.wayland-session-plasma" "$dest"
+    plasma | gnome | budgie)
+      cp -- "$SCRIPT_DIR/dotfiles/.wayland-session-$id" "$dest"
       chmod 755 "$dest"
-      log "Created $dest from the built-in plasma template. Edit it, then run: bash install.sh --de plasma"
+      log "Created $dest from the built-in $id template. Edit it, then run: bash install.sh --de $id"
       ;;
     xfce | lxqt | lxde | mate | cinnamon | i3)
       cp -- "$SCRIPT_DIR/dotfiles/.xinitrc-$id" "$dest"
@@ -326,11 +325,20 @@ check_session_commands() {
       [[ "$token" == /* ]] || continue
       check_path="${SESSION_ROOT:-}$token"
       if [[ ! -f "$check_path" || ! -x "$check_path" ]]; then
-        if [[ "$base" == ".wayland-session-plasma" ]]; then
-          log "Missing command: $token (normally provided by plasma-workspace). Install plasma-desktop and re-run."
-        else
-          log "Missing command: $token. Install your session and ensure $token exists and is executable, then re-run."
-        fi
+        case "$base" in
+          .wayland-session-plasma)
+            log "Missing command: $token (normally provided by plasma-workspace). Install plasma-desktop and re-run."
+            ;;
+          .wayland-session-gnome)
+            log "Missing command: $token (normally provided by gnome-session). Install gnome-session and re-run."
+            ;;
+          .wayland-session-budgie)
+            log "Missing command: $token (normally provided by budgie-desktop). Install budgie-desktop and re-run."
+            ;;
+          *)
+            log "Missing command: $token. Install your session and ensure $token exists and is executable, then re-run."
+            ;;
+        esac
         return 1
       fi
     done
@@ -509,6 +517,103 @@ configure_pam() {
   done
 }
 
+# Register GNOME's TTY1 login as Wayland before the session stack runs pam_systemd.
+configure_gnome_session_type() (
+  local de="$1" user="$2"
+  if [[ -z "$user" || "$user" == -* || "$user" == *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]* ]]; then
+    log "ERROR: Invalid user name: $user (use letters, digits, ., _ and -; do not start with -)"
+    return 1
+  fi
+
+  local marker='# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)'
+  local user_re='[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*'
+  # A numeric jump in PAM means "ok" plus a jump, so a failed condition would fail the whole
+  # session stack. Each gate therefore jumps when it does NOT match and ignores its own result
+  # otherwise; login passes the tty as "tty1" or "/dev/tty1".
+  local tty_gate='session    [success=2 default=ignore] pam_succeed_if.so quiet tty notin tty1:/dev/tty1'
+  local user_gate_re="^session    \\[success=1 default=ignore\\] pam_succeed_if\\.so quiet user != ${user_re}$"
+  local env_line="session    optional   pam_env.so readenv=0 user_readenv=0 conffile=$GNOME_SESSION_TYPE_DEST"
+  local has_block=0
+  if [[ -f "$LOGIN_FILE" ]] && grep -Fxq -- "$marker" "$LOGIN_FILE"; then
+    has_block=1
+  fi
+  if [[ "$de" != gnome && $has_block -eq 0 ]]; then
+    if [[ -e "$GNOME_SESSION_TYPE_DEST" ]]; then
+      sudo rm -f -- "$GNOME_SESSION_TYPE_DEST" || return 1
+    fi
+    return 0
+  fi
+  if [[ ! -f "$LOGIN_FILE" ]]; then
+    log "ERROR: $LOGIN_FILE is missing; lightXDM will not create it."
+    return 1
+  fi
+
+  local tmp line newline inserted=0 block_line=0
+  tmp="$(mktemp)" || return 1
+  trap 'rm -f -- "$tmp"' EXIT
+  # Preserve each original line, including whether the last line has a newline.
+  while :; do
+    if IFS= read -r line; then
+      newline=$'\n'
+    elif [[ -n "$line" ]]; then
+      newline=""
+    else
+      break
+    fi
+    if [[ $has_block -eq 1 ]]; then
+      if [[ "$line" == "$marker" ]]; then
+        block_line=1
+        continue
+      elif [[ $block_line -eq 1 && "$line" == "$tty_gate" ]]; then
+        block_line=2
+        continue
+      elif [[ $block_line -eq 2 && "$line" =~ $user_gate_re ]]; then
+        block_line=3
+        continue
+      elif [[ $block_line -eq 3 && "$line" == "$env_line" ]]; then
+        block_line=0
+        continue
+      fi
+      block_line=0
+    fi
+    if [[ "$de" == gnome && $inserted -eq 0 && "$line" =~ ^[[:space:]]*-?session[[:space:]] ]]; then
+      printf '%s\n' "$marker" "$tty_gate" \
+        "session    [success=1 default=ignore] pam_succeed_if.so quiet user != $user" \
+        "$env_line"
+      inserted=1
+    fi
+    printf '%s%s' "$line" "$newline"
+  done < "$LOGIN_FILE" > "$tmp"
+
+  if [[ "$de" == gnome && $inserted -eq 0 ]]; then
+    log "ERROR: No session line in $LOGIN_FILE; lightXDM will not change it."
+    return 1
+  fi
+  local changed=0 backup="${LOGIN_FILE}.lightxdm.bak"
+  if [[ "$(sha256sum < "$tmp")" != "$(sha256sum < "$LOGIN_FILE")" ]]; then
+    changed=1
+    if [[ ! -e "$backup" ]]; then
+      log "Backing up $LOGIN_FILE to $backup"
+      sudo cp "$LOGIN_FILE" "$backup" || return 1
+    fi
+  fi
+  if [[ "$de" == gnome ]]; then
+    local src="$SCRIPT_DIR/pam/gnome-session-type.conf"
+    if [[ ! -f "$GNOME_SESSION_TYPE_DEST" ]] ||
+      [[ "$(sha256sum < "$src")" != "$(sha256sum < "$GNOME_SESSION_TYPE_DEST")" || "$(stat -c %a "$GNOME_SESSION_TYPE_DEST")" != 644 ]]; then
+      sudo install -Dm644 "$src" "$GNOME_SESSION_TYPE_DEST" || return 1
+    fi
+  fi
+  if [[ $changed -eq 1 ]]; then
+    # shellcheck disable=SC2024  # the temporary input file belongs to the calling user
+    sudo tee "$LOGIN_FILE" < "$tmp" > /dev/null || return 1
+    log "Configured GNOME session type in $LOGIN_FILE for $de."
+  fi
+  if [[ "$de" != gnome && -e "$GNOME_SESSION_TYPE_DEST" ]]; then
+    sudo rm -f -- "$GNOME_SESSION_TYPE_DEST" || return 1
+  fi
+)
+
 # Install Polkit rule for passwordless actions
 install_polkit_rule() {
   log "Installing Polkit rule for passwordless actions..."
@@ -608,22 +713,23 @@ main() {
         echo "$usage"
         cat <<'EOF'
 
-Sets up a desktop from a TTY1 login instead of a display manager: X11 desktops start with startx and Plasma starts on Wayland.
+Sets up a desktop from a TTY1 login instead of a display manager: X11 desktops start with startx and Plasma, GNOME and Budgie start on Wayland.
 A default run, as your regular user (it asks for sudo once):
   - installs the packages for the desktop (detected, chosen from a menu, or --de)
-  - copies ~/.bash_profile and ~/.xinitrc (or ~/.wayland-session for Plasma), backing up or saving any existing copies
+  - copies ~/.bash_profile and ~/.xinitrc (or ~/.wayland-session for Plasma, GNOME and Budgie), backing up or saving any existing copies
   - appends keyring unlock lines to /etc/pam.d/login (backup at /etc/pam.d/login.lightxdm.bak)
+  - for GNOME, adds a TTY1-only PAM line to register the login session as Wayland
   - installs a Polkit rule for passwordless power-off, reboot, suspend and hibernate
   - disables installed display managers (uninstall.sh re-enables them)
 
 Options:
-  --de <id>         configure this desktop: plasma xfce lxqt lxde mate cinnamon i3, or a custom
+  --de <id>         configure this desktop: plasma gnome xfce lxqt lxde mate cinnamon budgie i3, or a custom
                     id that has a ~/.config/lightxdm/.xinitrc-<id> template (with --no-packages)
   --list-packages   print the packages for --de <id> and exit; changes nothing
-  --init-template   create ~/.config/lightxdm/.xinitrc-<id> (or .wayland-session-plasma) for --de <id> to edit, and exit
+  --init-template   create ~/.config/lightxdm/.xinitrc-<id> (or .wayland-session-<id> for Plasma, GNOME and Budgie) for --de <id> to edit, and exit
                     (any lowercase id: a custom one starts from the i3 template)
   --no-packages     skip package installation
-  --no-keyring      skip keyring packages and the PAM lines (use with autologin)
+  --no-keyring      skip keyring packages and keyring PAM lines (use with autologin)
   --no-polkit-rule  keep your Polkit policy; do not install the rule
   --autologin       also log in on TTY1 without a password (requires --no-keyring)
 
@@ -657,7 +763,7 @@ EOF
         ;;
       --de)
         if [[ $# -lt 2 || "$2" == -* ]]; then
-          log "Missing argument for --de (valid ids: plasma xfce lxqt lxde mate cinnamon i3)"
+          log "Missing argument for --de (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
           echo "$usage" >&2
           exit 1
         fi
@@ -700,16 +806,12 @@ EOF
 
   if [[ $list_only -eq 1 ]]; then
     if [[ $de_specified -eq 0 ]]; then
-      log "--list-packages requires --de <id> (valid ids: plasma xfce lxqt lxde mate cinnamon i3)"
+      log "--list-packages requires --de <id> (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
       echo "$usage" >&2
       exit 1
     fi
     case "$de" in
-      gnome | budgie)
-        log "$de now runs only on Wayland and cannot be started with startx (see README.md). To configure another installed desktop, pass --de <id>."
-        exit 1
-        ;;
-      plasma | xfce | lxqt | lxde | mate | cinnamon | i3)
+      plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3)
         if [[ $no_keyring -eq 1 ]]; then
           list_packages "$de" --no-keyring
         else
@@ -718,7 +820,7 @@ EOF
         exit 0
         ;;
       *)
-        log "Unsupported desktop environment: $de; --list-packages requires a built-in desktop id (valid ids: plasma xfce lxqt lxde mate cinnamon i3)"
+        log "Unsupported desktop environment: $de; --list-packages requires a built-in desktop id (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
         exit 1
         ;;
     esac
@@ -730,7 +832,7 @@ EOF
       *)
         # Explicit character list: [a-z] ranges miss "i" under some locales (for example tr_TR).
         if [[ $no_packages -ne 1 || -z "$de" || "$de" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* || ! -f "$(xinitrc_template "$de")" ]]; then
-          log "Unsupported desktop environment: $de (valid ids: plasma xfce lxqt lxde mate cinnamon i3)"
+          log "Unsupported desktop environment: $de (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
           if [[ -n "$de" && "$de" != *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* ]]; then
             if [[ ! -f "$(xinitrc_template "$de")" ]]; then
               log "For a custom session, create its template first: bash install.sh --init-template --de $de"
@@ -786,12 +888,9 @@ EOF
         log "Detected desktop environment: $de"
       fi
     else
-      local candidate supported_des=() wayland_des=()
+      local candidate supported_des=()
       for candidate in "${detected_des[@]}"; do
         case "$candidate" in
-          gnome | budgie)
-            wayland_des+=("$candidate")
-            ;;
           unknown | "") ;;
           *)
             supported_des+=("$candidate")
@@ -803,9 +902,6 @@ EOF
         de="${detected_des[0]}"
         log "Detected desktop environment: $de"
       else
-        if [[ ${#wayland_des[@]} -gt 0 ]]; then
-          log "Skipping Wayland-only desktop environment(s): ${wayland_des[*]}"
-        fi
         if [[ ${#supported_des[@]} -eq 1 ]]; then
           de="${supported_des[0]}"
           log "Detected desktop environment: $de"
@@ -822,13 +918,6 @@ EOF
       fi
     fi
   fi
-
-  case "$de" in
-    gnome | budgie)
-      log "$de now runs only on Wayland and cannot be started with startx (see README.md). To configure another installed desktop, pass --de <id>."
-      exit 1
-      ;;
-  esac
 
   local template is_wayland=0 session_dotfile=".xinitrc" manual_start="startx"
   template="$(xinitrc_template "$de")"
@@ -908,6 +997,9 @@ EOF
     configure_pam "$de"
     completed_steps+=("$install_step")
   fi
+  install_step="configure_gnome_session_type"
+  configure_gnome_session_type "$de" "$real_user"
+  completed_steps+=("$install_step")
   if [[ $no_polkit_rule -eq 1 ]]; then
     log "Skipping Polkit rule installation (--no-polkit-rule)."
   else

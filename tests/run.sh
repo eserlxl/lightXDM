@@ -145,9 +145,12 @@ export SESSION_ROOT="$TMP_DIR/session_root"
 mkdir -p "$SESSION_ROOT/usr/lib" "$SESSION_ROOT/usr/bin"
 cp "$STUB_BIN/chown" "$SESSION_ROOT/usr/lib/plasma-dbus-run-session-if-needed"
 cp "$STUB_BIN/chown" "$SESSION_ROOT/usr/bin/startplasma-wayland"
+cp "$STUB_BIN/chown" "$SESSION_ROOT/usr/bin/gnome-session"
+cp "$STUB_BIN/chown" "$SESSION_ROOT/usr/bin/startbudgielabwc"
 export PATH="$STUB_BIN:$PATH"
 export STUB_LOG="$TMP_DIR/stub.log"
 export LOGIN_FILE="$TMP_DIR/login"
+export GNOME_SESSION_TYPE_DEST="$TMP_DIR/gnome-session-type.conf"
 export AUTOLOGIN_DROPIN_DIR="$TMP_DIR/getty@tty1.service.d"
 export POLKIT_RULE_DEST="$TMP_DIR/49-nopasswd.rules"
 export DISPLAY_MANAGER_LINK="$TMP_DIR/display-manager.service"
@@ -332,6 +335,11 @@ run_main_with_stubs() (
   install_packages() { stub_install_step install_packages "$@"; }
   copy_dotfiles() { stub_install_step copy_dotfiles "$1"; }
   configure_pam() { stub_install_step configure_pam "$1"; }
+  configure_gnome_session_type() {
+    if [[ "${STUB_RECORD_GNOME_STEP:-0}" == 1 || "${STUB_FAIL_STEP:-}" == configure_gnome_session_type ]]; then
+      stub_install_step configure_gnome_session_type "$@"
+    fi
+  }
   install_polkit_rule() { stub_install_step install_polkit_rule; }
   disable_display_managers() { stub_install_step disable_display_managers; }
   enable_autologin() { stub_install_step enable_autologin "$1"; }
@@ -379,7 +387,7 @@ output="$(
 )"
 status=$?
 set -e
-if [[ $status -eq 23 && "$output" == *"Install stopped during enable_autologin; already done: install_packages copy_dotfiles install_polkit_rule disable_display_managers"* &&
+if [[ $status -eq 23 && "$output" == *"Install stopped during enable_autologin; already done: install_packages copy_dotfiles configure_gnome_session_type install_polkit_rule disable_display_managers"* &&
   "$output" != *"lightXDM install complete!"* ]]; then
   pass "install.sh reports a failed enable_autologin step and keeps its exit status"
 else
@@ -419,7 +427,7 @@ fi
 # A failure at any install step reports only completed steps and preserves status.
 completed_install_steps=()
 recovery_hint="After fixing the error, rerunning install.sh is safe; uninstall.sh reverts configuration changes (installed packages stay)."
-for failed_install_step in install_packages copy_dotfiles configure_pam install_polkit_rule disable_display_managers; do
+for failed_install_step in install_packages copy_dotfiles configure_pam configure_gnome_session_type install_polkit_rule disable_display_managers; do
   for failed_install_status in 1 23; do
     : >"$STUB_LOG"
     set +e
@@ -457,7 +465,7 @@ status=$?
 set -e
 if [[ $status -eq 1 && "$output" == *"$recovery_hint"* &&
   "$output" != *"lightXDM install complete!"* ]] &&
-  grep -Fxq '=> Install stopped during disable_display_managers; already done: copy_dotfiles' <<<"$output"; then
+  grep -Fxq '=> Install stopped during disable_display_managers; already done: copy_dotfiles configure_gnome_session_type' <<<"$output"; then
   pass "main excludes skipped steps from failure report"
 else
   fail "main skipped steps failure report (status=$status, output=$output)"
@@ -536,36 +544,39 @@ for missing_template_mode in packages no-packages; do
   fi
 done
 
-# Case 10c: Wayland-only desktops without a lightXDM Wayland session are refused before any installation step
-for refused_de in gnome budgie; do
-  for refused_mode in detected explicit skip-options; do
-    refused_args=()
-    expected_refusal_log=$'sudo -v\ndetect_de'
-    if [[ "$refused_mode" != "detected" ]]; then
-      refused_args=(--de "$refused_de")
-      expected_refusal_log="sudo -v"
+# Case 10c: GNOME and Budgie run on Wayland when detected or explicitly selected
+for wayland_de in gnome budgie; do
+  for wayland_mode in detected explicit skip-options; do
+    wayland_args=()
+    expected_wayland_log=$'sudo -v\ndetect_de'
+    if [[ "$wayland_mode" != "detected" ]]; then
+      wayland_args=(--de "$wayland_de")
+      expected_wayland_log="sudo -v"
     fi
-    if [[ "$refused_mode" == "skip-options" ]]; then
-      refused_args+=(--no-packages --no-keyring --no-polkit-rule)
+    if [[ "$wayland_mode" == "skip-options" ]]; then
+      wayland_args+=(--no-packages --no-keyring --no-polkit-rule)
+      expected_wayland_log+=$'\ncopy_dotfiles '"$wayland_de"$'\ndisable_display_managers'
+    else
+      expected_wayland_log+=$'\ninstall_packages '"$wayland_de"$'\ncopy_dotfiles '"$wayland_de"$'\nconfigure_pam '"$wayland_de"$'\ninstall_polkit_rule\ndisable_display_managers'
     fi
     : >"$STUB_LOG"
     set +e
-    output="$(STUB_DETECTED_DE="$refused_de" run_main_with_stubs "$sudo_pw_dir" "${refused_args[@]}" 2>&1)"
+    output="$(STUB_DETECTED_DE="$wayland_de" run_main_with_stubs "$sudo_pw_dir" "${wayland_args[@]}" 2>&1)"
     status=$?
     set -e
     log_content="$(cat "$STUB_LOG")"
-    if [[ $status -eq 1 && "$output" == *"$refused_de now runs only on Wayland and cannot be started with startx (see README.md)."* &&
-      "$log_content" == "$expected_refusal_log" && "$output" != *"lightXDM install complete!"* &&
-      "$output" != *"Install stopped during"* ]]; then
-      pass "main refuses $refused_de before any installation step ($refused_mode)"
+    if [[ $status -eq 0 && "$log_content" == "$expected_wayland_log" &&
+      "$output" == *"lightXDM install complete!"* && "$output" == *"- $wayland_de will auto-start on TTY1"* &&
+      "$output" != *"startx"* && "$output" != *"Install stopped during"* ]]; then
+      pass "main configures $wayland_de on Wayland ($wayland_mode)"
     else
-      fail "main refusal of $refused_de ($refused_mode, status=$status, log=$log_content, output=$output)"
+      fail "main $wayland_de Wayland ($wayland_mode, status=$status, log=$log_content, output=$output)"
     fi
   done
 done
 
-# Case 10d: Plasma (Wayland) and all six X11 desktops run every installation step
-for supported_de in plasma xfce lxqt lxde mate cinnamon i3; do
+# Case 10d: all three Wayland and all six X11 desktops run every installation step
+for supported_de in plasma gnome xfce lxqt lxde mate cinnamon budgie i3; do
   : >"$STUB_LOG"
   set +e
   output="$(STUB_DETECTED_DE="$supported_de" run_main_with_stubs "$sudo_pw_dir" 2>&1)"
@@ -610,6 +621,39 @@ if [[ -f "$plasma_dotfiles_home/.wayland-session" && ! -L "$plasma_dotfiles_home
 else
   fail "copy_dotfiles plasma Wayland files"
 fi
+
+for wl_copy_de in gnome budgie; do
+  wl_copy_home="$TMP_DIR/home_${wl_copy_de}_wayland"
+  mkdir -p "$wl_copy_home"
+  (
+    export HOME="$wl_copy_home"
+    copy_dotfiles "$wl_copy_de" 2>/dev/null
+  )
+  if [[ -f "$wl_copy_home/.wayland-session" && ! -L "$wl_copy_home/.wayland-session" &&
+    "$(stat -c '%a' "$wl_copy_home/.wayland-session")" == 755 &&
+    "$(sha256sum < "$wl_copy_home/.wayland-session")" == "$(sha256sum < "$REPO_ROOT/dotfiles/.wayland-session-$wl_copy_de")" &&
+    -f "$wl_copy_home/.gpg-agent-gnome" && ! -e "$wl_copy_home/.gpg-agent-kwallet" &&
+    ! -e "$wl_copy_home/.xinitrc" && ! -L "$wl_copy_home/.xinitrc" ]] &&
+    cmp -s "$wl_copy_home/.gpg-agent-gnome" "$REPO_ROOT/dotfiles/.gpg-agent-gnome"; then
+    pass "copy_dotfiles $wl_copy_de installs ~/.wayland-session (755) and ~/.gpg-agent-gnome without ~/.xinitrc"
+  else
+    fail "copy_dotfiles $wl_copy_de Wayland files"
+  fi
+
+  printf '# existing user xinitrc\nexec i3\n' >"$wl_copy_home/.xinitrc"
+  wl_copy_xinit_hash="$(sha256sum < "$wl_copy_home/.xinitrc")"
+  (
+    export HOME="$wl_copy_home"
+    copy_dotfiles "$wl_copy_de" 2>/dev/null
+  )
+  if [[ "$(sha256sum < "$wl_copy_home/.xinitrc")" == "$wl_copy_xinit_hash" &&
+    ! -e "$wl_copy_home/.xinitrc.lightxdm.bak" && ! -e "$wl_copy_home/.xinitrc.lightxdm.absent" &&
+    ! -e "$wl_copy_home/.wayland-session.lightxdm.bak" && ! -e "$wl_copy_home/.wayland-session.lightxdm-edited" ]]; then
+    pass "copy_dotfiles $wl_copy_de preserves ~/.xinitrc and recognizes its own Wayland template on reinstall"
+  else
+    fail "copy_dotfiles $wl_copy_de reinstall preservation"
+  fi
+done
 
 plasma_keep_xinit_home="$TMP_DIR/home_plasma_keep_xinit"
 mkdir -p "$plasma_keep_xinit_home"
@@ -1455,7 +1499,7 @@ output="$(
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
-if [[ $status -eq 0 && -f "$no_sudo_home/.bash_profile" && -O "$no_sudo_home/.bash_profile" && -f "$no_sudo_home/.gpg-agent-kwallet" && -f "$no_sudo_home/.gpg-agent-gnome" && -x "$no_sudo_home/.xinitrc" && -z "$log_content" ]]; then
+if [[ $status -eq 0 && -f "$no_sudo_home/.bash_profile" && -O "$no_sudo_home/.bash_profile" && -f "$no_sudo_home/.gpg-agent-kwallet" && -f "$no_sudo_home/.gpg-agent-gnome" && -x "$no_sudo_home/.wayland-session" && ! -e "$no_sudo_home/.xinitrc" && -z "$log_content" ]]; then
   pass "copy_dotfiles writes dotfiles to HOME without sudo"
 else
   fail "copy_dotfiles without sudo (status=$status, log=$log_content, output=$output)"
@@ -2293,7 +2337,7 @@ else
     log_content="$(cat "$STUB_LOG")"
     if [[ $status -ne 0 && ! -e "$dm_readonly_dir/state" &&
       "$output" == *"$recovery_hint"* && "$output" != *"lightXDM install complete!"* ]] &&
-      grep -Fxq '=> Install stopped during disable_display_managers; already done: install_packages copy_dotfiles configure_pam install_polkit_rule' <<<"$output" &&
+      grep -Fxq '=> Install stopped during disable_display_managers; already done: install_packages copy_dotfiles configure_pam configure_gnome_session_type install_polkit_rule' <<<"$output" &&
       grep -Fq 'systemctl is-enabled' "$STUB_LOG" &&
       ! grep -Fq 'systemctl disable' "$STUB_LOG"; then
       pass "disable_display_managers stops before disabling when state write fails (alias_only=$dm_alias_only)"
@@ -2400,7 +2444,7 @@ output="$(run_main_with_stubs "$sudo_pw_dir" --de bogus 2>&1)"
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
-if [[ $status -eq 1 && "$output" == *"xfce lxqt lxde mate cinnamon i3"* && -z "$log_content" ]]; then
+if [[ $status -eq 1 && "$output" == *"plasma gnome xfce lxqt lxde mate cinnamon budgie i3"* && -z "$log_content" ]]; then
   pass "main --de bogus prints valid ids and exits 1"
 else
   fail "main --de bogus (status=$status, log=$log_content, output=$output)"
@@ -3568,7 +3612,7 @@ for pam_const in PAM_KWALLET_AUTH PAM_KWALLET_SESSION PAM_GNOME_KEYRING_AUTH PAM
     pam_sync_errors+=("${pam_const}:${pam_pattern}")
   fi
 done
-uninstall_pam_count="$(grep -Ec '\^-?(auth|session|account|password)[[:space:]]' <<<"$uninstall_active_lines" || true)"
+uninstall_pam_count="$(grep -Ec "^[[:space:]]*'\^-?(auth|session|account|password)[[:space:]]" <<<"$uninstall_active_lines" || true)"
 if [[ "$uninstall_pam_count" -ne 4 ]]; then
   pam_sync_errors+=("uninstall_pam_count=${uninstall_pam_count}")
 fi
@@ -3650,13 +3694,11 @@ ln -sf "$xinit_bin/dbus-update-activation-environment" "$xinit_no_xtools_bin/dbu
 ln -sf "$xinit_bin/polkit-gnome-authentication-agent-1" "$xinit_no_xtools_bin/polkit-gnome-authentication-agent-1"
 
 xinit_specs=(
-  "gnome|gnome|GNOME|x11|gpg-agent-gnome|0|0|gnome-session"
   "xfce|xfce|XFCE|<unset>|gpg-agent-gnome|0|1|startxfce4"
   "lxqt|lxqt|LXQt|<unset>|gpg-agent-gnome|0|0|startlxqt"
   "lxde|lxde|LXDE|<unset>|gpg-agent-gnome|1|0|startlxde"
   "mate|mate|MATE|<unset>|gpg-agent-gnome|0|0|mate-session"
   "cinnamon|cinnamon|X-Cinnamon|<unset>|gpg-agent-gnome|0|0|cinnamon-session"
-  "budgie|budgie|Budgie:GNOME|<unset>|gpg-agent-gnome|0|0|budgie-desktop"
   "i3|i3|i3|<unset>|gpg-agent-gnome|1|1|i3"
 )
 
@@ -3939,6 +3981,72 @@ if [[ -x "$wl_tmpl" && "$(git -C "$REPO_ROOT" ls-files -s dotfiles/.wayland-sess
 else
   fail ".wayland-session-plasma behavior (kw=$wl_with_kw_status:$wl_with_kw_err:$wl_with_kw_log | empty=$wl_empty_status:$wl_empty_err:$wl_empty_log | last=$wl_last_line)"
 fi
+
+# Case 57c: GNOME and Budgie templates set Wayland env, source the optional keyring helper, and exec the packaged session command
+wl_session_specs=(
+  "gnome|gnome|GNOME|/usr/bin/gnome-session"
+  "budgie|budgie-desktop|Budgie|/usr/bin/startbudgielabwc"
+)
+for spec in "${wl_session_specs[@]}"; do
+  IFS='|' read -r wl_de wl_ds wl_desktop wl_command <<<"$spec"
+  wl_tmpl="$REPO_ROOT/dotfiles/.wayland-session-$wl_de"
+  wl_tmpl_test_dir="$TMP_DIR/wayland_template_$wl_de"
+  mkdir -p "$wl_tmpl_test_dir"
+  wl_tmpl_stub="$wl_tmpl_test_dir/stub-session"
+  cat >"$wl_tmpl_stub" <<'EOF'
+#!/bin/bash
+printf 'session:%s|pid=%s|DESKTOP_SESSION=%s|XDG_CURRENT_DESKTOP=%s|XDG_SESSION_TYPE=%s|GDK_BACKEND=%s|SSH_AUTH_SOCK=%s\n' \
+  "$*" "$$" "${DESKTOP_SESSION-<unset>}" "${XDG_CURRENT_DESKTOP-<unset>}" \
+  "${XDG_SESSION_TYPE-<unset>}" "${GDK_BACKEND-<unset>}" "${SSH_AUTH_SOCK-<unset>}" >>"$XINITRC_LOG"
+EOF
+  chmod 755 "$wl_tmpl_stub"
+  wl_tmpl_copy="$wl_tmpl_test_dir/.wayland-session-$wl_de"
+  sed "s|^exec $wl_command\$|exec $wl_tmpl_stub|" "$wl_tmpl" >"$wl_tmpl_copy"
+  chmod 755 "$wl_tmpl_copy"
+
+  # Check Git's recorded executable mode, since checkout permissions depend on umask.
+  if [[ "$(git -C "$REPO_ROOT" ls-files -s "dotfiles/.wayland-session-$wl_de")" == 100755* &&
+    ! -e "$REPO_ROOT/dotfiles/.xinitrc-$wl_de" &&
+    "$(head -n 1 "$wl_tmpl")" == "#!/bin/bash" && "$(tail -n 1 "$wl_tmpl")" == "exec $wl_command" ]] &&
+    grep -Fxq "# Wayland session for lightXDM: start $wl_desktop" "$wl_tmpl"; then
+    pass ".wayland-session-$wl_de has the required header, exec path and recorded mode 100755"
+  else
+    fail ".wayland-session-$wl_de content or Git mode"
+  fi
+
+  for wl_helper in present absent; do
+    wl_test_home="$xinit_home"
+    expected_wl_log=$'gpg-agent-gnome\n'
+    wl_ssh="/tmp/gnome-gpg-ssh.sock"
+    if [[ "$wl_helper" == absent ]]; then
+      wl_test_home="$xinit_empty_home"
+      expected_wl_log=""
+      wl_ssh="<unset>"
+    fi
+    : >"$xinit_log"
+    : >"$xinit_err"
+    : >"$xinit_pid_file"
+    set +e
+    (
+      exec 2>"$xinit_err"
+      echo "$BASHPID" >"$xinit_pid_file"
+      export HOME="$wl_test_home" XINITRC_LOG="$xinit_log"
+      unset DESKTOP_SESSION XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GDK_BACKEND SSH_AUTH_SOCK
+      exec bash "$wl_tmpl_copy"
+    )
+    wl_status=$?
+    set -e
+    wl_pid="$(cat "$xinit_pid_file")"
+    wl_log="$(cat "$xinit_log")"
+    wl_err="$(cat "$xinit_err")"
+    expected_wl_log+="session:|pid=$wl_pid|DESKTOP_SESSION=$wl_ds|XDG_CURRENT_DESKTOP=$wl_desktop|XDG_SESSION_TYPE=wayland|GDK_BACKEND=<unset>|SSH_AUTH_SOCK=$wl_ssh"
+    if [[ $wl_status -eq 0 && -z "$wl_err" && "$wl_log" == "$expected_wl_log" ]]; then
+      pass ".wayland-session-$wl_de exports Wayland env and execs its session with keyring helper $wl_helper"
+    else
+      fail ".wayland-session-$wl_de behavior (helper=$wl_helper, status=$wl_status, err=$wl_err, log=$wl_log, expected=$expected_wl_log)"
+    fi
+  done
+done
 
 # Case 58: .bash_profile starts X only on interactive tty1 outside X without the marker, before .bashrc
 profile_home="$TMP_DIR/bash_profile/home"
@@ -4465,12 +4573,14 @@ de_pkg_specs=(
   "i3|i3-wm|i3 xterm dex gnome-keyring polkit-gnome"
 )
 
-plasma_pkg_list="$(list_packages plasma)"
-if ! grep -Fxq 'xorg-server' <<<"$plasma_pkg_list" && ! grep -Fxq 'xorg-xinit' <<<"$plasma_pkg_list"; then
-  pass "list_packages plasma omits xorg-server and xorg-xinit"
-else
-  fail "list_packages plasma unexpectedly included Xorg packages ($plasma_pkg_list)"
-fi
+for wl_pkg_de in plasma gnome budgie; do
+  wl_pkg_list="$(list_packages "$wl_pkg_de")"
+  if ! grep -Fxq 'xorg-server' <<<"$wl_pkg_list" && ! grep -Fxq 'xorg-xinit' <<<"$wl_pkg_list"; then
+    pass "list_packages $wl_pkg_de omits xorg-server and xorg-xinit"
+  else
+    fail "list_packages $wl_pkg_de unexpectedly included Xorg packages ($wl_pkg_list)"
+  fi
+done
 
 detect_pair_bin="$TMP_DIR/pacman_detect_pair"
 mkdir -p "$detect_pair_bin"
@@ -4487,9 +4597,9 @@ chmod +x "$detect_pair_bin/pacman"
 for spec in "${de_pkg_specs[@]}"; do
   IFS='|' read -r de detect_pkg de_pkgs <<<"$spec"
   de_base_pkgs="$expected_base_pkgs"
-  if [[ "$de" == "plasma" ]]; then
-    de_base_pkgs="$expected_wayland_base_pkgs"
-  fi
+  case "$de" in
+    plasma | gnome | budgie) de_base_pkgs="$expected_wayland_base_pkgs" ;;
+  esac
 
   : >"$STUB_LOG"
   set +e
@@ -4531,9 +4641,9 @@ fi
 for spec in "${de_pkg_specs[@]}"; do
   IFS='|' read -r de _ de_pkgs <<<"$spec"
   de_base_pkgs="$expected_base_pkgs"
-  if [[ "$de" == "plasma" ]]; then
-    de_base_pkgs="$expected_wayland_base_pkgs"
-  fi
+  case "$de" in
+    plasma | gnome | budgie) de_base_pkgs="$expected_wayland_base_pkgs" ;;
+  esac
   expected_no_kr_pkgs=()
   for pkg in $de_pkgs; do
     case "$pkg" in
@@ -6030,13 +6140,10 @@ ln -sf "$STUB_BIN/systemctl" "$lp_no_sudo_bin/systemctl"
 
 for spec in "${de_pkg_specs[@]}"; do
   IFS='|' read -r lp_de _ lp_de_pkgs <<<"$spec"
-  case "$lp_de" in
-    gnome | budgie) continue ;;
-  esac
   lp_base_pkgs="$expected_base_pkgs"
-  if [[ "$lp_de" == "plasma" ]]; then
-    lp_base_pkgs="$expected_wayland_base_pkgs"
-  fi
+  case "$lp_de" in
+    plasma | gnome | budgie) lp_base_pkgs="$expected_wayland_base_pkgs" ;;
+  esac
   read -r -a lp_expected_arr <<<"$lp_base_pkgs $lp_de_pkgs"
   lp_expected_out="$(printf '%s\n' "${lp_expected_arr[@]}")"
   lp_expected_sum="$(printf '%s\n' "${lp_expected_arr[@]}" | sha256sum)"
@@ -6185,10 +6292,10 @@ for lp_wayland_de in gnome budgie; do
   lp_wl_status=$?
   set -e
   lp_wl_err="$(cat "$lp_err")"
-  if [[ $lp_wl_status -eq 1 && -z "$lp_wl_out" &&
-    "$lp_wl_err" == *"$lp_wayland_de now runs only on Wayland and cannot be started with startx (see README.md)."* &&
-    ! -s "$STUB_LOG" ]]; then
-    pass "main --list-packages --de $lp_wayland_de refuses with Wayland message before sudo -v"
+  if [[ $lp_wl_status -eq 0 && "$lp_wl_out" == "$(list_packages "$lp_wayland_de")" &&
+    -z "$lp_wl_err" && ! -s "$STUB_LOG" ]] &&
+    ! grep -Eq '^xorg-(server|xinit)$' <<<"$lp_wl_out"; then
+    pass "main --list-packages --de $lp_wayland_de lists Wayland packages before sudo -v"
   else
     fail "main --list-packages --de $lp_wayland_de (status=$lp_wl_status, out=$lp_wl_out, err=$lp_wl_err, log=$(cat "$STUB_LOG"))"
   fi
@@ -6215,7 +6322,7 @@ for lp_bad_case in custom custom-no-packages unknown empty; do
   fi
 done
 
-# Case 74: multi-desktop detection lists all matches, skips Wayland-only desktops when supported ones exist, and prompts when two or more supported desktops remain
+# Case 74: multi-desktop detection lists all matches and offers Wayland and X11 desktops together
 multi_detect_bin="$TMP_DIR/pacman_multi_detect"
 mkdir -p "$multi_detect_bin"
 cat >"$multi_detect_bin/pacman" <<'EOF'
@@ -6269,33 +6376,34 @@ fi
 
 : >"$STUB_LOG"
 set +e
-output="$(STUB_DETECTED_DE=$'gnome\nxfce' run_main_with_stubs "$sudo_pw_dir" 2>&1)"
+output="$(STUB_DETECTED_DE=$'gnome\nxfce' STUB_REAL_PROMPT=1 run_main_with_stubs "$sudo_pw_dir" <<<"2" 2>&1)"
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
 expected_px_log=$'sudo -v\ndetect_de\ninstall_packages xfce\ncopy_dotfiles xfce\nconfigure_pam xfce\ninstall_polkit_rule\ndisable_display_managers'
 if [[ $status -eq 0 && "$log_content" == "$expected_px_log" &&
-  "$output" == *"Skipping Wayland-only desktop environment(s): gnome"* &&
-  "$output" == *"Detected desktop environment: xfce"* &&
+  "$output" == *"1) GNOME"* && "$output" == *"2) XFCE"* && "$output" == *"3) Quit"* &&
+  "$output" != *"Wayland-only"* &&
   "$output" == *"lightXDM install complete!"* && "$output" == *"- xfce "* ]]; then
-  pass "main skips Wayland-only gnome and configures xfce when gnome and xfce are detected"
+  pass "main offers GNOME and XFCE and configures the selected XFCE"
 else
   fail "main gnome+xfce (status=$status, log=$log_content, output=$output)"
 fi
 
 : >"$STUB_LOG"
 set +e
-output="$(STUB_DETECTED_DE=$'gnome\nbudgie\nlxqt' run_main_with_stubs "$sudo_pw_dir" 2>&1)"
+output="$(STUB_DETECTED_DE=$'gnome\nbudgie\nlxqt' STUB_REAL_PROMPT=1 run_main_with_stubs "$sudo_pw_dir" <<<"3" 2>&1)"
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
 wayland_line_count="$(grep -Fc 'Wayland-only' <<<"$output" || true)"
 expected_pgl_log=$'sudo -v\ndetect_de\ninstall_packages lxqt\ncopy_dotfiles lxqt\nconfigure_pam lxqt\ninstall_polkit_rule\ndisable_display_managers'
 if [[ $status -eq 0 && "$log_content" == "$expected_pgl_log" &&
-  "$wayland_line_count" -eq 1 &&
-  "$output" == *"gnome budgie"* &&
-  "$output" == *"Detected desktop environment: lxqt"* ]]; then
-  pass "main logs multiple Wayland-only desktops once and configures remaining lxqt"
+  "$wayland_line_count" -eq 0 &&
+  "$output" == *"1) GNOME"* && "$output" == *"2) Budgie"* &&
+  "$output" == *"3) LXQt"* && "$output" == *"4) Quit"* &&
+  "$output" == *"lightXDM install complete!"* ]]; then
+  pass "main offers GNOME, Budgie and LXQt and configures the selected LXQt"
 else
   fail "main gnome+budgie+lxqt (status=$status, count=$wayland_line_count, log=$log_content, output=$output)"
 fi
@@ -6304,34 +6412,41 @@ for all_wl_detected in $'gnome\nbudgie' $'budgie\ngnome'; do
   first_wl="${all_wl_detected%%$'\n'*}"
   : >"$STUB_LOG"
   set +e
-  output="$(STUB_DETECTED_DE="$all_wl_detected" run_main_with_stubs "$sudo_pw_dir" 2>&1)"
+  output="$(STUB_DETECTED_DE="$all_wl_detected" STUB_REAL_PROMPT=1 run_main_with_stubs "$sudo_pw_dir" <<<"1" 2>&1)"
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
-  if [[ $status -eq 1 && "$log_content" == $'sudo -v\ndetect_de' &&
-    "$output" == *"$first_wl now runs only on Wayland and cannot be started with startx (see README.md)."* &&
-    "$output" != *"lightXDM install complete!"* ]]; then
-    pass "main keeps Wayland refusal when only unsupported Wayland desktops are detected (${all_wl_detected//$'\n'/+})"
+  expected_wl_log=$'sudo -v\ndetect_de\ninstall_packages '"$first_wl"$'\ncopy_dotfiles '"$first_wl"$'\nconfigure_pam '"$first_wl"$'\ninstall_polkit_rule\ndisable_display_managers'
+  if [[ $status -eq 0 && "$log_content" == "$expected_wl_log" &&
+    "$output" == *"$(de_label "$first_wl")"* && "$output" == *"GNOME"* && "$output" == *"Budgie"* &&
+    "$output" == *"3) Quit"* && "$output" == *"lightXDM install complete!"* && "$output" != *"startx"* ]]; then
+    pass "main offers both Wayland desktops and configures the selection (${all_wl_detected//$'\n'/+})"
   else
     fail "main all-Wayland multi-detect (${all_wl_detected//$'\n'/+}, status=$status, log=$log_content, output=$output)"
   fi
 done
 
 for multi_choice_detected in $'xfce\ni3' $'gnome\nxfce\ni3'; do
+  multi_choice=2
+  if [[ "$multi_choice_detected" == gnome* ]]; then
+    multi_choice=3
+  fi
   : >"$STUB_LOG"
   set +e
-  output="$(STUB_DETECTED_DE="$multi_choice_detected" STUB_REAL_PROMPT=1 run_main_with_stubs "$sudo_pw_dir" <<<"2" 2>&1)"
+  output="$(STUB_DETECTED_DE="$multi_choice_detected" STUB_REAL_PROMPT=1 run_main_with_stubs "$sudo_pw_dir" <<<"$multi_choice" 2>&1)"
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
   expected_i3_log=$'sudo -v\ndetect_de\ninstall_packages i3\ncopy_dotfiles i3\nconfigure_pam i3\ninstall_polkit_rule\ndisable_display_managers'
-  wl_note_ok=0
-  if [[ "$multi_choice_detected" == gnome* && "$output" == *"Wayland-only"* && "$output" == *"gnome"* ]] ||
-    [[ "$multi_choice_detected" != gnome* && "$output" != *"Wayland-only"* ]]; then
-    wl_note_ok=1
+  menu_ok=0
+  if [[ "$multi_choice_detected" == gnome* && "$output" == *"1) GNOME"* &&
+    "$output" == *"2) XFCE"* && "$output" == *"3) i3"* && "$output" == *"4) Quit"* ]] ||
+    [[ "$multi_choice_detected" != gnome* && "$output" == *"1) XFCE"* &&
+      "$output" == *"2) i3"* && "$output" == *"3) Quit"* ]]; then
+    menu_ok=1
   fi
-  if [[ $status -eq 0 && $wl_note_ok -eq 1 && "$log_content" == "$expected_i3_log" &&
-    "$output" == *"1) XFCE"* && "$output" == *"2) i3"* && "$output" == *"3) Quit"* &&
+  if [[ $status -eq 0 && $menu_ok -eq 1 && "$log_content" == "$expected_i3_log" &&
+    "$output" != *"Wayland-only"* &&
     "$output" == *"lightXDM install complete!"* && "$output" == *"- i3 "* ]]; then
     pass "main configures i3 when selected from detected chooser (${multi_choice_detected//$'\n'/+})"
   else
@@ -6342,17 +6457,17 @@ done
 # plasma is a supported candidate in detection alongside X11 desktops and when paired with gnome
 : >"$STUB_LOG"
 set +e
-output="$(STUB_DETECTED_DE=$'plasma\ngnome' run_main_with_stubs "$sudo_pw_dir" 2>&1)"
+output="$(STUB_DETECTED_DE=$'plasma\ngnome' STUB_REAL_PROMPT=1 run_main_with_stubs "$sudo_pw_dir" <<<"1" 2>&1)"
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
 expected_pg_log=$'sudo -v\ndetect_de\ninstall_packages plasma\ncopy_dotfiles plasma\nconfigure_pam plasma\ninstall_polkit_rule\ndisable_display_managers'
 if [[ $status -eq 0 && "$log_content" == "$expected_pg_log" &&
-  "$output" == *"Skipping Wayland-only desktop environment(s): gnome"* &&
-  "$output" == *"Detected desktop environment: plasma"* &&
+  "$output" == *"1) KDE Plasma"* && "$output" == *"2) GNOME"* && "$output" == *"3) Quit"* &&
+  "$output" != *"Wayland-only"* &&
   "$output" == *"lightXDM install complete!"* && "$output" == *"- plasma "* &&
   "$output" != *"No need to run 'startx'."* ]]; then
-  pass "main skips Wayland-only gnome and configures detected plasma"
+  pass "main offers KDE Plasma and GNOME and configures the selected Plasma"
 else
   fail "main plasma+gnome (status=$status, log=$log_content, output=$output)"
 fi
@@ -6427,10 +6542,6 @@ out_plasma_again="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT
 status_plasma_again=$?
 out_custom="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de dwm 2>&1)"
 status_custom=$?
-out_wayland="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de gnome 2>&1)"
-status_wayland=$?
-out_budgie_wl="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de budgie 2>&1)"
-status_budgie_wl=$?
 out_badid="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de Dwm 2>&1)"
 status_badid=$?
 out_asroot=""
@@ -6472,15 +6583,33 @@ if [[ $status_custom -eq 0 && "$(stat -c '%a' "$init_dwm" 2>/dev/null)" == 755 ]
 else
   fail "install.sh --init-template custom (status=$status_custom, output=$out_custom, content=$(cat "$init_dwm" 2>/dev/null))"
 fi
-if [[ $status_wayland -eq 1 && $status_budgie_wl -eq 1 &&
-  "$out_wayland" == *"gnome now runs only on Wayland and cannot be started with startx (see README.md)."* &&
-  "$out_budgie_wl" == *"budgie now runs only on Wayland and cannot be started with startx (see README.md)."* &&
-  ! -e "$init_home/.config/lightxdm/.xinitrc-gnome" && ! -e "$init_home/.config/lightxdm/.xinitrc-budgie" &&
-  $status_no_de -eq 1 && "$out_no_de" == *"--init-template requires --de"* && ! -s "$STUB_LOG" ]]; then
-  pass "install.sh --init-template refuses Wayland-only ids and a missing --de, and never calls sudo"
+if [[ $status_no_de -eq 1 && "$out_no_de" == *"--init-template requires --de"* && ! -s "$STUB_LOG" ]]; then
+  pass "install.sh --init-template requires --de and never calls sudo"
 else
-  fail "install.sh --init-template refusals (status=$status_wayland/$status_budgie_wl/$status_no_de, log=$(cat "$STUB_LOG"), output=$out_wayland / $out_budgie_wl / $out_no_de)"
+  fail "install.sh --init-template missing id (status=$status_no_de, log=$(cat "$STUB_LOG"), output=$out_no_de)"
 fi
+for init_wl_de in gnome budgie; do
+  set +e
+  out_wl_init="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de "$init_wl_de" 2>&1)"
+  status_wl_init=$?
+  out_wl_again="$(HOME="$init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de "$init_wl_de" 2>&1)"
+  status_wl_again=$?
+  set -e
+  init_wl="$init_home/.config/lightxdm/.wayland-session-$init_wl_de"
+  resolved_wl_override="$(HOME="$init_home" xinitrc_template "$init_wl_de")"
+  resolved_wl_bundled="$(HOME="$TMP_DIR/empty_wayland_home" xinitrc_template "$init_wl_de")"
+  if [[ $status_wl_init -eq 0 && "$out_wl_init" == *"Created $init_wl"* &&
+    "$out_wl_init" == *"bash install.sh --de $init_wl_de"* ]] &&
+    cmp -s "$init_wl" "$REPO_ROOT/dotfiles/.wayland-session-$init_wl_de" &&
+    [[ "$(stat -c '%a' "$init_wl")" == 755 && ! -e "$init_home/.config/lightxdm/.xinitrc-$init_wl_de" &&
+      $status_wl_again -eq 1 && "$out_wl_again" == *"already exists"* &&
+      "$resolved_wl_override" == "$init_wl" &&
+      "$resolved_wl_bundled" == "$REPO_ROOT/dotfiles/.wayland-session-$init_wl_de" && ! -s "$STUB_LOG" ]]; then
+    pass "install.sh --init-template --de $init_wl_de creates a Wayland template (755), refuses overwrite, and xinitrc_template prefers it"
+  else
+    fail "install.sh --init-template --de $init_wl_de (status=$status_wl_init/$status_wl_again, resolved=$resolved_wl_override/$resolved_wl_bundled, output=$out_wl_init / $out_wl_again)"
+  fi
+done
 if [[ $status_badid -eq 1 && "$out_badid" == *"Invalid desktop id: Dwm"* && ! -e "$init_home/.config/lightxdm/.xinitrc-Dwm" ]]; then
   pass "install.sh --init-template rejects an id with uppercase letters"
 else
@@ -6602,10 +6731,12 @@ else
   done
 fi
 
-# Case 75: --help states X11 desktops start with startx and Plasma starts on Wayland
+# Case 75: --help states how X11 desktops and all three Wayland desktops start
 help_wl_out="$(HOME="$help_home" bash "$REPO_ROOT/install.sh" --help 2>&1)"
-if [[ "$help_wl_out" == *"startx"* && "$help_wl_out" == *"Plasma"* && "$help_wl_out" == *"Wayland"* ]]; then
-  pass "install.sh --help documents X11 startx and Plasma Wayland startup"
+if [[ "$help_wl_out" == *"X11 desktops start with startx and Plasma, GNOME and Budgie start on Wayland."* &&
+  "$help_wl_out" == *"plasma gnome xfce lxqt lxde mate cinnamon budgie i3"* &&
+  "$help_wl_out" == *".wayland-session-<id> for Plasma, GNOME and Budgie"* ]]; then
+  pass "install.sh --help documents X11 startx and Plasma, GNOME and Budgie Wayland startup"
 else
   fail "install.sh --help Wayland description (output=$help_wl_out)"
 fi
@@ -6684,6 +6815,36 @@ if [[ $wl_miss_st -eq 1 &&
 else
   fail "check_session_commands Wayland rejection (miss=$wl_miss_st:$wl_miss_out | nonexec=$wl_nonexec_st:$wl_nonexec_out | dir=$wl_isdir_st:$wl_isdir_out | gen=$wl_generic_st:$wl_generic_out)"
 fi
+
+for wl_check_spec in "gnome|/usr/bin/gnome-session|gnome-session" "budgie|/usr/bin/startbudgielabwc|budgie-desktop"; do
+  IFS='|' read -r wl_check_de wl_check_command wl_check_package <<<"$wl_check_spec"
+  set +e
+  wl_check_ok_out="$(SESSION_ROOT="$SESSION_ROOT" PATH="$wl_chk_nostartx_bin" check_session_commands "$REPO_ROOT/dotfiles/.wayland-session-$wl_check_de" 2>&1)"
+  wl_check_ok_st=$?
+  wl_check_miss_out="$(SESSION_ROOT="$wl_chk_dir/empty_root" PATH="$wl_chk_nostartx_bin" check_session_commands "$REPO_ROOT/dotfiles/.wayland-session-$wl_check_de" 2>&1)"
+  wl_check_miss_st=$?
+  set -e
+  if [[ $wl_check_ok_st -eq 0 && -z "$wl_check_ok_out" && $wl_check_miss_st -eq 1 &&
+    "$wl_check_miss_out" == "=> Missing command: $wl_check_command (normally provided by $wl_check_package). Install $wl_check_package and re-run." ]]; then
+    pass "check_session_commands checks $wl_check_de absolute exec path without startx and names $wl_check_package when missing"
+  else
+    fail "check_session_commands $wl_check_de (ok=$wl_check_ok_st:$wl_check_ok_out, missing=$wl_check_miss_st:$wl_check_miss_out)"
+  fi
+
+  : >"$STUB_LOG"
+  set +e
+  output="$(SESSION_ROOT="$wl_chk_dir/empty_root" run_main_with_stubs "$sudo_pw_dir" --no-packages --de "$wl_check_de" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 1 && "$(cat "$STUB_LOG")" == "sudo -v" &&
+    "$output" == *"Missing command: $wl_check_command (normally provided by $wl_check_package)."* &&
+    "$output" == *"Install stopped during check_session_commands; already done: none"* &&
+    "$output" != *"lightXDM install complete!"* ]]; then
+    pass "main --no-packages --de $wl_check_de stops before configuration when its session command is missing"
+  else
+    fail "main missing $wl_check_de session command (status=$status, log=$(cat "$STUB_LOG"), output=$output)"
+  fi
+done
 
 # main --no-packages --de plasma stops in check_session_commands before copy_dotfiles when startplasma-wayland is missing
 wl_incomplete_root="$wl_chk_dir/incomplete_root"
@@ -6906,6 +7067,238 @@ else
     pass "uninstall.sh removes lightXDM ~/.wayland-session, restores backed-up ~/.wayland-session (saving edits), and keeps foreign ~/.wayland-session"
   else
     fail "uninstall.sh ~/.wayland-session handling (b=$st_wlu_bundled:$out_wlu_bundled | u=$st_wlu_user:$out_wlu_user | bak1=$st_wlu_bak1:$out_wlu_bak1 | bak2=$st_wlu_bak2:$out_wlu_bak2 | f=$st_wlu_foreign:$out_wlu_foreign)"
+  fi
+fi
+
+# Case 79b: uninstall.sh recognizes the GNOME and Budgie Wayland templates without special cases
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh GNOME and Budgie Wayland templates (unshare -r unavailable)"
+else
+  for wl_uninstall_de in gnome budgie; do
+    for wl_uninstall_mode in bundled installed override; do
+      wl_uninstall_home="$TMP_DIR/uninstall_${wl_uninstall_de}_$wl_uninstall_mode"
+      mkdir -p "$wl_uninstall_home"
+      if [[ "$wl_uninstall_mode" == bundled ]]; then
+        cp "$REPO_ROOT/dotfiles/.wayland-session-$wl_uninstall_de" "$wl_uninstall_home/.wayland-session"
+      else
+        if [[ "$wl_uninstall_mode" == override ]]; then
+          mkdir -p "$wl_uninstall_home/.config/lightxdm"
+          cp "$REPO_ROOT/dotfiles/.wayland-session-$wl_uninstall_de" "$wl_uninstall_home/.config/lightxdm/.wayland-session-$wl_uninstall_de"
+          echo '# user session override' >>"$wl_uninstall_home/.config/lightxdm/.wayland-session-$wl_uninstall_de"
+        fi
+        HOME="$wl_uninstall_home" copy_dotfiles "$wl_uninstall_de" 2>/dev/null
+      fi
+      set +e
+      output="$(env TARGET_HOME="$wl_uninstall_home" LOGIN_FILE="$TMP_DIR/wl_uninstall_login" \
+        AUTOLOGIN_DROPIN="$TMP_DIR/wl_uninstall_auto" OVERRIDE_FILE="$TMP_DIR/wl_uninstall_override" \
+        POLKIT_RULE="$TMP_DIR/wl_uninstall_polkit" DM_STATE_FILE="$TMP_DIR/wl_uninstall_dm" \
+        unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+      status=$?
+      set -e
+      if [[ $status -eq 0 && ! -e "$wl_uninstall_home/.wayland-session" &&
+        ! -e "$wl_uninstall_home/.wayland-session.lightxdm.absent" &&
+        ! -e "$wl_uninstall_home/.wayland-session.lightxdm-edited" &&
+        ! -e "$wl_uninstall_home/.bash_profile" && ! -e "$wl_uninstall_home/.gpg-agent-gnome" ]] &&
+        { [[ "$wl_uninstall_mode" != override ]] ||
+          [[ -f "$wl_uninstall_home/.config/lightxdm/.wayland-session-$wl_uninstall_de" ]]; }; then
+        pass "uninstall.sh removes the $wl_uninstall_mode $wl_uninstall_de Wayland session and its installed dotfiles"
+      else
+        fail "uninstall.sh $wl_uninstall_de Wayland ($wl_uninstall_mode, status=$status, output=$output)"
+      fi
+    done
+  done
+fi
+
+# GNOME needs the session type in PAM before system-local-login reaches pam_systemd.
+rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak" "$GNOME_SESSION_TYPE_DEST"
+write_stock_login
+cp "$LOGIN_FILE" "$TMP_DIR/gnome-original"
+gnome_marker='# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)'
+gnome_user='Test_i.9-user'
+cat >"$TMP_DIR/gnome-expected" <<EOF
+#%PAM-1.0
+
+auth       requisite    pam_nologin.so
+auth       include      system-local-login
+account    include      system-local-login
+$gnome_marker
+session    [success=2 default=ignore] pam_succeed_if.so quiet tty notin tty1:/dev/tty1
+session    [success=1 default=ignore] pam_succeed_if.so quiet user != $gnome_user
+session    optional   pam_env.so readenv=0 user_readenv=0 conffile=$GNOME_SESSION_TYPE_DEST
+session    include      system-local-login
+password   include      system-local-login
+EOF
+configure_gnome_session_type gnome "$gnome_user" 2>/dev/null || fail "configure_gnome_session_type gnome \"$gnome_user\" returned $?"
+if cmp -s "$LOGIN_FILE" "$TMP_DIR/gnome-expected" &&
+  cmp -s "${LOGIN_FILE}.lightxdm.bak" "$TMP_DIR/gnome-original" &&
+  cmp -s "$GNOME_SESSION_TYPE_DEST" "$REPO_ROOT/pam/gnome-session-type.conf" &&
+  [[ "$(stat -c %a "$GNOME_SESSION_TYPE_DEST")" == 644 &&
+    "$(cat "$GNOME_SESSION_TYPE_DEST")" == $'# '*$'\nXDG_SESSION_TYPE DEFAULT=wayland' &&
+    "$(wc -l < "$GNOME_SESSION_TYPE_DEST")" -eq 2 ]]; then
+  pass "GNOME installs the exact TTY1 PAM block before the first Arch session line and its mode 644 config"
+else
+  fail "GNOME PAM block, config, permissions or pristine backup differ from expected"
+fi
+
+gnome_stat="$(stat -c '%y %z %i' "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak" "$GNOME_SESSION_TYPE_DEST" 2>&1 || true)"
+configure_gnome_session_type gnome "$gnome_user" 2>/dev/null || fail "configure_gnome_session_type gnome \"$gnome_user\" returned $?"
+if cmp -s "$LOGIN_FILE" "$TMP_DIR/gnome-expected" &&
+  [[ "$gnome_stat" == "$(stat -c '%y %z %i' "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak" "$GNOME_SESSION_TYPE_DEST")" ]]; then
+  pass "GNOME session-type configuration is idempotent without rewriting any files"
+else
+  fail "GNOME session-type configuration rewrites files on a second run"
+fi
+
+configure_gnome_session_type gnome another.user 2>/dev/null || fail "configure_gnome_session_type gnome another.user returned $?"
+configure_gnome_session_type gnome "$gnome_user" 2>/dev/null || fail "configure_gnome_session_type gnome \"$gnome_user\" returned $?"
+if cmp -s "$LOGIN_FILE" "$TMP_DIR/gnome-expected" &&
+  cmp -s "${LOGIN_FILE}.lightxdm.bak" "$TMP_DIR/gnome-original"; then
+  pass "GNOME replaces another user's block without duplicating it or overwriting the original backup"
+else
+  fail "GNOME failed to replace another user's block"
+fi
+
+for gnome_bad_user in '' '-testuser' 'test user' 'test/user' 'test;user' "test\$user" 'test[user]' $'test\nuser' $'us\u00e9r'; do
+  set +e
+  output="$(configure_gnome_session_type gnome "$gnome_bad_user" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 1 && "$output" == *"Invalid user name:"* ]] &&
+    cmp -s "$LOGIN_FILE" "$TMP_DIR/gnome-expected" &&
+    cmp -s "$GNOME_SESSION_TYPE_DEST" "$REPO_ROOT/pam/gnome-session-type.conf" &&
+    cmp -s "${LOGIN_FILE}.lightxdm.bak" "$TMP_DIR/gnome-original"; then
+    pass "GNOME refuses invalid user name $(printf '%q' "$gnome_bad_user") without changing files"
+  else
+    fail "GNOME invalid user name (status=$status, output=$output)"
+  fi
+done
+
+configure_gnome_session_type xfce "$gnome_user" 2>/dev/null || fail "configure_gnome_session_type xfce \"$gnome_user\" returned $?"
+output="$(configure_gnome_session_type xfce "$gnome_user" 2>&1)"
+if cmp -s "$LOGIN_FILE" "$TMP_DIR/gnome-original" &&
+  [[ ! -e "$GNOME_SESSION_TYPE_DEST" && -z "$output" ]]; then
+  pass "Switching to XFCE removes the GNOME block and config and is then a quiet no-op"
+else
+  fail "Switching to XFCE did not clean up GNOME session-type configuration (output=$output)"
+fi
+
+# A missing session stack must not produce a backup, config or login edit.
+rm -f "${LOGIN_FILE}.lightxdm.bak"
+printf '#%%PAM-1.0\nauth include system-local-login\n' >"$LOGIN_FILE"
+cp "$LOGIN_FILE" "$TMP_DIR/gnome-no-session"
+set +e
+output="$(configure_gnome_session_type gnome "$gnome_user" 2>&1)"
+status=$?
+set -e
+if [[ $status -eq 1 && "$output" == *"ERROR:"* && "$output" == *"$LOGIN_FILE"* &&
+  ! -e "${LOGIN_FILE}.lightxdm.bak" && ! -e "$GNOME_SESSION_TYPE_DEST" ]] &&
+  cmp -s "$LOGIN_FILE" "$TMP_DIR/gnome-no-session"; then
+  pass "GNOME refuses a login file without a session line and changes nothing"
+else
+  fail "GNOME missing session line (status=$status, output=$output)"
+fi
+
+# Preserve whitespace and a missing final newline, including with a -session entry.
+printf '#%%PAM-1.0\n\tauth include system-local-login\n  -session include system-local-login\npassword include system-local-login' >"$LOGIN_FILE"
+cp "$LOGIN_FILE" "$TMP_DIR/gnome-no-newline"
+configure_gnome_session_type gnome "$gnome_user" 2>/dev/null || fail "configure_gnome_session_type gnome \"$gnome_user\" returned $?"
+if grep -Fxq -- "$gnome_marker" "$LOGIN_FILE" && [[ -n "$(tail -c 1 "$LOGIN_FILE")" ]]; then
+  configure_gnome_session_type xfce "$gnome_user" 2>/dev/null || fail "configure_gnome_session_type xfce \"$gnome_user\" returned $?"
+  if cmp -s "$LOGIN_FILE" "$TMP_DIR/gnome-no-newline"; then
+    pass "GNOME handles an indented -session line and preserves every original byte without a final newline"
+  else
+    fail "GNOME changed original bytes when removing its block"
+  fi
+else
+  fail "GNOME failed to handle -session or preserve a missing final newline"
+fi
+
+# Similar standalone module lines outside the marked block must survive a desktop switch.
+rm -f "${LOGIN_FILE}.lightxdm.bak"
+write_stock_login
+printf '%s\n' \
+  'session    [success=1 default=ignore] pam_succeed_if.so quiet user != preexisting-user' \
+  'session    optional   pam_env.so readenv=0 user_readenv=0 conffile=/user/session-type.conf' >>"$LOGIN_FILE"
+cp "$LOGIN_FILE" "$TMP_DIR/gnome-standalone"
+configure_gnome_session_type gnome "$gnome_user" 2>/dev/null || fail "configure_gnome_session_type gnome \"$gnome_user\" returned $?"
+configure_gnome_session_type xfce "$gnome_user" 2>/dev/null || fail "configure_gnome_session_type xfce \"$gnome_user\" returned $?"
+if cmp -s "$LOGIN_FILE" "$TMP_DIR/gnome-standalone"; then
+  pass "GNOME installation and desktop switching preserve standalone module lines outside the marked block"
+else
+  fail "GNOME configuration changed standalone module lines outside its block"
+fi
+
+# Exercise the real step through main with --no-keyring; all privileged calls use stubs.
+rm -f "${LOGIN_FILE}.lightxdm.bak"
+write_stock_login
+mkdir -p "$TMP_DIR/gnome-main-home"
+set +e
+# shellcheck disable=SC2317,SC2329  # overrides are called through main
+output="$(
+  exec 2>&1
+  export HOME="$TMP_DIR/gnome-main-home" USER="$gnome_user" PATH="$sudo_pw_dir:$PATH"
+  check_root() { :; }
+  copy_dotfiles() { :; }
+  disable_display_managers() { :; }
+  main --de gnome --no-packages --no-keyring --no-polkit-rule
+)"
+status=$?
+set -e
+if [[ $status -eq 0 && "$output" == *"lightXDM install complete!"* &&
+  "$output" == *"Skipping keyring PAM configuration"* && -f "$GNOME_SESSION_TYPE_DEST" ]] &&
+  cmp -s "$LOGIN_FILE" "$TMP_DIR/gnome-expected"; then
+  pass "main runs the real GNOME session-type step even with --no-keyring"
+else
+  fail "main GNOME --no-keyring (status=$status, output=$output)"
+fi
+
+# The session-type step follows keyring PAM configuration in the main step order.
+: >"$STUB_LOG"
+output="$(USER="$gnome_user" STUB_RECORD_GNOME_STEP=1 run_main_with_stubs "$sudo_pw_dir" --de gnome 2>&1)"
+if [[ "$(cat "$STUB_LOG")" == *$'configure_pam gnome\nconfigure_gnome_session_type gnome '"$gnome_user"$'\ninstall_polkit_rule'* ]]; then
+  pass "main runs configure_gnome_session_type as its own step immediately after configure_pam"
+else
+  fail "main GNOME session-type step order (log=$(cat "$STUB_LOG"), output=$output)"
+fi
+
+if [[ $can_unshare -eq 0 ]]; then
+  skip "GNOME session-type uninstall modes (unshare -r unavailable)"
+else
+  # Add keyring lines after the block to verify --keyring-only removes only those.
+  configure_pam gnome 2>/dev/null
+  gnome_uninstall_env=(env TARGET_HOME="$TMP_DIR/gnome-main-home" LOGIN_FILE="$LOGIN_FILE"
+    GNOME_SESSION_TYPE_DEST="$GNOME_SESSION_TYPE_DEST" AUTOLOGIN_DROPIN="$TMP_DIR/gnome-auto"
+    OVERRIDE_FILE="$TMP_DIR/gnome-override" POLKIT_RULE="$TMP_DIR/gnome-polkit"
+    DM_STATE_FILE="$TMP_DIR/gnome-dm/state")
+  output="$("${gnome_uninstall_env[@]}" unshare -r bash "$REPO_ROOT/uninstall.sh" --keyring-only 2>&1)"
+  if cmp -s "$LOGIN_FILE" "$TMP_DIR/gnome-expected" &&
+    cmp -s "$GNOME_SESSION_TYPE_DEST" "$REPO_ROOT/pam/gnome-session-type.conf" &&
+    [[ -f "${LOGIN_FILE}.lightxdm.bak" ]]; then
+    pass "uninstall --keyring-only keeps the GNOME block, config and backup while removing keyring lines"
+  else
+    fail "uninstall --keyring-only changed GNOME session-type configuration (output=$output)"
+  fi
+  output="$("${gnome_uninstall_env[@]}" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  if cmp -s "$LOGIN_FILE" "$TMP_DIR/gnome-original" &&
+    [[ ! -e "${LOGIN_FILE}.lightxdm.bak" && ! -e "$GNOME_SESSION_TYPE_DEST" ]]; then
+    pass "uninstall removes the GNOME block and config and restores the login file byte-identical to its backup"
+  else
+    fail "uninstall GNOME restore (output=$output)"
+  fi
+
+  # Matching pre-existing lines belong to the user, including a different valid user.
+  cp "$TMP_DIR/gnome-expected" "$LOGIN_FILE"
+  cp "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+  # A user's own pam_env line for another conffile is not lightXDM's and must survive.
+  printf '%s\n' 'session    [success=1 default=ignore] pam_succeed_if.so quiet user != another-user' 'session    optional   pam_env.so readenv=0 user_readenv=0 conffile=/user/session-type.conf' \
+    "$gnome_marker extra" 'session    [success=1 default=ignore] pam_succeed_if.so quiet user != -invalid' >>"$LOGIN_FILE"
+  cp "$TMP_DIR/gnome-expected" "$TMP_DIR/gnome-preexisting-expected"
+  printf '%s\n' 'session    optional   pam_env.so readenv=0 user_readenv=0 conffile=/user/session-type.conf' "$gnome_marker extra" 'session    [success=1 default=ignore] pam_succeed_if.so quiet user != -invalid' >>"$TMP_DIR/gnome-preexisting-expected"
+  output="$("${gnome_uninstall_env[@]}" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  if cmp -s "$LOGIN_FILE" "$TMP_DIR/gnome-preexisting-expected" && [[ -f "${LOGIN_FILE}.lightxdm.bak" ]]; then
+    pass "uninstall preserves GNOME lines present in the backup, nonmatching lines and a user pam_env line for another conffile, removing only a newly added valid user gate"
+  else
+    fail "uninstall GNOME pre-existing and anchored-line handling (output=$output)"
   fi
 fi
 

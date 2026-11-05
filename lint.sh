@@ -18,10 +18,10 @@ scripts=(
   dotfiles/.bash_profile
   dotfiles/.gpg-agent-gnome
   dotfiles/.gpg-agent-kwallet
+  dotfiles/.wayland-session-budgie
+  dotfiles/.wayland-session-gnome
   dotfiles/.wayland-session-plasma
-  dotfiles/.xinitrc-budgie
   dotfiles/.xinitrc-cinnamon
-  dotfiles/.xinitrc-gnome
   dotfiles/.xinitrc-i3
   dotfiles/.xinitrc-lxde
   dotfiles/.xinitrc-lxqt

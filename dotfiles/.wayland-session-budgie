@@ -1,0 +1,14 @@
+#!/bin/bash
+# Wayland session for lightXDM: start Budgie
+# shellcheck disable=SC1090
+
+export DESKTOP_SESSION=budgie-desktop
+export XDG_CURRENT_DESKTOP=Budgie
+export XDG_SESSION_TYPE=wayland
+
+# Source GPG agent integration for GNOME Keyring
+if [[ -f ~/.gpg-agent-gnome ]]; then
+  source ~/.gpg-agent-gnome
+fi
+
+exec /usr/bin/startbudgielabwc

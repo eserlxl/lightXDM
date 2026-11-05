@@ -122,22 +122,24 @@ for desktop in xfce lxqt lxde mate cinnamon i3; do
   fi
 done
 
-# Plasma starts on Wayland: every absolute path on its launcher's last exec line must ship in its set.
-wayland_template="$REPO_ROOT/dotfiles/.wayland-session-plasma"
-wayland_exec="$(grep -E '^[[:space:]]*exec[[:space:]]' "$wayland_template" | tail -n 1)"
-wayland_paths=0
-for token in $wayland_exec; do
-  if [[ "$token" == /* ]]; then
-    check_packaged_command plasma "$token"
-    wayland_paths=$((wayland_paths + 1))
+# Wayland launchers need every absolute path on their last exec line in their package set.
+for desktop in plasma gnome budgie; do
+  wayland_template="$REPO_ROOT/dotfiles/.wayland-session-$desktop"
+  wayland_exec="$(grep -E '^[[:space:]]*exec[[:space:]]' "$wayland_template" | tail -n 1)"
+  wayland_paths=0
+  for token in $wayland_exec; do
+    if [[ "$token" == /* ]]; then
+      check_packaged_command "$desktop" "$token"
+      wayland_paths=$((wayland_paths + 1))
+    fi
+  done
+  if [[ $wayland_paths -eq 0 ]]; then
+    fail "No absolute launch path on the last exec line of $wayland_template"
   fi
 done
-if [[ $wayland_paths -eq 0 ]]; then
-  fail "No absolute launch path on the last exec line of $wayland_template"
-fi
 
 for desktop in "${desktops[@]}"; do
-  [[ "$desktop" == plasma ]] && continue
+  case "$desktop" in plasma | gnome | budgie) continue ;; esac
   check_packaged_command "$desktop" /usr/bin/startx
 done
 for desktop in xfce i3; do
@@ -147,14 +149,19 @@ done
 pam_auth() {
   local user=$1
   local pw=$2
-  python - "$user" "$pw" <<'PY'
+  local tty="${3:-}"
+  python - "$user" "$pw" "$tty" <<'PY'
+import inspect
 import sys
 import pam
 
 p = pam.pam()
+kwargs = {}
+if sys.argv[3] and "tty" in inspect.signature(p.authenticate).parameters:
+    kwargs["tty"] = sys.argv[3]
 # call_end=False keeps the handle open; otherwise open_session() fails with
 # PAM_SYSTEM_ERR without updating p.code, and a broken session stack passes.
-if not p.authenticate(sys.argv[1], sys.argv[2], service="login", call_end=False):
+if not p.authenticate(sys.argv[1], sys.argv[2], service="login", call_end=False, **kwargs):
     sys.exit(1)
 if p.open_session() != 0:
     sys.exit(1)
@@ -211,6 +218,46 @@ else
 fi
 faillock --user "$test_user" --reset >/dev/null 2>&1 || true
 
+# GNOME's conditional environment setup must leave the real Arch PAM stack usable for every
+# tty and user (a failed gate must never fail the session), and set the Wayland session type
+# only for the configured user on TTY1, whichever form login uses for the tty.
+other_user="lightxdmother"
+useradd -m "$other_user"
+printf '%s:%s\n' "$other_user" "$right_pw" | chpasswd
+configure_gnome_session_type gnome "$test_user"
+pam_session_matrix() {
+  python - "$test_user" "$other_user" "$right_pw" <<'PY'
+import ctypes
+import sys
+import pam
+
+PAM_TTY = 3
+test_user, other_user, password = sys.argv[1:4]
+bad = 0
+for user in (test_user, other_user):
+    for tty in (None, "tty1", "/dev/tty1", "tty2"):
+        p = pam.pam()
+        if not p.authenticate(user, password, service="login", call_end=False):
+            print(f"auth failed for {user} tty={tty}"); bad += 1; continue
+        if tty:
+            p.pam_set_item(p.handle, PAM_TTY, ctypes.c_char_p(tty.encode()))
+        opened = p.open_session()
+        session_type = p.getenv("XDG_SESSION_TYPE")
+        closed = p.close_session()
+        p.end()
+        want = "wayland" if user == test_user and tty in ("tty1", "/dev/tty1") else None
+        if opened != 0 or closed != 0 or session_type != want:
+            print(f"{user} tty={tty}: open={opened} close={closed} XDG_SESSION_TYPE={session_type} want={want}")
+            bad += 1
+sys.exit(1 if bad else 0)
+PY
+}
+if matrix_out="$(pam_session_matrix 2>&1)"; then
+  pass "GNOME PAM block: sessions open and close for every tty and user; only $test_user on TTY1 gets XDG_SESSION_TYPE=wayland"
+else
+  fail "GNOME PAM block session matrix: $matrix_out"
+fi
+
 # 3. Run uninstall.sh as root and assert /etc/pam.d/login matches original byte-for-byte
 if TARGET_HOME="/home/$test_user" bash "$REPO_ROOT/uninstall.sh"; then
   pass "uninstall.sh succeeds as root"
@@ -219,7 +266,8 @@ else
 fi
 
 # cmp is in diffutils, which the base image lacks; sha256sum is in coreutils.
-if [[ "$(sha256sum </etc/pam.d/login)" == "$(sha256sum <"$orig_login")" && ! -e /etc/pam.d/login.lightxdm.bak ]]; then
+if [[ "$(sha256sum </etc/pam.d/login)" == "$(sha256sum <"$orig_login")" &&
+  ! -e /etc/pam.d/login.lightxdm.bak && ! -e "$GNOME_SESSION_TYPE_DEST" ]]; then
   pass "uninstall.sh restores /etc/pam.d/login byte-identical to original"
 else
   fail "uninstall.sh did not restore /etc/pam.d/login byte-identical to original"
