@@ -56,7 +56,7 @@ You need Arch Linux (or a derivative) with systemd, and a user in the `wheel` gr
 | MATE (`mate`) | `startx`, through `~/.xinitrc` | GNOME Keyring | mate-polkit |
 | Cinnamon (`cinnamon`) | `startx`, through `~/.xinitrc` | GNOME Keyring | built into Cinnamon |
 | LXQt (`lxqt`) | `startx`, through `~/.xinitrc` | GNOME Keyring | lxqt-policykit |
-| Your own window manager | X11 or Wayland, with your template and `--no-packages` | GNOME Keyring (or `--no-keyring`) | your choice |
+| Your own window manager | X11 or Wayland, with your template and `--no-packages` | GNOME Keyring by default, KWallet with `--keyring kwallet`, or none with `--no-keyring` | your choice |
 
 Wayland desktops do not install `xorg-server` or `xorg-xinit`. See [GNOME session requirements](docs/installation.md#gnome-session-requirements) before choosing GNOME.
 

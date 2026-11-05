@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2025-2026 Eser KUBALI
 # SPDX-License-Identifier: GPL-3.0-or-later
 # lightXDM install script for Arch Linux
-# Installs a minimal DE, configures auto-login, KWallet, and PAM
+# Installs a desktop and its TTY1 session, with PAM keyring unlock and optional autologin
 set -e
 
 # --- Configuration ---
