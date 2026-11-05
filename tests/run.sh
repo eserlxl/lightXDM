@@ -153,6 +153,7 @@ export STUB_LOG="$TMP_DIR/stub.log"
 export LOGIN_FILE="$TMP_DIR/login"
 export GNOME_SESSION_TYPE_DEST="$TMP_DIR/gnome-session-type.conf"
 export AUTOLOGIN_DROPIN_DIR="$TMP_DIR/getty@tty1.service.d"
+export POLKIT_RULE_SRC="$REPO_ROOT/polkit/49-nopasswd.rules"
 export POLKIT_RULE_DEST="$TMP_DIR/49-nopasswd.rules"
 export DISPLAY_MANAGER_LINK="$TMP_DIR/display-manager.service"
 export DM_STATE_FILE="$TMP_DIR/lightxdm/disabled-display-managers"
@@ -430,7 +431,6 @@ run_main_with_stubs() (
       stub_install_step configure_gnome_session_type "$@"
     fi
   }
-  install_polkit_rule() { stub_install_step install_polkit_rule; }
   disable_display_managers() { stub_install_step disable_display_managers; }
   enable_autologin() { stub_install_step enable_autologin "$1"; }
   main "$@"
@@ -477,7 +477,7 @@ output="$(
 )"
 status=$?
 set -e
-if [[ $status -eq 23 && "$output" == *"Install stopped during enable_autologin; already done: install_packages copy_dotfiles configure_gnome_session_type install_polkit_rule disable_display_managers"* &&
+if [[ $status -eq 23 && "$output" == *"Install stopped during enable_autologin; already done: install_packages copy_dotfiles configure_gnome_session_type disable_display_managers"* &&
   "$output" != *"lightXDM install complete!"* ]]; then
   pass "install.sh reports a failed enable_autologin step and keeps its exit status"
 else
@@ -517,7 +517,7 @@ fi
 # A failure at any install step reports only completed steps and preserves status.
 completed_install_steps=()
 recovery_hint="After fixing the error, rerunning install.sh is safe; uninstall.sh reverts configuration changes (installed packages stay)."
-for failed_install_step in install_packages copy_dotfiles configure_pam configure_gnome_session_type install_polkit_rule disable_display_managers; do
+for failed_install_step in install_packages copy_dotfiles configure_pam configure_gnome_session_type disable_display_managers; do
   for failed_install_status in 1 23; do
     : >"$STUB_LOG"
     set +e
@@ -647,7 +647,7 @@ for wayland_de in gnome budgie; do
       wayland_args+=(--no-packages --no-keyring --no-polkit-rule)
       expected_wayland_log+=$'\ncopy_dotfiles '"$wayland_de"$'\ndisable_display_managers'
     else
-      expected_wayland_log+=$'\ninstall_packages '"$wayland_de"$'\ncopy_dotfiles '"$wayland_de"$'\nconfigure_pam '"$wayland_de"$'\ninstall_polkit_rule\ndisable_display_managers'
+      expected_wayland_log+=$'\ninstall_packages '"$wayland_de"$'\ncopy_dotfiles '"$wayland_de"$'\nconfigure_pam '"$wayland_de"$'\ndisable_display_managers'
     fi
     : >"$STUB_LOG"
     set +e
@@ -675,7 +675,7 @@ for supported_de in plasma gnome xfce lxqt lxde mate cinnamon budgie i3; do
   log_content="$(cat "$STUB_LOG")"
   if [[ $status -eq 0 && "$log_content" == *"install_packages $supported_de"* &&
     "$log_content" == *"copy_dotfiles $supported_de"* && "$log_content" == *"configure_pam $supported_de"* &&
-    "$log_content" == *"install_polkit_rule"* && "$log_content" == *"disable_display_managers"* ]]; then
+    "$log_content" == *"disable_display_managers"* ]]; then
     pass "main still configures $supported_de"
   else
     fail "main with $supported_de (status=$status, log=$log_content, output=$output)"
@@ -688,7 +688,7 @@ output="$(run_main_with_stubs "$sudo_pw_dir" --de plasma 2>&1)"
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
-if [[ $status -eq 0 && "$log_content" == $'sudo -v\ninstall_packages plasma\ncopy_dotfiles plasma\nconfigure_pam plasma\ninstall_polkit_rule\ndisable_display_managers' &&
+if [[ $status -eq 0 && "$log_content" == $'sudo -v\ninstall_packages plasma\ncopy_dotfiles plasma\nconfigure_pam plasma\ndisable_display_managers' &&
   "$output" == *"lightXDM install complete!"* && "$output" != *"startx"* ]]; then
   pass "main --de plasma proceeds through all installation steps without startx"
 else
@@ -1845,7 +1845,7 @@ for flag in --help -h; do
   set -e
   log_content="$(cat "$STUB_LOG")"
   help_options_ok=1
-  for help_word in --de --list-packages --no-packages --no-keyring --no-polkit-rule /etc/pam.d/login Polkit "display managers" uninstall.sh; do
+  for help_word in --de --list-packages --no-packages --no-keyring /etc/pam.d/login "display managers" uninstall.sh; do
     [[ "$output" == *"$help_word"*"$help_word"* || ( "$help_word" != --* && "$output" == *"$help_word"* ) ]] || help_options_ok=0
   done
   if [[ $status -eq 0 && "$output" == *"Usage:"* && $help_options_ok -eq 1 && -z "$log_content" &&
@@ -2421,7 +2421,6 @@ else
       install_packages() { :; }
       copy_dotfiles() { :; }
       configure_pam() { :; }
-      install_polkit_rule() { :; }
       main --de i3
     ' bash "$REPO_ROOT/install.sh" 2>&1)"
     status=$?
@@ -2429,7 +2428,7 @@ else
     log_content="$(cat "$STUB_LOG")"
     if [[ $status -ne 0 && ! -e "$dm_readonly_dir/state" &&
       "$output" == *"$recovery_hint"* && "$output" != *"lightXDM install complete!"* ]] &&
-      grep -Fxq '=> Install stopped during disable_display_managers; already done: install_packages copy_dotfiles configure_pam configure_gnome_session_type install_polkit_rule' <<<"$output" &&
+      grep -Fxq '=> Install stopped during disable_display_managers; already done: install_packages copy_dotfiles configure_pam configure_gnome_session_type' <<<"$output" &&
       grep -Fq 'systemctl is-enabled' "$STUB_LOG" &&
       ! grep -Fq 'systemctl disable' "$STUB_LOG"; then
       pass "disable_display_managers stops before disabling when state write fails (alias_only=$dm_alias_only)"
@@ -2569,7 +2568,7 @@ for de_id in "" i3; do
   if [[ $status -eq 0 && "$output" == *"Skipping package installation (--no-packages)."* &&
     "$log_content" != *"install_packages"* && "$log_content" == *"sudo -v"* &&
     "$log_content" == *"copy_dotfiles i3"* && "$log_content" == *"configure_pam i3"* &&
-    "$log_content" == *"install_polkit_rule"* && "$log_content" == *"disable_display_managers"* ]]; then
+    "$log_content" == *"disable_display_managers"* ]]; then
     pass "main ${no_packages_args[*]} skips packages and runs all other setup steps"
   else
     fail "main ${no_packages_args[*]} (status=$status, log=$log_content, output=$output)"
@@ -2660,7 +2659,7 @@ for startup_template_case in last-exec missing-session no-exec expression path l
   set -e
   log_content="$(cat "$STUB_LOG")"
   if [[ $status -eq $expected_startup_status ]] && {
-    [[ $status -eq 0 && "$log_content" == $'sudo -v\ncopy_dotfiles xfce\nconfigure_pam xfce\ninstall_polkit_rule\ndisable_display_managers' &&
+    [[ $status -eq 0 && "$log_content" == $'sudo -v\ncopy_dotfiles xfce\nconfigure_pam xfce\ndisable_display_managers' &&
       "$output" == *"lightXDM install complete!"* ]] ||
     [[ $status -eq 1 && "$log_content" == "sudo -v" &&
       "$output" == *"Missing command: lightxdm-missing-session. Install your session"* &&
@@ -2791,7 +2790,7 @@ status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
 if [[ $status -eq 0 && "$output" == *"lightXDM install complete!"* &&
-  "$log_content" == $'sudo -v\nconfigure_pam sway\ninstall_polkit_rule\ndisable_display_managers' &&
+  "$log_content" == $'sudo -v\nconfigure_pam sway\ndisable_display_managers' &&
   -f "$custom_wayland_home/.wayland-session" && ! -L "$custom_wayland_home/.wayland-session" &&
   "$(stat -c '%a' "$custom_wayland_home/.wayland-session")" == 755 &&
   ! -e "$custom_wayland_home/.xinitrc" && -f "$custom_wayland_home/.gpg-agent-gnome" ]] &&
@@ -3058,8 +3057,6 @@ output="$(
   # shellcheck disable=SC2317,SC2329
   configure_pam() { echo "configure_pam $1" >>"$STUB_LOG"; }
   # shellcheck disable=SC2317,SC2329
-  install_polkit_rule() { echo "install_polkit_rule" >>"$STUB_LOG"; }
-  # shellcheck disable=SC2317,SC2329
   disable_display_managers() { echo "disable_display_managers" >>"$STUB_LOG"; }
   main --no-packages --de i3
 )"
@@ -3286,39 +3283,17 @@ EOF
   fi
 fi
 
-# Case 50: Polkit install backs up foreign rules once and uninstall restores them
-printf '// administrator rule\n' >"$POLKIT_RULE_DEST"
-polkit_original_hash="$(sha256sum < "$POLKIT_RULE_DEST")"
-install_polkit_rule 2>/dev/null
-install_polkit_rule 2>/dev/null
-if [[ -f "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
-  [[ "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm.bak")" == "$polkit_original_hash" ]] &&
-  [[ "$(sha256sum < "$POLKIT_RULE_SRC")" == "$(sha256sum < "$POLKIT_RULE_DEST")" ]]; then
-  pass "install_polkit_rule backs up a foreign rule and installs the shipped rule"
-else
-  fail "install_polkit_rule foreign rule backup"
-fi
-
-printf '// later administrator edit\n' >"$POLKIT_RULE_DEST"
-polkit_edit_hash="$(sha256sum < "$POLKIT_RULE_DEST")"
-install_polkit_rule 2>/dev/null
-printf '// second administrator edit\n' >"$POLKIT_RULE_DEST"
-polkit_second_edit_hash="$(sha256sum < "$POLKIT_RULE_DEST")"
-install_polkit_rule 2>/dev/null
-install_polkit_rule 2>/dev/null
-if [[ -f "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
-  [[ "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm.bak")" == "$polkit_original_hash" ]] &&
-  [[ -f "${POLKIT_RULE_DEST}.lightxdm-edited" && "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm-edited")" == "$polkit_edit_hash" ]] &&
-  [[ -f "${POLKIT_RULE_DEST}.lightxdm-edited.1" && "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm-edited.1")" == "$polkit_second_edit_hash" ]] &&
-  [[ ! -e "${POLKIT_RULE_DEST}.lightxdm-edited.2" ]] &&
-  [[ "$(sha256sum < "$POLKIT_RULE_DEST")" == "$(sha256sum < "$POLKIT_RULE_SRC")" ]]; then
-  pass "install_polkit_rule preserves the original backup and successive edits on reinstall"
-else
-  fail "install_polkit_rule backup or edit preservation on reinstall"
-fi
-
+# Case 50: uninstall restores a foreign Polkit rule from .lightxdm.bak and saves edits
 polkit_test_dir="$TMP_DIR/polkit_uninstall"
 mkdir -p "$polkit_test_dir/home"
+rm -f "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak" "${POLKIT_RULE_DEST}.lightxdm.absent" "${POLKIT_RULE_DEST}.lightxdm-edited"*
+printf '// administrator rule\n' >"${POLKIT_RULE_DEST}.lightxdm.bak"
+polkit_original_hash="$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm.bak")"
+printf '// later administrator edit\n' >"${POLKIT_RULE_DEST}.lightxdm-edited"
+polkit_edit_hash="$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm-edited")"
+printf '// second administrator edit\n' >"${POLKIT_RULE_DEST}.lightxdm-edited.1"
+polkit_second_edit_hash="$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm-edited.1")"
+cp "$POLKIT_RULE_SRC" "$POLKIT_RULE_DEST"
 printf '// administrator edit before uninstall\n' >>"$POLKIT_RULE_DEST"
 polkit_uninstall_edit_hash="$(sha256sum < "$POLKIT_RULE_DEST")"
 if [[ $can_unshare -eq 0 ]]; then
@@ -3343,17 +3318,10 @@ else
   done
 fi
 
-# Case 51: without a prior Polkit rule, install creates no backup and uninstall removes it
-rm -f "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak"
-install_polkit_rule 2>/dev/null
-install_polkit_rule 2>/dev/null
-if [[ ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
-  [[ -f "${POLKIT_RULE_DEST}.lightxdm.absent" && ! -s "${POLKIT_RULE_DEST}.lightxdm.absent" ]] &&
-  [[ "$(sha256sum < "$POLKIT_RULE_SRC")" == "$(sha256sum < "$POLKIT_RULE_DEST")" ]]; then
-  pass "install_polkit_rule creates no backup for a fresh or identical rule"
-else
-  fail "install_polkit_rule fresh install or identical rule"
-fi
+# Case 51: without a prior Polkit rule, uninstall removes the unmodified rule and absent marker
+rm -f "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak" "${POLKIT_RULE_DEST}.lightxdm.absent" "${POLKIT_RULE_DEST}.lightxdm-edited"*
+cp "$POLKIT_RULE_SRC" "$POLKIT_RULE_DEST"
+: >"${POLKIT_RULE_DEST}.lightxdm.absent"
 if [[ $can_unshare -eq 0 ]]; then
   skip "uninstall.sh removes Polkit rule without a prior rule (unshare -r unavailable)"
 else
@@ -3368,19 +3336,12 @@ else
   fi
 fi
 
-# Case 51b: a foreign Polkit symlink survives install/uninstall and a repeated uninstall
-rm -f "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak" "${POLKIT_RULE_DEST}.lightxdm.absent"
+# Case 51b: a foreign Polkit symlink in .lightxdm.bak survives uninstall and a repeated uninstall
+rm -f "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak" "${POLKIT_RULE_DEST}.lightxdm.absent" "${POLKIT_RULE_DEST}.lightxdm-edited"*
 printf '// administrator symlink rule\n' >"$polkit_test_dir/original.rules"
 polkit_link_hash="$(sha256sum < "$polkit_test_dir/original.rules")"
-ln -s "$polkit_test_dir/original.rules" "$POLKIT_RULE_DEST"
-install_polkit_rule 2>/dev/null
-if [[ -L "${POLKIT_RULE_DEST}.lightxdm.bak" && ! -L "$POLKIT_RULE_DEST" ]] &&
-  [[ "$(readlink "${POLKIT_RULE_DEST}.lightxdm.bak")" == "$polkit_test_dir/original.rules" ]] &&
-  [[ "$(sha256sum < "$polkit_test_dir/original.rules")" == "$polkit_link_hash" ]]; then
-  pass "install_polkit_rule preserves a foreign symlink in its backup"
-else
-  fail "install_polkit_rule foreign symlink backup"
-fi
+ln -s "$polkit_test_dir/original.rules" "${POLKIT_RULE_DEST}.lightxdm.bak"
+cp "$POLKIT_RULE_SRC" "$POLKIT_RULE_DEST"
 if [[ $can_unshare -eq 0 ]]; then
   skip "uninstall.sh restores a foreign Polkit symlink (unshare -r unavailable)"
 else
@@ -3399,26 +3360,14 @@ else
   done
 fi
 
-# Case 51c: template-identical and dangling Polkit symlinks round-trip with later symlink edits
+# Case 51c: template-identical and dangling Polkit symlinks in .lightxdm.bak round-trip with later symlink edits
 for polkit_link_target in "$POLKIT_RULE_SRC" "$polkit_test_dir/missing.rules"; do
-  rm -f "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak" "${POLKIT_RULE_DEST}.lightxdm-edited" "${POLKIT_RULE_DEST}.lightxdm-edited.1" "${POLKIT_RULE_DEST}.lightxdm-edited.2"
-  ln -s "$polkit_link_target" "$POLKIT_RULE_DEST"
-  install_polkit_rule 2>/dev/null
-  rm -f "$POLKIT_RULE_DEST"
-  ln -s "$polkit_test_dir/reinstall-missing.rules" "$POLKIT_RULE_DEST"
-  install_polkit_rule 2>/dev/null
-  if [[ -L "${POLKIT_RULE_DEST}.lightxdm.bak" && "$(readlink "${POLKIT_RULE_DEST}.lightxdm.bak")" == "$polkit_link_target" ]] &&
-    [[ -L "${POLKIT_RULE_DEST}.lightxdm-edited" && "$(readlink "${POLKIT_RULE_DEST}.lightxdm-edited")" == "$polkit_test_dir/reinstall-missing.rules" ]] &&
-    [[ -f "$POLKIT_RULE_DEST" && ! -L "$POLKIT_RULE_DEST" ]] &&
-    [[ "$(sha256sum < "$POLKIT_RULE_DEST")" == "$(sha256sum < "$POLKIT_RULE_SRC")" ]]; then
-    pass "install_polkit_rule preserves original and edited symlinks ($polkit_link_target)"
-  else
-    fail "install_polkit_rule symlink preservation ($polkit_link_target)"
-  fi
+  rm -f "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak" "${POLKIT_RULE_DEST}.lightxdm.absent" "${POLKIT_RULE_DEST}.lightxdm-edited" "${POLKIT_RULE_DEST}.lightxdm-edited.1" "${POLKIT_RULE_DEST}.lightxdm-edited.2"
+  ln -s "$polkit_link_target" "${POLKIT_RULE_DEST}.lightxdm.bak"
+  ln -s "$polkit_test_dir/reinstall-missing.rules" "${POLKIT_RULE_DEST}.lightxdm-edited"
   if [[ $can_unshare -eq 0 ]]; then
     skip "uninstall.sh restores Polkit symlink ($polkit_link_target; unshare -r unavailable)"
   else
-    rm -f "$POLKIT_RULE_DEST"
     ln -s "$POLKIT_RULE_SRC" "$POLKIT_RULE_DEST"
     for polkit_run in 1 2; do
       set +e
@@ -3438,23 +3387,16 @@ for polkit_link_target in "$POLKIT_RULE_SRC" "$polkit_test_dir/missing.rules"; d
   fi
 done
 
-# Case 51d: a fresh Polkit rule edited before uninstall or reinstall is saved and removed
+# Case 51d: a fresh Polkit rule edited before uninstall or saved on an older reinstall is saved and removed
 for polkit_reinstall in 0 1; do
   rm -f "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm.bak" "${POLKIT_RULE_DEST}.lightxdm.absent" "${POLKIT_RULE_DEST}.lightxdm-edited" "${POLKIT_RULE_DEST}.lightxdm-edited.1" "${POLKIT_RULE_DEST}.lightxdm-edited.2"
-  install_polkit_rule 2>/dev/null
+  cp "$POLKIT_RULE_SRC" "$POLKIT_RULE_DEST"
+  : >"${POLKIT_RULE_DEST}.lightxdm.absent"
   printf '// fresh install user edit\n' >>"$POLKIT_RULE_DEST"
   polkit_fresh_edit_hash="$(sha256sum < "$POLKIT_RULE_DEST")"
   if [[ $polkit_reinstall -eq 1 ]]; then
-    install_polkit_rule 2>/dev/null
-  fi
-  if [[ -f "${POLKIT_RULE_DEST}.lightxdm.absent" && ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" && ! -L "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
-    { [[ $polkit_reinstall -eq 0 ]] ||
-      { [[ -f "${POLKIT_RULE_DEST}.lightxdm-edited" ]] &&
-        [[ "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm-edited")" == "$polkit_fresh_edit_hash" ]] &&
-        [[ "$(sha256sum < "$POLKIT_RULE_DEST")" == "$(sha256sum < "$POLKIT_RULE_SRC")" ]]; }; }; then
-    pass "install_polkit_rule remembers an absent original and preserves edits (reinstall=$polkit_reinstall)"
-  else
-    fail "install_polkit_rule fresh edited rule (reinstall=$polkit_reinstall)"
+    cp "$POLKIT_RULE_DEST" "${POLKIT_RULE_DEST}.lightxdm-edited"
+    cp "$POLKIT_RULE_SRC" "$POLKIT_RULE_DEST"
   fi
 
   if [[ $EUID -eq 0 ]]; then
@@ -4973,7 +4915,7 @@ for spec in "${no_kr_specs[@]}"; do
     [[ "$(sha256sum < "$LOGIN_FILE")" == "$stock_kr_hash" && ! -e "${LOGIN_FILE}.lightxdm.bak" ]] &&
     [[ -f "$no_kr_home/.bash_profile" && -f "$no_kr_home/.xinitrc" && -f "$no_kr_home/$exp_gpg_file" ]] &&
     [[ "$(sha256sum < "$no_kr_home/.xinitrc")" == "$(sha256sum < "$REPO_ROOT/dotfiles/.xinitrc-$exp_de")" ]] &&
-    [[ -f "$POLKIT_RULE_DEST" && "$(sha256sum < "$POLKIT_RULE_DEST")" == "$(sha256sum < "$POLKIT_RULE_SRC")" ]]; then
+    [[ ! -e "$POLKIT_RULE_DEST" ]]; then
     pass "main $flag_str skips configure_pam, omits keyring packages, and completes remaining setup"
   else
     fail "main $flag_str (status=$status, log=$log_content, output=$output)"
@@ -5022,7 +4964,7 @@ for combo_spec in \
     [[ "$(sha256sum < "$LOGIN_FILE")" == "$stock_combo_hash" && ! -e "${LOGIN_FILE}.lightxdm.bak" ]] &&
     [[ -f "$combo_home/.bash_profile" && -f "$combo_home/.xinitrc" ]] &&
     [[ "$(sha256sum < "$combo_home/.xinitrc")" == "$(sha256sum < "$no_kr_custom_dir/dotfiles/.xinitrc-$combo_de")" ]] &&
-    [[ -f "$POLKIT_RULE_DEST" && "$(sha256sum < "$POLKIT_RULE_DEST")" == "$(sha256sum < "$POLKIT_RULE_SRC")" ]]; then
+    [[ ! -e "$POLKIT_RULE_DEST" ]]; then
     pass "main $combo_flags skips packages and configure_pam while configuring $combo_de"
   else
     fail "main $combo_flags (status=$status, log=$log_content, output=$output)"
@@ -5077,7 +5019,6 @@ for fail_pkg_flag in "" "--no-keyring"; do
         source "$1/install.sh"
         copy_dotfiles() { echo "copy_dotfiles $*" >>"$STUB_LOG"; }
         configure_pam() { echo "configure_pam $*" >>"$STUB_LOG"; }
-        install_polkit_rule() { echo "install_polkit_rule" >>"$STUB_LOG"; }
         disable_display_managers() { echo "disable_display_managers" >>"$STUB_LOG"; }
         shift
         main "$@"
@@ -5091,7 +5032,6 @@ for fail_pkg_flag in "" "--no-keyring"; do
     grep -Fq -- "pacman -S --needed --noconfirm" "$STUB_LOG" &&
     [[ "$log_content" != *"copy_dotfiles"* ]] &&
     [[ "$log_content" != *"configure_pam"* ]] &&
-    [[ "$log_content" != *"install_polkit_rule"* ]] &&
     [[ "$log_content" != *"disable_display_managers"* ]] &&
     [[ "$output" == *"$recovery_hint"* && "$output" != *"lightXDM install complete!"* ]] &&
     grep -Fxq '=> Install stopped during install_packages; already done: none' <<<"$output"; then
@@ -5101,48 +5041,51 @@ for fail_pkg_flag in "" "--no-keyring"; do
   fi
 done
 
-# Case 64: --no-polkit-rule skips install_polkit_rule and leaves Polkit untouched, while omitting it calls install_polkit_rule
+# Case 64: --no-polkit-rule is accepted as a no-op with a note and neither it nor a plain install creates a Polkit rule
 help_no_polkit_out="$(HOME="$help_home" bash "$REPO_ROOT/install.sh" --help 2>&1)"
-if [[ "$help_no_polkit_out" == *"--no-polkit-rule"* ]]; then
-  pass "install.sh --help documents --no-polkit-rule"
+if [[ "$help_no_polkit_out" != *"--no-polkit-rule"* && "$help_no_polkit_out" != *"Polkit rule"* ]]; then
+  pass "install.sh --help omits --no-polkit-rule and Polkit rule installation"
 else
-  fail "install.sh --help missing --no-polkit-rule (output=$help_no_polkit_out)"
+  fail "install.sh --help still mentions Polkit rule (output=$help_no_polkit_out)"
 fi
 
 for default_polkit_spec in \
-  "default||Auto-unlock and Polkit rules are set" \
-  "de-lxqt|--de lxqt|Auto-unlock and Polkit rules are set" \
-  "no-packages|--no-packages|Auto-unlock and Polkit rules are set" \
-  "no-keyring|--no-keyring|Polkit rules are set (keyring setup skipped)"; do
+  "default||Auto-unlock is set" \
+  "de-lxqt|--de lxqt|Auto-unlock is set" \
+  "no-packages|--no-packages|Auto-unlock is set" \
+  "no-keyring|--no-keyring|Keyring setup skipped"; do
   IFS='|' read -r dp_label dp_flags dp_summary <<<"$default_polkit_spec"
   dp_args=()
   if [[ -n "$dp_flags" ]]; then
     read -r -a dp_args <<<"$dp_flags"
   fi
+  rm -f "$POLKIT_RULE_DEST"
   : >"$STUB_LOG"
   set +e
   output="$(USER=testuser run_main_with_stubs "$bash_stub_dir:$sudo_pw_dir" "${dp_args[@]}" 2>&1)"
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
-  if [[ $status -eq 0 ]] &&
-    grep -Fxq -- "install_polkit_rule" "$STUB_LOG" &&
-    [[ "$output" != *"Skipping Polkit rule"* && "$output" == *"- $dp_summary"* ]]; then
-    pass "main ${dp_flags:-<default>} calls install_polkit_rule and reports '$dp_summary'"
+  if [[ $status -eq 0 && ! -e "$POLKIT_RULE_DEST" ]] &&
+    ! grep -Fxq -- "install_polkit_rule" "$STUB_LOG" &&
+    [[ "$output" != *"--no-polkit-rule"* && "$output" != *"Polkit"* && "$output" == *"- $dp_summary"* ]]; then
+    pass "main ${dp_flags:-<default>} creates no Polkit rule and reports '$dp_summary'"
   else
     fail "main ${dp_label} Polkit default (status=$status, log=$log_content, output=$output)"
   fi
 done
 
 for skip_polkit_spec in \
-  "alone|--no-polkit-rule|i3|1|1|Auto-unlock is set (Polkit rule skipped)" \
-  "with-de|--no-polkit-rule --de lxqt|lxqt|1|1|Auto-unlock is set (Polkit rule skipped)" \
-  "de-first|--de xfce --no-polkit-rule|xfce|1|1|Auto-unlock is set (Polkit rule skipped)" \
-  "no-packages|--no-packages --no-polkit-rule|i3|0|1|Auto-unlock is set (Polkit rule skipped)" \
-  "no-keyring|--no-keyring --no-polkit-rule|i3|1|0|Keyring setup and Polkit rule skipped" \
-  "all-flags|--de dwm --no-polkit-rule --no-keyring --no-packages|dwm|0|0|Keyring setup and Polkit rule skipped"; do
+  "alone|--no-polkit-rule|i3|1|1|Auto-unlock is set" \
+  "with-de|--no-polkit-rule --de lxqt|lxqt|1|1|Auto-unlock is set" \
+  "de-first|--de xfce --no-polkit-rule|xfce|1|1|Auto-unlock is set" \
+  "no-packages|--no-packages --no-polkit-rule|i3|0|1|Auto-unlock is set" \
+  "no-keyring|--no-keyring --no-polkit-rule|i3|1|0|Keyring setup skipped" \
+  "no-pkg-no-kr|--no-packages --no-keyring --de i3 --no-polkit-rule|i3|0|0|Keyring setup skipped" \
+  "all-flags|--de dwm --no-polkit-rule --no-keyring --no-packages|dwm|0|0|Keyring setup skipped"; do
   IFS='|' read -r sp_label sp_flags sp_de sp_expect_pkg sp_expect_pam sp_summary <<<"$skip_polkit_spec"
   read -r -a sp_args <<<"$sp_flags"
+  rm -f "$POLKIT_RULE_DEST"
   : >"$STUB_LOG"
   set +e
   output="$(
@@ -5163,13 +5106,13 @@ for skip_polkit_spec in \
     [[ $sp_expect_pam -eq 0 && "$log_content" != *"configure_pam"* ]]; then
     pam_ok=1
   fi
-  if [[ $status -eq 0 && $pkg_ok -eq 1 && $pam_ok -eq 1 ]] &&
+  if [[ $status -eq 0 && $pkg_ok -eq 1 && $pam_ok -eq 1 && ! -e "$POLKIT_RULE_DEST" ]] &&
     ! grep -Fxq -- "install_polkit_rule" "$STUB_LOG" &&
     grep -Fxq -- "copy_dotfiles $sp_de" "$STUB_LOG" &&
     grep -Fxq -- "disable_display_managers" "$STUB_LOG" &&
-    [[ "$output" == *"Skipping Polkit rule installation (--no-polkit-rule)."* ]] &&
+    [[ "$output" == *"--no-polkit-rule is no longer needed: lightXDM does not install a Polkit rule."* ]] &&
     [[ "$output" == *"- $sp_summary"* && "$output" != *"Polkit rules are set"* ]]; then
-    pass "main $sp_flags skips install_polkit_rule and reports '$sp_summary'"
+    pass "main $sp_flags prints the --no-polkit-rule note, creates no rule file, and reports '$sp_summary'"
   else
     fail "main $sp_label ($sp_flags, status=$status, log=$log_content, output=$output)"
   fi
@@ -5182,8 +5125,10 @@ st_zsh_nopolkit=$?
 set -e
 if [[ $st_zsh_nopolkit -eq 0 ]] &&
   ! grep -Fxq -- "install_polkit_rule" "$STUB_LOG" &&
-  [[ "$out_zsh_nopolkit" == *"- Auto-unlock is set (Polkit rule skipped)"* && "$out_zsh_nopolkit" != *"Polkit rules are set"* ]]; then
-  pass "main --no-polkit-rule adjusts closing summary for non-bash login shells too"
+  [[ "$out_zsh_nopolkit" == *"--no-polkit-rule is no longer needed"* &&
+    "$out_zsh_nopolkit" == *"- Auto-unlock is set"* && "$out_zsh_nopolkit" != *"Polkit rule skipped"* &&
+    "$out_zsh_nopolkit" != *"Polkit rules are set"* ]]; then
+  pass "main --no-polkit-rule prints the note and closing summary for non-bash login shells too"
 else
   fail "main --no-polkit-rule non-bash summary (status=$st_zsh_nopolkit, output=$out_zsh_nopolkit)"
 fi
@@ -5218,11 +5163,29 @@ output="$(
 )"
 status=$?
 set -e
-if [[ $status -eq 0 && ! -e "$POLKIT_RULE_DEST" && ! -L "$POLKIT_RULE_DEST" &&
+if [[ $status -eq 0 && "$output" == *"--no-polkit-rule is no longer needed"* &&
+  ! -e "$POLKIT_RULE_DEST" && ! -L "$POLKIT_RULE_DEST" &&
   ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" && ! -e "${POLKIT_RULE_DEST}.lightxdm.absent" ]]; then
   pass "main --no-polkit-rule creates no Polkit rule or marker when none existed"
 else
   fail "main --no-polkit-rule on absent Polkit rule (status=$status, output=$output)"
+fi
+
+set +e
+output="$(
+  export HOME="$no_polkit_fs_home"
+  export PATH="$sudo_pw_dir:$STUB_BIN:$PATH"
+  export USER="testuser"
+  unset SUDO_USER
+  main --no-packages --de i3 2>&1
+)"
+status=$?
+set -e
+if [[ $status -eq 0 && ! -e "$POLKIT_RULE_DEST" && ! -L "$POLKIT_RULE_DEST" &&
+  ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" && ! -e "${POLKIT_RULE_DEST}.lightxdm.absent" ]]; then
+  pass "main without --no-polkit-rule also creates no Polkit rule or marker"
+else
+  fail "main default creates no Polkit rule (status=$status, output=$output)"
 fi
 
 printf '// custom user polkit policy\n' >"$POLKIT_RULE_DEST"
@@ -5258,13 +5221,15 @@ output="$(
 )"
 status=$?
 set -e
-if [[ $status -eq 0 && -f "$POLKIT_RULE_DEST" && -f "${POLKIT_RULE_DEST}.lightxdm.bak" &&
-  "$(sha256sum < "$POLKIT_RULE_DEST")" == "$(sha256sum < "$POLKIT_RULE_SRC")" &&
-  "$(sha256sum < "${POLKIT_RULE_DEST}.lightxdm.bak")" == "$custom_polkit_hash" ]]; then
-  pass "main without --no-polkit-rule backs up the existing rule and installs 49-nopasswd.rules"
+if [[ $status -eq 0 && -f "$POLKIT_RULE_DEST" &&
+  "$(sha256sum < "$POLKIT_RULE_DEST")" == "$custom_polkit_hash" &&
+  ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" && ! -e "${POLKIT_RULE_DEST}.lightxdm.absent" &&
+  ! -e "${POLKIT_RULE_DEST}.lightxdm-edited" ]]; then
+  pass "main without --no-polkit-rule also leaves an existing Polkit rule untouched"
 else
-  fail "main default Polkit install after --no-polkit-rule (status=$status, output=$output)"
+  fail "main default with existing Polkit rule (status=$status, output=$output)"
 fi
+rm -f "$POLKIT_RULE_DEST"
 
 # Case 65: a failing dotfile backup or edit-save copy stops copy_dotfiles before overwriting ~/.bash_profile
 fail_cp_home="$TMP_DIR/home_fail_cp"
@@ -5289,7 +5254,6 @@ output="$(
       check_root() { :; }
       install_packages() { :; }
       configure_pam() { :; }
-      install_polkit_rule() { :; }
       disable_display_managers() { :; }
       main --de i3
     ' bash "$REPO_ROOT" 2>&1
@@ -5425,7 +5389,7 @@ EOF
   done
 fi
 
-# Case 67: a failing backup copy stops configure_pam and install_polkit_rule before modifying targets
+# Case 67: a failing backup copy stops configure_pam before modifying LOGIN_FILE
 fail_sys_cp_dir="$TMP_DIR/sys_fail_cp"
 mkdir -p "$fail_sys_cp_dir"
 fail_pam_login="$fail_sys_cp_dir/login"
@@ -5510,133 +5474,6 @@ if [[ $status -ne 0 && ! -e "$missing_pam_login" && "$output" == *"is missing; l
   pass "configure_pam refuses a missing LOGIN_FILE and points at the backup"
 else
   fail "configure_pam with missing LOGIN_FILE (status=$status, exists=$([[ -e "$missing_pam_login" ]] && echo yes || echo no), output=$output)"
-fi
-
-for polkit_cp_case in backup edited; do
-  fail_polkit_rule="$fail_sys_cp_dir/${polkit_cp_case}.rules"
-  printf '// foreign administrator rule (%s)\n' "$polkit_cp_case" >"$fail_polkit_rule"
-  fail_polkit_hash="$(sha256sum < "$fail_polkit_rule")"
-  if [[ "$polkit_cp_case" == "edited" ]]; then
-    : >"${fail_polkit_rule}.lightxdm.absent"
-  fi
-  set +e
-  # shellcheck disable=SC2016  # expand inside the child shell so install.sh owns errexit
-  output="$(
-    env -u SHELLOPTS -u SUDO_USER \
-      POLKIT_RULE_DEST="$fail_polkit_rule" \
-      PATH="$fail_cp_bin:$STUB_BIN:$PATH" \
-      bash -c '
-        source "$1/install.sh"
-        install_polkit_rule
-      ' bash "$REPO_ROOT" 2>&1
-  )"
-  status=$?
-  set -e
-  if [[ $status -ne 0 ]] &&
-    [[ -f "$fail_polkit_rule" && ! -L "$fail_polkit_rule" ]] &&
-    [[ "$(sha256sum < "$fail_polkit_rule")" == "$fail_polkit_hash" ]] &&
-    [[ ! -e "${fail_polkit_rule}.lightxdm.bak" && ! -e "${fail_polkit_rule}.lightxdm-edited" ]]; then
-    pass "install_polkit_rule aborts on failed $polkit_cp_case copy without overwriting POLKIT_RULE_DEST"
-  else
-    fail "install_polkit_rule on failed $polkit_cp_case copy (status=$status, output=$output)"
-  fi
-done
-
-# Case 68: Polkit probes must use sudo when the rule directory is inaccessible
-restricted_polkit_dir="$TMP_DIR/restricted-polkit"
-restricted_polkit_bin="$TMP_DIR/restricted-polkit-bin"
-restricted_polkit_rule="$restricted_polkit_dir/49-nopasswd.rules"
-mkdir -p "$restricted_polkit_dir" "$restricted_polkit_bin"
-chmod 000 "$restricted_polkit_dir"
-if [[ -r "$restricted_polkit_dir" || -x "$restricted_polkit_dir" ]]; then
-  chmod 700 "$restricted_polkit_dir"
-  skip "install_polkit_rule uses sudo for inaccessible rule directory (permissions bypassed, e.g. root)"
-else
-  cat >"$restricted_polkit_bin/sudo" <<'EOF'
-#!/usr/bin/env bash
-set -e
-chmod 700 "$POLKIT_RULE_DIR"
-trap 'chmod 000 "$POLKIT_RULE_DIR"' EXIT
-"$@"
-EOF
-  chmod +x "$restricted_polkit_bin/sudo"
-
-  polkit_path_state() {
-    if [[ -L "$1" ]]; then
-      printf 'link:%s' "$(readlink -- "$1")"
-    elif [[ -f "$1" ]]; then
-      printf 'file:%s' "$(sha256sum < "$1")"
-    else
-      printf 'missing'
-    fi
-  }
-
-  shipped_polkit_state="$(polkit_path_state "$POLKIT_RULE_SRC")"
-  polkit_marker_suffixes=(.lightxdm.bak .lightxdm.absent .lightxdm-edited .lightxdm-edited.1 .lightxdm-edited.2)
-  for restricted_fixture in foreign shipped dangling \
-    backup-missing backup-link-missing absent-missing absent-link-missing \
-    backup backup-link absent absent-link edited edited-link numbered numbered-link; do
-    chmod 700 "$restricted_polkit_dir"
-    rm -f -- "$restricted_polkit_dir/"*
-    printf '// foreign administrator rule\n' >"$restricted_polkit_rule"
-    case "$restricted_fixture" in
-      shipped) cp "$POLKIT_RULE_SRC" "$restricted_polkit_rule" ;;
-      dangling)
-        rm "$restricted_polkit_rule"
-        ln -s missing-rule "$restricted_polkit_rule"
-        ;;
-      *-missing) rm "$restricted_polkit_rule" ;;
-    esac
-    case "$restricted_fixture" in
-      backup-link*) ln -s missing-backup "${restricted_polkit_rule}.lightxdm.bak" ;;
-      backup*|edited*|numbered*) printf '// original backup\n' >"${restricted_polkit_rule}.lightxdm.bak" ;;
-      absent-link*) ln -s missing-marker "${restricted_polkit_rule}.lightxdm.absent" ;;
-      absent*) printf 'preserve marker\n' >"${restricted_polkit_rule}.lightxdm.absent" ;;
-    esac
-    case "$restricted_fixture" in
-      edited-link) ln -s missing-edit "${restricted_polkit_rule}.lightxdm-edited" ;;
-      edited|numbered*) printf '// previous edit\n' >"${restricted_polkit_rule}.lightxdm-edited" ;;
-    esac
-    case "$restricted_fixture" in
-      numbered) printf '// numbered edit\n' >"${restricted_polkit_rule}.lightxdm-edited.1" ;;
-      numbered-link) ln -s missing-numbered-edit "${restricted_polkit_rule}.lightxdm-edited.1" ;;
-    esac
-
-    expected_polkit_markers=()
-    for suffix in "${polkit_marker_suffixes[@]}"; do
-      expected_polkit_markers+=("$(polkit_path_state "$restricted_polkit_rule$suffix")")
-    done
-    case "$restricted_fixture" in
-      foreign|dangling) expected_polkit_markers[0]="$(polkit_path_state "$restricted_polkit_rule")" ;;
-      backup|backup-link|absent|absent-link) expected_polkit_markers[2]="$(polkit_path_state "$restricted_polkit_rule")" ;;
-      edited|edited-link) expected_polkit_markers[3]="$(polkit_path_state "$restricted_polkit_rule")" ;;
-      numbered*) expected_polkit_markers[4]="$(polkit_path_state "$restricted_polkit_rule")" ;;
-    esac
-
-    chmod 000 "$restricted_polkit_dir"
-    set +e
-    # shellcheck disable=SC2016  # source with the destination set before readonly declarations
-    output="$(env -u SHELLOPTS POLKIT_RULE_DEST="$restricted_polkit_rule" \
-      POLKIT_RULE_DIR="$restricted_polkit_dir" PATH="$restricted_polkit_bin:$PATH" \
-      bash -c 'source "$1/install.sh"; install_polkit_rule' bash "$REPO_ROOT" 2>&1)"
-    status=$?
-    set -e
-    chmod 700 "$restricted_polkit_dir"
-    restricted_polkit_ok=1
-    if [[ $status -ne 0 || "$(polkit_path_state "$restricted_polkit_rule")" != "$shipped_polkit_state" ]]; then
-      restricted_polkit_ok=0
-    fi
-    for marker_index in "${!polkit_marker_suffixes[@]}"; do
-      if [[ "$(polkit_path_state "$restricted_polkit_rule${polkit_marker_suffixes[marker_index]}")" != "${expected_polkit_markers[marker_index]}" ]]; then
-        restricted_polkit_ok=0
-      fi
-    done
-    if [[ $restricted_polkit_ok -eq 1 ]]; then
-      pass "install_polkit_rule preserves $restricted_fixture rule state using sudo in an inaccessible directory"
-    else
-      fail "install_polkit_rule inaccessible directory ($restricted_fixture, status=$status, output=$output)"
-    fi
-  done
 fi
 
 # Case 69: disable_display_managers records and disables an enabled ly@tty1.service while leaving ly@tty2.service untouched
@@ -5847,7 +5684,7 @@ output="$(STUB_DETECTED_DE=unknown STUB_REAL_PROMPT=1 run_main_with_stubs "$sudo
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
-expected_menu_main_log=$'sudo -v\ndetect_de\ninstall_packages lxqt\ncopy_dotfiles lxqt\nconfigure_pam lxqt\ninstall_polkit_rule\ndisable_display_managers'
+expected_menu_main_log=$'sudo -v\ndetect_de\ninstall_packages lxqt\ncopy_dotfiles lxqt\nconfigure_pam lxqt\ndisable_display_managers'
 if [[ $status -eq 0 && "$log_content" == "$expected_menu_main_log" &&
   "$output" == *"No supported desktop environment detected."* &&
   "$output" == *"lightXDM install complete!"* && "$output" == *"- lxqt "* ]]; then
@@ -5856,7 +5693,7 @@ else
   fail "main interactive desktop menu selection (status=$status, log=$log_content, output=$output)"
 fi
 
-# Case 71: a failed PAM append stops main before Polkit or display managers
+# Case 71: a failed PAM append stops main before display managers
 fail_pam_append_dir="$TMP_DIR/fail_pam_append"
 mkdir -p "$fail_pam_append_dir"
 printf '#%%PAM-1.0\nauth include system-local-login\nsession include system-local-login\n' >"$fail_pam_append_dir/login"
@@ -5886,7 +5723,6 @@ output="$(
       check_root() { echo "check_root" >>"$STUB_LOG"; }
       install_packages() { echo "install_packages $*" >>"$STUB_LOG"; }
       copy_dotfiles() { echo "copy_dotfiles $*" >>"$STUB_LOG"; }
-      install_polkit_rule() { echo "install_polkit_rule" >>"$STUB_LOG"; }
       disable_display_managers() { echo "disable_display_managers" >>"$STUB_LOG"; }
       main --de i3
     ' bash "$REPO_ROOT" 2>&1
@@ -5898,10 +5734,10 @@ if [[ $status -ne 0 ]] &&
   grep -Fxq -- "install_packages i3" "$STUB_LOG" &&
   grep -Fxq -- "copy_dotfiles i3" "$STUB_LOG" &&
   grep -Fxq -- "failed PAM append" "$STUB_LOG" &&
-  [[ "$log_content" != *"install_polkit_rule"* && "$log_content" != *"disable_display_managers"* &&
+  [[ "$log_content" != *"disable_display_managers"* &&
     "$output" == *"$recovery_hint"* && "$output" != *"lightXDM install complete!"* ]] &&
   grep -Fxq '=> Install stopped during configure_pam; already done: install_packages copy_dotfiles' <<<"$output"; then
-  pass "main stops on PAM append failure before Polkit or display managers"
+  pass "main stops on PAM append failure before display managers"
 else
   fail "main on PAM append failure (status=$status, log=$log_content, output=$output)"
 fi
@@ -6647,7 +6483,7 @@ output="$(STUB_DETECTED_DE=$'gnome\nxfce' STUB_REAL_PROMPT=1 run_main_with_stubs
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
-expected_px_log=$'sudo -v\ndetect_de\ninstall_packages xfce\ncopy_dotfiles xfce\nconfigure_pam xfce\ninstall_polkit_rule\ndisable_display_managers'
+expected_px_log=$'sudo -v\ndetect_de\ninstall_packages xfce\ncopy_dotfiles xfce\nconfigure_pam xfce\ndisable_display_managers'
 if [[ $status -eq 0 && "$log_content" == "$expected_px_log" &&
   "$output" == *"1) GNOME"* && "$output" == *"2) XFCE"* && "$output" == *"3) Quit"* &&
   "$output" != *"Wayland-only"* &&
@@ -6664,7 +6500,7 @@ status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
 wayland_line_count="$(grep -Fc 'Wayland-only' <<<"$output" || true)"
-expected_pgl_log=$'sudo -v\ndetect_de\ninstall_packages lxqt\ncopy_dotfiles lxqt\nconfigure_pam lxqt\ninstall_polkit_rule\ndisable_display_managers'
+expected_pgl_log=$'sudo -v\ndetect_de\ninstall_packages lxqt\ncopy_dotfiles lxqt\nconfigure_pam lxqt\ndisable_display_managers'
 if [[ $status -eq 0 && "$log_content" == "$expected_pgl_log" &&
   "$wayland_line_count" -eq 0 &&
   "$output" == *"1) GNOME"* && "$output" == *"2) Budgie"* &&
@@ -6683,7 +6519,7 @@ for all_wl_detected in $'gnome\nbudgie' $'budgie\ngnome'; do
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
-  expected_wl_log=$'sudo -v\ndetect_de\ninstall_packages '"$first_wl"$'\ncopy_dotfiles '"$first_wl"$'\nconfigure_pam '"$first_wl"$'\ninstall_polkit_rule\ndisable_display_managers'
+  expected_wl_log=$'sudo -v\ndetect_de\ninstall_packages '"$first_wl"$'\ncopy_dotfiles '"$first_wl"$'\nconfigure_pam '"$first_wl"$'\ndisable_display_managers'
   if [[ $status -eq 0 && "$log_content" == "$expected_wl_log" &&
     "$output" == *"$(de_label "$first_wl")"* && "$output" == *"GNOME"* && "$output" == *"Budgie"* &&
     "$output" == *"3) Quit"* && "$output" == *"lightXDM install complete!"* && "$output" != *"startx"* ]]; then
@@ -6704,7 +6540,7 @@ for multi_choice_detected in $'xfce\ni3' $'gnome\nxfce\ni3'; do
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
-  expected_i3_log=$'sudo -v\ndetect_de\ninstall_packages i3\ncopy_dotfiles i3\nconfigure_pam i3\ninstall_polkit_rule\ndisable_display_managers'
+  expected_i3_log=$'sudo -v\ndetect_de\ninstall_packages i3\ncopy_dotfiles i3\nconfigure_pam i3\ndisable_display_managers'
   menu_ok=0
   if [[ "$multi_choice_detected" == gnome* && "$output" == *"1) GNOME"* &&
     "$output" == *"2) XFCE"* && "$output" == *"3) i3"* && "$output" == *"4) Quit"* ]] ||
@@ -6728,7 +6564,7 @@ output="$(STUB_DETECTED_DE=$'plasma\ngnome' STUB_REAL_PROMPT=1 run_main_with_stu
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
-expected_pg_log=$'sudo -v\ndetect_de\ninstall_packages plasma\ncopy_dotfiles plasma\nconfigure_pam plasma\ninstall_polkit_rule\ndisable_display_managers'
+expected_pg_log=$'sudo -v\ndetect_de\ninstall_packages plasma\ncopy_dotfiles plasma\nconfigure_pam plasma\ndisable_display_managers'
 if [[ $status -eq 0 && "$log_content" == "$expected_pg_log" &&
   "$output" == *"1) KDE Plasma"* && "$output" == *"2) GNOME"* && "$output" == *"3) Quit"* &&
   "$output" != *"Wayland-only"* &&
@@ -7803,7 +7639,7 @@ fi
 # The session-type step follows keyring PAM configuration in the main step order.
 : >"$STUB_LOG"
 output="$(USER="$gnome_user" STUB_RECORD_GNOME_STEP=1 run_main_with_stubs "$sudo_pw_dir" --de gnome 2>&1)"
-if [[ "$(cat "$STUB_LOG")" == *$'configure_pam gnome\nconfigure_gnome_session_type gnome '"$gnome_user"$'\ninstall_polkit_rule'* ]]; then
+if [[ "$(cat "$STUB_LOG")" == *$'configure_pam gnome\nconfigure_gnome_session_type gnome '"$gnome_user"$'\ndisable_display_managers'* ]]; then
   pass "main runs configure_gnome_session_type as its own step immediately after configure_pam"
 else
   fail "main GNOME session-type step order (log=$(cat "$STUB_LOG"), output=$output)"

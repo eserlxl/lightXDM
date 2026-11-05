@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2025-2026 Eser KUBALI
 # SPDX-License-Identifier: GPL-3.0-or-later
 # lightXDM install script for Arch Linux
-# Installs a minimal DE, configures auto-login, KWallet, Polkit, and PAM
+# Installs a minimal DE, configures auto-login, KWallet, and PAM
 set -e
 
 # --- Configuration ---
@@ -17,8 +17,6 @@ readonly PAM_KWALLET_AUTH="auth       optional   pam_kwallet5.so"
 readonly PAM_KWALLET_SESSION="session    optional   pam_kwallet5.so force_run"
 readonly PAM_GNOME_KEYRING_AUTH="auth       optional   pam_gnome_keyring.so"
 readonly PAM_GNOME_KEYRING_SESSION="session    optional   pam_gnome_keyring.so auto_start"
-readonly POLKIT_RULE_SRC="$SCRIPT_DIR/polkit/49-nopasswd.rules"
-readonly POLKIT_RULE_DEST="${POLKIT_RULE_DEST:-/etc/polkit-1/rules.d/49-nopasswd.rules}"
 
 # --- Functions ---
 
@@ -682,38 +680,6 @@ configure_gnome_session_type() (
   fi
 )
 
-# Install Polkit rule for passwordless actions
-install_polkit_rule() {
-  log "Installing Polkit rule for passwordless actions..."
-  local backup="${POLKIT_RULE_DEST}.lightxdm.bak"
-  local absent="${POLKIT_RULE_DEST}.lightxdm.absent"
-  if ! sudo test -e "$POLKIT_RULE_DEST" && ! sudo test -L "$POLKIT_RULE_DEST" &&
-    ! sudo test -e "$backup" && ! sudo test -L "$backup" &&
-    ! sudo test -e "$absent" && ! sudo test -L "$absent"; then
-    sudo install -Dm644 /dev/null "$absent"
-  fi
-  if sudo test -L "$POLKIT_RULE_DEST" ||
-    { sudo test -e "$POLKIT_RULE_DEST" &&
-      [[ "$(sudo sha256sum -- "$POLKIT_RULE_DEST" | cut -d' ' -f1)" != "$(sha256sum -- "$POLKIT_RULE_SRC" | cut -d' ' -f1)" ]]; }; then
-    if ! sudo test -e "$backup" && ! sudo test -L "$backup" &&
-      ! sudo test -e "$absent" && ! sudo test -L "$absent"; then
-      log "Backing up $POLKIT_RULE_DEST to $backup"
-      sudo cp -pP -- "$POLKIT_RULE_DEST" "$backup"
-    else
-      local edited="${POLKIT_RULE_DEST}.lightxdm-edited" n=1
-      if sudo test -e "$edited" || sudo test -L "$edited"; then
-        while sudo test -e "${edited}.${n}" || sudo test -L "${edited}.${n}"; do
-          n=$((n + 1))
-        done
-        edited="${edited}.${n}"
-      fi
-      log "Saving edited $POLKIT_RULE_DEST to $edited"
-      sudo cp -pP -- "$POLKIT_RULE_DEST" "$edited"
-    fi
-  fi
-  sudo install -Dm644 "$POLKIT_RULE_SRC" "$POLKIT_RULE_DEST"
-}
-
 # Record a display manager before disabling it
 record_and_disable_unit() {
   local unit="$1"
@@ -774,7 +740,7 @@ main() {
   local autologin=0
   local init_template=0
   local wayland=0
-  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--init-template [--wayland]] [--no-packages] [--no-keyring] [--no-polkit-rule] [--autologin]"
+  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--init-template [--wayland]] [--no-packages] [--no-keyring] [--autologin]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -788,7 +754,6 @@ A default run, as your regular user, asks for your sudo password up front (again
   - copies ~/.bash_profile and ~/.xinitrc (or ~/.wayland-session for Wayland sessions), backing up or saving any existing copies
   - appends keyring unlock lines to /etc/pam.d/login (backup at /etc/pam.d/login.lightxdm.bak)
   - for GNOME, adds a TTY1-only PAM line to register the login session as Wayland
-  - installs a Polkit rule for passwordless power-off, reboot, suspend and hibernate
   - disables installed display managers (uninstall.sh re-enables them)
 
 Options:
@@ -801,7 +766,6 @@ Options:
   --wayland         with --init-template --de <custom-id>, create a minimal Wayland template ending in exec <id>
   --no-packages     skip package installation
   --no-keyring      skip keyring packages and keyring PAM lines (use with autologin)
-  --no-polkit-rule  keep your Polkit policy; do not install the rule
   --autologin       also log in on TTY1 without a password (requires --no-keyring)
 
 uninstall.sh reverts these changes; installed packages stay.
@@ -883,6 +847,10 @@ EOF
     fi
     init_xinitrc_template "$de" "$wayland"
     exit $?
+  fi
+
+  if [[ $no_polkit_rule -eq 1 ]]; then
+    log "--no-polkit-rule is no longer needed: lightXDM does not install a Polkit rule."
   fi
 
   if [[ $list_only -eq 1 ]]; then
@@ -1085,13 +1053,6 @@ EOF
   install_step="configure_gnome_session_type"
   configure_gnome_session_type "$de" "$real_user"
   completed_steps+=("$install_step")
-  if [[ $no_polkit_rule -eq 1 ]]; then
-    log "Skipping Polkit rule installation (--no-polkit-rule)."
-  else
-    install_step="install_polkit_rule"
-    install_polkit_rule
-    completed_steps+=("$install_step")
-  fi
   install_step="disable_display_managers"
   disable_display_managers
   completed_steps+=("$install_step")
@@ -1101,13 +1062,9 @@ EOF
     completed_steps+=("$install_step")
   fi
 
-  local unlock_summary="Auto-unlock and Polkit rules are set"
-  if [[ $no_keyring -eq 1 && $no_polkit_rule -eq 1 ]]; then
-    unlock_summary="Keyring setup and Polkit rule skipped"
-  elif [[ $no_keyring -eq 1 ]]; then
-    unlock_summary="Polkit rules are set (keyring setup skipped)"
-  elif [[ $no_polkit_rule -eq 1 ]]; then
-    unlock_summary="Auto-unlock is set (Polkit rule skipped)"
+  local unlock_summary="Auto-unlock is set"
+  if [[ $no_keyring -eq 1 ]]; then
+    unlock_summary="Keyring setup skipped"
   fi
 
   if [[ $autologin -eq 1 ]]; then
