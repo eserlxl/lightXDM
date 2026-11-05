@@ -107,6 +107,10 @@ EOF
 
 cat >"$STUB_BIN/systemctl" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${1:-}" == is-enabled && "${2:-}" == getty@tty1.service ]]; then
+  echo enabled
+  exit 0
+fi
 echo "systemctl $*" >>"${STUB_LOG:-/dev/null}"
 if [[ "${1:-}" == "daemon-reload" && "${STUB_SYSTEMCTL_FAIL_RELOAD:-0}" == "1" ]]; then
   exit 1
@@ -429,6 +433,9 @@ run_main_with_stubs() (
   if [[ "${STUB_REAL_INSTALL_PACKAGES:-0}" != 1 ]]; then
     install_packages() { stub_install_step install_packages "$@"; }
   fi
+  if [[ "${STUB_REAL_TTY1_CHECK:-0}" != 1 ]]; then
+    check_tty1_getty() { :; }
+  fi
   if [[ "${STUB_REAL_COPY_DOTFILES:-0}" != 1 ]]; then
     copy_dotfiles() { stub_install_step copy_dotfiles "$1"; }
   fi
@@ -446,6 +453,77 @@ run_main_with_stubs() (
   enable_autologin() { stub_install_step enable_autologin "$1"; }
   main "$@"
 )
+
+# A persistent getty mask must stop the handover before any install step.
+tty1_bin="$TMP_DIR/tty1_bin"
+tty1_home="$TMP_DIR/tty1_home"
+mkdir -p "$tty1_bin" "$tty1_home"
+cat >"$tty1_bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == 'is-enabled getty@tty1.service' ]]; then
+  printf '%s\n' "$*" >>"$TTY1_CHECK_LOG"
+  printf '%s\n' "$STUB_TTY1_STATE"
+  case "$STUB_TTY1_STATE" in
+    masked | masked-runtime) exit 1 ;;
+    *) exit 0 ;;
+  esac
+fi
+echo "systemctl $*" >>"$STUB_LOG"
+case "${1:-}" in
+  list-unit-files) exit 0 ;;
+  is-enabled) echo disabled; exit 1 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$tty1_bin/systemctl"
+for tty1_state in masked masked-runtime enabled static; do
+  : >"$STUB_LOG"
+  : >"$TMP_DIR/tty1-check.log"
+  set +e
+  output="$(HOME="$tty1_home" STUB_REAL_TTY1_CHECK=1 STUB_RECORD_GNOME_STEP=1 \
+    STUB_TTY1_STATE="$tty1_state" TTY1_CHECK_LOG="$TMP_DIR/tty1-check.log" \
+    run_main_with_stubs "$tty1_bin:$sudo_pw_dir" --de i3 2>&1)"
+  status=$?
+  set -e
+  log_content="$(cat "$STUB_LOG")"
+  tty1_expected_log="sudo -v"
+  if [[ "$tty1_state" != masked ]]; then
+    tty1_expected_log+=$'\ninstall_packages i3\ncopy_dotfiles i3\nconfigure_pam i3\nconfigure_gnome_session_type i3 '"${USER:-testuser}"$'\ndisable_display_managers'
+  fi
+  if [[ "$(cat "$TMP_DIR/tty1-check.log")" == 'is-enabled getty@tty1.service' &&
+    "$log_content" == "$tty1_expected_log" ]] &&
+    { [[ "$tty1_state" == masked && $status -eq 1 &&
+         "$output" == *'getty@tty1.service is masked'* &&
+         "$output" == *'next boot would have no TTY1 login'* &&
+         "$output" == *'sudo systemctl unmask getty@tty1.service'* &&
+         "$output" != *'lightXDM install complete!'* ]] ||
+      [[ "$tty1_state" != masked && $status -eq 0 &&
+         "$output" == *'lightXDM install complete!'* ]]; }; then
+    pass "main refuses only a persistent TTY1 getty mask ($tty1_state) before install steps"
+  else
+    fail "main TTY1 getty check ($tty1_state, status=$status, log=$log_content, output=$output)"
+  fi
+
+  : >"$STUB_LOG"
+  : >"$TMP_DIR/tty1-check.log"
+  set +e
+  output="$(env -u SHELLOPTS -u SUDO_USER HOME="$tty1_home" PATH="$tty1_bin:$PATH" \
+    STUB_TTY1_STATE="$tty1_state" TTY1_CHECK_LOG="$TMP_DIR/tty1-check.log" \
+    bash "$REPO_ROOT/install.sh" --dry-run --de i3 2>&1)"
+  status=$?
+  set -e
+  if [[ "$(cat "$TMP_DIR/tty1-check.log")" == 'is-enabled getty@tty1.service' ]] &&
+    ! grep -Eq '^(sudo |pacman |systemctl (disable|enable|daemon-reload))' "$STUB_LOG" &&
+    { [[ "$tty1_state" == masked && $status -eq 1 && ! -s "$STUB_LOG" &&
+         "$output" == *'getty@tty1.service is masked'* &&
+         "$output" == *'sudo systemctl unmask getty@tty1.service'* &&
+         "$output" != *'Desktop:'* ]] ||
+      [[ "$tty1_state" != masked && $status -eq 0 && "$output" == *'Desktop: i3'* ]]; }; then
+    pass "--dry-run refuses only a persistent TTY1 getty mask ($tty1_state) without changes"
+  else
+    fail "--dry-run TTY1 getty check ($tty1_state, status=$status, log=$(cat "$STUB_LOG"), output=$output)"
+  fi
+done
 
 # Non-interactive installs never allow sudo to prompt.
 ni_bin="$TMP_DIR/non_interactive_bin"
@@ -1749,6 +1827,7 @@ bash_bin="$(command -v bash)"
 ln -sf "$STUB_BIN/id" "$no_sudo_path/id"
 ln -sf "$grep_bin" "$no_sudo_path/grep"
 ln -sf "$bash_bin" "$no_sudo_path/bash"
+ln -sf "$STUB_BIN/systemctl" "$no_sudo_path/systemctl"
 
 : >"$STUB_LOG"
 set +e
@@ -2484,7 +2563,7 @@ case "$1" in
     ;;
   is-enabled)
     case "${3:-$2}" in
-      greetd.service | sddm.service) echo enabled ;;
+      greetd.service | sddm.service | getty@tty1.service) echo enabled ;;
       gdm.service | ly@.service) echo indirect ;;
       lxdm.service | static-dm.service) echo static ;;
       *) echo disabled; exit 1 ;;
@@ -2831,6 +2910,7 @@ mkdir -p "$startup_bin"
 for startup_tool in bash id tr grep getent cut cat; do
   ln -s "$(command -v "$startup_tool")" "$startup_bin/$startup_tool"
 done
+ln -s "$STUB_BIN/systemctl" "$startup_bin/systemctl"
 for missing_startup_command in startx startxfce4; do
   for startup_command in startx startxfce4; do
     rm -f "$startup_bin/$startup_command"
@@ -7135,7 +7215,7 @@ case "$1" in
     ;;
   is-enabled)
     case "$2" in
-      sddm.service | lxdm.service) echo enabled ;;
+      sddm.service | lxdm.service | getty@tty1.service) echo enabled ;;
       *) echo disabled; exit 1 ;;
     esac
     ;;

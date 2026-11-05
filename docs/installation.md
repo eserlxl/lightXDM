@@ -60,7 +60,7 @@ Plasma, GNOME, and Budgie start on Wayland through `~/.wayland-session`, which `
 - Appends PAM lines to `/etc/pam.d/login` (unless `--no-keyring` is passed; after a one-time backup at `/etc/pam.d/login.lightxdm.bak`; installing another desktop or choosing a different backend replaces the keyring lines lightXDM added for the previous one, and `uninstall.sh` removes the lines lightXDM added and restores the backup when nothing else changed, otherwise it keeps your other edits and leaves the backup for review) for keyring auto-unlock: KWallet (`pam_kwallet5.so`) for Plasma and custom sessions with `--keyring kwallet`, GNOME Keyring (`pam_gnome_keyring.so`) otherwise.
 - For GNOME only, inserts a [session-type PAM block](#gnome-session-requirements) before the first session line, including with `--no-keyring`.
 - Installs no Polkit rule: systemd already allows power-off, reboot, suspend, and hibernate in an active local session (`uninstall.sh` removes the `49-nopasswd.rules` older versions installed), while USB mounting uses `udisks2` defaults.
-- Your DE will start automatically on TTY1 after login—no need to run 'startx'.
+- Your DE will start automatically on TTY1 after login—no need to run 'startx'. The installer (including `--dry-run`) refuses before changing anything when `getty@tty1.service` is persistently masked; run `sudo systemctl unmask getty@tty1.service` and re-run the installer.
 
 ### Custom sessions
 

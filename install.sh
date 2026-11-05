@@ -1031,6 +1031,18 @@ enable_autologin() {
   sudo bash "$SCRIPT_DIR/enable-autologin.sh" "$1"
 }
 
+# Refuse a handover that would leave the next boot without a TTY1 login.
+check_tty1_getty() {
+  local state
+  state="$(systemctl is-enabled getty@tty1.service 2>/dev/null || true)"
+  if [[ "$state" == masked ]]; then
+    log "getty@tty1.service is masked; the next boot would have no TTY1 login."
+    log "Run sudo systemctl unmask getty@tty1.service and re-run the installer."
+    return 1
+  fi
+  return 0
+}
+
 disable_display_managers() {
   local preview="${1:-0}"
   if [[ $preview -eq 0 ]]; then
@@ -1090,6 +1102,7 @@ preview_install() {
   local de="$1" no_packages="$2" no_keyring="$3" autologin="$4" keyring="${5:-}" template real_user
   template="$(xinitrc_template "$de")" || return 1
   check_template_syntax "$template" || return 1
+  check_tty1_getty || return 1
   real_user="${USER:-$(id -un)}"
   printf 'Desktop: %s\nTemplate: %s\n' "$de" "$template"
   if [[ ! -r "$template" ]]; then
@@ -1499,6 +1512,8 @@ EOF
   template="$(xinitrc_template "$de")"
   install_step="check_template_syntax"
   check_template_syntax "$template" || exit 1
+  install_step="check_tty1_getty"
+  check_tty1_getty || exit 1
   if [[ "${template##*/}" == .wayland-session-* ]]; then
     is_wayland=1
     session_dotfile=".wayland-session"
