@@ -10,7 +10,7 @@ JOBS="${LIGHTXDM_VM_JOBS:-2}"
 
 usage() {
   cat <<EOF
-Usage: bash $0 [-h|--help] [--strict] [--rebuild-image] [desktop | <from>:<to> | <desktop>+autologin | <desktop>+lightdm | <desktop>+relogin ...]   (default: plasma xfce)
+Usage: bash $0 [-h|--help] [--strict] [--rebuild-image] [desktop | <from>:<to> | <desktop>+autologin | <desktop>+lightdm | <desktop>+relogin | <desktop>+recovery ...]   (default: plasma xfce)
 
 Builds an Arch Linux VM image in Docker (once per package set), then for each desktop boots a
 VM, runs install.sh --de <desktop> as a test user, reboots, types the password at the TTY1
@@ -19,6 +19,7 @@ An argument <from>:<to> installs <from>, then <to> in the same VM, and checks <t
 An argument <desktop>+autologin installs with --no-keyring --autologin and boots without typing a password.
 An argument <desktop>+lightdm checks that install.sh disables LightDM and uninstall.sh restores it after both logins.
 An argument <desktop>+relogin logs out and back in on TTY1 in the same boot instead of rebooting for the second login.
+An argument <desktop>+recovery installs with autologin, makes the session crash at once, and checks that TTY1 auto-start pauses, the TTY1 shell works and a repaired launcher starts the desktop.
 Prints one PASS/FAIL line per check; exits 1 if any check fails, 0 with SKIP if a tool is missing.
 --strict exits 1 on any SKIP (also enabled by LIGHTXDM_STRICT_TESTS=1).
 --rebuild-image rebuilds the VM image even when the package set is unchanged, to test current Arch packages.
@@ -39,7 +40,7 @@ is_desktop() {
 
 is_mode() {
   case "$1" in
-    autologin | lightdm | relogin) return 0 ;;
+    autologin | lightdm | relogin | recovery) return 0 ;;
     *) return 1 ;;
   esac
 }

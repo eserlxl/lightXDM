@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Real TTY1 login test for one desktop in a QEMU VM (driven by tests/qemu-arch.sh).
 
-Usage: vmtest.py <desktop|from:to|desktop+autologin|desktop+lightdm|desktop+relogin> <repo> <vm-dir> <ssh-port>
+Usage: vmtest.py <desktop|from:to|desktop+autologin|desktop+lightdm|desktop+relogin|desktop+recovery> <repo> <vm-dir> <ssh-port>
 Boots <vm-dir>/root.img with -snapshot (the image stays unchanged), copies the repo's
 working tree into the VM, runs install.sh --de <desktop> as user 'tester' (or <from> then
 <to> when given <from>:<to>), reboots, types the login at the TTY1 getty through QMP, and
@@ -111,7 +111,7 @@ class Qmp:
                 return reply
 
     def type(self, text):
-        names = {"-": "minus", "\n": "ret"}
+        names = {"-": "minus", "\n": "ret", " ": "spc", "/": "slash"}
         for ch in text:
             self.cmd("send-key", keys=[{"type": "qcode", "data": names.get(ch, ch)}])
             time.sleep(0.08)
@@ -184,7 +184,7 @@ def reboot_and_login(qmp, tag):
         if ssh("systemctl is-active getty@tty1")[1].strip() == "active":
             break
         time.sleep(2)
-    if MODE == "autologin":
+    if MODE in ("autologin", "recovery"):
         return True
     time.sleep(5)
     qmp.type(USER + "\n")
@@ -259,6 +259,68 @@ def relogin(qmp, tag):
     return True
 
 
+def recovery_checks(qmp):
+    def wait_file(path, limit):
+        end = time.monotonic() + limit
+        detail = f"{path} did not appear within {limit}s"
+        while time.monotonic() < end:
+            try:
+                rc, out, err = ssh(f"test -f {path}", timeout=min(15, end - time.monotonic()))
+                if rc == 0:
+                    return True, ""
+                detail = (out + err).strip() or f"{path} is absent (rc={rc})"
+            except subprocess.TimeoutExpired:
+                detail = f"ssh timed out checking {path}"
+            time.sleep(min(1, max(0, end - time.monotonic())))
+        return False, f"after {limit}s: {detail}"
+
+    # Preserve an installed Wayland launcher so this also exercises recovery on Wayland desktops.
+    log("recovery: replacing the session launcher with an immediate failure")
+    rc, out, err = ssh(
+        f"su - {USER} -c '"
+        "if [ -e ~/.wayland-session ] || [ -L ~/.wayland-session ]; then "
+        "mv ~/.wayland-session ~/.wayland-session.recovery-backup; fi && "
+        "printf \"#!/bin/sh\\nexit 1\\n\" > ~/.wayland-session && "
+        "chmod +x ~/.wayland-session && rm -f ~/recovery-shell-ok'", timeout=20)
+    check("recovery: failing launcher installed as the user", rc == 0, (out + err).strip())
+    if rc != 0 or not reboot_and_login(qmp, "recovery"):
+        return
+
+    marker = f"/home/{USER}/.config/lightxdm/no-autostart"
+    ok, detail = wait_file(marker, 120)
+    check("recovery: crash loop pauses TTY1 auto-start", ok, detail)
+    if not ok:
+        return
+
+    try:
+        rc, out, err = ssh("systemctl is-active getty@tty1", timeout=15)
+        ok = rc == 0 and out.strip() == "active"
+        detail = (out + err).strip() or f"systemctl returned {rc}"
+    except subprocess.TimeoutExpired:
+        ok, detail = False, "ssh timed out checking getty@tty1"
+    check("recovery: getty@tty1 remains active after the crash loop", ok, detail)
+    if not ok:
+        return
+
+    qmp.type(f"touch /home/{USER}/recovery-shell-ok\n")
+    log("recovery: typed the shell probe at the paused TTY1 shell")
+    ok, detail = wait_file(f"/home/{USER}/recovery-shell-ok", 30)
+    check("recovery: paused TTY1 shell executes a command typed through QMP", ok, detail)
+    if not ok:
+        return
+
+    rc, out, err = ssh(
+        f"su - {USER} -c 'rm -f ~/.wayland-session ~/.config/lightxdm/no-autostart && "
+        "if [ -e ~/.wayland-session.recovery-backup ] || [ -L ~/.wayland-session.recovery-backup ]; then "
+        "mv ~/.wayland-session.recovery-backup ~/.wayland-session; fi'", timeout=20)
+    check("recovery: launcher repaired and auto-start pause removed", rc == 0, (out + err).strip())
+    if rc != 0:
+        return
+    qmp.type("exit\n")
+    log("recovery: exited the TTY1 shell to restart autologin with the repaired launcher")
+    session_checks("recovery", qmp)
+
+
 def wait_proc(name, limit=240):
     end = time.time() + limit
     while time.time() < end:
@@ -297,7 +359,7 @@ def lock_keyring(tag):
 
 def session_checks(tag, qmp):
     check(f"{tag}: {PROCS[0]} runs for {USER}", wait_proc(PROCS[0]))
-    if tag == "login1" and TARGET in FIRST_LOGIN_KEYS:
+    if tag in ("login1", "recovery") and TARGET in FIRST_LOGIN_KEYS:
         time.sleep(8)
         qmp.type(FIRST_LOGIN_KEYS[TARGET])
         log(f"{tag}: answered the first-login prompt")
@@ -337,7 +399,7 @@ def session_checks(tag, qmp):
     else:
         check(f"{tag}: Xorg server runs", has_xorg)
     time.sleep(15)
-    if MODE != "autologin":
+    if MODE not in ("autologin", "recovery"):
         if KEYRING == "kwallet":
             # KDE Frameworks 6.31+: PAM starts ksecretd --pam-login, which serves org.freedesktop.secrets.
             check(f"{tag}: ksecretd was started by PAM", ssh(f"pgrep -u {USER} -f 'ksecretd --pam-login'")[0] == 0)
@@ -401,7 +463,7 @@ def main():
             check(f"install.sh --de {FROM} exits 0", rc == 0, out[-400:])
             if rc != 0:
                 return
-        install_args = f"--no-keyring --autologin --de {TARGET}" if MODE == "autologin" else f"--de {TARGET}"
+        install_args = f"--no-keyring --autologin --de {TARGET}" if MODE in ("autologin", "recovery") else f"--de {TARGET}"
         rc, out, err = ssh(f"su - {USER} -c 'cd ~/lightXDM && bash install.sh {install_args}' 2>&1", timeout=1800)
         with open(os.path.join(RUN, "install.log"), "w") as f:
             f.write(out + err)
@@ -413,10 +475,16 @@ def main():
             check("install.sh disabled lightdm.service", out.strip() == "disabled", (out + err).strip())
             rc, _, err = ssh("grep -Fxq lightdm.service /etc/lightxdm/disabled-display-managers")
             check("install.sh recorded lightdm.service", rc == 0, err.strip())
-        if MODE == "autologin":
+        if MODE in ("autologin", "recovery"):
             _, out, err = ssh(f"bash /home/{USER}/lightXDM/enable-autologin.sh --status")
             check(f"enable-autologin.sh --status reports enabled for {USER}",
                   out.startswith(f"enabled for {USER}"), (out + err).strip())
+        if MODE == "recovery":
+            recovery_checks(qmp)
+            if os.environ.get("LIGHTXDM_VM_KEEP") == "1":
+                kept = True
+                log(f"LIGHTXDM_VM_KEEP=1: VM left running (qemu pid {proc.pid})")
+            return
         login1_ok = reboot_and_login(qmp, "login1")
         if login1_ok:
             session_checks("login1", qmp)
