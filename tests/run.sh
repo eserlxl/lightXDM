@@ -7179,6 +7179,20 @@ else
   else
     fail "uninstall.sh after re-install over old install (status=$status, output=$output, login=$(cat "$old_dir/login"))"
   fi
+  # Switching an older GNOME keyring install to Plasma removes the legacy auth line alongside the session line.
+  rm -f -- "$old_dir/login" "$old_dir"/login.*.bak*
+  printf %b "$old_stock" >"$old_dir/login.lightxde.bak.1751000000"
+  printf %b "$old_stock$old_keyring" >"$old_dir/login"
+  # shellcheck disable=SC2016  # expand inside the child shell
+  old_pam_log="$(env LOGIN_FILE="$old_dir/login" bash -c 'source "$1/install.sh" && configure_pam plasma' bash "$REPO_ROOT" 2>&1)"
+  if cmp -s "$old_dir/login.lightxdm.bak" "$old_dir/login.expected" &&
+    ! grep -q pam_gnome_keyring "$old_dir/login" &&
+    grep -Fxq -- "$PAM_KWALLET_AUTH" "$old_dir/login" &&
+    grep -Fxq -- "$PAM_KWALLET_SESSION" "$old_dir/login"; then
+    pass "configure_pam plasma removes the legacy GNOME keyring auth line and adds KWallet lines"
+  else
+    fail "configure_pam plasma legacy GNOME keyring auth line (log=$old_pam_log, login=$(cat "$old_dir/login"))"
+  fi
   # An existing .lightxdm.bak wins; the .lightxde backup is not moved.
   rm -f -- "$old_dir/login" "$old_dir"/login.*.bak*
   printf %b "$old_stock" >"$old_dir/login.lightxdm.bak"

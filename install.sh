@@ -602,8 +602,11 @@ configure_pam() {
 
   local backup_file="${LOGIN_FILE}.lightxdm.bak"
   if [[ -f "$backup_file" ]]; then
-    local pam_sed=() other_line
-    for other_line in "$other_auth_line" "$other_session_line"; do
+    local pam_sed=() other_line other_lines=("$other_auth_line" "$other_session_line")
+    if [[ "$other_module" == "pam_gnome_keyring.so" ]]; then
+      other_lines+=("auth       optional   pam_gnome_keyring.so auto_start")
+    fi
+    for other_line in "${other_lines[@]}"; do
       if grep -Fxq -- "$other_line" "$LOGIN_FILE" && ! grep -Fxq -- "$other_line" "$backup_file"; then
         pam_sed+=(-e "/^${other_line//./\\.}\$/d")
       fi
