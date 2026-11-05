@@ -6981,6 +6981,45 @@ else
   fail "Plasma PAM removal preview changed the login file or installation failed"
 fi
 
+
+# A legacy backup must produce the same removal preview without being adopted yet.
+dr_legacy_dir="$dr_dir/legacy-removals"
+mkdir -p "$dr_legacy_dir/home/.config/lightxdm" "$dr_legacy_dir/system"
+printf '#%%PAM-1.0\n' >"$dr_legacy_dir/system/login.lightxde.bak.1751000000"
+{
+  cat "$dr_legacy_dir/system/login.lightxde.bak.1751000000"
+  printf '%s\n' "$PAM_KWALLET_AUTH" "$PAM_KWALLET_SESSION"
+} >"$dr_legacy_dir/system/login"
+cp "$dr_legacy_dir/system/login" "$dr_legacy_dir/login-before"
+: >"$STUB_LOG"
+dr_legacy_out="$(env -u SHELLOPTS -u SUDO_USER HOME="$dr_legacy_dir/home" USER=testuser \
+  PATH="$dr_bin:$STUB_BIN:$PATH" LOGIN_FILE="$dr_legacy_dir/system/login" \
+  DM_STATE_FILE="$dr_legacy_dir/system/dm-state" AUTOLOGIN_DROPIN_DIR="$dr_legacy_dir/system/getty.d" \
+  DISPLAY_MANAGER_LINK="$dr_legacy_dir/system/display-manager.service" \
+  bash "$REPO_ROOT/install.sh" --dry-run --de xfce)"
+# shellcheck disable=SC2016  # expand inside the child shell
+if cmp -s "$dr_legacy_dir/login-before" "$dr_legacy_dir/system/login" &&
+  [[ -f "$dr_legacy_dir/system/login.lightxde.bak.1751000000" && ! -e "$dr_legacy_dir/system/login.lightxdm.bak" ]] &&
+  ! grep -q '^sudo ' "$STUB_LOG" &&
+  env -u SHELLOPTS -u SUDO_USER HOME="$dr_legacy_dir/home" USER=testuser \
+    PATH="$dr_bin:$STUB_BIN:$PATH" LOGIN_FILE="$dr_legacy_dir/system/login" \
+    DM_STATE_FILE="$dr_legacy_dir/system/dm-state" AUTOLOGIN_DROPIN_DIR="$dr_legacy_dir/system/getty.d" \
+    DISPLAY_MANAGER_LINK="$dr_legacy_dir/system/display-manager.service" \
+    bash -c 'source "$1/install.sh"; shift; check_root() { :; }; main "$@"' \
+    _ "$REPO_ROOT" --de xfce >"$dr_legacy_dir/install.out" 2>&1; then
+  sed -n 's/^  remove: //p' <<<"$dr_legacy_out" | sort >"$dr_legacy_dir/preview-removals"
+  comm -23 <(sort "$dr_legacy_dir/login-before") <(sort "$dr_legacy_dir/system/login") >"$dr_legacy_dir/actual-removals"
+  if [[ $(wc -l <"$dr_legacy_dir/actual-removals") -eq 2 ]] &&
+    cmp -s "$dr_legacy_dir/preview-removals" "$dr_legacy_dir/actual-removals" &&
+    [[ -f "$dr_legacy_dir/system/login.lightxdm.bak" && ! -e "$dr_legacy_dir/system/login.lightxde.bak.1751000000" ]]; then
+    pass "Xfce dry-run lists KWallet rules removed using a legacy backup"
+  else
+    fail "Xfce legacy backup PAM removals differ from installation (preview=$dr_legacy_out)"
+  fi
+else
+  fail "Xfce legacy backup preview changed files or used sudo, or installation failed"
+fi
+
 : >"$STUB_LOG"
 set +e
 dr_missing_out="$(run_main_with_stubs "$dr_bin" --dry-run 2>&1)"

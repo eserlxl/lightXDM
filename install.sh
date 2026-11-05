@@ -549,7 +549,7 @@ copy_dotfiles() {
 
 # Installs before 2026-11-03 backed up to .lightxde.bak.<epoch>; adopt the oldest one as the
 # original so a re-install does not back up a login file that already holds old keyring lines.
-adopt_legacy_pam_backup() {
+legacy_pam_backup_candidate() {
   local backup_file="${LOGIN_FILE}.lightxdm.bak" old_backup epoch oldest_epoch=""
   if [[ -e "$backup_file" || -L "$backup_file" ]]; then
     return 0
@@ -566,8 +566,16 @@ adopt_legacy_pam_backup() {
     fi
   done
   if [[ -n "$oldest_epoch" ]]; then
-    log "Using ${LOGIN_FILE}.lightxde.bak.${oldest_epoch} as the original $LOGIN_FILE backup."
-    sudo mv -- "${LOGIN_FILE}.lightxde.bak.${oldest_epoch}" "$backup_file" || return 1
+    printf '%s\n' "${LOGIN_FILE}.lightxde.bak.${oldest_epoch}"
+  fi
+}
+
+adopt_legacy_pam_backup() {
+  local old_backup
+  old_backup="$(legacy_pam_backup_candidate)"
+  if [[ -n "$old_backup" ]]; then
+    log "Using $old_backup as the original $LOGIN_FILE backup."
+    sudo mv -- "$old_backup" "${LOGIN_FILE}.lightxdm.bak" || return 1
   fi
 }
 
@@ -587,6 +595,9 @@ pam_lines_to_remove() {
   local other_module="$1" other_auth_line="$2" other_session_line="$3"
   local backup_file="${LOGIN_FILE}.lightxdm.bak" other_line
   local other_lines=("$other_auth_line" "$other_session_line")
+  if [[ ! -e "$backup_file" && ! -L "$backup_file" ]]; then
+    backup_file="$(legacy_pam_backup_candidate)"
+  fi
   [[ -f "$backup_file" ]] || return 0
   if [[ "$other_module" == "pam_gnome_keyring.so" ]]; then
     other_lines+=("auth       optional   pam_gnome_keyring.so auto_start")
