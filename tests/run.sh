@@ -6951,6 +6951,25 @@ else
   fail "init custom Wayland overwrite refusal (status=$status, output=$output)"
 fi
 
+# A custom id keeps one session template: --init-template refuses to add the sibling.
+for sib_case in "wayland-session-sway:xinitrc-sway::sway" "xinitrc-dwm:wayland-session-dwm:--wayland:dwm"; do
+  IFS=: read -r sib_have sib_new sib_flag sib_id <<<"$sib_case"
+  sib_home="$TMP_DIR/init_sibling_home_$sib_id"
+  mkdir -p "$sib_home/.config/lightxdm"
+  : >"$sib_home/.config/lightxdm/.$sib_have"
+  : >"$STUB_LOG"
+  set +e
+  output="$(HOME="$sib_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template ${sib_flag:+"$sib_flag"} --de "$sib_id" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 1 && "$output" == *"/.config/lightxdm/.$sib_have already exists"* &&
+    ! -e "$sib_home/.config/lightxdm/.$sib_new" && ! -s "$STUB_LOG" ]]; then
+    pass "--init-template ${sib_flag:+$sib_flag }--de $sib_id refuses while .$sib_have exists"
+  else
+    fail "init-template sibling refusal for $sib_id (status=$status, output=$output)"
+  fi
+done
+
 # --wayland requires template initialization and a custom id; refuse before writing.
 reject_wayland_home="$TMP_DIR/reject_wayland_home"
 mkdir -p "$reject_wayland_home"

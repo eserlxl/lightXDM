@@ -333,6 +333,18 @@ init_xinitrc_template() {
     log "$dest already exists; edit it, or remove it to start over."
     return 1
   fi
+  case "$id" in
+    plasma | gnome | budgie | xfce | lxqt | lxde | mate | cinnamon | i3) ;;
+    *)
+      # install.sh refuses a custom id with both templates, so never create the second one.
+      local sibling="$HOME/.config/lightxdm/.wayland-session-$id"
+      [[ $wayland -eq 1 ]] && sibling="$HOME/.config/lightxdm/.xinitrc-$id"
+      if [[ -e "$sibling" || -L "$sibling" ]]; then
+        log "$sibling already exists for $id; a custom id uses one session template: edit it, or remove it to switch."
+        return 1
+      fi
+      ;;
+  esac
   mkdir -p "$HOME/.config/lightxdm"
   case "$id" in
     plasma | gnome | budgie)
