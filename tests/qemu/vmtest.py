@@ -339,6 +339,10 @@ def session_checks(tag, qmp):
                                f"/org/freedesktop/secrets/collection/{collection} org.freedesktop.Secret.Collection Locked")
         check(f"{tag}: keyring collection '{collection}' is unlocked without a prompt", out.strip() == "b false",
               (out + err).strip())
+        rc, out, err = user_bus(f"bash /home/{USER}/lightXDM/install.sh --check-keyring "
+                               f"{'kwallet' if KEYRING == 'kwallet' else 'gnome'}")
+        check(f"{tag}: --check-keyring reports collection '{collection}' as unlocked",
+              rc == 0 and f"collection '{collection}' is unlocked" in out, (out + err).strip())
     # Ask polkitd for an action that needs authentication on behalf of a session process: with an
     # agent registered for the session it opens a dialog and pkcheck waits (timeout -> 124); without
     # one polkitd answers at once "no agent is available" (exit 2). Shell-integrated agents

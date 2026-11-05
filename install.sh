@@ -38,6 +38,31 @@ check_root() {
   fi
 }
 
+# Read the existing collection without activating the secret service or prompting.
+check_keyring_unlocked() {
+  local collection output status=0
+  case "$1" in
+    gnome) collection="login" ;;
+    kwallet) collection="kdewallet" ;;
+  esac
+  output="$(busctl --user --auto-start=no get-property org.freedesktop.secrets \
+    "/org/freedesktop/secrets/collection/$collection" org.freedesktop.Secret.Collection Locked 2>&1)" || status=$?
+  if [[ $status -eq 0 ]]; then
+    case "$output" in
+      'b false')
+        echo "Keyring collection '$collection' is unlocked."
+        return 0
+        ;;
+      'b true')
+        echo "Keyring collection '$collection' is locked."
+        return 1
+        ;;
+    esac
+  fi
+  log "Keyring collection '$collection' is unavailable: ${output:-busctl returned no output (status $status)}"
+  return 2
+}
+
 # Detect the installed desktop environment
 detect_de() {
   local pair pkg de found=0
@@ -1086,12 +1111,14 @@ main() {
   local no_packages=0
   local no_keyring=0
   local keyring=""
+  local check_keyring=""
+  local argument_count=$#
   local no_polkit_rule=0
   local autologin=0
   local init_template=0
   local wayland=0
   local from_session=""
-  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--no-keyring] [--autologin]"
+  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1122,6 +1149,8 @@ Options:
   --no-packages     skip package installation
   --keyring <gnome|kwallet> choose the PAM keyring backend for a custom id (requires --no-packages;
                     cannot combine with --no-keyring or --init-template)
+  --check-keyring <gnome|kwallet> report the existing collection's state from your desktop session and exit
+                    (use alone, without sudo; no service activation or prompts; 0=unlocked, 1=locked, 2=unavailable)
   --no-keyring      skip keyring packages and keyring PAM lines (use with autologin)
   --autologin       also log in on TTY1 without a password (requires --no-keyring)
 
@@ -1157,6 +1186,21 @@ EOF
         fi
         case "$2" in
           gnome | kwallet) keyring="$2" ;;
+          *)
+            log "Invalid keyring backend: $2 (valid backends: gnome kwallet)"
+            exit 1
+            ;;
+        esac
+        shift 2
+        ;;
+      --check-keyring)
+        if [[ $# -lt 2 || "$2" == -* ]]; then
+          log "Missing argument for --check-keyring (valid backends: gnome kwallet)"
+          echo "$usage" >&2
+          exit 1
+        fi
+        case "$2" in
+          gnome | kwallet) check_keyring="$2" ;;
           *)
             log "Invalid keyring backend: $2 (valid backends: gnome kwallet)"
             exit 1
@@ -1206,6 +1250,20 @@ EOF
         ;;
     esac
   done
+
+  if [[ -n "$check_keyring" ]]; then
+    if [[ $argument_count -ne 2 ]]; then
+      log "--check-keyring cannot be combined with any other option."
+      exit 1
+    fi
+    if [[ $EUID -eq 0 ]]; then
+      log "Do not run --check-keyring as root or with sudo; run it in the desktop user's session."
+      exit 1
+    fi
+    local check_status=0
+    check_keyring_unlocked "$check_keyring" || check_status=$?
+    exit "$check_status"
+  fi
 
   if [[ -n "$from_session" ]]; then
     if [[ $init_template -eq 0 || $de_specified -eq 0 || -z "$de" ]]; then

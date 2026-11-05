@@ -6981,6 +6981,128 @@ for kr_reject_case in plasma gnome xfce lxqt lxde mate cinnamon budgie i3 builti
   fi
 done
 
+# --check-keyring reads only the user's existing collection, without service activation.
+ck_dir="$TMP_DIR/check-keyring"
+mkdir -p "$ck_dir/bin" "$ck_dir/home"
+cat >"$ck_dir/bin/busctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$KEYRING_CHECK_LOG"
+case "$KEYRING_CHECK_RESULT" in
+  unlocked) echo 'b false' ;;
+  locked) echo 'b true' ;;
+  unavailable) echo 'Unknown object' >&2; exit 1 ;;
+  unexpected) echo 's unexpected' ;;
+  empty) exit 0 ;;
+esac
+EOF
+chmod +x "$ck_dir/bin/busctl"
+
+if [[ $EUID -eq 0 ]]; then
+  skip "--check-keyring session results (requires a non-root user)"
+else
+  for ck_backend in gnome kwallet; do
+    ck_collection=login
+    [[ "$ck_backend" != kwallet ]] || ck_collection=kdewallet
+    for ck_result in unlocked locked unavailable unexpected empty; do
+      case "$ck_result" in
+        unlocked) ck_expected_status=0; ck_message="collection '$ck_collection' is unlocked." ;;
+        locked) ck_expected_status=1; ck_message="collection '$ck_collection' is locked." ;;
+        unavailable) ck_expected_status=2; ck_message="collection '$ck_collection' is unavailable: Unknown object" ;;
+        unexpected) ck_expected_status=2; ck_message="collection '$ck_collection' is unavailable: s unexpected" ;;
+        empty) ck_expected_status=2; ck_message="collection '$ck_collection' is unavailable: busctl returned no output" ;;
+      esac
+      : >"$ck_dir/busctl.log"
+      : >"$STUB_LOG"
+      set +e
+      ck_output="$(env -u SHELLOPTS HOME="$ck_dir/home" PATH="$ck_dir/bin:$PATH" \
+        KEYRING_CHECK_LOG="$ck_dir/busctl.log" KEYRING_CHECK_RESULT="$ck_result" \
+        bash "$REPO_ROOT/install.sh" --check-keyring "$ck_backend" 2>&1)"
+      ck_status=$?
+      set -e
+      ck_args="$(cat "$ck_dir/busctl.log")"
+      if [[ $ck_status -eq $ck_expected_status && "$ck_output" == *"$ck_message"* &&
+        "$ck_args" == "--user --auto-start=no get-property org.freedesktop.secrets /org/freedesktop/secrets/collection/$ck_collection org.freedesktop.Secret.Collection Locked" &&
+        ! -s "$STUB_LOG" ]]; then
+        pass "--check-keyring $ck_backend reports $ck_result without activation or sudo"
+      else
+        fail "--check-keyring $ck_backend $ck_result (status=$ck_status, output=$ck_output, args=$ck_args, log=$(cat "$STUB_LOG"))"
+      fi
+    done
+  done
+fi
+
+for ck_reject in missing flag-argument empty invalid combined combined-reversed duplicate \
+  --list-packages --dry-run --non-interactive --no-packages --keyring --no-keyring --no-polkit-rule --autologin \
+  --init-template --wayland --from-session; do
+  ck_reject_args=(--check-keyring gnome)
+  ck_message='--check-keyring cannot be combined with any other option.'
+  case "$ck_reject" in
+    missing) ck_reject_args=(--check-keyring); ck_message='Missing argument for --check-keyring' ;;
+    flag-argument) ck_reject_args=(--check-keyring --de xfce); ck_message='Missing argument for --check-keyring' ;;
+    empty) ck_reject_args=(--check-keyring ''); ck_message='Invalid keyring backend:' ;;
+    invalid) ck_reject_args=(--check-keyring kde); ck_message='Invalid keyring backend: kde' ;;
+    combined) ck_reject_args+=(--de xfce) ;;
+    combined-reversed) ck_reject_args=(--de xfce --check-keyring kwallet) ;;
+    duplicate) ck_reject_args+=(--check-keyring kwallet) ;;
+    --keyring) ck_reject_args+=(--keyring kwallet) ;;
+    --from-session) ck_reject_args+=(--from-session /usr/share/xsessions/custom.desktop) ;;
+    *) ck_reject_args+=("$ck_reject") ;;
+  esac
+  : >"$ck_dir/busctl.log"
+  : >"$STUB_LOG"
+  set +e
+  ck_output="$(env -u SHELLOPTS HOME="$ck_dir/home" PATH="$ck_dir/bin:$PATH" \
+    KEYRING_CHECK_LOG="$ck_dir/busctl.log" KEYRING_CHECK_RESULT=unlocked \
+    bash "$REPO_ROOT/install.sh" "${ck_reject_args[@]}" 2>&1)"
+  ck_status=$?
+  set -e
+  if [[ $ck_status -eq 1 && "$ck_output" == *"$ck_message"* && ! -s "$ck_dir/busctl.log" && ! -s "$STUB_LOG" ]]; then
+    pass "--check-keyring rejects $ck_reject before busctl or sudo"
+  else
+    fail "--check-keyring rejection $ck_reject (status=$ck_status, output=$ck_output)"
+  fi
+done
+
+# --help wins wherever it appears, as with every other option, and runs no check.
+for ck_help_order in "--check-keyring gnome --help" "--help --check-keyring gnome"; do
+  read -r -a ck_help_args <<<"$ck_help_order"
+  : >"$ck_dir/busctl.log"
+  set +e
+  ck_output="$(env -u SHELLOPTS HOME="$ck_dir/home" PATH="$ck_dir/bin:$PATH" \
+    KEYRING_CHECK_LOG="$ck_dir/busctl.log" KEYRING_CHECK_RESULT=unlocked \
+    bash "$REPO_ROOT/install.sh" "${ck_help_args[@]}" 2>&1)"
+  ck_status=$?
+  set -e
+  if [[ $ck_status -eq 0 && "$ck_output" == *"--check-keyring <gnome|kwallet> report"* && ! -s "$ck_dir/busctl.log" ]]; then
+    pass "--help with --check-keyring ($ck_help_order) prints usage without running the check"
+  else
+    fail "--help with --check-keyring ($ck_help_order) (status=$ck_status, output=$ck_output)"
+  fi
+done
+
+ck_root_runner=()
+if [[ $EUID -ne 0 ]]; then
+  ck_root_runner=(unshare -r)
+fi
+if [[ $EUID -ne 0 && $can_unshare -eq 0 ]]; then
+  skip "--check-keyring refuses root (unshare -r unavailable)"
+else
+  : >"$ck_dir/busctl.log"
+  : >"$STUB_LOG"
+  set +e
+  ck_output="$(env -u SHELLOPTS HOME="$ck_dir/home" PATH="$ck_dir/bin:$PATH" \
+    KEYRING_CHECK_LOG="$ck_dir/busctl.log" KEYRING_CHECK_RESULT=unlocked \
+    "${ck_root_runner[@]}" bash "$REPO_ROOT/install.sh" --check-keyring gnome 2>&1)"
+  ck_status=$?
+  set -e
+  if [[ $ck_status -eq 1 && "$ck_output" == *'Do not run --check-keyring as root'* &&
+    ! -s "$ck_dir/busctl.log" && ! -s "$STUB_LOG" ]]; then
+    pass "--check-keyring refuses root before busctl or sudo"
+  else
+    fail "--check-keyring root refusal (status=$ck_status, output=$ck_output)"
+  fi
+fi
+
 for dr_de in xfce plasma gnome custom-x11 custom-wayland custom-gnome custom-kwallet-x11 custom-kwallet-wayland; do
   dr_case="$dr_dir/$dr_de"
   dr_preview_home="$dr_case/preview-home"
