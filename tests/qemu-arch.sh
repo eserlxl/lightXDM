@@ -88,6 +88,7 @@ for de in "${desktops[@]}"; do
   fi
   port=$((port + 1))
   mkdir -p "$VM_DIR/run-$de"
+  rm -f -- "$VM_DIR/run-$de/result"
   echo "Testing $de (log: $VM_DIR/run-$de/driver.log)"
   python3 "$REPO_ROOT/tests/qemu/vmtest.py" "$de" "$REPO_ROOT" "$VM_DIR" "$port" >"$VM_DIR/run-$de/vmtest.out" 2>&1 &
   running=$((running + 1))

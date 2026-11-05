@@ -7691,4 +7691,62 @@ else
   fi
 fi
 
+# An early VM driver crash must not reuse a previous run's successful result.
+if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+  qemu_stale_bin="$TMP_DIR/qemu_stale/bin"
+  qemu_stale_vm="$TMP_DIR/qemu_stale/vm"
+  mkdir -p "$qemu_stale_bin" "$qemu_stale_vm/run-plasma"
+  printf '%s\n' 'PASS: plasma: stale' 'DONE pass=1 fail=0' >"$qemu_stale_vm/run-plasma/result"
+
+  cat >"$qemu_stale_bin/docker" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == info ]]; then
+  exit 0
+elif [[ "$1" == run ]]; then
+  touch "$LIGHTXDM_VM_DIR/BUILD_DONE"
+  exit 0
+fi
+exit 1
+EOF
+  for qemu_stale_tool in qemu-system-x86_64 ssh; do
+    cat >"$qemu_stale_bin/$qemu_stale_tool" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  done
+  cat >"$qemu_stale_bin/ssh-keygen" <<'EOF'
+#!/usr/bin/env bash
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -f ]]; then
+    touch "$2"
+    exit 0
+  fi
+  shift
+done
+exit 0
+EOF
+  cat >"$qemu_stale_bin/python3" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$qemu_stale_bin/docker" "$qemu_stale_bin/qemu-system-x86_64" \
+    "$qemu_stale_bin/ssh" "$qemu_stale_bin/ssh-keygen" "$qemu_stale_bin/python3"
+
+  set +e
+  output="$(
+    export PATH="$qemu_stale_bin:$PATH" LIGHTXDM_VM_DIR="$qemu_stale_vm"
+    bash "$REPO_ROOT/tests/qemu-arch.sh" plasma 2>&1
+  )"
+  status=$?
+  set -e
+  if [[ $status -eq 1 && "$output" == *"FAIL: plasma: the VM test did not finish"* &&
+    "$output" != *"PASS: plasma: stale"* ]]; then
+    pass "qemu-arch.sh rejects a stale result when the VM driver exits before writing a result"
+  else
+    fail "qemu-arch.sh stale result after early driver exit (status=$status, output=$output)"
+  fi
+else
+  skip "qemu-arch.sh stale result after early driver exit (/dev/kvm is not accessible)"
+fi
+
 finish_harness
