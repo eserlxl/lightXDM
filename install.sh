@@ -789,6 +789,7 @@ disable_display_managers() {
     disabled_dms+=("ly@tty1")
   fi
   if [[ ${#disabled_dms[@]} -gt 0 ]]; then
+    display_manager_disabled=1
     log "Disabled display manager(s): ${disabled_dms[*]}"
     log "Your current session will not be interrupted."
   else
@@ -799,6 +800,7 @@ disable_display_managers() {
 # --- Main ---
 
 main() {
+  local display_manager_disabled=0
   local de=""
   local de_specified=0
   local list_only=0
@@ -1132,6 +1134,12 @@ EOF
   fi
 
   local unlock_summary="Auto-unlock is set"
+  local test_summary="Reboot or log out to test"
+  local test_summary_after_then="reboot or log out to test"
+  if [[ $display_manager_disabled -eq 1 ]]; then
+    test_summary="Reboot to test (the disabled display manager keeps running until then, so logging out returns to it)"
+    test_summary_after_then="reboot to test (the disabled display manager keeps running until then, so logging out returns to it)"
+  fi
   if [[ $no_keyring -eq 1 ]]; then
     unlock_summary="Keyring setup skipped"
   fi
@@ -1157,7 +1165,7 @@ EOF
 lightXDM install complete!
 - $de will auto-start on TTY1 for $real_user
 - $unlock_summary
-- Reboot or log out to test
+- $test_summary
 
 On next boot, after logging in, your desktop environment will start automatically on TTY1.
 EOF
@@ -1167,7 +1175,7 @@ EOF
 lightXDM install complete!
 - $de will auto-start on TTY1 for $real_user
 - $unlock_summary
-- Reboot or log out to test
+- $test_summary
 
 On next boot, after logging in, your desktop environment will start automatically on TTY1. No need to run 'startx'.
 EOF
@@ -1177,7 +1185,7 @@ EOF
 lightXDM install complete!
 - $de is configured in ~/$session_dotfile for $real_user (auto-start requires ~/$shell_profile)
 - $unlock_summary
-- Add the TTY1 auto-start block to ~/$shell_profile (see docs/startx-autologin.md), then reboot or log out to test
+- Add the TTY1 auto-start block to ~/$shell_profile (see docs/startx-autologin.md), then $test_summary_after_then
 
 Your login shell ($login_shell) does not read ~/.bash_profile, so $de will not auto-start on TTY1 until you add the auto-start block to ~/$shell_profile (or run '$manual_start' manually).
 EOF

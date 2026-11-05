@@ -431,7 +431,11 @@ run_main_with_stubs() (
       stub_install_step configure_gnome_session_type "$@"
     fi
   }
-  disable_display_managers() { stub_install_step disable_display_managers; }
+  disable_display_managers() {
+    stub_install_step disable_display_managers || return
+    # shellcheck disable=SC2034  # main's summary reads it through bash's dynamic scope
+    display_manager_disabled="${STUB_DM_DISABLED:-0}"
+  }
   enable_autologin() { stub_install_step enable_autologin "$1"; }
   main "$@"
 )
@@ -2417,12 +2421,15 @@ chmod +x "$dm_stub_dir/systemctl"
 set +e
 output="$(
   export PATH="$dm_stub_dir:$PATH"
+  display_manager_disabled=0
   disable_display_managers 2>&1
+  # main reads this flag to tell the user to reboot rather than log out.
+  echo "display_manager_disabled=$display_manager_disabled"
 )"
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
-if [[ $status -eq 0 && -f "$DM_STATE_FILE" ]] &&
+if [[ $status -eq 0 && -f "$DM_STATE_FILE" && "$output" == *"display_manager_disabled=1"* ]] &&
   [[ "$(cat "$DM_STATE_FILE")" == $'sddm.service\ngreetd.service' ]] &&
   grep -Fxq 'systemctl disable greetd.service' "$STUB_LOG" &&
   grep -Fxq 'systemctl disable sddm.service' "$STUB_LOG" &&
@@ -3304,6 +3311,25 @@ if [[ $status_zsh -eq 0 && "$out_zsh" == *"WARNING:"* && "$out_zsh" == *'~/.zpro
 else
   fail "main login shell check (zsh=$status_zsh:$out_zsh | fish=$status_fish:$out_fish | bash=$status_bash:$out_bash)"
 fi
+
+for summary_shell in bash zsh fish; do
+  summary_stub_dir="$TMP_DIR/getent_$summary_shell"
+  for summary_dm in 0 1; do
+    summary_output="$(USER=testuser STUB_DM_DISABLED="$summary_dm" run_main_with_stubs "$summary_stub_dir:$sudo_pw_dir" --no-packages --de i3 2>&1)"
+    if [[ $summary_dm -eq 1 ]]; then
+      if [[ "${summary_output,,}" == *"reboot to test (the disabled display manager keeps running until then, so logging out returns to it)"* &&
+        "$summary_output" != *"log out to test"* ]]; then
+        pass "main requires reboot after disabling a display manager ($summary_shell)"
+      else
+        fail "main reboot guidance after disabling a display manager ($summary_shell): $summary_output"
+      fi
+    elif [[ "${summary_output,,}" == *"reboot or log out to test"* ]]; then
+      pass "main retains logout guidance without a disabled display manager ($summary_shell)"
+    else
+      fail "main logout guidance without a disabled display manager ($summary_shell): $summary_output"
+    fi
+  done
+done
 
 paused_home="$TMP_DIR/paused_home"
 mkdir -p "$paused_home/.config/lightxdm"

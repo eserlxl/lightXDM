@@ -27,7 +27,7 @@ bash install.sh   # as your regular user, not root
 
 It asks for your sudo password up front (again only if the package download outlasts sudo's timeout).
 
-Reboot (or log out), log in on TTY1, and your desktop starts automatically.
+Reboot (log out only works when no display manager was running), log in on TTY1, and your desktop starts automatically.
 
 ## Install
 
