@@ -8258,6 +8258,16 @@ if [[ "\$1" == info ]]; then
   exit 0
 elif [[ "\$1" == run ]]; then
   echo "run" >>"$qemu_rebuild_log"
+  while [[ \$# -gt 0 ]]; do
+    if [[ "\$1" == -v ]]; then
+      shift
+      case "\${1%%:*}" in
+        "$TMP_DIR/qemu_rebuild/"*) ;;
+        *) touch "$TMP_DIR/qemu_rebuild/invalid-mount" ;;
+      esac
+    fi
+    shift
+  done
   touch "\$LIGHTXDM_VM_DIR/BUILD_DONE"
   exit 0
 fi
@@ -8302,11 +8312,27 @@ EOF
   if [[ -f "$qemu_rebuild_log" ]] && grep -Fxq "run" "$qemu_rebuild_log"; then
     rebuilt_with_docker=1
   fi
+  rm -f "$qemu_rebuild_log"
+  (
+    cd "$TMP_DIR/qemu_rebuild" || exit 1
+    PATH="$qemu_rebuild_bin:$PATH" LIGHTXDM_VM_DIR=relative-vm \
+      bash "$REPO_ROOT/tests/qemu-arch.sh" xfce >/dev/null 2>&1
+  )
+  relative_mounts_ok=0
+  if [[ -f "$qemu_rebuild_log" && -f "$TMP_DIR/qemu_rebuild/relative-vm/build-image.sh" ]] &&
+    grep -Fxq "run" "$qemu_rebuild_log" && [[ ! -e "$TMP_DIR/qemu_rebuild/invalid-mount" ]]; then
+    relative_mounts_ok=1
+  fi
   set -e
   if [[ $reused_without_docker -eq 1 && $rebuilt_with_docker -eq 1 ]]; then
     pass "qemu-arch.sh --rebuild-image forces image rebuild while a plain run reuses it"
   else
     fail "qemu-arch.sh --rebuild-image (reused=$reused_without_docker, rebuilt=$rebuilt_with_docker)"
+  fi
+  if [[ $relative_mounts_ok -eq 1 ]]; then
+    pass "qemu-arch.sh resolves relative VM directory mounts"
+  else
+    fail "qemu-arch.sh resolves relative VM directory mounts"
   fi
 else
   skip "qemu-arch.sh --rebuild-image (/dev/kvm is not accessible)"

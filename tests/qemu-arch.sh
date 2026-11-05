@@ -112,6 +112,7 @@ if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
 fi
 
 mkdir -p "$VM_DIR/pkgcache"
+VM_DIR="$(CDPATH='' cd -- "$VM_DIR" && pwd)"
 # pacman inside the container downloads as its own unprivileged user.
 chmod 0777 "$VM_DIR/pkgcache"
 [[ -f "$VM_DIR/id_vm" ]] || ssh-keygen -q -t ed25519 -N '' -f "$VM_DIR/id_vm"
