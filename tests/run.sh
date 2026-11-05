@@ -1231,6 +1231,47 @@ else
   fi
 fi
 
+# Case 19b: uninstall removes a marker-less rule byte-identical to the 2025 lightXDM version, keeps a foreign one
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh removes an older lightXDM Polkit rule (unshare -r unavailable)"
+else
+  cat >"$uninstall_polkit" <<'OLD_RULE'
+// /etc/polkit-1/rules.d/49-nopasswd.rules for lightXDE
+polkit.addRule(function(action, subject) {
+  if (subject.isInGroup("wheel")) {
+    if (action.id.match(/^org\.freedesktop\.udisks2\./) ||
+        action.id.match(/^org\.freedesktop\.upower\./) ||
+        action.id.match(/^org\.freedesktop\.login1\./)) {
+      return polkit.Result.YES;
+    }
+  }
+}); 
+OLD_RULE
+  if [[ "$(sha256sum < "$uninstall_polkit")" != "d7e2e00acab61ca5c7d081f86705d699fa81b4da85c6d4e8bdfc88cda1234fc2  -" ]]; then
+    fail "older Polkit rule fixture bytes differ from 23dfd12"
+  fi
+  set +e
+  output="$(TARGET_HOME="$uninstall_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && "$output" == *"Removing Polkit rule..."* && ! -e "$uninstall_polkit" ]]; then
+    pass "uninstall.sh removes a marker-less Polkit rule byte-identical to an older lightXDM version"
+  else
+    fail "uninstall.sh older Polkit rule (status=$status, output=$output)"
+  fi
+  printf '// foreign polkit policy\n' >"$uninstall_polkit"
+  set +e
+  output="$(TARGET_HOME="$uninstall_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && "$output" == *"Keeping $uninstall_polkit"* && -f "$uninstall_polkit" ]]; then
+    pass "uninstall.sh keeps a marker-less Polkit rule that matches no lightXDM version"
+  else
+    fail "uninstall.sh foreign Polkit rule (status=$status, output=$output)"
+  fi
+  rm -f "$uninstall_polkit"
+fi
+
 # Case 20: copy_dotfiles backs up pre-existing .bash_profile and .xinitrc once, and uninstall.sh restores them and removes gpg-agent files
 temp_home="$TMP_DIR/home_with_dotfiles"
 mkdir -p "$temp_home"

@@ -182,18 +182,41 @@ save_edited_dotfile() {
   mv -- "$src" "$edited_dest"
 }
 
+# Hashes of the Polkit rules older lightXDM versions installed at this path (git history of polkit/49-nopasswd.rules).
+LIGHTXDM_OLD_POLKIT_HASHES=(
+  b40b6310d9bd99611c1954dfbc28a18f3c8a579eacac9deb12b39806dc5ce01e
+  dad6a3771ac75a4411fb4bff0a000ac97140b4d62b99919ea167c02a10f39aa6
+  4bc421259361fb23b640176b88ea7df8a3c30e841fe38be2c24d48d5132f6262
+  b6073bfb5c36b1df6f03a7e274646e4a2d71dcb5467855a0a4641b8a30c2dad4
+  d7e2e00acab61ca5c7d081f86705d699fa81b4da85c6d4e8bdfc88cda1234fc2
+  154c72602e1e8667b94446a2370dadff5f8328534572965f48788c76272fb43f
+)
+
+# True for a regular file equal to the current rule or to any rule an older lightXDM version installed.
+is_lightxdm_polkit_rule() {
+  local path="$1" hash old
+  [[ -f "$path" && ! -L "$path" ]] || return 1
+  files_match "$path" "$SCRIPT_DIR/polkit/49-nopasswd.rules" && return 0
+  hash="$(sha256sum < "$path")"
+  hash="${hash%% *}"
+  for old in "${LIGHTXDM_OLD_POLKIT_HASHES[@]}"; do
+    [[ "$hash" == "$old" ]] && return 0
+  done
+  return 1
+}
+
 # Restore the original Polkit rule or remove the installed rule
 POLKIT_RULE="${POLKIT_RULE:-/etc/polkit-1/rules.d/49-nopasswd.rules}"
 if [[ -e "${POLKIT_RULE}.lightxdm.bak" || -L "${POLKIT_RULE}.lightxdm.bak" ]]; then
   if [[ -L "$POLKIT_RULE" ]] ||
-    { [[ -e "$POLKIT_RULE" ]] && ! files_match "$POLKIT_RULE" "$SCRIPT_DIR/polkit/49-nopasswd.rules"; }; then
+    { [[ -e "$POLKIT_RULE" ]] && ! is_lightxdm_polkit_rule "$POLKIT_RULE"; }; then
     save_edited_dotfile "$POLKIT_RULE"
   fi
   echo "Restoring $POLKIT_RULE from backup..."
   mv -- "${POLKIT_RULE}.lightxdm.bak" "$POLKIT_RULE"
 elif [[ -e "${POLKIT_RULE}.lightxdm.absent" || -L "${POLKIT_RULE}.lightxdm.absent" ]]; then
   if [[ -e "$POLKIT_RULE" || -L "$POLKIT_RULE" ]]; then
-    if [[ -f "$POLKIT_RULE" && ! -L "$POLKIT_RULE" ]] && files_match "$POLKIT_RULE" "$SCRIPT_DIR/polkit/49-nopasswd.rules"; then
+    if is_lightxdm_polkit_rule "$POLKIT_RULE"; then
       echo "Removing Polkit rule..."
       rm -f "$POLKIT_RULE"
     else
@@ -201,7 +224,7 @@ elif [[ -e "${POLKIT_RULE}.lightxdm.absent" || -L "${POLKIT_RULE}.lightxdm.absen
     fi
   fi
   rm -f -- "${POLKIT_RULE}.lightxdm.absent"
-elif [[ -f "$POLKIT_RULE" && ! -L "$POLKIT_RULE" ]] && files_match "$POLKIT_RULE" "$SCRIPT_DIR/polkit/49-nopasswd.rules"; then
+elif is_lightxdm_polkit_rule "$POLKIT_RULE"; then
   echo "Removing Polkit rule..."
   rm -f "$POLKIT_RULE"
 elif [[ -e "$POLKIT_RULE" || -L "$POLKIT_RULE" ]]; then

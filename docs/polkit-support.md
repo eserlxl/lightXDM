@@ -24,7 +24,7 @@ Systemd's `login1` policy allows power-off, reboot, suspend and hibernate withou
 
 ### The rule older versions installed
 
-Older versions installed `/etc/polkit-1/rules.d/49-nopasswd.rules`, which redundantly granted the same actions to local active `wheel` users on seat0. `uninstall.sh` still removes it or restores the rule it replaced from `49-nopasswd.rules.lightxdm.bak`; `--no-polkit-rule` is accepted but has no effect.
+Older versions installed `/etc/polkit-1/rules.d/49-nopasswd.rules`. The newest versions redundantly granted the power actions to local active `wheel` users on seat0; the 2025 versions granted broader rights (the first one: every `udisks2`, `upower` and `login1` action to any `wheel` user, with no active-session check). `uninstall.sh` still removes an unmodified copy of any of them or restores the rule it replaced from `49-nopasswd.rules.lightxdm.bak`; `--no-polkit-rule` is accepted but has no effect.
 
 > **Note:** The correct polkit agent is installed automatically for your desktop environment:
 > - Plasma: polkit-kde-agent
