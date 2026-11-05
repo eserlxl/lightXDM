@@ -7815,4 +7815,21 @@ else
   skip "qemu-arch.sh stale result after early driver exit (/dev/kvm is not accessible)"
 fi
 
+# A failing docker stub and a temporary VM dir keep a missed duplicate check from reaching real VMs.
+qemu_dup_bin="$TMP_DIR/qemu_dup/bin"
+mkdir -p "$qemu_dup_bin"
+printf '#!/usr/bin/env bash\nexit 1\n' >"$qemu_dup_bin/docker"
+chmod +x "$qemu_dup_bin/docker"
+set +e
+output="$(PATH="$qemu_dup_bin:$PATH" LIGHTXDM_VM_DIR="$TMP_DIR/qemu_dup/vm" \
+  bash "$REPO_ROOT/tests/qemu-arch.sh" xfce xfce 2>"$TMP_DIR/qemu-duplicate-stderr")"
+status=$?
+set -e
+if [[ $status -eq 1 && -z "$output" ]] &&
+  grep -Fq 'Duplicate desktop: xfce' "$TMP_DIR/qemu-duplicate-stderr"; then
+  pass "qemu-arch.sh rejects duplicate desktop specs"
+else
+  fail "qemu-arch.sh duplicate desktop (status=$status, stdout=$output, stderr=$(cat "$TMP_DIR/qemu-duplicate-stderr"))"
+fi
+
 finish_harness

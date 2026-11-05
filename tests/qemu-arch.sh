@@ -43,6 +43,11 @@ is_mode() {
 
 desktops=()
 for arg in "$@"; do
+  for desktop in "${desktops[@]}"; do
+    if [[ "$arg" == "$desktop" ]]; then
+      echo "Duplicate desktop: $arg" >&2; usage >&2; exit 1
+    fi
+  done
   case "$arg" in
     -h | --help) usage; exit 0 ;;
     *:*:*) echo "Unknown desktop: $arg" >&2; usage >&2; exit 1 ;;
