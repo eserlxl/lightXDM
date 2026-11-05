@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Real TTY1 login test for one desktop in a QEMU VM (driven by tests/qemu-arch.sh).
 
-Usage: vmtest.py <desktop|from:to|desktop+autologin|desktop+lightdm> <repo> <vm-dir> <ssh-port>
+Usage: vmtest.py <desktop|from:to|desktop+autologin|desktop+lightdm|desktop+relogin> <repo> <vm-dir> <ssh-port>
 Boots <vm-dir>/root.img with -snapshot (the image stays unchanged), copies the repo's
 working tree into the VM, runs install.sh --de <desktop> as user 'tester' (or <from> then
 <to> when given <from>:<to>), reboots, types the login at the TTY1 getty through QMP, and
@@ -192,6 +192,45 @@ def reboot_and_login(qmp, tag):
     return True
 
 
+def relogin(qmp, tag):
+    name = f"{tag}: previous session ended and getty@tty1 is back"
+    try:
+        rc, out, err = ssh(f"loginctl terminate-user {USER}", timeout=20)
+    except subprocess.TimeoutExpired:
+        check(name, False, "terminating the previous user session timed out")
+        return False
+    if rc != 0:
+        check(name, False, (out + err).strip() or f"loginctl terminate-user returned {rc}")
+        return False
+
+    end = time.time() + 120
+    ok = False
+    detail = "timed out waiting for the previous session to end and getty@tty1 to return"
+    while time.time() < end:
+        try:
+            rc, sessions, err = ssh("loginctl list-sessions --no-legend", timeout=15)
+            getty_rc, getty, getty_err = ssh("systemctl is-active getty@tty1", timeout=15)
+            has_session = any(len(fields) > 2 and fields[2] == USER
+                              for fields in (line.split() for line in sessions.splitlines()))
+            ok = rc == 0 and not has_session and getty_rc == 0 and getty.strip() == "active"
+            detail = f"sessions: {(sessions + err).strip()}; getty@tty1: {(getty + getty_err).strip()}"
+            if ok:
+                break
+        except subprocess.TimeoutExpired:
+            detail = "ssh timed out waiting for the previous session to end and getty@tty1 to return"
+        time.sleep(2)
+
+    check(name, ok, detail)
+    if not ok:
+        return False
+    time.sleep(5)
+    qmp.type(USER + "\n")
+    time.sleep(3)
+    qmp.type(PASSWORD + "\n")
+    log(f"{tag}: typed the TTY1 login")
+    return True
+
+
 def wait_proc(name, limit=240):
     end = time.time() + limit
     while time.time() < end:
@@ -309,7 +348,10 @@ def main():
             kept = True
             log(f"LIGHTXDM_VM_KEEP=1: VM left running (qemu pid {proc.pid})")
             return
-        if login1_ok and reboot_and_login(qmp, "login2"):
+        if MODE == "relogin":
+            if login1_ok and relogin(qmp, "relogin"):
+                session_checks("relogin", qmp)
+        elif login1_ok and reboot_and_login(qmp, "login2"):
             session_checks("login2", qmp)
         if MODE == "lightdm":
             rc, out, err = ssh(f"su - {USER} -c 'cd ~/lightXDM && sudo bash uninstall.sh' 2>&1", timeout=600)
