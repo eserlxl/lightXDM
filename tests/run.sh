@@ -202,9 +202,9 @@ else
   fail "prompt_de_selection option 1 (status=$status, output=$output, PS3=${PS3-<unset>})"
 fi
 
-# Case 4: prompt_de_selection returns 2 with empty stdout on Quit ("7")
+# Case 4: prompt_de_selection returns 2 with empty stdout on Quit ("10")
 set +e
-output="$(prompt_de_selection <<<"7" 2>/dev/null)"
+output="$(prompt_de_selection <<<"10" 2>/dev/null)"
 status=$?
 set -e
 if [[ $status -eq 2 && -z "$output" ]]; then
@@ -5772,9 +5772,9 @@ else
   fi
 fi
 
-# Case 70: desktop menu options 1-6, invalid-then-valid retry, and end-to-end selection through main
+# Case 70: desktop menu options 1-9, invalid-then-valid retry, and end-to-end selection through main
 menu_out="$TMP_DIR/menu_out"
-menu_ids=(xfce lxqt lxde mate cinnamon i3)
+menu_ids=(xfce lxqt lxde mate cinnamon i3 plasma gnome budgie)
 for menu_idx in "${!menu_ids[@]}"; do
   menu_choice=$((menu_idx + 1))
   expected_menu_id="${menu_ids[menu_idx]}"

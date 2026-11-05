@@ -123,7 +123,7 @@ select_de_from_menu() {
 prompt_de_selection() {
   log "No supported desktop environment detected."
   select_de_from_menu "Please select a desktop environment to install: " \
-    xfce lxqt lxde mate cinnamon i3
+    xfce lxqt lxde mate cinnamon i3 plasma gnome budgie
 }
 
 # Prompt user to select among multiple detected DEs
