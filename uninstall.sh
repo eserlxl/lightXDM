@@ -162,7 +162,8 @@ save_edited_dotfile() {
   mv -T -- "$src" "$edited_dest"
 }
 
-# Hashes of the Polkit rules older lightXDM versions installed at this path (git history of polkit/49-nopasswd.rules).
+# Hashes of the Polkit rules older lightXDM versions installed at this path (git history of
+# polkit/49-nopasswd.rules), pinned so an edit to that file cannot hide a copy users still have.
 LIGHTXDM_OLD_POLKIT_HASHES=(
   b40b6310d9bd99611c1954dfbc28a18f3c8a579eacac9deb12b39806dc5ce01e
   dad6a3771ac75a4411fb4bff0a000ac97140b4d62b99919ea167c02a10f39aa6
@@ -170,13 +171,13 @@ LIGHTXDM_OLD_POLKIT_HASHES=(
   b6073bfb5c36b1df6f03a7e274646e4a2d71dcb5467855a0a4641b8a30c2dad4
   d7e2e00acab61ca5c7d081f86705d699fa81b4da85c6d4e8bdfc88cda1234fc2
   154c72602e1e8667b94446a2370dadff5f8328534572965f48788c76272fb43f
+  5f0b2207f050dd9f56f748c54cb2956abbc894f5bb85aecc47cdbee230316b2a
 )
 
-# True for a regular file equal to the current rule or to any rule an older lightXDM version installed.
+# True for a regular file equal to any rule an older lightXDM version installed.
 is_lightxdm_polkit_rule() {
   local path="$1" hash old
   [[ -f "$path" && ! -L "$path" ]] || return 1
-  files_match "$path" "$SCRIPT_DIR/polkit/49-nopasswd.rules" && return 0
   hash="$(sha256sum < "$path")"
   hash="${hash%% *}"
   for old in "${LIGHTXDM_OLD_POLKIT_HASHES[@]}"; do
