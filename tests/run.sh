@@ -3926,6 +3926,15 @@ else
   fail "PAM constant drift between install.sh and uninstall.sh (${pam_sync_errors[*]})"
 fi
 
+# install.sh and uninstall.sh must agree on which files an older lightXDM installed.
+past_helper_install="$(sed -n '/^is_past_lightxdm_template()/,/^}/p' "$REPO_ROOT/install.sh")"
+past_helper_uninstall="$(sed -n '/^is_past_lightxdm_template()/,/^}/p' "$REPO_ROOT/uninstall.sh")"
+if [[ -n "$past_helper_install" && "$past_helper_install" == "$past_helper_uninstall" ]]; then
+  pass "install.sh and uninstall.sh share one is_past_lightxdm_template body"
+else
+  fail "is_past_lightxdm_template differs between install.sh and uninstall.sh"
+fi
+
 # Case 57: .xinitrc-* templates merge X resources/keymaps, export session vars, source xinitrc.d before gpg-agent, manage activation/polkit per DE, and exec the session command
 xinit_test_dir="$TMP_DIR/xinitrc_templates"
 xinit_home="$xinit_test_dir/home"
