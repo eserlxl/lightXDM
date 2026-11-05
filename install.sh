@@ -148,7 +148,7 @@ list_packages() {
       ;;
     gnome)
       base_pkgs=(udisks2 polkit gvfs gvfs-mtp gvfs-gphoto2 gvfs-afc)
-      pkgs=(gnome-shell gnome-session gnome-control-center nautilus gnome-terminal gnome-keyring polkit-gnome)
+      pkgs=(gnome-shell gnome-session gnome-control-center nautilus gnome-terminal gnome-keyring)
       ;;
     xfce)
       pkgs=(xfce4 xfce4-session xfce4-terminal gnome-keyring polkit-gnome)
@@ -157,17 +157,17 @@ list_packages() {
       pkgs=(lxqt xdg-utils lxterminal gnome-keyring lxqt-policykit)
       ;;
     lxde)
-      pkgs=(lxde-common lxsession lxpanel openbox pcmanfm lxterminal gnome-keyring polkit-gnome)
+      pkgs=(lxde-common lxsession lxpanel openbox pcmanfm lxterminal gnome-keyring)
       ;;
     mate)
-      pkgs=(mate mate-terminal gnome-keyring polkit-gnome)
+      pkgs=(mate mate-terminal gnome-keyring)
       ;;
     cinnamon)
-      pkgs=(cinnamon gnome-terminal gnome-keyring polkit-gnome)
+      pkgs=(cinnamon gnome-terminal gnome-keyring)
       ;;
     budgie)
       base_pkgs=(udisks2 polkit gvfs gvfs-mtp gvfs-gphoto2 gvfs-afc)
-      pkgs=(budgie-desktop gnome-terminal gnome-keyring polkit-gnome)
+      pkgs=(budgie-desktop gnome-terminal gnome-keyring)
       ;;
     i3)
       pkgs=(i3 xterm dex gnome-keyring polkit-gnome)

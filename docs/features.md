@@ -27,7 +27,7 @@ lightXDM has recently expanded to support many desktop environments and improved
 ### Multi-Desktop Environment Support
 - **Automatic Detection:** The installer detects if Plasma, GNOME, Budgie, XFCE, LXQt, LXDE, MATE, Cinnamon, or i3 is already installed.
 - **User Choice:** If no DE is found, the installer prompts you to select and install one of XFCE, LXQt, LXDE, MATE, Cinnamon, or i3; to install Plasma, GNOME, or Budgie, pass `--de plasma`, `--de gnome`, or `--de budgie`.
-- **Minimal Install:** Only the essential packages for your chosen DE are installed, including the correct polkit agent (lxqt-policykit for LXQt, polkit-kde-agent for Plasma, polkit-gnome for all others), keeping the system lightweight.
+- **Minimal Install:** Only the essential packages for your chosen DE are installed, including the polkit agent each desktop needs: polkit-kde-agent for Plasma, lxqt-policykit for LXQt, polkit-gnome for XFCE and i3 (their templates start it); GNOME Shell and Cinnamon have one built in, and Budgie (budgie-polkit-dialog), LXDE (lxpolkit) and MATE (mate-polkit) start their own, keeping the system lightweight.
 - **Dotfiles:** `.bash_profile` and the session template for your DE (`~/.xinitrc` for X11, or `~/.wayland-session` for Plasma, GNOME, and Budgie) are copied for session start on TTY1. Installing an X11 desktop moves any `~/.wayland-session` aside and removes it so `startx` can run; see [session files and backups](installation.md#session-files-and-backups).
 - **Wayland packages:** Plasma, GNOME, and Budgie do not install `xorg-server` or `xorg-xinit`.
 
@@ -49,12 +49,12 @@ lightXDM has recently expanded to support many desktop environments and improved
 | Plasma support                 | auto-detect/install, Wayland via `~/.wayland-session`, KWallet, polkit-kde-agent, dotfiles |
 | GNOME support                  | auto-detect/install, Wayland via `~/.wayland-session`, GNOME Keyring, TTY1 session-type PAM block; no screen lock without GDM |
 | Budgie support                 | auto-detect/install, Wayland via `~/.wayland-session`, GNOME Keyring, dotfiles |
-| XFCE support                   | auto-detect/install, GNOME Keyring, polkit-gnome, dotfiles    |
+| XFCE support                   | auto-detect/install, GNOME Keyring, polkit-gnome (started by `.xinitrc`), dotfiles |
 | LXQt support                   | auto-detect/install, GNOME Keyring, lxqt-policykit, dotfiles   |
-| LXDE support                   | auto-detect/install, GNOME Keyring, polkit-gnome, dotfiles    |
-| MATE support                   | auto-detect/install, GNOME Keyring, polkit-gnome, dotfiles    |
-| Cinnamon support               | auto-detect/install, GNOME Keyring, polkit-gnome, dotfiles    |
-| i3 support                     | auto-detect/install, GNOME Keyring, polkit-gnome, dotfiles    |
+| LXDE support                   | auto-detect/install, GNOME Keyring, lxpolkit (lxsession), dotfiles |
+| MATE support                   | auto-detect/install, GNOME Keyring, mate-polkit, dotfiles |
+| Cinnamon support               | auto-detect/install, GNOME Keyring, built-in polkit agent, dotfiles |
+| i3 support                     | auto-detect/install, GNOME Keyring, polkit-gnome (started by `.xinitrc`), dotfiles |
 | No DE installed                | Prompts user, installs selected DE                                |
 | Display manager free           | disables SDDM, LightDM, GDM, LXDM, ly@tty1 and the display-manager.service unit |
 | Auto-start & optional autologin| TTY1 auto-start via `.bash_profile` (`~/.xinitrc` or `~/.wayland-session`); optional autologin via `enable-autologin.sh` |

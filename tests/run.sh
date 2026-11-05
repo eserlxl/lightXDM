@@ -2029,8 +2029,8 @@ status_lxde=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
 if [[ $status_gnome -eq 0 && $status_lxde -eq 0 ]] &&
-  [[ "$log_content" == *"gnome-shell gnome-session gnome-control-center nautilus gnome-terminal gnome-keyring polkit-gnome"* ]] &&
-  [[ "$log_content" == *"lxde-common lxsession lxpanel openbox pcmanfm lxterminal gnome-keyring polkit-gnome"* ]] &&
+  [[ "$log_content" == *"gnome-shell gnome-session gnome-control-center nautilus gnome-terminal gnome-keyring"* ]] &&
+  [[ "$log_content" == *"lxde-common lxsession lxpanel openbox pcmanfm lxterminal gnome-keyring"* ]] &&
   ! grep -Eq '(^|[[:space:]])(gdm|lxdm|gnome|lxde)([[:space:]]|$)' "$STUB_LOG"; then
   pass "install_packages for gnome and lxde avoids display managers and bare group names"
 else
@@ -4710,13 +4710,13 @@ expected_base_pkgs="xorg-server xorg-xinit udisks2 polkit gvfs gvfs-mtp gvfs-gph
 expected_wayland_base_pkgs="udisks2 polkit gvfs gvfs-mtp gvfs-gphoto2 gvfs-afc"
 de_pkg_specs=(
   "plasma|plasma-desktop|plasma-desktop konsole dolphin kwallet-pam polkit-kde-agent"
-  "gnome|gnome-shell|gnome-shell gnome-session gnome-control-center nautilus gnome-terminal gnome-keyring polkit-gnome"
+  "gnome|gnome-shell|gnome-shell gnome-session gnome-control-center nautilus gnome-terminal gnome-keyring"
   "xfce|xfce4-session|xfce4 xfce4-session xfce4-terminal gnome-keyring polkit-gnome"
   "lxqt|lxqt-session|lxqt xdg-utils lxterminal gnome-keyring lxqt-policykit"
-  "lxde|lxde-common|lxde-common lxsession lxpanel openbox pcmanfm lxterminal gnome-keyring polkit-gnome"
-  "mate|mate-session-manager|mate mate-terminal gnome-keyring polkit-gnome"
-  "cinnamon|cinnamon|cinnamon gnome-terminal gnome-keyring polkit-gnome"
-  "budgie|budgie-desktop|budgie-desktop gnome-terminal gnome-keyring polkit-gnome"
+  "lxde|lxde-common|lxde-common lxsession lxpanel openbox pcmanfm lxterminal gnome-keyring"
+  "mate|mate-session-manager|mate mate-terminal gnome-keyring"
+  "cinnamon|cinnamon|cinnamon gnome-terminal gnome-keyring"
+  "budgie|budgie-desktop|budgie-desktop gnome-terminal gnome-keyring"
   "i3|i3-wm|i3 xterm dex gnome-keyring polkit-gnome"
 )
 

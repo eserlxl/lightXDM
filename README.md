@@ -47,9 +47,12 @@ You need Arch Linux (or a derivative) with systemd, and a user in the `wheel` gr
 | Desktop | Starts with | Keyring unlocked by PAM | Polkit agent |
 |---|---|---|---|
 | KDE Plasma (`plasma`) | Wayland, through `~/.wayland-session` | KWallet | polkit-kde-agent |
-| GNOME (`gnome`) | Wayland, through `~/.wayland-session`; **no screen lock without GDM** | GNOME Keyring | polkit-gnome |
-| Budgie (`budgie`) | Wayland, through `~/.wayland-session` | GNOME Keyring | polkit-gnome |
-| XFCE, LXDE, MATE, Cinnamon, i3 | `startx`, through `~/.xinitrc` | GNOME Keyring | polkit-gnome |
+| GNOME (`gnome`) | Wayland, through `~/.wayland-session`; **no screen lock without GDM** | GNOME Keyring | built into GNOME Shell |
+| Budgie (`budgie`) | Wayland, through `~/.wayland-session` | GNOME Keyring | budgie-polkit-dialog |
+| XFCE, i3 | `startx`, through `~/.xinitrc` | GNOME Keyring | polkit-gnome (started by the template) |
+| LXDE (`lxde`) | `startx`, through `~/.xinitrc` | GNOME Keyring | lxpolkit (from lxsession) |
+| MATE (`mate`) | `startx`, through `~/.xinitrc` | GNOME Keyring | mate-polkit |
+| Cinnamon (`cinnamon`) | `startx`, through `~/.xinitrc` | GNOME Keyring | built into Cinnamon |
 | LXQt (`lxqt`) | `startx`, through `~/.xinitrc` | GNOME Keyring | lxqt-policykit |
 | Your own window manager | X11 or Wayland, with your template and `--no-packages` | GNOME Keyring (or `--no-keyring`) | your choice |
 

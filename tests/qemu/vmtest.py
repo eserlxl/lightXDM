@@ -33,10 +33,14 @@ DESKTOPS = {
     "lxqt": ("x11", ["lxqt-session"], "gnome"),
     "lxde": ("x11", ["lxsession"], "gnome"),
     "mate": ("x11", ["mate-session"], "gnome"),
-    "cinnamon": ("x11", ["cinnamon-session"], "gnome"),
+    # cinnamon-session-binary shows as a truncated 15-character comm; check the shell instead.
+    "cinnamon": ("x11", ["cinnamon"], "gnome"),
     "i3": ("x11", ["i3"], "gnome"),
 }
 SESSION_TYPE, PROCS, KEYRING = DESKTOPS[DESKTOP]
+# Keys a user presses once on the first login: LXQt asks for a default window manager before it
+# runs its autostart entries (the polkit agent among them); Enter accepts the highlighted one.
+FIRST_LOGIN_KEYS = {"lxqt": "\n"}
 results = []
 
 
@@ -162,6 +166,11 @@ def user_bus(cmd):
 def session_checks(tag, qmp):
     for proc in PROCS:
         check(f"{tag}: {proc} runs for {USER}", wait_proc(proc))
+    if tag == "login1" and DESKTOP in FIRST_LOGIN_KEYS:
+        time.sleep(8)
+        qmp.type(FIRST_LOGIN_KEYS[DESKTOP])
+        log(f"{tag}: answered the first-login prompt")
+        time.sleep(5)
     _, sessions, _ = ssh(f"for s in $(loginctl list-sessions --no-legend | awk '$3==\"{USER}\"{{print $1}}'); do "
                          "loginctl show-session $s -p TTY -p Service -p Active; echo; done")
     log(f"{tag}: sessions\n{sessions}")
@@ -186,6 +195,24 @@ def session_checks(tag, qmp):
                            f"/org/freedesktop/secrets/collection/{collection} org.freedesktop.Secret.Collection Locked")
     check(f"{tag}: keyring collection '{collection}' is unlocked without a prompt", out.strip() == "b false",
           (out + err).strip())
+    # Ask polkitd for an action that needs authentication on behalf of a session process: with an
+    # agent registered for the session it opens a dialog and pkcheck waits (timeout -> 124); without
+    # one polkitd answers at once "no agent is available" (exit 2). Shell-integrated agents
+    # (GNOME Shell, Cinnamon) have no process of their own, so the process list only names extras.
+    # Some sessions start their agent from autostart a little later (LXQt): retry for up to a minute.
+    probe = ""
+    for _ in range(6):
+        _, probe, _ = ssh(f"timeout 8 pkcheck --action-id org.freedesktop.policykit.exec --process "
+                          f"$(pgrep -u {USER} -x {PROCS[-1]} | head -1) --allow-user-interaction >/dev/null 2>&1; echo rc=$?")
+        if probe.strip() == "rc=124":
+            break
+        time.sleep(4)
+    _, names, _ = ssh(f"ps -u {USER} -o comm= | grep -E 'polkit|policykit|lxpolkit' | sort -u | tr '\\n' ' '")
+    agent = names.strip() or "built into the session"
+    log(f"{tag}: polkit probe {probe.strip()}; agent processes: {agent}")
+    check(f"{tag}: a polkit authentication agent answers in the session ({agent})", probe.strip() == "rc=124",
+          probe.strip())
+    time.sleep(2)
     qmp.cmd("screendump", filename=os.path.join(RUN, f"{tag}.png"), format="png")
 
 

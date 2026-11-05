@@ -71,9 +71,12 @@ polkit.addRule(function(action, subject) {
 This hybrid rule balances usability and security: trusted local users can power off or reboot without a password, but other privileged actions still require authentication.
 
 > **Note:** The correct polkit agent is installed automatically for your desktop environment:
-> - LXQt: lxqt-policykit
 > - Plasma: polkit-kde-agent
-> - All other supported desktops: polkit-gnome
+> - LXQt: lxqt-policykit
+> - XFCE and i3: polkit-gnome, started by `~/.xinitrc`
+> - GNOME and Cinnamon: built into the shell; Budgie: budgie-polkit-dialog; LXDE: lxpolkit (lxsession); MATE: mate-polkit — each desktop starts its own, so lightXDM installs nothing extra
+>
+> Each of these was checked in a VM: an authorization request that needs a password opens the agent's dialog in a TTY1 session (`bash tests/qemu-arch.sh`).
 
 ---
 
@@ -124,7 +127,7 @@ sudo pacman -S polkit udisks2 gvfs
 # plus the GUI agent for your desktop:
 sudo pacman -S polkit-kde-agent   # KDE Plasma
 sudo pacman -S lxqt-policykit     # LXQt
-sudo pacman -S polkit-gnome       # every other supported desktop
+sudo pacman -S polkit-gnome       # XFCE and i3 (other desktops bring their own agent)
 ```
 
 These provide the Polkit backend and the authentication dialog for your desktop.
@@ -138,7 +141,7 @@ These provide the Polkit backend and the authentication dialog for your desktop.
 | USB automount  | `udisks2` defaults + polkit agent   |
 | Reboot/Suspend/Hibernate | `login1` rule              |
 | Brightness     | `UPower` defaults                   |
-| GUI prompt     | polkit-kde-agent (Plasma), lxqt-policykit (LXQt), polkit-gnome (others) |
+| GUI prompt     | polkit-kde-agent (Plasma), lxqt-policykit (LXQt), polkit-gnome (XFCE, i3), the desktop's own agent (GNOME, Cinnamon, Budgie, LXDE, MATE) |
 
 Use the default secure rules for best safety, and only loosen them if you're fully aware of the consequences.
 
