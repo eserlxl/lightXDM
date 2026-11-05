@@ -32,7 +32,7 @@ DESKTOPS = {
     "plasma": ("wayland", ["kwin_wayland", "plasmashell"], "kwallet"),
     "gnome": ("wayland", ["gnome-shell"], "gnome"),
     "budgie": ("wayland", ["labwc", "budgie-panel"], "gnome"),
-    "xfce": ("x11", ["xfce4-session"], "gnome"),
+    "xfce": ("x11", ["xfce4-session", "xfwm4"], "gnome"),
     "lxqt": ("x11", ["lxqt-session"], "gnome"),
     "lxde": ("x11", ["lxsession"], "gnome"),
     "mate": ("x11", ["mate-session"], "gnome"),
