@@ -280,6 +280,13 @@ def session_checks(tag, qmp):
     # LXQt starts its panel only after the first-login prompt is answered.
     for proc in PROCS[1:]:
         check(f"{tag}: {proc} runs for {USER}", wait_proc(proc))
+    if TARGET == "lxqt":
+        # LXQt runs the window manager saved at the first-login prompt, not a fixed one.
+        _, conf, _ = ssh(f"cat /home/{USER}/.config/lxqt/session.conf")
+        saved = [line.split("=", 1)[1] for line in conf.splitlines() if line.startswith("window_manager=")]
+        wm = os.path.basename(saved[-1].strip()) if saved else ""
+        check(f"{tag}: LXQt window manager {wm or '(none saved)'} runs for {USER}", bool(wm) and wait_proc(wm),
+              conf.strip())
     _, sessions, _ = ssh(f"for s in $(loginctl list-sessions --no-legend | awk '$3==\"{USER}\"{{print $1}}'); do "
                          "loginctl show-session $s -p TTY -p Service -p Active; echo; done")
     log(f"{tag}: sessions\n{sessions}")
