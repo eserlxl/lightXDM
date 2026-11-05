@@ -3656,21 +3656,65 @@ EOF
 echo /dev/tty1
 EOF
   chmod +x "$snippet_home/.local/bin/lightxdm-test-session" "$snippet_home/.wayland-session" "$snippet_dir/bin/tty"
-  snippet_status=0
-  if [[ "$snippet_shell" == zsh ]]; then
-    # shellcheck disable=SC2016  # expand inside the child shell
-    timeout 20 env -i HOME="$snippet_home" PATH="$snippet_dir/bin:/usr/bin:/bin" TERM=dumb \
-      "$snippet_shell_path" -f -o interactive -c 'source "$1"' zsh "$snippet_dir/snippet" || snippet_status=$?
-  else
-    # shellcheck disable=SC2016  # expand inside the child shell
-    timeout 20 env -i HOME="$snippet_home" PATH="$snippet_dir/bin:/usr/bin:/bin" TERM=dumb \
-      "$snippet_shell_path" --no-config -l -i -c 'source $argv[1]' "$snippet_dir/snippet" || snippet_status=$?
-  fi
-  if [[ $snippet_status -eq 0 && -f "$snippet_home/session-started" ]]; then
-    pass "$snippet_shell TTY1 snippet starts a session from ~/.local/bin"
-  else
-    fail "$snippet_shell TTY1 snippet did not start a session from ~/.local/bin (status=$snippet_status)"
-  fi
+  for snippet_case in wayland paused startx_missing startx_nonexecutable; do
+    case_home="$snippet_dir/$snippet_case/home"
+    mkdir -p "$case_home/.local/bin"
+    cp "$snippet_home/.local/bin/lightxdm-test-session" "$case_home/.local/bin/"
+    cat >"$case_home/.local/bin/startx" <<'EOF'
+#!/bin/sh
+touch "$HOME/startx-started"
+EOF
+    chmod +x "$case_home/.local/bin/startx"
+    case "$snippet_case" in
+      wayland|paused)
+        cp "$snippet_home/.wayland-session" "$case_home/.wayland-session"
+        ;;
+      startx_nonexecutable)
+        cp "$snippet_home/.wayland-session" "$case_home/.wayland-session"
+        chmod -x "$case_home/.wayland-session"
+        ;;
+    esac
+    if [[ "$snippet_case" == paused ]]; then
+      mkdir -p "$case_home/.config/lightxdm"
+      : >"$case_home/.config/lightxdm/no-autostart"
+    fi
+    snippet_status=0
+    if [[ "$snippet_shell" == zsh ]]; then
+      # shellcheck disable=SC2016  # expand inside the child shell
+      timeout 20 env -i HOME="$case_home" PATH="$snippet_dir/bin:/usr/bin:/bin" TERM=dumb \
+        "$snippet_shell_path" -f -o interactive -c 'source "$1"; : > "$HOME/after-source"' zsh "$snippet_dir/snippet" || snippet_status=$?
+    else
+      # shellcheck disable=SC2016  # expand inside the child shell
+      timeout 20 env -i HOME="$case_home" PATH="$snippet_dir/bin:/usr/bin:/bin" TERM=dumb \
+        "$snippet_shell_path" --no-config -l -i -c 'source $argv[1]; touch $HOME/after-source' "$snippet_dir/snippet" || snippet_status=$?
+    fi
+    case "$snippet_case" in
+      wayland)
+        snippet_title="$snippet_shell TTY1 snippet execs a Wayland session from ~/.local/bin"
+        if [[ $snippet_status -eq 0 && -f "$case_home/session-started" && ! -e "$case_home/after-source" ]]; then
+          pass "$snippet_title"
+        else
+          fail "$snippet_title (status=$snippet_status)"
+        fi
+        ;;
+      paused)
+        snippet_title="$snippet_shell TTY1 snippet respects no-autostart"
+        if [[ $snippet_status -eq 0 && ! -e "$case_home/session-started" && ! -e "$case_home/startx-started" ]]; then
+          pass "$snippet_title"
+        else
+          fail "$snippet_title (status=$snippet_status)"
+        fi
+        ;;
+      startx_*)
+        snippet_title="$snippet_shell TTY1 snippet execs startx with $snippet_case Wayland session"
+        if [[ $snippet_status -eq 0 && -f "$case_home/startx-started" && ! -e "$case_home/after-source" ]]; then
+          pass "$snippet_title"
+        else
+          fail "$snippet_title (status=$snippet_status)"
+        fi
+        ;;
+    esac
+  done
 done
 
 for summary_shell in bash zsh fish; do
