@@ -7645,6 +7645,44 @@ else
   fail "GNOME configuration changed standalone module lines outside its block"
 fi
 
+# Fail each privileged write independently while allowing the backup copy to run.
+gnome_fail_bin="$TMP_DIR/gnome-fail-bin"
+mkdir -p "$gnome_fail_bin"
+cat >"$gnome_fail_bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "$GNOME_FAIL_CMD" ]]; then
+  exit 1
+fi
+exec "$@"
+EOF
+chmod +x "$gnome_fail_bin/sudo"
+
+rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak" "$GNOME_SESSION_TYPE_DEST"
+write_stock_login
+cp "$LOGIN_FILE" "$TMP_DIR/gnome-failure-stock"
+set +e
+( export PATH="$gnome_fail_bin:$PATH" GNOME_FAIL_CMD=install; configure_gnome_session_type gnome "$gnome_user" ) 2>/dev/null
+gnome_install_status=$?
+set -e
+gnome_login_unchanged=0
+cmp -s "$LOGIN_FILE" "$TMP_DIR/gnome-failure-stock" && gnome_login_unchanged=1
+gnome_config_absent=0
+[[ ! -e "$GNOME_SESSION_TYPE_DEST" ]] && gnome_config_absent=1
+
+rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak" "$GNOME_SESSION_TYPE_DEST"
+write_stock_login
+cp "$LOGIN_FILE" "$TMP_DIR/gnome-failure-stock"
+set +e
+( export PATH="$gnome_fail_bin:$PATH" GNOME_FAIL_CMD=tee; configure_gnome_session_type gnome "$gnome_user" ) 2>/dev/null
+gnome_tee_status=$?
+set -e
+if [[ $gnome_install_status -ne 0 && $gnome_tee_status -ne 0 &&
+  $gnome_login_unchanged -eq 1 && $gnome_config_absent -eq 1 ]]; then
+  pass "GNOME session-type configuration stops when install or login write fails"
+else
+  fail "GNOME write failures (install status=$gnome_install_status, tee status=$gnome_tee_status, stock login unchanged=$gnome_login_unchanged, config absent=$gnome_config_absent)"
+fi
+
 # Exercise the real step through main with --no-keyring; all privileged calls use stubs.
 rm -f "${LOGIN_FILE}.lightxdm.bak"
 write_stock_login
