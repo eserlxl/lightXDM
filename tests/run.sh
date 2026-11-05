@@ -7644,7 +7644,7 @@ else
 fi
 
 # Unsupported entries fail before even creating the template directory.
-for session_bad_case in field-file field-urls backslash single-quote unclosed-quote joined-quote empty missing other-group duplicate; do
+for session_bad_case in field-file field-urls backslash single-quote unclosed-quote joined-quote unquoted-quote empty missing other-group duplicate; do
   case "$session_bad_case" in
     field-file) session_bad_lines=('Exec=startfluxbox %f') ;;
     field-urls) session_bad_lines=('Exec=startfluxbox "%U"') ;;
@@ -7652,6 +7652,7 @@ for session_bad_case in field-file field-urls backslash single-quote unclosed-qu
     single-quote) session_bad_lines=("Exec=startfluxbox 'session config'") ;;
     unclosed-quote) session_bad_lines=('Exec=startfluxbox "session config') ;;
     joined-quote) session_bad_lines=('Exec=startfluxbox "session"config') ;;
+    unquoted-quote) session_bad_lines=('Exec=startfluxbox session"config"') ;;
     empty) session_bad_lines=('Exec=   ') ;;
     missing) session_bad_lines=('Name=Missing Exec') ;;
     other-group) session_bad_lines=('[Desktop Action Other]' 'Exec=startfluxbox') ;;
