@@ -6983,6 +6983,25 @@ else
   else
     fail "uninstall.sh two .lightxde backups (status=$status, output=$output, login=$(cat "$old_dir/login"))"
   fi
+  # After that uninstall the login file has no keyring lines, so a re-install must not adopt the
+  # newer backup (it holds the old keyring lines) and uninstall must restore the original again.
+  rm -f -- "$old_dir"/login.*.bak*
+  printf %b "$old_stock" >"$old_dir/login"
+  printf %b "$old_stock$old_keyring" >"$old_dir/login.lightxde.bak.1752000000"
+  # shellcheck disable=SC2016  # expand inside the child shell
+  old_pam_log="$(env LOGIN_FILE="$old_dir/login" bash -c 'source "$1/install.sh" && configure_pam xfce' bash "$REPO_ROOT" 2>&1)"
+  old_fresh=0
+  cmp -s "$old_dir/login.lightxdm.bak" "$old_dir/login.expected" && old_fresh=1
+  set +e
+  output="$("${old_uninstall_env[@]}" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && $old_fresh -eq 1 && "$old_pam_log" != *"as the original"* && -f "$old_dir/login.lightxde.bak.1752000000" ]] &&
+    cmp -s "$old_dir/login" "$old_dir/login.expected"; then
+    pass "configure_pam skips a .lightxde backup once the login file has no old keyring lines"
+  else
+    fail "configure_pam adopted a newer .lightxde backup (status=$status, log=$old_pam_log, output=$output, login=$(cat "$old_dir/login"))"
+  fi
   # A re-install over an old install adopts the .lightxde backup, so uninstall still restores the original.
   rm -f -- "$old_dir/login" "$old_dir"/login.*.bak*
   printf %b "$old_stock" >"$old_dir/login.lightxde.bak.1751000000"
@@ -7016,6 +7035,18 @@ else
     pass "configure_pam leaves .lightxde backups alone when .lightxdm.bak exists"
   else
     fail "configure_pam moved a .lightxde backup despite .lightxdm.bak ($(ls "$old_dir"))"
+  fi
+  # configure_gnome_session_type adopts the .lightxde backup too, before it backs up the login file.
+  rm -f -- "$old_dir/login" "$old_dir"/login.*.bak*
+  printf %b "$old_stock" >"$old_dir/login.lightxde.bak.1751000000"
+  printf %b "${old_stock}session    include      system-local-login\n$old_keyring" >"$old_dir/login"
+  # shellcheck disable=SC2016  # expand inside the child shell
+  old_pam_log="$(env LOGIN_FILE="$old_dir/login" GNOME_SESSION_TYPE_DEST="$old_dir/gnome-session-type.conf" bash -c 'source "$1/install.sh" && configure_gnome_session_type gnome old-user' bash "$REPO_ROOT" 2>&1)"
+  if cmp -s "$old_dir/login.lightxdm.bak" "$old_dir/login.expected" && [[ ! -e "$old_dir/login.lightxde.bak.1751000000" &&
+    "$old_pam_log" == *"Using $old_dir/login.lightxde.bak.1751000000 as the original"* ]]; then
+    pass "configure_gnome_session_type adopts the oldest .lightxde backup"
+  else
+    fail "configure_gnome_session_type adopt .lightxde backup (log=$old_pam_log, $(ls "$old_dir"))"
   fi
   rm -rf -- "$old_dir"
 fi

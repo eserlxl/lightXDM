@@ -526,6 +526,11 @@ adopt_legacy_pam_backup() {
   if [[ -e "$backup_file" || -L "$backup_file" ]]; then
     return 0
   fi
+  # Without old keyring lines in the login file, an uninstall already restored the original;
+  # a newer leftover backup may hold keyring lines and must not become the original.
+  grep -Fxq -e "$PAM_KWALLET_AUTH" -e "$PAM_KWALLET_SESSION" -e "$PAM_GNOME_KEYRING_AUTH" \
+    -e "$PAM_GNOME_KEYRING_SESSION" -e "auth       optional   pam_gnome_keyring.so auto_start" \
+    -- "$LOGIN_FILE" 2>/dev/null || return 0
   for old_backup in "${LOGIN_FILE}".lightxde.bak.*; do
     epoch="${old_backup##*.lightxde.bak.}"
     if [[ -f "$old_backup" && "$epoch" =~ ^[0-9]+$ ]] && { [[ -z "$oldest_epoch" ]] || ((10#$epoch < 10#$oldest_epoch)); }; then
