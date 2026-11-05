@@ -83,7 +83,7 @@ In your home it replaces `~/.bash_profile` and `~/.xinitrc` (or `~/.wayland-sess
 
 ## Uninstall
 
-Run `sudo bash uninstall.sh` from your user account to restore backups and remove lightXDM configuration. Packages the installer installed are not removed. Display managers disabled by the installer are re-enabled for the next boot, using `/etc/lightxdm/disabled-display-managers`; the state file is then removed (a unit that fails to re-enable stays recorded there and uninstall exits with an error). Other display managers are left unchanged. To use a different state path, set `DM_STATE_FILE` to the same path for both scripts (pass it through sudo when uninstalling). To keep everything else and remove only the keyring lines lightXDM added to `/etc/pam.d/login` (for example to switch to autologin), run `sudo bash uninstall.sh --keyring-only`.
+Run `sudo bash uninstall.sh` from your user account to restore backups and remove lightXDM configuration. Packages the installer installed are not removed. Display managers disabled by the installer are re-enabled for the next boot, using `/etc/lightxdm/disabled-display-managers`; the state file is then removed (a display manager that was removed or masked since install is skipped with a warning; any other unit that fails to re-enable stays recorded there and uninstall exits with an error). Other display managers are left unchanged. To use a different state path, set `DM_STATE_FILE` to the same path for both scripts (pass it through sudo when uninstalling). To keep everything else and remove only the keyring lines lightXDM added to `/etc/pam.d/login` (for example to switch to autologin), run `sudo bash uninstall.sh --keyring-only`.
 
 ## Documentation
 
