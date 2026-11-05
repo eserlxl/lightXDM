@@ -2778,12 +2778,13 @@ else
     fail "uninstall.sh failed enable (status=$status, output=$output)"
   fi
 
-  # Case 41c: a missing first unit does not prevent restoring the remaining units
+  # Case 41c: a first unit that fails to enable does not prevent restoring the remaining units
+  # (systemctl is-enabled reports an installed, unmasked unit that failed to enable as disabled)
   dm_partial_state="$TMP_DIR/dm_partial_state"
   printf '%s\n' sddm.service greetd.service >"$dm_partial_state"
   : >"$STUB_LOG"
   set +e
-  output="$(env DM_STATE_FILE="$dm_partial_state" STUB_SYSTEMCTL_FAIL_UNIT=sddm.service TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" OVERRIDE_DIR="$TMP_DIR/dm_getty.d" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(env DM_STATE_FILE="$dm_partial_state" STUB_SYSTEMCTL_FAIL_UNIT=sddm.service STUB_SYSTEMCTL_STATE=disabled TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" OVERRIDE_DIR="$TMP_DIR/dm_getty.d" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
