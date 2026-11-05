@@ -33,7 +33,11 @@ for script in "${scripts[@]}"; do
     echo "Checking $script..."
     opts=()
     # The sourced gpg-agent dotfiles export a command substitution in one step (SC2155).
-    case "$script" in dotfiles/.gpg-agent-*) opts=(-e SC2155) ;; esac
+    case "$script" in
+      dotfiles/.gpg-agent-*) opts=(-e SC2155) ;;
+      # Full dataflow analysis of the 8,000-line test suite needs about 13 GB of memory.
+      tests/run.sh) opts=(--extended-analysis=false) ;;
+    esac
     shellcheck "${opts[@]}" "$SCRIPT_DIR/$script"
   else
     echo "Error: $SCRIPT_DIR/$script not found." >&2
