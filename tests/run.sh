@@ -7615,6 +7615,35 @@ else
   fail "Wayland init from session (status=$status, output=$output)"
 fi
 
+# Imported executable paths with spaces survive the Wayland preflight.
+escaped_wayland_home="$TMP_DIR/escaped_wayland_home"
+escaped_wayland_dir="$TMP_DIR/wm dir"
+escaped_wayland_command="$escaped_wayland_dir/compositor"
+mkdir -p "$escaped_wayland_home" "$escaped_wayland_dir"
+printf '#!/bin/sh\nexit 0\n' >"$escaped_wayland_command"
+chmod +x "$escaped_wayland_command"
+printf '[Desktop Entry]\nExec="%s"\n' "$escaped_wayland_command" >"$init_session_entry"
+output="$(HOME="$escaped_wayland_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --wayland --de escaped-wm --from-session "$init_session_entry" 2>&1)" && status=0 || status=$?
+escaped_wayland_template="$escaped_wayland_home/.config/lightxdm/.wayland-session-escaped-wm"
+if [[ $status -eq 0 ]]; then
+  output="$(HOME="$escaped_wayland_home" SESSION_ROOT='' bash -c 'source "$1/install.sh"; check_session_commands "$2"' bash "$REPO_ROOT" "$escaped_wayland_template" 2>&1)" && status=0 || status=$?
+fi
+if [[ $status -eq 0 ]]; then
+  pass "Wayland preflight accepts an imported escaped executable path"
+else
+  fail "Wayland preflight imported escaped path (status=$status, output=$output)"
+fi
+
+missing_wayland_command="$TMP_DIR/no such/compositor"
+missing_wayland_template="$escaped_wayland_home/.config/lightxdm/.wayland-session-missing-wm"
+printf 'exec %q\n' "$missing_wayland_command" >"$missing_wayland_template"
+output="$(HOME="$escaped_wayland_home" SESSION_ROOT='' bash -c 'source "$1/install.sh"; check_session_commands "$2"' bash "$REPO_ROOT" "$missing_wayland_template" 2>&1)" && status=0 || status=$?
+if [[ $status -eq 1 && "$output" == *"Missing command: $missing_wayland_command."* ]]; then
+  pass "Wayland preflight reports a missing escaped executable path"
+else
+  fail "Wayland preflight missing escaped path (status=$status, output=$output)"
+fi
+
 # Imported templates keep the existing overwrite refusal, including user edits.
 printf '# user edit\n' >>"$init_session_template"
 init_session_before="$(sha256sum < "$init_session_template")"

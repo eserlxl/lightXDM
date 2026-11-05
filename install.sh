@@ -493,7 +493,9 @@ check_session_commands() {
       esac
     done < "$template"
     local tokens=() token check_path
-    read -r -a tokens <<< "$session_line"
+    # Escapes written by printf %q for imported paths must join words as the shell does when running the template.
+    # shellcheck disable=SC2162
+    read -a tokens <<< "$session_line"
     for token in "${tokens[@]}"; do
       [[ "$token" == -* ]] && break
       [[ "$token" == /* ]] || continue
