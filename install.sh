@@ -209,6 +209,7 @@ is_past_lightxdm_template() {
     .xinitrc) pathspec='dotfiles/.xinitrc*' ;;
     .wayland-session) pathspec='dotfiles/.wayland-session-*' ;;
     .gpg-agent-*) pathspec='dotfiles/.gpg-agent-*' ;;
+    .config/autostart/lightxdm-gpg-agent-tty.desktop) pathspec='dotfiles/lightxdm-gpg-agent-tty.desktop' ;;
     *) return 1 ;;
   esac
   [[ -f "$file" && ! -L "$file" && -e "$SCRIPT_DIR/.git" ]] || return 1
@@ -245,7 +246,7 @@ preserve_dotfile() {
         return 0
       fi
     done
-    if is_past_lightxdm_template "$target" "${target##*/}"; then
+    if is_past_lightxdm_template "$target" "${target#"$HOME"/}"; then
       return 0
     fi
   fi
@@ -470,6 +471,9 @@ copy_dotfiles() {
     preserve_dotfile "$user_home/.gpg-agent-gnome" "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome"
     install -Dm744 "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome" "$user_home/.gpg-agent-gnome"
   fi
+  # The helper runs before a Wayland compositor starts; this re-runs its refresh inside the session.
+  preserve_dotfile "$user_home/.config/autostart/lightxdm-gpg-agent-tty.desktop" "$SCRIPT_DIR/dotfiles/lightxdm-gpg-agent-tty.desktop"
+  install -Dm644 "$SCRIPT_DIR/dotfiles/lightxdm-gpg-agent-tty.desktop" "$user_home/.config/autostart/lightxdm-gpg-agent-tty.desktop"
 
   local template base
   template="$(xinitrc_template "$de")"

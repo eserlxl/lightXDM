@@ -10,6 +10,9 @@ When you log in, your session script (`~/.xinitrc` on X11 desktops, `~/.wayland-
 2. Points `SSH_AUTH_SOCK` at the `gpg-agent` SSH socket when `enable-ssh-support` is present in `~/.gnupg/gpg-agent.conf` (`$GNUPGHOME/gpg-agent.conf` when `GNUPGHOME` is set).
 3. If `SSH_AUTH_SOCK` is still empty, exports the first agent socket found: OpenSSH's `$XDG_RUNTIME_DIR/ssh-agent.socket` (`ssh-agent.socket`), then the GCR SSH agent's `$XDG_RUNTIME_DIR/gcr/ssh` (`gcr-ssh-agent.socket`).
 4. Refreshes the agent's startup tty with `gpg-connect-agent updatestartuptty /bye`.
+5. On every desktop, `~/.config/autostart/lightxdm-gpg-agent-tty.desktop` re-runs that refresh inside the session, so SSH passphrase prompts reach the desktop on Wayland, where the helper runs before the compositor starts.
+
+A custom compositor without XDG autostart support needs `gpg-connect-agent updatestartuptty /bye` in its own startup.
 
 These scripts do not configure a `pinentry-program` or desktop keyring integration on their own.
 

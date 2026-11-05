@@ -217,6 +217,7 @@ is_past_lightxdm_template() {
     .xinitrc) pathspec='dotfiles/.xinitrc*' ;;
     .wayland-session) pathspec='dotfiles/.wayland-session-*' ;;
     .gpg-agent-*) pathspec='dotfiles/.gpg-agent-*' ;;
+    .config/autostart/lightxdm-gpg-agent-tty.desktop) pathspec='dotfiles/lightxdm-gpg-agent-tty.desktop' ;;
     *) return 1 ;;
   esac
   [[ -f "$file" && ! -L "$file" && -e "$SCRIPT_DIR/.git" ]] || return 1
@@ -244,6 +245,9 @@ matches_lightxdm_template() {
     .gpg-agent-gnome | .gpg-agent-kwallet)
       templates=("$SCRIPT_DIR/dotfiles/.gpg-agent-gnome")
       ;;
+    .config/autostart/lightxdm-gpg-agent-tty.desktop)
+      templates=("$SCRIPT_DIR/dotfiles/lightxdm-gpg-agent-tty.desktop")
+      ;;
     .wayland-session)
       templates=("$SCRIPT_DIR"/dotfiles/.wayland-session-*)
       if [[ "$mode" != "--bundled-only" ]]; then
@@ -267,7 +271,7 @@ matches_lightxdm_template() {
   is_past_lightxdm_template "$path" "$dotfile"
 }
 
-for dotfile in .bash_profile .xinitrc .wayland-session .gpg-agent-kwallet .gpg-agent-gnome; do
+for dotfile in .bash_profile .xinitrc .wayland-session .gpg-agent-kwallet .gpg-agent-gnome .config/autostart/lightxdm-gpg-agent-tty.desktop; do
   past_backup=0
   # A backup equal to an older bundled template is a lightXDM file an earlier install backed up
   # as the user's original: drop it and treat the dotfile as one lightXDM created.

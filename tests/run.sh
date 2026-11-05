@@ -3590,6 +3590,55 @@ else
   fi
 fi
 
+# Case 52b: the gpg-agent autostart entry installs on every desktop, reinstalls cleanly, and uninstall removes or saves it
+gpg_tty_entry=".config/autostart/lightxdm-gpg-agent-tty.desktop"
+gpg_tty_dir="$TMP_DIR/gpg_tty_entry"
+for gpg_tty_de in xfce plasma; do
+  gpg_tty_home="$gpg_tty_dir/home_$gpg_tty_de"
+  mkdir -p "$gpg_tty_home"
+  (
+    export HOME="$gpg_tty_home"
+    export USER="${USER:-testuser}"
+    copy_dotfiles "$gpg_tty_de" 2>/dev/null
+    copy_dotfiles "$gpg_tty_de" 2>/dev/null
+  )
+  if [[ -f "$gpg_tty_home/$gpg_tty_entry" && ! -L "$gpg_tty_home/$gpg_tty_entry" ]] &&
+    [[ "$(stat -c '%a' "$gpg_tty_home/$gpg_tty_entry")" == "644" ]] &&
+    cmp -s "$gpg_tty_home/$gpg_tty_entry" "$REPO_ROOT/dotfiles/lightxdm-gpg-agent-tty.desktop" &&
+    [[ -f "$gpg_tty_home/$gpg_tty_entry.lightxdm.absent" ]] &&
+    [[ ! -e "$gpg_tty_home/$gpg_tty_entry.lightxdm.bak" && ! -e "$gpg_tty_home/$gpg_tty_entry.lightxdm-edited" ]]; then
+    pass "copy_dotfiles $gpg_tty_de installs ~/$gpg_tty_entry (mode 644) and reinstalls it without a backup or edited copy"
+  else
+    fail "copy_dotfiles $gpg_tty_de gpg-agent autostart entry"
+  fi
+done
+
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh removes an unmodified gpg-agent autostart entry and saves an edited one (unshare -r unavailable)"
+else
+  gpg_tty_clean_home="$gpg_tty_dir/home_xfce"
+  gpg_tty_edit_home="$gpg_tty_dir/home_plasma"
+  echo "X-Edited=true" >>"$gpg_tty_edit_home/$gpg_tty_entry"
+  gpg_tty_edit_content="$(cat "$gpg_tty_edit_home/$gpg_tty_entry")"
+  set +e
+  out_gpg_tty_clean="$(env TARGET_HOME="$gpg_tty_clean_home" LOGIN_FILE="$gpg_tty_dir/login" OVERRIDE_DIR="$gpg_tty_dir/getty.d" DM_STATE_FILE="$gpg_tty_dir/state" POLKIT_RULE="$gpg_tty_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  st_gpg_tty_clean=$?
+  out_gpg_tty_edit="$(env TARGET_HOME="$gpg_tty_edit_home" LOGIN_FILE="$gpg_tty_dir/login" OVERRIDE_DIR="$gpg_tty_dir/getty.d" DM_STATE_FILE="$gpg_tty_dir/state" POLKIT_RULE="$gpg_tty_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  st_gpg_tty_edit=$?
+  set -e
+  if [[ $st_gpg_tty_clean -eq 0 && $st_gpg_tty_edit -eq 0 ]] &&
+    [[ ! -e "$gpg_tty_clean_home/$gpg_tty_entry" && ! -e "$gpg_tty_clean_home/$gpg_tty_entry.lightxdm.absent" ]] &&
+    [[ ! -e "$gpg_tty_clean_home/$gpg_tty_entry.lightxdm-edited" && -d "$gpg_tty_clean_home/.config/autostart" ]] &&
+    [[ "$out_gpg_tty_clean" == *"Removing $gpg_tty_clean_home/$gpg_tty_entry..."* ]] &&
+    [[ ! -e "$gpg_tty_edit_home/$gpg_tty_entry" && ! -e "$gpg_tty_edit_home/$gpg_tty_entry.lightxdm.absent" ]] &&
+    [[ -f "$gpg_tty_edit_home/$gpg_tty_entry.lightxdm-edited" && "$(cat "$gpg_tty_edit_home/$gpg_tty_entry.lightxdm-edited")" == "$gpg_tty_edit_content" ]] &&
+    [[ "$out_gpg_tty_edit" == *"Saving edited $gpg_tty_edit_home/$gpg_tty_entry to $gpg_tty_edit_home/$gpg_tty_entry.lightxdm-edited..."* ]]; then
+    pass "uninstall.sh removes an unmodified gpg-agent autostart entry, saves an edited one as .lightxdm-edited and keeps ~/.config/autostart"
+  else
+    fail "uninstall.sh gpg-agent autostart entry (clean=$st_gpg_tty_clean:$out_gpg_tty_clean | edited=$st_gpg_tty_edit:$out_gpg_tty_edit)"
+  fi
+fi
+
 # Case 53: fresh home -> install -> edit -> reinstall -> uninstall leaves no dotfiles and saves edits
 absent_dir="$TMP_DIR/absent_dotfile"
 absent_home1="$absent_dir/home_reinstall"
@@ -5923,8 +5972,8 @@ if [[ $status_override_missing -eq 0 ]] &&
   [[ "$(sha256sum < "$ut_override_home/.xinitrc")" != "$(sha256sum < "$REPO_ROOT/dotfiles/.xinitrc-i3")" ]] &&
   [[ -f "$ut_override_home/.xinitrc.lightxdm.bak" && "$(cat "$ut_override_home/.xinitrc.lightxdm.bak")" == "# pre-existing user xinitrc" ]] &&
   [[ ! -e "$ut_override_home/.xinitrc.lightxdm-edited" ]] &&
-  [[ ! -e "$ut_plain_home/.config" ]]; then
-  pass "A user .config/lightxdm/.xinitrc-i3 overrides dotfiles/.xinitrc-i3 without creating ~/.config when absent"
+  [[ ! -e "$ut_plain_home/.config/lightxdm" ]]; then
+  pass "A user .config/lightxdm/.xinitrc-i3 overrides dotfiles/.xinitrc-i3 without creating ~/.config/lightxdm when absent"
 else
   fail "user .config/lightxdm/.xinitrc-i3 override (status=$status_override_missing, output=$output)"
 fi

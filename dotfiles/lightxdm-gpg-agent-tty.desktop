@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=lightXDM gpg-agent session display
+Comment=Point gpg-agent's SSH passphrase prompts at this desktop session
+Exec=gpg-connect-agent updatestartuptty /bye
+NoDisplay=true

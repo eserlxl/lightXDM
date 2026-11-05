@@ -289,6 +289,17 @@ def session_checks(tag, qmp):
     has_xorg = ssh("pgrep -x Xorg")[0] == 0
     if SESSION_TYPE == "wayland":
         check(f"{tag}: no Xorg server (Xwayland only)", not has_xorg)
+        # The helper runs before the compositor; the autostart entry must refresh gpg-agent's
+        # startup display from inside the session so SSH passphrase prompts reach the desktop.
+        env = ""
+        for _ in range(6):
+            _, env, _ = ssh(f"su - {USER} -c \"gpg-connect-agent --no-autostart 'GETINFO std_startup_env' /bye\"")
+            if "WAYLAND_DISPLAY=" in env:
+                break
+            time.sleep(5)
+        # gpg-connect-agent separates entries with NUL bytes; keep the failure detail text-only.
+        check(f"{tag}: gpg-agent startup env has the session WAYLAND_DISPLAY", "WAYLAND_DISPLAY=" in env,
+              env.replace("\0", " ").strip())
     else:
         check(f"{tag}: Xorg server runs", has_xorg)
     time.sleep(15)
