@@ -14,6 +14,7 @@ if [[ $# -gt 0 ]]; then
   elif [[ $# -eq 1 && "$1" == "--keyring-only" ]]; then
     keyring_only=1
   else
+    echo "Unknown option: $*" >&2
     echo "Usage: sudo bash $0 [-h|--help] [--keyring-only]" >&2
     exit 1
   fi

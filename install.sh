@@ -876,6 +876,7 @@ EOF
         shift 2
         ;;
       *)
+        log "Unknown option: $1"
         echo "$usage" >&2
         exit 1
         ;;

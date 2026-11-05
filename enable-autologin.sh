@@ -110,6 +110,11 @@ main() {
     usage
   fi
 
+  if [[ "$1" == -* && "$1" != "--disable" ]]; then
+    echo "Invalid username: '$1'." >&2
+    usage
+  fi
+
   if [[ $EUID -ne 0 ]]; then
     echo "Please run as root (with sudo)."
     exit 1
@@ -150,11 +155,6 @@ main() {
 
   local target_user
   target_user="$1"
-
-  if [[ "$target_user" == -* ]]; then
-    echo "Invalid username: '$target_user'."
-    exit 1
-  fi
 
   local passwd_entry
   if ! passwd_entry="$(getent passwd "$target_user")"; then

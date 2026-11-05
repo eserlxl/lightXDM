@@ -927,6 +927,17 @@ else
   fail "enable-autologin.sh no-argument usage as normal user (status=$status, output=$output)"
 fi
 
+# Case 12c: a mistyped option is named before any root check
+set +e
+output="$(bash "$REPO_ROOT/enable-autologin.sh" --disble 2>&1)"
+status=$?
+set -e
+if [[ $status -ne 0 && "$output" == *"Invalid username: '--disble'"* && "$output" == *"Usage:"* && "$output" != *"Please run as root"* ]]; then
+  pass "enable-autologin.sh names a rejected option before asking for root"
+else
+  fail "enable-autologin.sh --disble as normal user (status=$status, output=$output)"
+fi
+
 # Case 13: enable-autologin.sh rejects dash-prefixed and unknown usernames
 if [[ $can_unshare -eq 0 ]]; then
   skip "enable-autologin.sh rejects dash-prefixed and unknown usernames (unshare -r unavailable)"
@@ -1919,7 +1930,7 @@ output="$(HOME="$help_home" bash "$REPO_ROOT/install.sh" --unknown 2>&1)"
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
-if [[ $status -eq 1 && "$output" == *"Usage:"* && -z "$log_content" ]] &&
+if [[ $status -eq 1 && "$output" == *"Unknown option: --unknown"* && "$output" == *"Usage:"* && -z "$log_content" ]] &&
   [[ "$(cat "$help_home/.bash_profile")" == "# untouched bash_profile" ]] &&
   [[ "$(cat "$LOGIN_FILE")" == "# untouched login" ]]; then
   pass "install.sh rejects unknown argument with usage and exits 1"
@@ -1955,7 +1966,7 @@ output="$(TARGET_HOME="$help_home" OVERRIDE_DIR="$help_dir" POLKIT_RULE="$help_p
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
-if [[ $status -eq 1 && "$output" == *"Usage:"* && -z "$log_content" ]] &&
+if [[ $status -eq 1 && "$output" == *"Unknown option: --unknown"* && "$output" == *"Usage:"* && -z "$log_content" ]] &&
   [[ -f "${LOGIN_FILE}.lightxdm.bak" && "$(cat "$LOGIN_FILE")" == "# untouched login" ]] &&
   [[ -f "$help_autologin" && -f "$help_override" && -f "$help_polkit" ]] &&
   [[ -f "$help_home/.bash_profile.lightxdm.bak" && "$(cat "$help_home/.bash_profile")" == "# untouched bash_profile" ]]; then
