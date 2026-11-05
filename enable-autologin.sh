@@ -106,13 +106,13 @@ main() {
     exit 0
   fi
 
+  if [[ $# -ne 1 || -z "$1" ]]; then
+    usage
+  fi
+
   if [[ $EUID -ne 0 ]]; then
     echo "Please run as root (with sudo)."
     exit 1
-  fi
-
-  if [[ $# -ne 1 || -z "$1" ]]; then
-    usage
   fi
 
   if [[ "$1" == "--disable" ]]; then

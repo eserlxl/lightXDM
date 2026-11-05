@@ -999,7 +999,7 @@ EOF
           if [[ $menu_rc -eq 2 ]]; then
             exit 0
           fi
-          log "No desktop environment was chosen. Exiting."
+          log "No desktop environment was chosen. Pass --de <id> to select one (plasma, gnome, budgie, xfce, lxqt, lxde, mate, cinnamon, i3). Exiting."
           exit 1
         }
       else

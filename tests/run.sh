@@ -601,7 +601,7 @@ output="$(
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
-if [[ $status -eq 1 && "$output" == *"No desktop environment was chosen. Exiting."* && "$log_content" == "sudo -v" ]]; then
+if [[ $status -eq 1 && "$output" == *"No desktop environment was chosen. Pass --de <id> to select one (plasma, gnome, budgie, xfce, lxqt, lxde, mate, cinnamon, i3). Exiting."* && "$log_content" == "sudo -v" ]]; then
   pass "main exits 1 with a message on desktop menu EOF"
 else
   fail "main desktop menu EOF (status=$status, output=$output, log=$log_content)"
@@ -914,6 +914,17 @@ else
   else
     fail "enable-autologin.sh argument count (status_zero=$status_zero, out_zero=$output_zero, status_two=$status_two, out_two=$output_two)"
   fi
+fi
+
+# Case 12b: no argument shows the usage text before any root check
+set +e
+output="$(bash "$REPO_ROOT/enable-autologin.sh" 2>&1)"
+status=$?
+set -e
+if [[ $status -ne 0 && "$output" == *"Usage:"* && "$output" != *"Please run as root"* ]]; then
+  pass "enable-autologin.sh checks its arguments before asking for root"
+else
+  fail "enable-autologin.sh no-argument usage as normal user (status=$status, output=$output)"
 fi
 
 # Case 13: enable-autologin.sh rejects dash-prefixed and unknown usernames
@@ -4943,6 +4954,18 @@ if [[ $status -eq 0 && "$log_content" == *"prompt_de_selection"* && "$log_conten
   pass "main exits 0 with no install step when Quit is chosen"
 else
   fail "main Quit (status=$status, log=$log_content, output=$output)"
+fi
+
+# A failing menu with no detected desktop names the next step
+: >"$STUB_LOG"
+set +e
+output="$(STUB_DETECTED_DE=unknown STUB_PROMPT_RC=1 run_main_with_stubs "$sudo_pw_dir" 2>&1)"
+status=$?
+set -e
+if [[ $status -eq 1 && "$output" == *"Pass --de <id>"* ]]; then
+  pass "main names --de when the menu fails with no detected desktop"
+else
+  fail "main menu failure message (status=$status, output=$output)"
 fi
 
 # Case 61: install_packages and detect_de cover all nine desktops' package lists and detection pairs
