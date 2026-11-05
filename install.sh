@@ -962,13 +962,14 @@ main() {
   local de_specified=0
   local list_only=0
   local dry_run=0
+  local non_interactive=0
   local no_packages=0
   local no_keyring=0
   local no_polkit_rule=0
   local autologin=0
   local init_template=0
   local wayland=0
-  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--dry-run] [--init-template [--wayland]] [--no-packages] [--no-keyring] [--autologin]"
+  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland]] [--no-packages] [--no-keyring] [--autologin]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -990,6 +991,7 @@ Options:
                     (requires --no-packages; uses GNOME Keyring or --no-keyring; refuses if both templates exist)
   --list-packages   print the packages for --de <id> and exit; changes nothing
   --dry-run         preview the resolved install for --de <id> and exit; no sudo or file changes
+  --non-interactive require --de and fail instead of prompting for sudo credentials
   --init-template   create ~/.config/lightxdm/.xinitrc-<id> (or .wayland-session-<id> for Plasma, GNOME and Budgie) for --de <id> to edit, and exit
                     (any lowercase id: a custom one starts from the i3 template unless --wayland is used)
   --wayland         with --init-template --de <custom-id>, create a minimal Wayland template ending in exec <id>
@@ -1007,6 +1009,10 @@ EOF
         ;;
       --dry-run)
         dry_run=1
+        shift
+        ;;
+      --non-interactive)
+        non_interactive=1
         shift
         ;;
       --no-packages)
@@ -1064,7 +1070,7 @@ EOF
   fi
 
   if [[ $init_template -eq 1 ]]; then
-    if [[ $list_only -eq 1 || $dry_run -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || $no_polkit_rule -eq 1 || $autologin -eq 1 ]]; then
+    if [[ $list_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || $no_polkit_rule -eq 1 || $autologin -eq 1 ]]; then
       log "--init-template takes only --de <id> and optional --wayland for custom ids; it creates the template and exits without installing."
       echo "$usage" >&2
       exit 1
@@ -1081,6 +1087,12 @@ EOF
     fi
     init_xinitrc_template "$de" "$wayland"
     exit $?
+  fi
+
+  if [[ $non_interactive -eq 1 && $de_specified -eq 0 ]]; then
+    log "--non-interactive requires --de <id>"
+    echo "$usage" >&2
+    exit 1
   fi
 
   if [[ $no_polkit_rule -eq 1 ]]; then
@@ -1151,6 +1163,10 @@ EOF
   fi
 
   check_root
+  # Defined after check_root, whose `command -v sudo` must still find the real binary.
+  if [[ $non_interactive -eq 1 ]]; then
+    sudo() { command sudo -n "$@"; }
+  fi
 
   # --- Wheel group and sudoers check ---
   local real_user

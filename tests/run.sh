@@ -417,6 +417,9 @@ run_main_with_stubs() (
   fi
   stub_install_step() {
     echo "$*" >>"$STUB_LOG"
+    if [[ "${STUB_CHECK_SUDO:-0}" == 1 ]]; then
+      ( sudo true ) || return
+    fi
     if [[ "$1" == "${STUB_FAIL_STEP:-}" ]]; then
       return "${STUB_FAIL_STATUS:-1}"
     fi
@@ -439,6 +442,59 @@ run_main_with_stubs() (
   enable_autologin() { stub_install_step enable_autologin "$1"; }
   main "$@"
 )
+
+# Non-interactive installs never allow sudo to prompt.
+ni_bin="$TMP_DIR/non_interactive_bin"
+ni_home="$TMP_DIR/non_interactive_home"
+mkdir -p "$ni_bin" "$ni_home"
+cat >"$ni_bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$NI_SUDO_LOG"
+[[ "${NI_REJECT:-0}" != 1 ]]
+EOF
+chmod +x "$ni_bin/sudo"
+export NI_SUDO_LOG="$TMP_DIR/non_interactive_sudo.log"
+printf 'unchanged\n' >"$ni_home/sentinel"
+: >"$NI_SUDO_LOG"
+: >"$STUB_LOG"
+set +e
+ni_output="$(HOME="$ni_home" STUB_CHECK_SUDO=1 run_main_with_stubs "$ni_bin" --non-interactive --de i3 2>&1)"
+ni_status=$?
+set -e
+if [[ $ni_status -eq 0 && $(wc -l <"$NI_SUDO_LOG") -gt 1 ]] && ! grep -Evq -- '^-n( |$)' "$NI_SUDO_LOG"; then
+  pass "--non-interactive passes -n to every sudo call, including in subshells"
+else
+  fail "--non-interactive sudo arguments (status=$ni_status, output=$ni_output)"
+fi
+: >"$NI_SUDO_LOG"
+: >"$STUB_LOG"
+set +e
+ni_missing="$(HOME="$ni_home" run_main_with_stubs "$ni_bin" --non-interactive 2>&1)"
+ni_missing_status=$?
+ni_conflict="$(HOME="$ni_home" run_main_with_stubs "$ni_bin" --init-template --non-interactive --de i3 2>&1)"
+ni_conflict_status=$?
+set -e
+if [[ $ni_missing_status -ne 0 && "$ni_missing" == *'--non-interactive requires --de'* &&
+  $ni_conflict_status -ne 0 && "$ni_conflict" == *'--init-template takes only'* &&
+  ! -s "$NI_SUDO_LOG" && ! -s "$STUB_LOG" && $(cat "$ni_home/sentinel") == unchanged &&
+  $(find "$ni_home" -type f | wc -l) -eq 1 ]]; then
+  pass "--non-interactive requires --de and is refused by --init-template before changes"
+else
+  fail "--non-interactive argument validation (missing=$ni_missing, conflict=$ni_conflict)"
+fi
+: >"$NI_SUDO_LOG"
+: >"$STUB_LOG"
+set +e
+ni_denied="$(HOME="$ni_home" NI_REJECT=1 STUB_REAL_COPY_DOTFILES=1 run_main_with_stubs "$ni_bin" --non-interactive --de i3 2>&1)"
+ni_denied_status=$?
+set -e
+if [[ $ni_denied_status -ne 0 && "$ni_denied" == *'Failed to authenticate with sudo'* &&
+  $(cat "$NI_SUDO_LOG") == '-n -v' && ! -s "$STUB_LOG" &&
+  $(cat "$ni_home/sentinel") == unchanged && $(find "$ni_home" -type f | wc -l) -eq 1 ]]; then
+  pass "--non-interactive stops before changes when sudo credentials are unavailable"
+else
+  fail "--non-interactive sudo rejection (status=$ni_denied_status, output=$ni_denied)"
+fi
 
 # --autologin needs --no-keyring, and then enables autologin for the user after the display managers
 : >"$STUB_LOG"
