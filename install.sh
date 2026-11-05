@@ -525,6 +525,16 @@ configure_pam() {
       ;;
   esac
 
+  local package
+  if [[ "$module" == "pam_kwallet5.so" ]]; then
+    package="kwallet-pam"
+  else
+    package="gnome-keyring"
+  fi
+  if [[ ! -e "${SESSION_ROOT:-}/usr/lib/security/$module" ]]; then
+    log "WARNING: $module is not installed (/usr/lib/security/$module); install $package or the keyring will not unlock at login."
+  fi
+
   local backup_file="${LOGIN_FILE}.lightxdm.bak"
   if [[ -f "$backup_file" ]]; then
     local pam_sed=() other_line

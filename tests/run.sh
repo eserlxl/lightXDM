@@ -142,7 +142,8 @@ for startup_command in startx startxfce4 startlxqt startlxde mate-session cinnam
   cp "$STUB_BIN/chown" "$STUB_BIN/$startup_command"
 done
 export SESSION_ROOT="$TMP_DIR/session_root"
-mkdir -p "$SESSION_ROOT/usr/lib" "$SESSION_ROOT/usr/bin"
+mkdir -p "$SESSION_ROOT/usr/lib/security" "$SESSION_ROOT/usr/bin"
+touch "$SESSION_ROOT/usr/lib/security/pam_kwallet5.so" "$SESSION_ROOT/usr/lib/security/pam_gnome_keyring.so"
 cp "$STUB_BIN/chown" "$SESSION_ROOT/usr/lib/plasma-dbus-run-session-if-needed"
 cp "$STUB_BIN/chown" "$SESSION_ROOT/usr/bin/startplasma-wayland"
 cp "$STUB_BIN/chown" "$SESSION_ROOT/usr/bin/gnome-session"
@@ -336,6 +337,43 @@ if grep -Fxq -- "$PAM_GNOME_KEYRING_AUTH" "$LOGIN_FILE" &&
   pass "configure_pam keeps a pam_gnome_keyring.so line already in the backup when switching to plasma"
 else
   fail "configure_pam pre-existing pam_gnome_keyring.so on switch to plasma (content=$preexisting_switch_content)"
+fi
+
+# Case 8c: missing keyring modules warn without preventing PAM configuration
+missing_module_ok=1
+for keyring_de in plasma xfce; do
+  if [[ "$keyring_de" == plasma ]]; then
+    keyring_module=pam_kwallet5.so
+    keyring_package=kwallet-pam
+    keyring_auth="$PAM_KWALLET_AUTH"
+    keyring_session="$PAM_KWALLET_SESSION"
+  else
+    keyring_module=pam_gnome_keyring.so
+    keyring_package=gnome-keyring
+    keyring_auth="$PAM_GNOME_KEYRING_AUTH"
+    keyring_session="$PAM_GNOME_KEYRING_SESSION"
+  fi
+  rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+  write_stock_login
+  mv "$SESSION_ROOT/usr/lib/security/$keyring_module" "$SESSION_ROOT/usr/lib/security/$keyring_module.off"
+  missing_log="$(configure_pam "$keyring_de" 2>&1)"
+  if [[ "$missing_log" != *"WARNING: $keyring_module is not installed (/usr/lib/security/$keyring_module); install $keyring_package or the keyring will not unlock at login."* ]] ||
+    ! grep -Fxq -- "$keyring_auth" "$LOGIN_FILE" ||
+    ! grep -Fxq -- "$keyring_session" "$LOGIN_FILE"; then
+    missing_module_ok=0
+  fi
+  mv "$SESSION_ROOT/usr/lib/security/$keyring_module.off" "$SESSION_ROOT/usr/lib/security/$keyring_module"
+  rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+  write_stock_login
+  installed_log="$(configure_pam "$keyring_de" 2>&1)"
+  if [[ "$installed_log" == *"is not installed"* ]]; then
+    missing_module_ok=0
+  fi
+done
+if [[ "$missing_module_ok" -eq 1 ]]; then
+  pass "configure_pam warns about missing keyring modules and still configures PAM"
+else
+  fail "configure_pam missing keyring module warning or configuration"
 fi
 
 # Case 9: main gets past sudo checks when sudo -n fails but sudo -v succeeds
