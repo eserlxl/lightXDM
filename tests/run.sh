@@ -1070,10 +1070,28 @@ set -e
 chmod 644 "$unread_dir/getty.d/lightxdm-autologin.conf"
 if [[ $EUID -eq 0 ]]; then
   skip "enable-autologin.sh --status with an unreadable drop-in (running as root)"
-elif [[ $status -eq 0 && "$output" == *"cannot read $unread_dir/getty.d/lightxdm-autologin.conf"* && "$output" != *"Permission denied"* ]]; then
+elif [[ $status -eq 0 && "$output" == *"cannot read $unread_dir/getty.d/lightxdm-autologin.conf"* && "$output" != *"Permission denied"* ]] &&
+  [[ $(printf '%s\n' "$output" | grep -Fc "Note: cannot read $unread_dir/getty.d/lightxdm-autologin.conf;") -eq 1 ]]; then
   pass "enable-autologin.sh --status notes an unreadable drop-in and exits 0"
 else
   fail "enable-autologin.sh --status unreadable drop-in (status=$status, output=$output)"
+fi
+
+# --status notes an unreadable foreign drop-in while reporting the readable one
+printf '[Service]\nExecStart=/usr/bin/agetty tty1\n' >"$unread_dir/getty.d/zz-local.conf"
+chmod 000 "$unread_dir/getty.d/zz-local.conf"
+set +e
+output="$(env OVERRIDE_DIR="$unread_dir/getty.d" LOGIN_FILE="$unread_dir/login" bash "$REPO_ROOT/enable-autologin.sh" --status 2>&1)"
+status=$?
+set -e
+chmod 644 "$unread_dir/getty.d/zz-local.conf"
+if [[ $EUID -eq 0 ]]; then
+  skip "enable-autologin.sh --status with an unreadable foreign drop-in (running as root)"
+elif [[ $status -eq 0 && "$output" == *"enabled for someone"* && "$output" == *"cannot read $unread_dir/getty.d/zz-local.conf"* ]] &&
+  [[ $(printf '%s\n' "$output" | grep -Fc "Note: cannot read $unread_dir/getty.d/zz-local.conf;") -eq 1 ]]; then
+  pass "enable-autologin.sh --status notes an unreadable foreign drop-in once"
+else
+  fail "enable-autologin.sh --status unreadable foreign drop-in (status=$status, output=$output)"
 fi
 
 # --status notes an unreadable drop-in directory instead of silently reporting disabled

@@ -80,6 +80,12 @@ show_status() {
     echo "disabled"
   fi
   for file in "$OVERRIDE_DIR"/*.conf; do
+    if [[ -f "$file" && ! -r "$file" ]]; then
+      if [[ "$file" != "$OVERRIDE_FILE" && "$file" != "$LEGACY_OVERRIDE_FILE" ]]; then
+        echo "Note: cannot read $file; run --status with sudo for an exact result." >&2
+      fi
+      continue
+    fi
     [[ -f "$file" && -r "$file" && "$file" != "$status_file" && "$file" != "$reset_file" ]] || continue
     if grep -Eq '^[[:space:]]*ExecStart[[:space:]]*=.*--autologin' "$file"; then
       echo "Warning: $file still enables autologin."
