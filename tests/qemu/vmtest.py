@@ -3,13 +3,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Real TTY1 login test for one desktop in a QEMU VM (driven by tests/qemu-arch.sh).
 
-Usage: vmtest.py <desktop> <repo> <vm-dir> <ssh-port>
+Usage: vmtest.py <desktop|from:to> <repo> <vm-dir> <ssh-port>
 Boots <vm-dir>/root.img with -snapshot (the image stays unchanged), copies the repo's
-working tree into the VM, runs install.sh --de <desktop> as user 'tester', reboots, types
-the login at the TTY1 getty through QMP, and checks the desktop session twice (the second
-login proves PAM unlocks an existing keyring). Writes <vm-dir>/run-<desktop>/result: one
-PASS/FAIL line per check, then 'DONE pass=N fail=M'. LIGHTXDM_VM_KEEP=1 leaves the VM
-running after the first login for debugging (ssh -p <port> root@127.0.0.1 with <vm-dir>/id_vm).
+working tree into the VM, runs install.sh --de <desktop> as user 'tester' (or <from> then
+<to> when given <from>:<to>), reboots, types the login at the TTY1 getty through QMP, and
+checks the desktop session twice (the second login proves PAM unlocks an existing keyring).
+Writes <vm-dir>/run-<spec>/result: one PASS/FAIL line per check, then 'DONE pass=N fail=M'.
+LIGHTXDM_VM_KEEP=1 leaves the VM running after the first login for debugging (ssh -p <port>
+root@127.0.0.1 with <vm-dir>/id_vm).
 """
 import json
 import os
@@ -19,7 +20,8 @@ import sys
 import time
 
 DESKTOP, REPO, VM_DIR, PORT = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
-RUN = os.path.join(VM_DIR, f"run-{DESKTOP}")
+FROM, TARGET = DESKTOP.split(":") if ":" in DESKTOP else (None, DESKTOP)
+RUN = os.path.join(VM_DIR, f"run-{DESKTOP.replace(':', '-')}")
 RESULT = os.path.join(RUN, "result")
 QMP_SOCK = os.path.join(RUN, "qmp.sock")
 USER, PASSWORD = "tester", "lightxdm-test"  # throwaway account inside the disposable VM
@@ -37,7 +39,7 @@ DESKTOPS = {
     "cinnamon": ("x11", ["cinnamon"], "gnome"),
     "i3": ("x11", ["i3"], "gnome"),
 }
-SESSION_TYPE, PROCS, KEYRING = DESKTOPS[DESKTOP]
+SESSION_TYPE, PROCS, KEYRING = DESKTOPS[TARGET]
 # Keys a user presses once on the first login: LXQt asks for a default window manager before it
 # runs its autostart entries (the polkit agent among them); Enter accepts the highlighted one.
 FIRST_LOGIN_KEYS = {"lxqt": "\n"}
@@ -166,9 +168,9 @@ def user_bus(cmd):
 def session_checks(tag, qmp):
     for proc in PROCS:
         check(f"{tag}: {proc} runs for {USER}", wait_proc(proc))
-    if tag == "login1" and DESKTOP in FIRST_LOGIN_KEYS:
+    if tag == "login1" and TARGET in FIRST_LOGIN_KEYS:
         time.sleep(8)
-        qmp.type(FIRST_LOGIN_KEYS[DESKTOP])
+        qmp.type(FIRST_LOGIN_KEYS[TARGET])
         log(f"{tag}: answered the first-login prompt")
         time.sleep(5)
     _, sessions, _ = ssh(f"for s in $(loginctl list-sessions --no-legend | awk '$3==\"{USER}\"{{print $1}}'); do "
@@ -233,10 +235,17 @@ def main():
         rc, _, err = ssh(f"mkdir -p /home/{USER}/lightXDM && tar -x -C /home/{USER}/lightXDM && "
                          f"chown -R {USER}: /home/{USER}/lightXDM", stdin=tar)
         check("working tree copied into the VM", rc == 0, err)
-        rc, out, err = ssh(f"su - {USER} -c 'cd ~/lightXDM && bash install.sh --de {DESKTOP}' 2>&1", timeout=1800)
+        if FROM:
+            rc, out, err = ssh(f"su - {USER} -c 'cd ~/lightXDM && bash install.sh --de {FROM}' 2>&1", timeout=1800)
+            with open(os.path.join(RUN, f"install-{FROM}.log"), "w") as f:
+                f.write(out + err)
+            check(f"install.sh --de {FROM} exits 0", rc == 0, out[-400:])
+            if rc != 0:
+                return
+        rc, out, err = ssh(f"su - {USER} -c 'cd ~/lightXDM && bash install.sh --de {TARGET}' 2>&1", timeout=1800)
         with open(os.path.join(RUN, "install.log"), "w") as f:
             f.write(out + err)
-        check(f"install.sh --de {DESKTOP} exits 0", rc == 0, out[-400:])
+        check(f"install.sh --de {TARGET} exits 0", rc == 0, out[-400:])
         if rc != 0:
             return
         reboot_and_login(qmp, "login1")

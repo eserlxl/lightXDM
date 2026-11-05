@@ -10,11 +10,12 @@ JOBS="${LIGHTXDM_VM_JOBS:-2}"
 
 usage() {
   cat <<EOF
-Usage: bash $0 [-h|--help] [desktop ...]   (default: plasma xfce)
+Usage: bash $0 [-h|--help] [desktop | <from>:<to> ...]   (default: plasma xfce)
 
 Builds an Arch Linux VM image in Docker (once per package set), then for each desktop boots a
 VM, runs install.sh --de <desktop> as a test user, reboots, types the password at the TTY1
 login and checks that the desktop session starts and PAM unlocks the keyring, twice.
+An argument <from>:<to> installs <from>, then <to> in the same VM, and checks <to>.
 Prints one PASS/FAIL line per check; exits 1 if any check fails, 0 with SKIP if a tool is missing.
 
 Environment:
@@ -24,12 +25,32 @@ Environment:
 EOF
 }
 
+is_desktop() {
+  case "$1" in
+    plasma | gnome | budgie | xfce | lxqt | lxde | mate | cinnamon | i3) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 desktops=()
 for arg in "$@"; do
   case "$arg" in
     -h | --help) usage; exit 0 ;;
-    plasma | gnome | budgie | xfce | lxqt | lxde | mate | cinnamon | i3) desktops+=("$arg") ;;
-    *) echo "Unknown desktop: $arg" >&2; usage >&2; exit 1 ;;
+    *:*:*) echo "Unknown desktop: $arg" >&2; usage >&2; exit 1 ;;
+    *:*)
+      if is_desktop "${arg%%:*}" && is_desktop "${arg#*:}"; then
+        desktops+=("$arg")
+      else
+        echo "Unknown desktop: $arg" >&2; usage >&2; exit 1
+      fi
+      ;;
+    *)
+      if is_desktop "$arg"; then
+        desktops+=("$arg")
+      else
+        echo "Unknown desktop: $arg" >&2; usage >&2; exit 1
+      fi
+      ;;
   esac
 done
 [[ ${#desktops[@]} -gt 0 ]] || desktops=(plasma xfce)
@@ -62,7 +83,9 @@ chmod 0777 "$VM_DIR/pkgcache"
 pkgs="$(
   # shellcheck source=install.sh disable=SC1091
   source "$REPO_ROOT/install.sh"
-  for de in "${desktops[@]}"; do list_packages "$de"; done | sort -u | tr '\n' ' '
+  for de in "${desktops[@]}"; do
+    for part in ${de/:/ }; do list_packages "$part"; done
+  done | sort -u | tr '\n' ' '
 )"
 stamp="$(printf '%s\n' "$pkgs" | cat - "$REPO_ROOT/tests/qemu/build-image.sh" | sha256sum | cut -d' ' -f1)"
 if [[ "$(cat "$VM_DIR/image.stamp" 2>/dev/null || true)" != "$stamp" || ! -f "$VM_DIR/root.img" ]]; then
@@ -87,22 +110,24 @@ for de in "${desktops[@]}"; do
     running=$((running - 1))
   fi
   port=$((port + 1))
-  mkdir -p "$VM_DIR/run-$de"
-  rm -f -- "$VM_DIR/run-$de/result"
-  echo "Testing $de (log: $VM_DIR/run-$de/driver.log)"
-  python3 "$REPO_ROOT/tests/qemu/vmtest.py" "$de" "$REPO_ROOT" "$VM_DIR" "$port" >"$VM_DIR/run-$de/vmtest.out" 2>&1 &
+  run_dir="$VM_DIR/run-${de/:/-}"
+  mkdir -p "$run_dir"
+  rm -f -- "$run_dir/result"
+  echo "Testing $de (log: $run_dir/driver.log)"
+  python3 "$REPO_ROOT/tests/qemu/vmtest.py" "$de" "$REPO_ROOT" "$VM_DIR" "$port" >"$run_dir/vmtest.out" 2>&1 &
   running=$((running + 1))
 done
 wait || true
 
 failures=0
 for de in "${desktops[@]}"; do
-  result="$VM_DIR/run-$de/result"
+  run_dir="$VM_DIR/run-${de/:/-}"
+  result="$run_dir/result"
   if [[ -f "$result" ]] && grep -q '^DONE' "$result"; then
     grep -E '^(PASS|FAIL)' "$result" || true
     grep -q '^FAIL' "$result" && failures=$((failures + 1))
   else
-    echo "FAIL: $de: the VM test did not finish (see $VM_DIR/run-$de/vmtest.out)"
+    echo "FAIL: $de: the VM test did not finish (see $run_dir/vmtest.out)"
     failures=$((failures + 1))
   fi
 done
