@@ -356,6 +356,9 @@ def main():
         # Copy the working tree (tracked and untracked, not ignored) so uncommitted changes are tested.
         files = subprocess.run(["git", "-C", REPO, "ls-files", "-z", "-co", "--exclude-standard"],
                                capture_output=True, check=True).stdout
+        # A tracked file deleted but not staged is still listed, and tar cannot read it.
+        files = b"".join(p + b"\0" for p in files.split(b"\0")
+                         if p and os.path.lexists(os.path.join(os.fsencode(REPO), p)))
         tar = subprocess.run(["tar", "-C", REPO, "--null", "-T", "-", "-c"], input=files,
                              capture_output=True, check=True).stdout
         rc, _, err = ssh(f"mkdir -p /home/{USER}/lightXDM && tar -x -C /home/{USER}/lightXDM && "
