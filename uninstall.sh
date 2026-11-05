@@ -140,48 +140,9 @@ if [[ $keyring_only -eq 1 ]]; then
   exit 0
 fi
 
-# Remove autologin drop-in and any legacy lightXDM-written override.conf
-AUTOLOGIN_DROPIN="${AUTOLOGIN_DROPIN:-/etc/systemd/system/getty@tty1.service.d/lightxdm-autologin.conf}"
-OVERRIDE_FILE="${OVERRIDE_FILE:-/etc/systemd/system/getty@tty1.service.d/override.conf}"
-
-is_legacy_autologin_override() {
-  local file="$1"
-  if [[ ! -f "$file" || -L "$file" ]]; then
-    return 1
-  fi
-  local lines=()
-  local exec_re='^ExecStart=-/usr/bin/agetty --autologin [^-[:space:]:][^[:space:]:]* --noclear %I [$]TERM$'
-  mapfile -t lines < "$file"
-  [[ ${#lines[@]} -eq 3 && "${lines[0]}" == "[Service]" && "${lines[1]}" == "ExecStart=" && "${lines[2]}" =~ $exec_re ]]
-}
-
-autologin_removed=0
-if [ -f "$AUTOLOGIN_DROPIN" ]; then
-  echo "Removing autologin drop-in..."
-  rm -f "$AUTOLOGIN_DROPIN"
-  autologin_removed=1
-fi
-if [[ -f "$OVERRIDE_FILE" || -L "$OVERRIDE_FILE" ]]; then
-  if is_legacy_autologin_override "$OVERRIDE_FILE"; then
-    echo "Removing legacy autologin override..."
-    rm -f "$OVERRIDE_FILE"
-    autologin_removed=1
-  else
-    echo "Keeping $OVERRIDE_FILE (not written by lightXDM)."
-  fi
-fi
-if [[ $autologin_removed -eq 1 ]]; then
-  systemctl daemon-reload || [[ ! -d "${SYSTEMD_RUN_DIR:-/run/systemd/system}" ]]
-  echo "Autologin configuration removed. Change will take effect at the next login or reboot."
-elif [[ ! -f "$OVERRIDE_FILE" && ! -L "$OVERRIDE_FILE" ]]; then
-  echo "No autologin drop-in found; skipping."
-fi
-# Drop-ins lightXDM did not write can still log tty1 in without a password.
-for drop_in in "$(dirname -- "$AUTOLOGIN_DROPIN")"/*.conf; do
-  if [[ -f "$drop_in" ]] && grep -Eqs '^[[:space:]]*ExecStart[[:space:]]*=.*--autologin' "$drop_in"; then
-    echo "Warning: $drop_in still enables autologin."
-  fi
-done
+# Remove the autologin drop-in and any legacy lightXDM-written override.conf (OVERRIDE_DIR
+# selects the getty@tty1 drop-in directory); a failed daemon-reload stops the uninstall.
+bash "$SCRIPT_DIR/enable-autologin.sh" --disable
 
 save_edited_dotfile() {
   local src="$1"

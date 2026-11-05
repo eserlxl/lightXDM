@@ -1127,7 +1127,7 @@ cp "$uninstall_autologin" "$uninstall_override"
 echo "// rule" >"$uninstall_polkit"
 : >"$STUB_LOG"
 set +e
-output="$(TARGET_HOME="$uninstall_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+output="$(TARGET_HOME="$uninstall_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" bash "$REPO_ROOT/uninstall.sh" 2>&1)"
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
@@ -1150,7 +1150,7 @@ else
   cp "$POLKIT_RULE_SRC" "$uninstall_polkit"
   : >"$STUB_LOG"
   set +e
-  output="$(TARGET_HOME="$uninstall_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(TARGET_HOME="$uninstall_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
@@ -1171,7 +1171,7 @@ else
     original_hash="$(sha256sum < "$LOGIN_FILE")"
     configure_pam "gnome" 2>/dev/null
     set +e
-    output="$(TARGET_HOME="$uninstall_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+    output="$(TARGET_HOME="$uninstall_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
     status=$?
     set -e
     if [[ $status -eq 0 && "$(sha256sum < "$LOGIN_FILE")" == "$original_hash" && ! -e "${LOGIN_FILE}.lightxdm.bak" ]]; then
@@ -1199,7 +1199,7 @@ auth required pam_u2f.so'
   configure_pam "gnome" 2>/dev/null
   printf '%s' "$pam_edits" >>"$LOGIN_FILE"
   set +e
-  output="$(TARGET_HOME="$uninstall_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(TARGET_HOME="$uninstall_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   if [[ $status -eq 0 && "$(sha256sum < "$LOGIN_FILE")" == "$edited_hash" &&
@@ -1219,7 +1219,7 @@ if [[ $can_unshare -eq 0 ]]; then
 else
   : >"$STUB_LOG"
   set +e
-  output="$(TARGET_HOME="$uninstall_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(TARGET_HOME="$uninstall_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
@@ -1251,7 +1251,7 @@ OLD_RULE
     fail "older Polkit rule fixture bytes differ from 23dfd12"
   fi
   set +e
-  output="$(TARGET_HOME="$uninstall_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(TARGET_HOME="$uninstall_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   if [[ $status -eq 0 && "$output" == *"Removing Polkit rule..."* && ! -e "$uninstall_polkit" ]]; then
@@ -1261,7 +1261,7 @@ OLD_RULE
   fi
   printf '// foreign polkit policy\n' >"$uninstall_polkit"
   set +e
-  output="$(TARGET_HOME="$uninstall_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(TARGET_HOME="$uninstall_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   if [[ $status -eq 0 && "$output" == *"Keeping $uninstall_polkit"* && -f "$uninstall_polkit" ]]; then
@@ -1304,7 +1304,7 @@ if [[ $can_unshare -eq 0 ]]; then
   skip "uninstall.sh restores .bash_profile and .xinitrc from backup and removes gpg-agent files (unshare -r unavailable)"
 else
   set +e
-  output="$(TARGET_HOME="$temp_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(TARGET_HOME="$temp_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   restored_bash="$(cat "$temp_home/.bash_profile")"
@@ -1330,7 +1330,7 @@ else
     copy_dotfiles "plasma" 2>/dev/null
   )
   set +e
-  output="$(TARGET_HOME="$temp_home_fresh" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(TARGET_HOME="$temp_home_fresh" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   if [[ $status -eq 0 && ! -e "$temp_home_fresh/.bash_profile" && ! -e "$temp_home_fresh/.wayland-session" && ! -e "$temp_home_fresh/.xinitrc" && ! -e "$temp_home_fresh/.gpg-agent-kwallet" ]] &&
@@ -1788,9 +1788,9 @@ else
     copy_dotfiles "xfce" 2>/dev/null
   )
   set +e
-  output1="$(TARGET_HOME="$twice_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output1="$(TARGET_HOME="$twice_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status1=$?
-  output2="$(TARGET_HOME="$twice_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output2="$(TARGET_HOME="$twice_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status2=$?
   set -e
   twice_bash=""
@@ -1817,7 +1817,7 @@ else
   echo "exec openbox-session" >"$edited_home/.xinitrc"
   expected_edited_bash="$(cat "$edited_home/.bash_profile")"
   set +e
-  output="$(TARGET_HOME="$edited_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(TARGET_HOME="$edited_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   actual_edited_bash=""
@@ -1846,7 +1846,7 @@ else
     copy_dotfiles "xfce" 2>/dev/null
   )
   set +e
-  output="$(TARGET_HOME="$removed_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(TARGET_HOME="$removed_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   prev_bash=""
@@ -1871,9 +1871,11 @@ echo "# untouched bash_profile" >"$help_home/.bash_profile"
 echo "# backup bash_profile" >"$help_home/.bash_profile.lightxdm.bak"
 echo "# untouched login" >"$LOGIN_FILE"
 echo "# backup login" >"${LOGIN_FILE}.lightxdm.bak"
-help_autologin="$TMP_DIR/help_autologin.conf"
+help_dir="$TMP_DIR/help_getty.d"
+mkdir -p "$help_dir"
+help_autologin="$help_dir/lightxdm-autologin.conf"
 echo "[Service]" >"$help_autologin"
-help_override="$TMP_DIR/help_override.conf"
+help_override="$help_dir/override.conf"
 echo "[Service]" >"$help_override"
 help_polkit="$TMP_DIR/help_polkit.rules"
 echo "// rule" >"$help_polkit"
@@ -1921,7 +1923,7 @@ fi
 for flag in --help -h; do
   : >"$STUB_LOG"
   set +e
-  output="$(TARGET_HOME="$help_home" AUTOLOGIN_DROPIN="$help_autologin" OVERRIDE_FILE="$help_override" POLKIT_RULE="$help_polkit" "${uninstall_runner[@]}" "$flag" 2>&1)"
+  output="$(TARGET_HOME="$help_home" OVERRIDE_DIR="$help_dir" POLKIT_RULE="$help_polkit" "${uninstall_runner[@]}" "$flag" 2>&1)"
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
@@ -1937,7 +1939,7 @@ done
 
 : >"$STUB_LOG"
 set +e
-output="$(TARGET_HOME="$help_home" AUTOLOGIN_DROPIN="$help_autologin" OVERRIDE_FILE="$help_override" POLKIT_RULE="$help_polkit" "${uninstall_runner[@]}" --unknown 2>&1)"
+output="$(TARGET_HOME="$help_home" OVERRIDE_DIR="$help_dir" POLKIT_RULE="$help_polkit" "${uninstall_runner[@]}" --unknown 2>&1)"
 status=$?
 set -e
 log_content="$(cat "$STUB_LOG")"
@@ -2012,7 +2014,7 @@ else
   )
   unshare_bin="$(command -v unshare)"
   set +e
-  output="$(PATH="$no_cmp_bin" TARGET_HOME="$no_cmp_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" "$unshare_bin" -r "$no_cmp_bin/bash" "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(PATH="$no_cmp_bin" TARGET_HOME="$no_cmp_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" "$unshare_bin" -r "$no_cmp_bin/bash" "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   if [[ $status -eq 0 && ! -e "$no_cmp_home/.bash_profile" && ! -e "$no_cmp_home/.xinitrc" && ! -e "$no_cmp_home/.wayland-session" ]] &&
@@ -2048,17 +2050,17 @@ else
   set +e
   output_unset="$(
     unset TARGET_HOME SUDO_USER
-    AUTOLOGIN_DROPIN="$refuse_autologin" OVERRIDE_FILE="$refuse_override" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
+    OVERRIDE_DIR="$refuse_dir" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
   )"
   status_unset=$?
   output_bad_user="$(
     unset TARGET_HOME
-    SUDO_USER="nonexistent_lightxdm_user_99999" AUTOLOGIN_DROPIN="$refuse_autologin" OVERRIDE_FILE="$refuse_override" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
+    SUDO_USER="nonexistent_lightxdm_user_99999" OVERRIDE_DIR="$refuse_dir" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
   )"
   status_bad_user=$?
   output_dash_user="$(
     unset TARGET_HOME
-    SUDO_USER="-V" AUTOLOGIN_DROPIN="$refuse_autologin" OVERRIDE_FILE="$refuse_override" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
+    SUDO_USER="-V" OVERRIDE_DIR="$refuse_dir" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
   )"
   status_dash_user=$?
   set -e
@@ -2109,13 +2111,13 @@ EOF
     expected_message="Target home directory does not exist"
     set +e
     if [[ "$bad_target" == "missing_home" ]]; then
-      output="$(TARGET_HOME="$refuse_dir/missing_home" AUTOLOGIN_DROPIN="$refuse_autologin" OVERRIDE_FILE="$refuse_override" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+      output="$(TARGET_HOME="$refuse_dir/missing_home" OVERRIDE_DIR="$refuse_dir" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
       status=$?
     else
       expected_message="Refusing to uninstall for root"
       output="$(
         unset TARGET_HOME
-        PATH="$getent_stub_dir:$PATH" SUDO_USER=root AUTOLOGIN_DROPIN="$refuse_autologin" OVERRIDE_FILE="$refuse_override" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
+        PATH="$getent_stub_dir:$PATH" SUDO_USER=root OVERRIDE_DIR="$refuse_dir" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
       )"
       status=$?
     fi
@@ -2134,7 +2136,7 @@ EOF
   set +e
   output_sudo="$(
     unset TARGET_HOME
-    PATH="$getent_stub_dir:$PATH" SUDO_USER="stubuser" AUTOLOGIN_DROPIN="$refuse_autologin" OVERRIDE_FILE="$refuse_override" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
+    PATH="$getent_stub_dir:$PATH" SUDO_USER="stubuser" OVERRIDE_DIR="$refuse_dir" POLKIT_RULE="$refuse_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
   )"
   status_sudo=$?
   set -e
@@ -2195,7 +2197,7 @@ if [[ $can_unshare -eq 0 ]]; then
   skip "uninstall.sh restores symlinked and dangling-symlink dotfiles (unshare -r unavailable)"
 else
   set +e
-  output="$(TARGET_HOME="$symlink_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(TARGET_HOME="$symlink_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   if [[ $status -eq 0 ]] &&
@@ -2233,7 +2235,7 @@ if [[ $can_unshare -eq 0 ]]; then
   skip "repeated install/uninstall cycles leave no ~/.bash_profile or ~/.xinitrc (unshare -r unavailable)"
 else
   set +e
-  output="$(TARGET_HOME="$repeat_install_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(TARGET_HOME="$repeat_install_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   if [[ $status -eq 0 ]] &&
@@ -2256,7 +2258,7 @@ else
     copy_dotfiles "plasma" 2>/dev/null
   )
   set +e
-  out_u1="$(TARGET_HOME="$cycle_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_u1="$(TARGET_HOME="$cycle_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status_u1=$?
   set -e
   (
@@ -2265,7 +2267,7 @@ else
     copy_dotfiles "plasma" 2>/dev/null
   )
   set +e
-  out_u2="$(TARGET_HOME="$cycle_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_u2="$(TARGET_HOME="$cycle_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status_u2=$?
   set -e
   if [[ $status_u1 -eq 0 && $status_u2 -eq 0 ]] &&
@@ -2487,7 +2489,7 @@ else
   dm_home="$TMP_DIR/dm_home"
   mkdir -p "$dm_home"
   set +e
-  output="$(env STUB_SYSTEMCTL_EXIT=1 TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" AUTOLOGIN_DROPIN="$TMP_DIR/dm_autologin" OVERRIDE_FILE="$TMP_DIR/dm_override" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(env STUB_SYSTEMCTL_EXIT=1 TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" OVERRIDE_DIR="$TMP_DIR/dm_getty.d" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   if [[ $status -ne 0 && -f "$DM_STATE_FILE" ]]; then
@@ -2499,7 +2501,7 @@ else
   # Case 41c: a missing first unit does not prevent restoring the remaining units
   : >"$STUB_LOG"
   set +e
-  output="$(env STUB_SYSTEMCTL_FAIL_UNIT=sddm.service TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" AUTOLOGIN_DROPIN="$TMP_DIR/dm_autologin" OVERRIDE_FILE="$TMP_DIR/dm_override" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(env STUB_SYSTEMCTL_FAIL_UNIT=sddm.service TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" OVERRIDE_DIR="$TMP_DIR/dm_getty.d" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
@@ -2518,7 +2520,7 @@ else
     printf '%s\n' sddm.service greetd.service >"$DM_STATE_FILE"
     : >"$STUB_LOG"
     set +e
-    output="$(env STUB_SYSTEMCTL_FAIL_UNIT=sddm.service STUB_SYSTEMCTL_STATE="$dm_gone_state" TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" AUTOLOGIN_DROPIN="$TMP_DIR/dm_autologin" OVERRIDE_FILE="$TMP_DIR/dm_override" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+    output="$(env STUB_SYSTEMCTL_FAIL_UNIT=sddm.service STUB_SYSTEMCTL_STATE="$dm_gone_state" TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" OVERRIDE_DIR="$TMP_DIR/dm_getty.d" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
     status=$?
     set -e
     log_content="$(cat "$STUB_LOG")"
@@ -2534,7 +2536,7 @@ else
 
   : >"$STUB_LOG"
   set +e
-  output="$(env TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" AUTOLOGIN_DROPIN="$TMP_DIR/dm_autologin" OVERRIDE_FILE="$TMP_DIR/dm_override" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(env TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" OVERRIDE_DIR="$TMP_DIR/dm_getty.d" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
@@ -2546,7 +2548,7 @@ else
 
   : >"$STUB_LOG"
   set +e
-  output="$(env TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" AUTOLOGIN_DROPIN="$TMP_DIR/dm_autologin" OVERRIDE_FILE="$TMP_DIR/dm_override" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(env TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" OVERRIDE_DIR="$TMP_DIR/dm_getty.d" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   if [[ $status -eq 0 && ! -s "$STUB_LOG" ]]; then
@@ -3008,7 +3010,7 @@ else
   u_bash_edit1="$(cat "$uninstall_edit_home/.bash_profile")"
   u_xinit_edit1="$(cat "$uninstall_edit_home/.xinitrc")"
   set +e
-  out_u_edit1="$(TARGET_HOME="$uninstall_edit_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_u_edit1="$(TARGET_HOME="$uninstall_edit_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status_u_edit1=$?
   set -e
 
@@ -3020,7 +3022,7 @@ else
   echo "# uninstall bash edit 2" >"$uninstall_edit_home/.bash_profile"
   echo "# uninstall xinit edit 2" >"$uninstall_edit_home/.xinitrc"
   set +e
-  out_u_edit2="$(TARGET_HOME="$uninstall_edit_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_u_edit2="$(TARGET_HOME="$uninstall_edit_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status_u_edit2=$?
   set -e
 
@@ -3138,7 +3140,7 @@ else
   cdpath_u_out="$(
     cd "$TMP_DIR"
     export CDPATH=.
-    TARGET_HOME="$cdpath_home" AUTOLOGIN_DROPIN="$uninstall_autologin" OVERRIDE_FILE="$uninstall_override" POLKIT_RULE="$uninstall_polkit" unshare -r bash relrepo/uninstall.sh 2>&1
+    TARGET_HOME="$cdpath_home" OVERRIDE_DIR="$uninstall_dir" POLKIT_RULE="$uninstall_polkit" unshare -r bash relrepo/uninstall.sh 2>&1
   )"
   cdpath_u_status=$?
   set -e
@@ -3231,7 +3233,7 @@ else
   printf '#%%PAM-1.0\nauth       optional   pam_kwallet5.so\naccount    include      system-local-login\n' >"$LOGIN_FILE"
   configure_pam plasma 2>/dev/null
   set +e
-  output="$(env AUTOLOGIN_DROPIN="$pre_dir/a" OVERRIDE_FILE="$pre_dir/o" POLKIT_RULE="$pre_dir/p" DM_STATE_FILE="$pre_dir/s" TARGET_HOME="$pre_dir/home" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(env OVERRIDE_DIR="$pre_dir/getty.d" POLKIT_RULE="$pre_dir/p" DM_STATE_FILE="$pre_dir/s" TARGET_HOME="$pre_dir/home" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   if [[ $status -eq 0 ]] && grep -qx 'auth       optional   pam_kwallet5.so' "$LOGIN_FILE" &&
@@ -3277,7 +3279,7 @@ EOF
 
   : >"$STUB_LOG"
   set +e
-  out_u_foreign="$(env AUTOLOGIN_DROPIN="$dedicated_dropin" OVERRIDE_FILE="$foreign_override" POLKIT_RULE="$dropin_test_dir/polkit" LOGIN_FILE="$dropin_test_dir/login" DM_STATE_FILE="$dropin_test_dir/dm" TARGET_HOME="$dropin_test_dir/home" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_u_foreign="$(env OVERRIDE_DIR="$dropin_test_dir/getty.d" POLKIT_RULE="$dropin_test_dir/polkit" LOGIN_FILE="$dropin_test_dir/login" DM_STATE_FILE="$dropin_test_dir/dm" TARGET_HOME="$dropin_test_dir/home" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   st_u_foreign=$?
   set -e
   log_u_foreign="$(cat "$STUB_LOG")"
@@ -3293,7 +3295,7 @@ EOF
   env OVERRIDE_DIR="$dropin_test_dir/getty.d" LOGIN_FILE="$dropin_test_dir/login" unshare -r bash "$REPO_ROOT/enable-autologin.sh" "$real_test_user" >/dev/null 2>&1
   : >"$STUB_LOG"
   set +e
-  out_u_both="$(env AUTOLOGIN_DROPIN="$dedicated_dropin" OVERRIDE_FILE="$foreign_override" POLKIT_RULE="$dropin_test_dir/polkit" LOGIN_FILE="$dropin_test_dir/login" DM_STATE_FILE="$dropin_test_dir/dm" TARGET_HOME="$dropin_test_dir/home" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_u_both="$(env OVERRIDE_DIR="$dropin_test_dir/getty.d" POLKIT_RULE="$dropin_test_dir/polkit" LOGIN_FILE="$dropin_test_dir/login" DM_STATE_FILE="$dropin_test_dir/dm" TARGET_HOME="$dropin_test_dir/home" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   st_u_both=$?
   set -e
   log_u_both="$(cat "$STUB_LOG")"
@@ -3313,7 +3315,7 @@ ExecStart=-/usr/bin/agetty --autologin legacyuser --noclear %I $TERM
 EOF
   : >"$STUB_LOG"
   set +e
-  out_u_legacy="$(env AUTOLOGIN_DROPIN="$dedicated_dropin" OVERRIDE_FILE="$foreign_override" POLKIT_RULE="$dropin_test_dir/polkit" LOGIN_FILE="$dropin_test_dir/login" DM_STATE_FILE="$dropin_test_dir/dm" TARGET_HOME="$dropin_test_dir/home" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_u_legacy="$(env OVERRIDE_DIR="$dropin_test_dir/getty.d" POLKIT_RULE="$dropin_test_dir/polkit" LOGIN_FILE="$dropin_test_dir/login" DM_STATE_FILE="$dropin_test_dir/dm" TARGET_HOME="$dropin_test_dir/home" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   st_u_legacy=$?
   set -e
   log_u_legacy="$(cat "$STUB_LOG")"
@@ -3342,7 +3344,7 @@ if [[ $can_unshare -eq 0 ]]; then
 else
   for polkit_run in 1 2; do
     set +e
-    output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" AUTOLOGIN_DROPIN="$polkit_test_dir/autologin" OVERRIDE_FILE="$polkit_test_dir/override" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+    output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" OVERRIDE_DIR="$polkit_test_dir/getty.d" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
     status=$?
     set -e
     if [[ $status -eq 0 && -f "$POLKIT_RULE_DEST" && ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
@@ -3367,7 +3369,7 @@ if [[ $can_unshare -eq 0 ]]; then
   skip "uninstall.sh removes Polkit rule without a prior rule (unshare -r unavailable)"
 else
   set +e
-  output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" AUTOLOGIN_DROPIN="$polkit_test_dir/autologin" OVERRIDE_FILE="$polkit_test_dir/override" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" OVERRIDE_DIR="$polkit_test_dir/getty.d" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   if [[ $status -eq 0 && ! -e "$POLKIT_RULE_DEST" && ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" && ! -e "${POLKIT_RULE_DEST}.lightxdm.absent" ]]; then
@@ -3388,7 +3390,7 @@ if [[ $can_unshare -eq 0 ]]; then
 else
   for polkit_run in 1 2; do
     set +e
-    output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" AUTOLOGIN_DROPIN="$polkit_test_dir/autologin" OVERRIDE_FILE="$polkit_test_dir/override" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+    output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" OVERRIDE_DIR="$polkit_test_dir/getty.d" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
     status=$?
     set -e
     if [[ $status -eq 0 && -L "$POLKIT_RULE_DEST" && ! -e "${POLKIT_RULE_DEST}.lightxdm.bak" && ! -L "${POLKIT_RULE_DEST}.lightxdm.bak" ]] &&
@@ -3412,7 +3414,7 @@ for polkit_link_target in "$POLKIT_RULE_SRC" "$polkit_test_dir/missing.rules"; d
     ln -s "$POLKIT_RULE_SRC" "$POLKIT_RULE_DEST"
     for polkit_run in 1 2; do
       set +e
-      output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" AUTOLOGIN_DROPIN="$polkit_test_dir/autologin" OVERRIDE_FILE="$polkit_test_dir/override" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+      output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" OVERRIDE_DIR="$polkit_test_dir/getty.d" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
       status=$?
       set -e
       if [[ $status -eq 0 && -L "$POLKIT_RULE_DEST" && "$(readlink "$POLKIT_RULE_DEST")" == "$polkit_link_target" ]] &&
@@ -3449,7 +3451,7 @@ for polkit_reinstall in 0 1; do
     continue
   fi
   set +e
-  output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" AUTOLOGIN_DROPIN="$polkit_test_dir/autologin" OVERRIDE_FILE="$polkit_test_dir/override" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" "${polkit_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(env TARGET_HOME="$polkit_test_dir/home" LOGIN_FILE="$polkit_test_dir/login" OVERRIDE_DIR="$polkit_test_dir/getty.d" DM_STATE_FILE="$polkit_test_dir/state" POLKIT_RULE="$POLKIT_RULE_DEST" "${polkit_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   if [[ $status -eq 0 && ! -e "$POLKIT_RULE_DEST" && ! -L "$POLKIT_RULE_DEST" ]] &&
@@ -3528,7 +3530,7 @@ else
   echo "# gnome uninstall edit 1" >>"$gpg_u_home/.gpg-agent-gnome"
   expected_u_gn1="$(cat "$gpg_u_home/.gpg-agent-gnome")"
   set +e
-  out_gpg_u1="$(env TARGET_HOME="$gpg_u_home" LOGIN_FILE="$gpg_uninstall_dir/login" AUTOLOGIN_DROPIN="$gpg_uninstall_dir/autologin" OVERRIDE_FILE="$gpg_uninstall_dir/override" DM_STATE_FILE="$gpg_uninstall_dir/state" POLKIT_RULE="$gpg_uninstall_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_gpg_u1="$(env TARGET_HOME="$gpg_u_home" LOGIN_FILE="$gpg_uninstall_dir/login" OVERRIDE_DIR="$gpg_uninstall_dir/getty.d" DM_STATE_FILE="$gpg_uninstall_dir/state" POLKIT_RULE="$gpg_uninstall_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   st_gpg_u1=$?
   set -e
   if [[ $st_gpg_u1 -eq 0 && -f "$gpg_u_home/.gpg-agent-gnome" ]] &&
@@ -3547,7 +3549,7 @@ else
   )
   echo "# gnome uninstall edit 2" >"$gpg_u_home/.gpg-agent-gnome"
   set +e
-  out_gpg_u2="$(env TARGET_HOME="$gpg_u_home" LOGIN_FILE="$gpg_uninstall_dir/login" AUTOLOGIN_DROPIN="$gpg_uninstall_dir/autologin" OVERRIDE_FILE="$gpg_uninstall_dir/override" DM_STATE_FILE="$gpg_uninstall_dir/state" POLKIT_RULE="$gpg_uninstall_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_gpg_u2="$(env TARGET_HOME="$gpg_u_home" LOGIN_FILE="$gpg_uninstall_dir/login" OVERRIDE_DIR="$gpg_uninstall_dir/getty.d" DM_STATE_FILE="$gpg_uninstall_dir/state" POLKIT_RULE="$gpg_uninstall_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   st_gpg_u2=$?
   set -e
 
@@ -3561,9 +3563,9 @@ else
   )
   echo "# post-install kwallet edit" >"$gpg_bak_home/.gpg-agent-kwallet"
   set +e
-  out_gpg_bak="$(env TARGET_HOME="$gpg_bak_home" LOGIN_FILE="$gpg_uninstall_dir/login" AUTOLOGIN_DROPIN="$gpg_uninstall_dir/autologin" OVERRIDE_FILE="$gpg_uninstall_dir/override" DM_STATE_FILE="$gpg_uninstall_dir/state" POLKIT_RULE="$gpg_uninstall_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_gpg_bak="$(env TARGET_HOME="$gpg_bak_home" LOGIN_FILE="$gpg_uninstall_dir/login" OVERRIDE_DIR="$gpg_uninstall_dir/getty.d" DM_STATE_FILE="$gpg_uninstall_dir/state" POLKIT_RULE="$gpg_uninstall_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   st_gpg_bak=$?
-  out_gpg_bak_twice="$(env TARGET_HOME="$gpg_bak_home" LOGIN_FILE="$gpg_uninstall_dir/login" AUTOLOGIN_DROPIN="$gpg_uninstall_dir/autologin" OVERRIDE_FILE="$gpg_uninstall_dir/override" DM_STATE_FILE="$gpg_uninstall_dir/state" POLKIT_RULE="$gpg_uninstall_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_gpg_bak_twice="$(env TARGET_HOME="$gpg_bak_home" LOGIN_FILE="$gpg_uninstall_dir/login" OVERRIDE_DIR="$gpg_uninstall_dir/getty.d" DM_STATE_FILE="$gpg_uninstall_dir/state" POLKIT_RULE="$gpg_uninstall_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   st_gpg_bak_twice=$?
   set -e
 
@@ -3627,7 +3629,7 @@ if [[ $can_unshare -eq 0 ]]; then
   skip "uninstall.sh removes fresh-home dotfiles and saves edits when .lightxdm.absent exists (unshare -r unavailable)"
 else
   set +e
-  out_abs1="$(env TARGET_HOME="$absent_home1" LOGIN_FILE="$absent_dir/login" AUTOLOGIN_DROPIN="$absent_dir/autologin" OVERRIDE_FILE="$absent_dir/override" DM_STATE_FILE="$absent_dir/state" POLKIT_RULE="$absent_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_abs1="$(env TARGET_HOME="$absent_home1" LOGIN_FILE="$absent_dir/login" OVERRIDE_DIR="$absent_dir/getty.d" DM_STATE_FILE="$absent_dir/state" POLKIT_RULE="$absent_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   st_abs1=$?
   set -e
 
@@ -3650,7 +3652,7 @@ else
   expected_abs2_xinit="$(cat "$absent_home2/.xinitrc")"
   expected_abs2_gn="$(cat "$absent_home2/.gpg-agent-gnome")"
   set +e
-  out_abs2="$(env TARGET_HOME="$absent_home2" LOGIN_FILE="$absent_dir/login" AUTOLOGIN_DROPIN="$absent_dir/autologin" OVERRIDE_FILE="$absent_dir/override" DM_STATE_FILE="$absent_dir/state" POLKIT_RULE="$absent_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_abs2="$(env TARGET_HOME="$absent_home2" LOGIN_FILE="$absent_dir/login" OVERRIDE_DIR="$absent_dir/getty.d" DM_STATE_FILE="$absent_dir/state" POLKIT_RULE="$absent_dir/polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   st_abs2=$?
   set -e
 
@@ -4766,7 +4768,7 @@ else
     printf 'sddm.service\n' >"$ml_dm_state"
     : >"$STUB_LOG"
     set +e
-    output="$(env TARGET_HOME="$ml_home" LOGIN_FILE="$ml_login" AUTOLOGIN_DROPIN="$ml_autologin" OVERRIDE_FILE="$ml_dir/override.conf" POLKIT_RULE="$ml_polkit" DM_STATE_FILE="$ml_dm_state" "${ml_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1)"
+    output="$(env TARGET_HOME="$ml_home" LOGIN_FILE="$ml_login" OVERRIDE_DIR="$ml_dir" POLKIT_RULE="$ml_polkit" DM_STATE_FILE="$ml_dm_state" "${ml_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1)"
     status=$?
     set -e
     log_content="$(cat "$STUB_LOG")"
@@ -5412,7 +5414,7 @@ EOF
     printf 'sddm.service\n' >"$reload_dir/state/disabled-display-managers"
     : >"$STUB_LOG"
     set +e
-    output="$(env STUB_SYSTEMCTL_FAIL_RELOAD=1 SYSTEMD_RUN_DIR="$reload_dir/run" TARGET_HOME="$reload_dir/home" LOGIN_FILE="$reload_dir/login" AUTOLOGIN_DROPIN="$reload_dir/getty.d/lightxdm-autologin.conf" OVERRIDE_FILE="$reload_dir/getty.d/override.conf" POLKIT_RULE="$reload_dir/polkit" DM_STATE_FILE="$reload_dir/state/disabled-display-managers" "${reload_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1)"
+    output="$(env STUB_SYSTEMCTL_FAIL_RELOAD=1 SYSTEMD_RUN_DIR="$reload_dir/run" TARGET_HOME="$reload_dir/home" LOGIN_FILE="$reload_dir/login" OVERRIDE_DIR="$reload_dir/getty.d" POLKIT_RULE="$reload_dir/polkit" DM_STATE_FILE="$reload_dir/state/disabled-display-managers" "${reload_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1)"
     status=$?
     set -e
     log_content="$(cat "$STUB_LOG")"
@@ -5674,8 +5676,7 @@ else
   output="$(
     env TARGET_HOME="$ly_dir/home" \
       LOGIN_FILE="$ly_dir/login" \
-      AUTOLOGIN_DROPIN="$ly_dir/autologin" \
-      OVERRIDE_FILE="$ly_dir/override" \
+      OVERRIDE_DIR="$ly_dir/getty.d" \
       POLKIT_RULE="$ly_dir/polkit" \
       DM_STATE_FILE="$ly_state" \
       "${ly_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
@@ -5941,8 +5942,7 @@ else
   out_ut_custom="$(
     env TARGET_HOME="$ut_custom_home" \
       LOGIN_FILE="$user_tmpl_dir/u_login1" \
-      AUTOLOGIN_DROPIN="$user_tmpl_dir/u_auto1" \
-      OVERRIDE_FILE="$user_tmpl_dir/u_over1" \
+      OVERRIDE_DIR="$user_tmpl_dir/getty.d" \
       POLKIT_RULE="$user_tmpl_dir/u_polkit1" \
       DM_STATE_FILE="$user_tmpl_dir/u_dm1" \
       "${ut_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
@@ -5951,8 +5951,7 @@ else
   out_ut_override="$(
     env TARGET_HOME="$ut_override_home" \
       LOGIN_FILE="$user_tmpl_dir/u_login2" \
-      AUTOLOGIN_DROPIN="$user_tmpl_dir/u_auto2" \
-      OVERRIDE_FILE="$user_tmpl_dir/u_over2" \
+      OVERRIDE_DIR="$user_tmpl_dir/getty.d" \
       POLKIT_RULE="$user_tmpl_dir/u_polkit2" \
       DM_STATE_FILE="$user_tmpl_dir/u_dm2" \
       "${ut_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
@@ -6027,8 +6026,7 @@ else
   output="$(
     env TARGET_HOME="$ut_link_keep_home" \
       LOGIN_FILE="$user_tmpl_dir/u_link_login" \
-      AUTOLOGIN_DROPIN="$user_tmpl_dir/u_link_auto" \
-      OVERRIDE_FILE="$user_tmpl_dir/u_link_over" \
+      OVERRIDE_DIR="$user_tmpl_dir/getty.d" \
       POLKIT_RULE="$user_tmpl_dir/u_link_polkit" \
       DM_STATE_FILE="$user_tmpl_dir/u_link_dm" \
       "${ut_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
@@ -6053,8 +6051,7 @@ else
   output="$(
     env TARGET_HOME="$ut_link_marker_home" \
       LOGIN_FILE="$user_tmpl_dir/u_link_marker_login" \
-      AUTOLOGIN_DROPIN="$user_tmpl_dir/u_link_marker_auto" \
-      OVERRIDE_FILE="$user_tmpl_dir/u_link_marker_over" \
+      OVERRIDE_DIR="$user_tmpl_dir/getty.d" \
       POLKIT_RULE="$user_tmpl_dir/u_link_marker_polkit" \
       DM_STATE_FILE="$user_tmpl_dir/u_link_marker_dm" \
       "${ut_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
@@ -6116,8 +6113,7 @@ for ut_selected_kind in user bundled; do
     output="$(
       env TARGET_HOME="$ut_selected_home" \
         LOGIN_FILE="$ut_selected_dir/u_login" \
-        AUTOLOGIN_DROPIN="$ut_selected_dir/u_auto" \
-        OVERRIDE_FILE="$ut_selected_dir/u_over" \
+        OVERRIDE_DIR="$ut_selected_dir/getty.d" \
         POLKIT_RULE="$ut_selected_dir/u_polkit" \
         DM_STATE_FILE="$ut_selected_dir/u_dm" \
         "${ut_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
@@ -6182,8 +6178,7 @@ for ut_copy_de in xfce dwm; do
     out_u1="$(
       env TARGET_HOME="$ut_copy_home" \
         LOGIN_FILE="$ut_copy_dir/u_login" \
-        AUTOLOGIN_DROPIN="$ut_copy_dir/u_auto" \
-        OVERRIDE_FILE="$ut_copy_dir/u_over" \
+        OVERRIDE_DIR="$ut_copy_dir/getty.d" \
         POLKIT_RULE="$ut_copy_dir/u_polkit" \
         DM_STATE_FILE="$ut_copy_dir/u_dm" \
         "${ut_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
@@ -6192,8 +6187,7 @@ for ut_copy_de in xfce dwm; do
     out_u2="$(
       env TARGET_HOME="$ut_copy_home" \
         LOGIN_FILE="$ut_copy_dir/u_login" \
-        AUTOLOGIN_DROPIN="$ut_copy_dir/u_auto" \
-        OVERRIDE_FILE="$ut_copy_dir/u_over" \
+        OVERRIDE_DIR="$ut_copy_dir/getty.d" \
         POLKIT_RULE="$ut_copy_dir/u_polkit" \
         DM_STATE_FILE="$ut_copy_dir/u_dm" \
         "${ut_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
@@ -6224,8 +6218,7 @@ else
   output="$(
     env TARGET_HOME="$ut_nomarker_home" \
       LOGIN_FILE="$user_tmpl_dir/u_nm_login" \
-      AUTOLOGIN_DROPIN="$user_tmpl_dir/u_nm_auto" \
-      OVERRIDE_FILE="$user_tmpl_dir/u_nm_over" \
+      OVERRIDE_DIR="$user_tmpl_dir/getty.d" \
       POLKIT_RULE="$user_tmpl_dir/u_nm_polkit" \
       DM_STATE_FILE="$user_tmpl_dir/u_nm_dm" \
       "${ut_uninstall_runner[@]}" "$REPO_ROOT/uninstall.sh" 2>&1
@@ -6858,21 +6851,21 @@ if [[ $can_unshare -eq 0 ]]; then
   skip "uninstall.sh --keyring-only (unshare -r unavailable)"
 else
   ko_dir="$TMP_DIR/keyring_only"
-  mkdir -p "$ko_dir/home"
+  mkdir -p "$ko_dir/home" "$ko_dir/getty.d"
   printf '#%%PAM-1.0\nauth       include      system-local-login\n' >"$ko_dir/login.lightxdm.bak"
   cp "$ko_dir/login.lightxdm.bak" "$ko_dir/login"
   cp "$ko_dir/login.lightxdm.bak" "$ko_dir/login.expected"
   printf 'auth       optional   pam_gnome_keyring.so\nsession    optional   pam_gnome_keyring.so auto_start\n' >>"$ko_dir/login"
-  printf '[Service]\n' >"$ko_dir/autologin.conf"
+  printf '[Service]\n' >"$ko_dir/getty.d/lightxdm-autologin.conf"
   printf 'rule\n' >"$ko_dir/polkit.rules"
   printf 'xfce\n' >"$ko_dir/home/.xinitrc"
   printf 'sddm.service\n' >"$ko_dir/dm"
   : >"$STUB_LOG"
   set +e
-  output="$(env -u SUDO_USER TARGET_HOME= LOGIN_FILE="$ko_dir/login" AUTOLOGIN_DROPIN="$ko_dir/autologin.conf" POLKIT_RULE="$ko_dir/polkit.rules" DM_STATE_FILE="$ko_dir/dm" unshare -r bash "$REPO_ROOT/uninstall.sh" --keyring-only 2>&1)"
+  output="$(env -u SUDO_USER TARGET_HOME= LOGIN_FILE="$ko_dir/login" OVERRIDE_DIR="$ko_dir/getty.d" POLKIT_RULE="$ko_dir/polkit.rules" DM_STATE_FILE="$ko_dir/dm" unshare -r bash "$REPO_ROOT/uninstall.sh" --keyring-only 2>&1)"
   status=$?
   set -e
-  if [[ $status -eq 0 && "$output" == *"Done (--keyring-only)"* && -f "$ko_dir/autologin.conf" && -f "$ko_dir/polkit.rules" && -f "$ko_dir/home/.xinitrc" ]] &&
+  if [[ $status -eq 0 && "$output" == *"Done (--keyring-only)"* && -f "$ko_dir/getty.d/lightxdm-autologin.conf" && -f "$ko_dir/polkit.rules" && -f "$ko_dir/home/.xinitrc" ]] &&
     cmp -s "$ko_dir/login" "$ko_dir/login.expected" && [[ "$(cat "$ko_dir/dm")" == sddm.service ]] && ! grep -q systemctl "$STUB_LOG"; then
     pass "uninstall.sh --keyring-only restores PAM and keeps autologin, Polkit, dotfiles and disabled display managers"
   else
@@ -6881,7 +6874,7 @@ else
   # A keyring line lightXDM did not add stays, with a warning
   printf '#%%PAM-1.0\nauth       optional   pam_kwallet5.so\n' >"$ko_dir/login"
   set +e
-  output="$(env -u SUDO_USER TARGET_HOME= LOGIN_FILE="$ko_dir/login" AUTOLOGIN_DROPIN="$ko_dir/autologin.conf" POLKIT_RULE="$ko_dir/polkit.rules" DM_STATE_FILE="$ko_dir/dm" unshare -r bash "$REPO_ROOT/uninstall.sh" --keyring-only 2>&1)"
+  output="$(env -u SUDO_USER TARGET_HOME= LOGIN_FILE="$ko_dir/login" OVERRIDE_DIR="$ko_dir/getty.d" POLKIT_RULE="$ko_dir/polkit.rules" DM_STATE_FILE="$ko_dir/dm" unshare -r bash "$REPO_ROOT/uninstall.sh" --keyring-only 2>&1)"
   status=$?
   set -e
   if [[ $status -eq 0 && "$output" == *"still configures PAM keyring unlock"* ]] && grep -q pam_kwallet5 "$ko_dir/login"; then
@@ -6899,7 +6892,7 @@ else
   mkdir -p "$old_dir/home"
   old_stock='#%PAM-1.0\nauth       include      system-local-login\n'
   old_keyring='auth       optional   pam_gnome_keyring.so auto_start\nsession    optional   pam_gnome_keyring.so auto_start\n'
-  old_uninstall_env=(env -u SUDO_USER TARGET_HOME="$old_dir/home" LOGIN_FILE="$old_dir/login" AUTOLOGIN_DROPIN="$old_dir/autologin.conf" OVERRIDE_FILE="$old_dir/override.conf" POLKIT_RULE="$old_dir/polkit.rules" DM_STATE_FILE="$old_dir/dm" GNOME_SESSION_TYPE_DEST="$old_dir/gnome-session-type.conf")
+  old_uninstall_env=(env -u SUDO_USER TARGET_HOME="$old_dir/home" LOGIN_FILE="$old_dir/login" OVERRIDE_DIR="$old_dir/getty.d" POLKIT_RULE="$old_dir/polkit.rules" DM_STATE_FILE="$old_dir/dm" GNOME_SESSION_TYPE_DEST="$old_dir/gnome-session-type.conf")
   printf %b "$old_stock" >"$old_dir/login.expected"
   for old_mode in full keyring-only; do
     printf %b "$old_stock$old_keyring" >"$old_dir/login"
@@ -6945,7 +6938,7 @@ else
   cp "$ua_dir/getty.d/lightxdm-autologin.conf" "$ua_dir/getty.d/zz-local.conf"
   printf '[Service]\nTTYVTDisallocate=no\n' >"$ua_dir/getty.d/plain.conf"
   set +e
-  output="$(env TARGET_HOME="$ua_dir/home" LOGIN_FILE="$ua_dir/login" AUTOLOGIN_DROPIN="$ua_dir/getty.d/lightxdm-autologin.conf" OVERRIDE_FILE="$ua_dir/getty.d/override.conf" POLKIT_RULE="$ua_dir/polkit" DM_STATE_FILE="$ua_dir/dm" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(env TARGET_HOME="$ua_dir/home" LOGIN_FILE="$ua_dir/login" OVERRIDE_DIR="$ua_dir/getty.d" POLKIT_RULE="$ua_dir/polkit" DM_STATE_FILE="$ua_dir/dm" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   if [[ $status -eq 0 && ! -e "$ua_dir/getty.d/lightxdm-autologin.conf" && "$output" == *"Warning: $ua_dir/getty.d/zz-local.conf still enables autologin."* &&
@@ -6978,7 +6971,7 @@ else
         ;;
     esac
     set +e
-    output="$(env TARGET_HOME="$sa_home" LOGIN_FILE="$sa_dir/$sa_case/login" AUTOLOGIN_DROPIN="$sa_dir/$sa_case/autologin.conf" OVERRIDE_FILE="$sa_dir/$sa_case/override.conf" POLKIT_RULE="$sa_dir/$sa_case/polkit" DM_STATE_FILE="$sa_dir/$sa_case/dm/state" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+    output="$(env TARGET_HOME="$sa_home" LOGIN_FILE="$sa_dir/$sa_case/login" OVERRIDE_DIR="$sa_dir/$sa_case/getty.d" POLKIT_RULE="$sa_dir/$sa_case/polkit" DM_STATE_FILE="$sa_dir/$sa_case/dm/state" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
     status=$?
     set -e
     case "$sa_case" in
@@ -7295,7 +7288,7 @@ else
     set +e
     output="$(env TARGET_HOME="$wl_roundtrip_home" LOGIN_FILE="$wl_switch_dir/login" \
       GNOME_SESSION_TYPE_DEST="$wl_switch_dir/gnome-session-type.conf" \
-      AUTOLOGIN_DROPIN="$wl_switch_dir/autologin.conf" OVERRIDE_FILE="$wl_switch_dir/override.conf" \
+      OVERRIDE_DIR="$wl_switch_dir/getty.d" \
       POLKIT_RULE="$wl_switch_dir/polkit.rules" DM_STATE_FILE="$wl_switch_dir/dm" \
       unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
     status=$?
@@ -7473,15 +7466,15 @@ else
   chmod 755 "$wl_u_foreign/.wayland-session"
 
   set +e
-  out_wlu_bundled="$(env TARGET_HOME="$wl_u_bundled" LOGIN_FILE="$wl_u_dir/l1" AUTOLOGIN_DROPIN="$wl_u_dir/a1" OVERRIDE_FILE="$wl_u_dir/o1" POLKIT_RULE="$wl_u_dir/p1" DM_STATE_FILE="$wl_u_dir/d1" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_wlu_bundled="$(env TARGET_HOME="$wl_u_bundled" LOGIN_FILE="$wl_u_dir/l1" OVERRIDE_DIR="$wl_u_dir/getty.d" POLKIT_RULE="$wl_u_dir/p1" DM_STATE_FILE="$wl_u_dir/d1" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   st_wlu_bundled=$?
-  out_wlu_user="$(env TARGET_HOME="$wl_u_user" LOGIN_FILE="$wl_u_dir/l2" AUTOLOGIN_DROPIN="$wl_u_dir/a2" OVERRIDE_FILE="$wl_u_dir/o2" POLKIT_RULE="$wl_u_dir/p2" DM_STATE_FILE="$wl_u_dir/d2" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_wlu_user="$(env TARGET_HOME="$wl_u_user" LOGIN_FILE="$wl_u_dir/l2" OVERRIDE_DIR="$wl_u_dir/getty.d" POLKIT_RULE="$wl_u_dir/p2" DM_STATE_FILE="$wl_u_dir/d2" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   st_wlu_user=$?
-  out_wlu_bak1="$(env TARGET_HOME="$wl_u_bak" LOGIN_FILE="$wl_u_dir/l3" AUTOLOGIN_DROPIN="$wl_u_dir/a3" OVERRIDE_FILE="$wl_u_dir/o3" POLKIT_RULE="$wl_u_dir/p3" DM_STATE_FILE="$wl_u_dir/d3" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_wlu_bak1="$(env TARGET_HOME="$wl_u_bak" LOGIN_FILE="$wl_u_dir/l3" OVERRIDE_DIR="$wl_u_dir/getty.d" POLKIT_RULE="$wl_u_dir/p3" DM_STATE_FILE="$wl_u_dir/d3" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   st_wlu_bak1=$?
-  out_wlu_bak2="$(env TARGET_HOME="$wl_u_bak" LOGIN_FILE="$wl_u_dir/l3" AUTOLOGIN_DROPIN="$wl_u_dir/a3" OVERRIDE_FILE="$wl_u_dir/o3" POLKIT_RULE="$wl_u_dir/p3" DM_STATE_FILE="$wl_u_dir/d3" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_wlu_bak2="$(env TARGET_HOME="$wl_u_bak" LOGIN_FILE="$wl_u_dir/l3" OVERRIDE_DIR="$wl_u_dir/getty.d" POLKIT_RULE="$wl_u_dir/p3" DM_STATE_FILE="$wl_u_dir/d3" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   st_wlu_bak2=$?
-  out_wlu_foreign="$(env TARGET_HOME="$wl_u_foreign" LOGIN_FILE="$wl_u_dir/l4" AUTOLOGIN_DROPIN="$wl_u_dir/a4" OVERRIDE_FILE="$wl_u_dir/o4" POLKIT_RULE="$wl_u_dir/p4" DM_STATE_FILE="$wl_u_dir/d4" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  out_wlu_foreign="$(env TARGET_HOME="$wl_u_foreign" LOGIN_FILE="$wl_u_dir/l4" OVERRIDE_DIR="$wl_u_dir/getty.d" POLKIT_RULE="$wl_u_dir/p4" DM_STATE_FILE="$wl_u_dir/d4" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   st_wlu_foreign=$?
   set -e
 
@@ -7522,7 +7515,7 @@ else
       fi
       set +e
       output="$(env TARGET_HOME="$wl_uninstall_home" LOGIN_FILE="$TMP_DIR/wl_uninstall_login" \
-        AUTOLOGIN_DROPIN="$TMP_DIR/wl_uninstall_auto" OVERRIDE_FILE="$TMP_DIR/wl_uninstall_override" \
+        OVERRIDE_DIR="$TMP_DIR/wl_uninstall_getty.d" \
         POLKIT_RULE="$TMP_DIR/wl_uninstall_polkit" DM_STATE_FILE="$TMP_DIR/wl_uninstall_dm" \
         unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
       status=$?
@@ -7746,8 +7739,8 @@ else
   # Add keyring lines after the block to verify --keyring-only removes only those.
   configure_pam gnome 2>/dev/null
   gnome_uninstall_env=(env TARGET_HOME="$TMP_DIR/gnome-main-home" LOGIN_FILE="$LOGIN_FILE"
-    GNOME_SESSION_TYPE_DEST="$GNOME_SESSION_TYPE_DEST" AUTOLOGIN_DROPIN="$TMP_DIR/gnome-auto"
-    OVERRIDE_FILE="$TMP_DIR/gnome-override" POLKIT_RULE="$TMP_DIR/gnome-polkit"
+    GNOME_SESSION_TYPE_DEST="$GNOME_SESSION_TYPE_DEST" OVERRIDE_DIR="$TMP_DIR/gnome-getty.d"
+    POLKIT_RULE="$TMP_DIR/gnome-polkit"
     DM_STATE_FILE="$TMP_DIR/gnome-dm/state")
   output="$("${gnome_uninstall_env[@]}" unshare -r bash "$REPO_ROOT/uninstall.sh" --keyring-only 2>&1)"
   if cmp -s "$LOGIN_FILE" "$TMP_DIR/gnome-expected" &&
@@ -7975,7 +7968,7 @@ else
   past_repo="$past_dir/repo"
   rm -rf "$past_dir"
   mkdir -p "$past_repo"
-  cp -- "$REPO_ROOT/install.sh" "$REPO_ROOT/uninstall.sh" "$past_repo/"
+  cp -- "$REPO_ROOT/install.sh" "$REPO_ROOT/uninstall.sh" "$REPO_ROOT/enable-autologin.sh" "$past_repo/"
   cp -r -- "$REPO_ROOT/dotfiles" "$REPO_ROOT/polkit" "$past_repo/"
   past_git=(git -C "$past_repo" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false)
   cp -- "$past_repo/dotfiles/.bash_profile" "$past_dir/old_bash_profile"
@@ -8014,8 +8007,8 @@ else
   else
     past_uninstall() {
       env TARGET_HOME="$1" LOGIN_FILE="$past_dir/login" DM_STATE_FILE="$past_dir/dm-state" \
-        GNOME_SESSION_TYPE_DEST="$past_dir/gnome-session-type.conf" AUTOLOGIN_DROPIN="$past_dir/autologin.conf" \
-        OVERRIDE_FILE="$past_dir/override.conf" POLKIT_RULE="$past_dir/49-nopasswd.rules" \
+        GNOME_SESSION_TYPE_DEST="$past_dir/gnome-session-type.conf" OVERRIDE_DIR="$past_dir/getty.d" \
+        POLKIT_RULE="$past_dir/49-nopasswd.rules" \
         unshare -r bash "$past_repo/uninstall.sh" 2>&1
     }
 

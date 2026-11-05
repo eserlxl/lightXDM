@@ -117,11 +117,17 @@ main() {
 
   if [[ "$1" == "--disable" ]]; then
     echo "Disabling TTY1 autologin..."
-    rm -f "$OVERRIDE_FILE"
+    local removed=0
+    if [[ -f "$OVERRIDE_FILE" || -L "$OVERRIDE_FILE" ]]; then
+      echo "Removing autologin drop-in..."
+      rm -f "$OVERRIDE_FILE"
+      removed=1
+    fi
     if [[ -f "$LEGACY_OVERRIDE_FILE" || -L "$LEGACY_OVERRIDE_FILE" ]]; then
       if is_legacy_autologin_override "$LEGACY_OVERRIDE_FILE"; then
         echo "Removing legacy autologin override..."
         rm -f "$LEGACY_OVERRIDE_FILE"
+        removed=1
       else
         echo "Keeping $LEGACY_OVERRIDE_FILE (not written by lightXDM)."
       fi
@@ -133,6 +139,10 @@ main() {
         echo "Warning: $drop_in still enables autologin."
       fi
     done
+    if [[ $removed -eq 0 ]]; then
+      echo "No lightXDM autologin drop-in found; nothing to remove."
+      exit 0
+    fi
     systemctl daemon-reload || [[ ! -d "${SYSTEMD_RUN_DIR:-/run/systemd/system}" ]]
     echo "Autologin disabled. Change will take effect at the next login or reboot."
     exit 0
