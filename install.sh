@@ -898,7 +898,7 @@ disable_display_managers() {
   local dm dm_unit recorded_units
   local disabled_dms=()
   for dm in "${DM_LIST[@]}"; do
-    if systemctl list-unit-files | grep -q "${dm}.service"; then
+    if grep -q -- "${dm}.service" < <(systemctl list-unit-files); then
       if [[ "$(systemctl is-enabled "${dm}.service" 2>/dev/null || true)" == "enabled" ]]; then
         record_and_disable_unit "${dm}.service" "$preview" || return
         disabled_dms+=("$dm")
@@ -1226,7 +1226,7 @@ EOF
   local real_user
   real_user="${USER:-$(id -un)}"
 
-  if ! id -nG "$real_user" | tr ' ' '\n' | grep -qx wheel; then
+  if ! grep -qx wheel < <(id -nG "$real_user" | tr ' ' '\n'); then
     log "ERROR: User '$real_user' is not in the 'wheel' group. Sudo and polkit rules will not work."
     log "Add the user to the wheel group as root, then log out and back in: su -c 'usermod -aG wheel $real_user'"
     exit 1

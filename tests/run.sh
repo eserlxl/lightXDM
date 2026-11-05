@@ -2536,6 +2536,38 @@ for dm_unit in ly@.service static-dm.service; do
   fi
 done
 
+# A large unit listing must still find its first entry under pipefail.
+dm_pipefail_dir="$TMP_DIR/dm_pipefail_bin"
+dm_pipefail_state="$TMP_DIR/dm_pipefail_state"
+mkdir -p "$dm_pipefail_dir"
+cat >"$dm_pipefail_dir/systemctl" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  list-unit-files)
+    printf 'sddm.service enabled\n'
+    for ((i = 0; i < 10000; i++)); do
+      printf 'other-unit-%05d.service disabled\n' "$i" 2>/dev/null || exit 1
+    done
+    ;;
+  is-enabled) [[ "${2:-}" == sddm.service ]] && echo enabled ;;
+  disable) exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$dm_pipefail_dir/systemctl"
+set +e
+# shellcheck disable=SC2016  # expand inside the child shell
+output="$(env PATH="$dm_pipefail_dir:$PATH" DM_STATE_FILE="$dm_pipefail_state" DISPLAY_MANAGER_LINK="$TMP_DIR/no-dm-link" \
+  bash -c 'set -o pipefail; source "$1/install.sh"; disable_display_managers' bash "$REPO_ROOT" 2>&1)"
+status=$?
+set -e
+if [[ $status -eq 0 && -f "$dm_pipefail_state" ]] &&
+  [[ "$(cat "$dm_pipefail_state")" == sddm.service ]]; then
+  pass "disable_display_managers finds a unit at the start of a large listing under pipefail"
+else
+  fail "disable_display_managers large listing under pipefail (status=$status, output=$output)"
+fi
+
 # Case 41a: rerunning install and finding sddm through both paths adds no duplicates
 ln -sf "$TMP_DIR/sddm.service" "$DISPLAY_MANAGER_LINK"
 : >"$TMP_DIR/sddm.service"
@@ -2666,14 +2698,16 @@ else
   fi
 
   # Case 41c: a missing first unit does not prevent restoring the remaining units
+  dm_partial_state="$TMP_DIR/dm_partial_state"
+  printf '%s\n' sddm.service greetd.service >"$dm_partial_state"
   : >"$STUB_LOG"
   set +e
-  output="$(env STUB_SYSTEMCTL_FAIL_UNIT=sddm.service TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" OVERRIDE_DIR="$TMP_DIR/dm_getty.d" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  output="$(env DM_STATE_FILE="$dm_partial_state" STUB_SYSTEMCTL_FAIL_UNIT=sddm.service TARGET_HOME="$dm_home" LOGIN_FILE="$TMP_DIR/dm_login" OVERRIDE_DIR="$TMP_DIR/dm_getty.d" POLKIT_RULE="$TMP_DIR/dm_polkit" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
   log_content="$(cat "$STUB_LOG")"
-  if [[ $status -ne 0 && -f "$DM_STATE_FILE" ]] &&
-    [[ "$(cat "$DM_STATE_FILE")" == 'sddm.service' ]] &&
+  if [[ $status -ne 0 && -f "$dm_partial_state" ]] &&
+    [[ "$(cat "$dm_partial_state")" == 'sddm.service' ]] &&
     [[ "$log_content" == $'systemctl enable sddm.service\nsystemctl is-enabled sddm.service\nsystemctl enable greetd.service' ]] &&
     [[ "$output" == *"Failed to re-enable display manager(s): sddm.service"* ]]; then
     pass "uninstall.sh restores later display managers and keeps only failed units"
