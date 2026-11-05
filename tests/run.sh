@@ -3082,6 +3082,43 @@ SHIM
   rm -rf "$race_dir"
 fi
 
+# Case 44c: uninstall.sh restores the dotfile backup with mv -T, so a directory/symlink planted at the dotfile name is replaced, not entered
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh does not follow a symlink planted at the dotfile name during backup restore (unshare -r unavailable)"
+else
+  restore_dir="$TMP_DIR/uninstall_restore_race"
+  restore_home="$restore_dir/home"
+  restore_victim="$restore_dir/victim"
+  restore_real_mv="$(command -v mv)"
+  mkdir -p "$restore_home" "$restore_victim" "$restore_dir/shim" "$restore_dir/override"
+  cp "$REPO_ROOT/dotfiles/.bash_profile" "$restore_home/.bash_profile"
+  echo "# original" >"$restore_home/.bash_profile.lightxdm.bak"
+  # The shim plants the symlink at the dotfile name right before the real mv restores the backup.
+  cat >"$restore_dir/shim/mv" <<SHIM
+#!/bin/bash
+last="\${!#}"
+if [[ "\$last" == */.bash_profile ]]; then
+  ln -s "$restore_victim" "\$last"
+fi
+exec "$restore_real_mv" "\$@"
+SHIM
+  chmod +x "$restore_dir/shim/mv"
+  set +e
+  out_restore="$(PATH="$restore_dir/shim:$PATH" TARGET_HOME="$restore_home" OVERRIDE_DIR="$restore_dir/override" POLKIT_RULE="$restore_dir/polkit.rules" \
+    LOGIN_FILE="$restore_dir/login" DM_STATE_FILE="$restore_dir/dm-state" GNOME_SESSION_TYPE_DEST="$restore_dir/gnome-session-type.conf" \
+    unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status_restore=$?
+  set -e
+  if [[ $status_restore -eq 0 && ! -e "$restore_victim/.bash_profile.lightxdm.bak" ]] &&
+    [[ -f "$restore_home/.bash_profile" && ! -L "$restore_home/.bash_profile" ]] &&
+    [[ "$(cat "$restore_home/.bash_profile")" == "# original" ]]; then
+    pass "uninstall.sh restores the dotfile backup over a planted symlink instead of moving it into the target"
+  else
+    fail "uninstall.sh followed a planted dotfile symlink during restore (status=$status_restore, output=$out_restore)"
+  fi
+  rm -rf "$restore_dir"
+fi
+
 # Case 45: main requires exact wheel membership (rejecting wheel-dev) and falls back to id -un when USER is unset
 id_wheel_dev_dir="$TMP_DIR/id_wheel_dev"
 mkdir -p "$id_wheel_dev_dir"
