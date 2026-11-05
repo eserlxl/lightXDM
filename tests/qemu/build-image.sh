@@ -29,6 +29,8 @@ DHCP=yes
 EOF
 ln -sf /run/systemd/resolve/stub-resolv.conf "$root/etc/resolv.conf"
 install -d -m700 "$root/root/.ssh"
+# SSH is key-only: the test user's fixed password must work only at the TTY1 console.
+printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' > "$root/etc/ssh/sshd_config.d/10-lightxdm-test.conf"
 install -m600 /out/id_vm.pub "$root/root/.ssh/authorized_keys"
 # The test user runs install.sh, which calls sudo; inside this throwaway VM it needs no password.
 echo '%wheel ALL=(ALL:ALL) NOPASSWD: ALL' > "$root/etc/sudoers.d/10-wheel"
@@ -36,15 +38,18 @@ chmod 440 "$root/etc/sudoers.d/10-wheel"
 # shellcheck disable=SC2016  # the script expands inside the chroot
 arch-chroot "$root" bash -euc '
   systemctl enable systemd-networkd systemd-resolved sshd
+  # Host keys made now stay fixed in the image, so the harness can pin them.
+  ssh-keygen -A
   useradd -m -G wheel -s /bin/bash tester
   echo "tester:lightxdm-test" | chpasswd
   kver=$(ls /usr/lib/modules)
   # No autodetect: the container would detect the build host, not the VM.
   mkinitcpio -k "$kver" -S autodetect -g /boot/initramfs-vm.img
 '
+cp "$root/etc/ssh/ssh_host_ed25519_key.pub" /out/host_key.pub
 cp "$root/boot/vmlinuz-linux" /out/vmlinuz
 cp "$root/boot/initramfs-vm.img" /out/initramfs.img
 rm -f /out/root.img
 mkfs.ext4 -q -L root -d "$root" /out/root.img 16G
-chown "$uid:$gid" /out/root.img /out/vmlinuz /out/initramfs.img
+chown "$uid:$gid" /out/root.img /out/vmlinuz /out/initramfs.img /out/host_key.pub
 echo rc=0 > /out/BUILD_DONE

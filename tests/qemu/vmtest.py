@@ -52,11 +52,23 @@ def check(name, ok, detail=""):
         f.write("\n".join(results) + "\n")
 
 
+KNOWN_HOSTS = os.path.join(RUN, "known_hosts")
+
+
+def pin_host_key():
+    # The image's host key was made at build time; pinning it means nothing else on the
+    # loopback port can receive the working tree or root commands.
+    with open(os.path.join(VM_DIR, "host_key.pub")) as f:
+        key = " ".join(f.read().split()[:2])
+    with open(KNOWN_HOSTS, "w") as f:
+        f.write(f"[127.0.0.1]:{PORT} {key}\n")
+
+
 def ssh(cmd, timeout=600, stdin=None):
     p = subprocess.run(
-        ["ssh", "-i", os.path.join(VM_DIR, "id_vm"), "-p", str(PORT), "-o", "StrictHostKeyChecking=no",
-         "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=5",
-         "root@127.0.0.1", cmd],
+        ["ssh", "-i", os.path.join(VM_DIR, "id_vm"), "-p", str(PORT), "-o", "StrictHostKeyChecking=yes",
+         "-o", f"UserKnownHostsFile={KNOWN_HOSTS}", "-o", "HostKeyAlgorithms=ssh-ed25519",
+         "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=5", "root@127.0.0.1", cmd],
         input=stdin, capture_output=True, timeout=timeout)
     return p.returncode, p.stdout.decode(errors="replace"), p.stderr.decode(errors="replace")
 
@@ -180,6 +192,7 @@ def session_checks(tag, qmp):
 def main():
     os.makedirs(RUN, exist_ok=True)
     open(RESULT, "w").close()
+    pin_host_key()
     proc = boot()
     kept = False
     try:
