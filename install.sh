@@ -611,7 +611,7 @@ pam_lines_to_remove() {
 
 # Configure PAM for KWallet/GNOME Keyring auto-unlock, or preview the missing lines.
 configure_pam() {
-  local de preview="${2:-0}"
+  local de preview="${2:-0}" keyring="${3:-gnome}"
   de=$1
 
   if [[ $preview -eq 1 ]]; then
@@ -637,7 +637,11 @@ configure_pam() {
   fi
   local module auth_line session_line other_module other_auth_line other_session_line
   case "$de" in
-    plasma)
+    plasma) keyring=kwallet ;;
+    gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) keyring=gnome ;;
+  esac
+  case "$keyring" in
+    kwallet)
       module="pam_kwallet5.so"
       auth_line="$PAM_KWALLET_AUTH"
       session_line="$PAM_KWALLET_SESSION"
@@ -941,7 +945,7 @@ disable_display_managers() {
 
 # Resolve the install using the configuration helpers' read-only preview paths.
 preview_install() {
-  local de="$1" no_packages="$2" no_keyring="$3" autologin="$4" template real_user
+  local de="$1" no_packages="$2" no_keyring="$3" autologin="$4" keyring="${5:-}" template real_user
   template="$(xinitrc_template "$de")" || return 1
   real_user="${USER:-$(id -un)}"
   printf 'Desktop: %s\nTemplate: %s\n' "$de" "$template"
@@ -958,7 +962,7 @@ preview_install() {
   if [[ $no_keyring -eq 1 ]]; then
     printf 'PAM keyring: skipped (--no-keyring)\n'
   else
-    configure_pam "$de" 1 || return 1
+    configure_pam "$de" 1 "$keyring" || return 1
   fi
   configure_gnome_session_type "$de" "$real_user" 1 || return 1
   disable_display_managers 1 || return 1
@@ -980,11 +984,12 @@ main() {
   local non_interactive=0
   local no_packages=0
   local no_keyring=0
+  local keyring=""
   local no_polkit_rule=0
   local autologin=0
   local init_template=0
   local wayland=0
-  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland]] [--no-packages] [--no-keyring] [--autologin]"
+  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland]] [--no-packages] [--keyring <gnome|kwallet>] [--no-keyring] [--autologin]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1003,7 +1008,7 @@ A default run, as your regular user, asks for your sudo password up front (again
 Options:
   --de <id>         configure this desktop: plasma gnome xfce lxqt lxde mate cinnamon budgie i3, or a custom
                     id with a ~/.config/lightxdm/.xinitrc-<id> or .wayland-session-<id> template
-                    (requires --no-packages; uses GNOME Keyring or --no-keyring; refuses if both templates exist)
+                    (requires --no-packages; defaults to GNOME Keyring; refuses if both templates exist)
   --list-packages   print the packages for --de <id> and exit; changes nothing
   --dry-run         preview the resolved install for --de <id> and exit; no sudo or file changes
   --non-interactive require --de and fail instead of prompting for sudo credentials
@@ -1011,6 +1016,8 @@ Options:
                     (any lowercase id: a custom one starts from the i3 template unless --wayland is used)
   --wayland         with --init-template --de <custom-id>, create a minimal Wayland template ending in exec <id>
   --no-packages     skip package installation
+  --keyring <gnome|kwallet> choose the PAM keyring backend for a custom id (requires --no-packages;
+                    cannot combine with --no-keyring or --init-template)
   --no-keyring      skip keyring packages and keyring PAM lines (use with autologin)
   --autologin       also log in on TTY1 without a password (requires --no-keyring)
 
@@ -1037,6 +1044,21 @@ EOF
       --no-keyring)
         no_keyring=1
         shift
+        ;;
+      --keyring)
+        if [[ $# -lt 2 || "$2" == -* ]]; then
+          log "Missing argument for --keyring (valid backends: gnome kwallet)"
+          echo "$usage" >&2
+          exit 1
+        fi
+        case "$2" in
+          gnome | kwallet) keyring="$2" ;;
+          *)
+            log "Invalid keyring backend: $2 (valid backends: gnome kwallet)"
+            exit 1
+            ;;
+        esac
+        shift 2
         ;;
       --no-polkit-rule)
         no_polkit_rule=1
@@ -1085,7 +1107,7 @@ EOF
   fi
 
   if [[ $init_template -eq 1 ]]; then
-    if [[ $list_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || $no_polkit_rule -eq 1 || $autologin -eq 1 ]]; then
+    if [[ $list_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ]]; then
       log "--init-template takes only --de <id> and optional --wayland for custom ids; it creates the template and exits without installing."
       echo "$usage" >&2
       exit 1
@@ -1102,6 +1124,23 @@ EOF
     fi
     init_xinitrc_template "$de" "$wayland"
     exit $?
+  fi
+
+  if [[ -n "$keyring" ]]; then
+    if [[ $no_keyring -eq 1 ]]; then
+      log "--keyring cannot be combined with --no-keyring."
+      exit 1
+    fi
+    if [[ $de_specified -eq 0 ]]; then
+      log "--keyring requires --de <custom-id>."
+      exit 1
+    fi
+    case "$de" in
+      plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3)
+        log "--keyring is only for custom ids; $de already has a keyring backend."
+        exit 1
+        ;;
+    esac
   fi
 
   if [[ $non_interactive -eq 1 && $de_specified -eq 0 ]]; then
@@ -1173,7 +1212,7 @@ EOF
   fi
 
   if [[ $dry_run -eq 1 ]]; then
-    preview_install "$de" "$no_packages" "$no_keyring" "$autologin"
+    preview_install "$de" "$no_packages" "$no_keyring" "$autologin" "$keyring"
     return $?
   fi
 
@@ -1329,7 +1368,7 @@ EOF
     log "Skipping keyring PAM configuration (--no-keyring)."
   else
     install_step="configure_pam"
-    configure_pam "$de"
+    configure_pam "$de" 0 "$keyring"
     completed_steps+=("$install_step")
   fi
   install_step="configure_gnome_session_type"

@@ -342,13 +342,15 @@ fi
 
 # Case 8c: missing keyring modules warn without preventing PAM configuration
 missing_module_ok=1
-for keyring_de in plasma xfce; do
-  if [[ "$keyring_de" == plasma ]]; then
+for keyring_de in plasma xfce custom-kwallet; do
+  if [[ "$keyring_de" == plasma || "$keyring_de" == custom-kwallet ]]; then
+    keyring_backend=kwallet
     keyring_module=pam_kwallet5.so
     keyring_package=kwallet-pam
     keyring_auth="$PAM_KWALLET_AUTH"
     keyring_session="$PAM_KWALLET_SESSION"
   else
+    keyring_backend=gnome
     keyring_module=pam_gnome_keyring.so
     keyring_package=gnome-keyring
     keyring_auth="$PAM_GNOME_KEYRING_AUTH"
@@ -357,7 +359,7 @@ for keyring_de in plasma xfce; do
   rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
   write_stock_login
   mv "$SESSION_ROOT/usr/lib/security/$keyring_module" "$SESSION_ROOT/usr/lib/security/$keyring_module.off"
-  missing_log="$(configure_pam "$keyring_de" 2>&1)"
+  missing_log="$(configure_pam "$keyring_de" 0 "$keyring_backend" 2>&1)"
   if [[ "$missing_log" != *"WARNING: $keyring_module is not installed (/usr/lib/security/$keyring_module); install $keyring_package or the keyring will not unlock at login."* ]] ||
     ! grep -Fxq -- "$keyring_auth" "$LOGIN_FILE" ||
     ! grep -Fxq -- "$keyring_session" "$LOGIN_FILE"; then
@@ -366,7 +368,7 @@ for keyring_de in plasma xfce; do
   mv "$SESSION_ROOT/usr/lib/security/$keyring_module.off" "$SESSION_ROOT/usr/lib/security/$keyring_module"
   rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
   write_stock_login
-  installed_log="$(configure_pam "$keyring_de" 2>&1)"
+  installed_log="$(configure_pam "$keyring_de" 0 "$keyring_backend" 2>&1)"
   if [[ "$installed_log" == *"is not installed"* ]]; then
     missing_module_ok=0
   fi
@@ -6844,7 +6846,73 @@ esac
 EOF
 chmod +x "$dr_bin/sudo" "$dr_bin/systemctl"
 
-for dr_de in xfce plasma gnome custom-x11 custom-wayland; do
+# Invalid backend options must stop before privilege checks or any changes.
+kr_reject_dir="$dr_dir/keyring-validation"
+mkdir -p "$kr_reject_dir/home/.config/lightxdm" "$kr_reject_dir/system"
+printf '#!/bin/bash\nexec i3\n' >"$kr_reject_dir/home/.config/lightxdm/.xinitrc-custom-keyring"
+printf '#%%PAM-1.0\n' >"$kr_reject_dir/system/login"
+cp -a "$kr_reject_dir/home" "$kr_reject_dir/home-before"
+cp -a "$kr_reject_dir/system" "$kr_reject_dir/system-before"
+for kr_reject_case in plasma gnome xfce lxqt lxde mate cinnamon budgie i3 builtin-gnome builtin-list builtin-preview \
+  conflict conflict-reversed no-id missing empty invalid init-template packages; do
+  kr_reject_args=(--de custom-keyring --no-packages)
+  case "$kr_reject_case" in
+    plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3)
+      kr_reject_args=(--de "$kr_reject_case" --no-packages --keyring kwallet)
+      kr_reject_message='--keyring is only for custom ids'
+      ;;
+    builtin-gnome | builtin-list | builtin-preview)
+      kr_reject_args=(--de i3 --keyring gnome)
+      case "$kr_reject_case" in
+        builtin-list) kr_reject_args+=(--list-packages) ;;
+        builtin-preview) kr_reject_args+=(--dry-run) ;;
+      esac
+      kr_reject_message='--keyring is only for custom ids'
+      ;;
+    conflict | conflict-reversed)
+      if [[ "$kr_reject_case" == conflict ]]; then
+        kr_reject_args+=(--keyring kwallet --no-keyring)
+      else
+        kr_reject_args+=(--no-keyring --keyring gnome)
+      fi
+      kr_reject_message='--keyring cannot be combined with --no-keyring'
+      ;;
+    no-id) kr_reject_args=(--no-packages --keyring kwallet); kr_reject_message='--keyring requires --de <custom-id>' ;;
+    missing) kr_reject_args+=(--keyring); kr_reject_message='Missing argument for --keyring' ;;
+    empty) kr_reject_args+=(--keyring ''); kr_reject_message='Invalid keyring backend:' ;;
+    invalid) kr_reject_args+=(--keyring kde); kr_reject_message='Invalid keyring backend: kde' ;;
+    init-template)
+      kr_reject_args=(--init-template --de custom-keyring --keyring kwallet)
+      kr_reject_message='--init-template takes only'
+      ;;
+    packages)
+      kr_reject_args=(--de custom-keyring --keyring kwallet)
+      kr_reject_message='Custom sessions need --no-packages'
+      ;;
+  esac
+  : >"$STUB_LOG"
+  set +e
+  # shellcheck disable=SC2016  # source and override check_root inside the isolated child
+  kr_reject_out="$(env -u SHELLOPTS -u SUDO_USER HOME="$kr_reject_dir/home" USER=testuser \
+    PATH="$dr_bin:$STUB_BIN:$PATH" LOGIN_FILE="$kr_reject_dir/system/login" \
+    DM_STATE_FILE="$kr_reject_dir/system/dm-state" \
+    GNOME_SESSION_TYPE_DEST="$kr_reject_dir/system/gnome-session-type.conf" \
+    DISPLAY_MANAGER_LINK="$kr_reject_dir/system/display-manager.service" \
+    AUTOLOGIN_DROPIN_DIR="$kr_reject_dir/system/getty.d" \
+    bash -c 'source "$1/install.sh"; shift; check_root() { echo check_root >>"$STUB_LOG"; return 91; }; main "$@"' \
+    _ "$REPO_ROOT" "${kr_reject_args[@]}" 2>&1)"
+  kr_reject_status=$?
+  set -e
+  if [[ $kr_reject_status -eq 1 && "$kr_reject_out" == *"$kr_reject_message"* && ! -s "$STUB_LOG" ]] &&
+    diff -r "$kr_reject_dir/home-before" "$kr_reject_dir/home" >/dev/null &&
+    diff -r "$kr_reject_dir/system-before" "$kr_reject_dir/system" >/dev/null; then
+    pass "--keyring rejects $kr_reject_case before privilege checks or changes"
+  else
+    fail "--keyring validation ($kr_reject_case, status=$kr_reject_status, output=$kr_reject_out, log=$(cat "$STUB_LOG"))"
+  fi
+done
+
+for dr_de in xfce plasma gnome custom-x11 custom-wayland custom-gnome custom-kwallet-x11 custom-kwallet-wayland; do
   dr_case="$dr_dir/$dr_de"
   dr_preview_home="$dr_case/preview-home"
   dr_real_home="$dr_case/real-home"
@@ -6854,6 +6922,9 @@ for dr_de in xfce plasma gnome custom-x11 custom-wayland; do
     plasma | gnome) dr_template=".wayland-session-$dr_de" ;;
     custom-x11) dr_flags=(--no-packages) ;;
     custom-wayland) dr_flags=(--no-packages); dr_template=".wayland-session-$dr_de" ;;
+    custom-gnome) dr_flags=(--no-packages --keyring gnome) ;;
+    custom-kwallet-x11) dr_flags=(--no-packages --keyring kwallet) ;;
+    custom-kwallet-wayland) dr_flags=(--no-packages --keyring kwallet); dr_template=".wayland-session-$dr_de" ;;
   esac
   for dr_home in "$dr_preview_home" "$dr_real_home"; do
     mkdir -p "$dr_home/.config/lightxdm"
@@ -6933,6 +7004,28 @@ for dr_de in xfce plasma gnome custom-x11 custom-wayland; do
     else
       fail "--dry-run --de $dr_de PAM/display-manager preview (out=$dr_out)"
     fi
+    case "$dr_de" in
+      custom-*)
+        dr_expected_auth="$PAM_GNOME_KEYRING_AUTH"
+        dr_expected_session="$PAM_GNOME_KEYRING_SESSION"
+        dr_other_module=pam_kwallet5.so
+        if [[ "$dr_de" == custom-kwallet-* ]]; then
+          dr_expected_auth="$PAM_KWALLET_AUTH"
+          dr_expected_session="$PAM_KWALLET_SESSION"
+          dr_other_module=pam_gnome_keyring.so
+        fi
+        if grep -Fxq -- "$dr_expected_auth" <<<"$dr_out" &&
+          grep -Fxq -- "$dr_expected_session" <<<"$dr_out" &&
+          grep -Fxq -- "$dr_expected_auth" "$dr_case/real-system/login" &&
+          grep -Fxq -- "$dr_expected_session" "$dr_case/real-system/login" &&
+          ! grep -Fq -- "$dr_other_module" <<<"$dr_out" &&
+          ! grep -Fq -- "$dr_other_module" "$dr_case/real-system/login"; then
+          pass "$dr_de preview and installation use the expected keyring backend"
+        else
+          fail "$dr_de keyring backend (preview=$dr_out, login=$(cat "$dr_case/real-system/login"))"
+        fi
+        ;;
+    esac
     if [[ "$dr_de" == gnome ]] &&
       ! grep -Fxq 'session    [success=1 default=ignore] pam_succeed_if.so quiet user != testuser' <<<"$dr_out"; then
       fail "GNOME dry-run omits the resolved session-type block"
@@ -6943,43 +7036,56 @@ for dr_de in xfce plasma gnome custom-x11 custom-wayland; do
 done
 
 
-# Preview the exact GNOME rules a Plasma install removes, including the legacy auth rule.
-dr_remove_dir="$dr_dir/removals"
-mkdir -p "$dr_remove_dir/home/.config/lightxdm" "$dr_remove_dir/system"
-cp "$REPO_ROOT/dotfiles/.wayland-session-plasma" "$dr_remove_dir/home/.config/lightxdm/"
-printf '#%%PAM-1.0\n' >"$dr_remove_dir/system/login.lightxdm.bak"
-{
-  cat "$dr_remove_dir/system/login.lightxdm.bak"
-  printf '%s\n' "$PAM_GNOME_KEYRING_AUTH" "$PAM_GNOME_KEYRING_SESSION" \
-    'auth       optional   pam_gnome_keyring.so auto_start'
-} >"$dr_remove_dir/system/login"
-cp "$dr_remove_dir/system/login" "$dr_remove_dir/login-before"
-: >"$STUB_LOG"
-dr_remove_out="$(env -u SHELLOPTS -u SUDO_USER HOME="$dr_remove_dir/home" USER=testuser \
-  PATH="$dr_bin:$STUB_BIN:$PATH" LOGIN_FILE="$dr_remove_dir/system/login" \
-  DM_STATE_FILE="$dr_remove_dir/system/dm-state" AUTOLOGIN_DROPIN_DIR="$dr_remove_dir/system/getty.d" \
-  DISPLAY_MANAGER_LINK="$dr_remove_dir/system/display-manager.service" \
-  bash "$REPO_ROOT/install.sh" --dry-run --de plasma)"
-# shellcheck disable=SC2016  # expand inside the child shell
-if cmp -s "$dr_remove_dir/login-before" "$dr_remove_dir/system/login" &&
-  ! grep -q '^sudo ' "$STUB_LOG" &&
-  env -u SHELLOPTS -u SUDO_USER HOME="$dr_remove_dir/home" USER=testuser \
+# Preview the exact GNOME rules a KWallet install removes, including the legacy auth rule.
+for dr_remove_de in plasma custom-kwallet; do
+  dr_remove_dir="$dr_dir/removals-$dr_remove_de"
+  mkdir -p "$dr_remove_dir/home/.config/lightxdm" "$dr_remove_dir/system"
+  dr_remove_flags=()
+  if [[ "$dr_remove_de" == plasma ]]; then
+    cp "$REPO_ROOT/dotfiles/.wayland-session-plasma" "$dr_remove_dir/home/.config/lightxdm/"
+  else
+    printf '#!/bin/bash\nexec i3\n' >"$dr_remove_dir/home/.config/lightxdm/.xinitrc-$dr_remove_de"
+    dr_remove_flags=(--no-packages --keyring kwallet)
+  fi
+  printf '#%%PAM-1.0\n' >"$dr_remove_dir/system/login.lightxdm.bak"
+  {
+    cat "$dr_remove_dir/system/login.lightxdm.bak"
+    printf '%s\n' "$PAM_GNOME_KEYRING_AUTH" "$PAM_GNOME_KEYRING_SESSION" \
+      'auth       optional   pam_gnome_keyring.so auto_start'
+  } >"$dr_remove_dir/system/login"
+  cp "$dr_remove_dir/system/login" "$dr_remove_dir/login-before"
+  : >"$STUB_LOG"
+  dr_remove_out="$(env -u SHELLOPTS -u SUDO_USER HOME="$dr_remove_dir/home" USER=testuser \
     PATH="$dr_bin:$STUB_BIN:$PATH" LOGIN_FILE="$dr_remove_dir/system/login" \
     DM_STATE_FILE="$dr_remove_dir/system/dm-state" AUTOLOGIN_DROPIN_DIR="$dr_remove_dir/system/getty.d" \
     DISPLAY_MANAGER_LINK="$dr_remove_dir/system/display-manager.service" \
-    bash -c 'source "$1/install.sh"; shift; check_root() { :; }; main "$@"' \
-    _ "$REPO_ROOT" --de plasma >"$dr_remove_dir/install.out" 2>&1; then
-  sed -n 's/^  remove: //p' <<<"$dr_remove_out" | sort >"$dr_remove_dir/preview-removals"
-  comm -23 <(sort "$dr_remove_dir/login-before") <(sort "$dr_remove_dir/system/login") >"$dr_remove_dir/actual-removals"
-  if [[ $(wc -l <"$dr_remove_dir/actual-removals") -eq 3 ]] &&
-    cmp -s "$dr_remove_dir/preview-removals" "$dr_remove_dir/actual-removals"; then
-    pass "Plasma dry-run lists the GNOME keyring rules removed by installation"
+    bash "$REPO_ROOT/install.sh" --dry-run --de "$dr_remove_de" "${dr_remove_flags[@]}")"
+  # shellcheck disable=SC2016  # expand inside the child shell
+  if cmp -s "$dr_remove_dir/login-before" "$dr_remove_dir/system/login" &&
+    ! grep -q '^sudo ' "$STUB_LOG" &&
+    env -u SHELLOPTS -u SUDO_USER HOME="$dr_remove_dir/home" USER=testuser \
+      PATH="$dr_bin:$STUB_BIN:$PATH" LOGIN_FILE="$dr_remove_dir/system/login" \
+      DM_STATE_FILE="$dr_remove_dir/system/dm-state" AUTOLOGIN_DROPIN_DIR="$dr_remove_dir/system/getty.d" \
+      DISPLAY_MANAGER_LINK="$dr_remove_dir/system/display-manager.service" \
+      bash -c 'source "$1/install.sh"; shift; check_root() { :; }; main "$@"' \
+      _ "$REPO_ROOT" --de "$dr_remove_de" "${dr_remove_flags[@]}" >"$dr_remove_dir/install.out" 2>&1; then
+    sed -n 's/^  remove: //p' <<<"$dr_remove_out" | sort >"$dr_remove_dir/preview-removals"
+    comm -23 <(sort "$dr_remove_dir/login-before") <(sort "$dr_remove_dir/system/login") >"$dr_remove_dir/actual-removals"
+    if [[ $(wc -l <"$dr_remove_dir/actual-removals") -eq 3 ]] &&
+      cmp -s "$dr_remove_dir/preview-removals" "$dr_remove_dir/actual-removals" &&
+      grep -Fxq -- "$PAM_KWALLET_AUTH" <<<"$dr_remove_out" &&
+      grep -Fxq -- "$PAM_KWALLET_SESSION" <<<"$dr_remove_out" &&
+      grep -Fxq -- "$PAM_KWALLET_AUTH" "$dr_remove_dir/system/login" &&
+      grep -Fxq -- "$PAM_KWALLET_SESSION" "$dr_remove_dir/system/login" &&
+      ! grep -q pam_gnome_keyring "$dr_remove_dir/system/login"; then
+      pass "$dr_remove_de dry-run lists the GNOME keyring rules removed by the KWallet installation"
+    else
+      fail "$dr_remove_de dry-run PAM removals or KWallet setup differ from installation (preview=$dr_remove_out)"
+    fi
   else
-    fail "Plasma dry-run PAM removals differ from installation (preview=$dr_remove_out)"
+    fail "$dr_remove_de PAM removal preview changed the login file or installation failed"
   fi
-else
-  fail "Plasma PAM removal preview changed the login file or installation failed"
-fi
+done
 
 
 # A legacy backup must produce the same removal preview without being adopted yet.
