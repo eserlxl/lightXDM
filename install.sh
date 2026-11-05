@@ -308,6 +308,7 @@ xinitrc_template() {
 # built-in template, or a custom X11 (from i3) or minimal Wayland template.
 init_xinitrc_template() {
   local id="$1" wayland="${2:-0}" dest="$HOME/.config/lightxdm/.xinitrc-$1"
+  local from_session="${3:-}" exec_line="exec $1" current_desktop="$1"
   case "$id" in
     plasma | gnome | budgie) dest="$HOME/.config/lightxdm/.wayland-session-$id" ;;
   esac
@@ -315,6 +316,18 @@ init_xinitrc_template() {
   if [[ -z "$id" || "$id" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* ]]; then
     log "Invalid desktop id: $id (use lowercase letters, digits, _ and -)"
     return 1
+  fi
+  if [[ -n "$from_session" ]]; then
+    if [[ $wayland -eq 1 ]]; then
+      log "--from-session cannot be combined with --wayland."
+      return 1
+    fi
+    case "$id" in
+      plasma | gnome | budgie | xfce | lxqt | lxde | mate | cinnamon | i3)
+        log "--from-session is only for custom ids; $id has a built-in template."
+        return 1
+        ;;
+    esac
   fi
   if [[ $wayland -eq 1 ]]; then
     case "$id" in
@@ -345,6 +358,79 @@ init_xinitrc_template() {
       fi
       ;;
   esac
+  if [[ -n "$from_session" ]]; then
+    if [[ ! -f "$from_session" || ! -r "$from_session" ]]; then
+      log "Cannot read session entry: $from_session"
+      return 1
+    fi
+    local line key value in_desktop=0 exec_seen=0 desktop_seen=0 exec_value=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line#"${line%%[![:space:]]*}"}"
+      line="${line%"${line##*[![:space:]]}"}"
+      case "$line" in
+        '' | \#*) continue ;;
+        '[Desktop Entry]') in_desktop=1; continue ;;
+        \[*\]) in_desktop=0; continue ;;
+      esac
+      [[ $in_desktop -eq 1 && "$line" == *=* ]] || continue
+      key="${line%%=*}"
+      key="${key%"${key##*[![:space:]]}"}"
+      value="${line#*=}"
+      value="${value#"${value%%[![:space:]]*}"}"
+      case "$key" in
+        Exec)
+          if [[ $exec_seen -eq 1 ]]; then
+            log "Duplicate Exec in [Desktop Entry]: $from_session"
+            return 1
+          fi
+          exec_seen=1
+          exec_value="$value"
+          ;;
+        DesktopNames)
+          if [[ $desktop_seen -eq 1 || -z "${value%%;*}" ]]; then
+            log "Invalid DesktopNames in [Desktop Entry]: $from_session"
+            return 1
+          fi
+          desktop_seen=1
+          current_desktop="${value%%;*}"
+          ;;
+      esac
+    done <"$from_session"
+    # This deliberately supports only literal words and whole double-quoted words.
+    # Never interpret desktop entries as shell code or expand desktop field codes.
+    if [[ $exec_seen -eq 0 || "$exec_value" == *%* || "$exec_value" == *\\* ]]; then
+      log "Missing or unsupported Exec in [Desktop Entry] (field codes and backslash escapes are refused): $from_session"
+      return 1
+    fi
+    local remaining="$exec_value" word quoted_word='^"([^"]*)"([[:space:]]|$)'
+    local exec_args=()
+    while :; do
+      remaining="${remaining#"${remaining%%[![:space:]]*}"}"
+      [[ -n "$remaining" ]] || break
+      if [[ "$remaining" == \"* ]]; then
+        if [[ ! "$remaining" =~ $quoted_word ]]; then
+          log "Unsupported quoting in Exec: $from_session"
+          return 1
+        fi
+        word="${BASH_REMATCH[1]}"
+        remaining="${remaining:${#BASH_REMATCH[0]}}"
+      else
+        word="${remaining%%[[:space:]]*}"
+        remaining="${remaining:${#word}}"
+        if [[ "$word" == *\"* || "$word" == *"'"* ]]; then
+          log "Unsupported quoting in Exec: $from_session"
+          return 1
+        fi
+      fi
+      exec_args+=("$word")
+    done
+    if [[ ${#exec_args[@]} -eq 0 || -z "${exec_args[0]}" ]]; then
+      log "Empty Exec in [Desktop Entry]: $from_session"
+      return 1
+    fi
+    printf -v exec_line '%q ' "${exec_args[@]}"
+    exec_line="exec ${exec_line% }"
+  fi
   mkdir -p "$HOME/.config/lightxdm"
   case "$id" in
     plasma | gnome | budgie)
@@ -374,10 +460,20 @@ fi
 exec $id
 EOF
       else
-        LC_ALL=C sed -e "s/^# \.xinitrc for lightXDM: start i3 /# .xinitrc for lightXDM: start $id /" \
-          -e "s/^\(export [A-Z_]*\)=i3\$/\1=$id/" \
-          -e "s/^# i3 does not update the activation environment itself, unlike full desktops\.\$/# Window managers often do not update the activation environment themselves./" \
-          -e "s/^exec i3\$/exec $id/" "$SCRIPT_DIR/dotfiles/.xinitrc-i3" >"$dest"
+        local template_line
+        while IFS= read -r template_line || [[ -n "$template_line" ]]; do
+          case "$template_line" in
+            '# .xinitrc for lightXDM: start i3 '*)
+              printf '# .xinitrc for lightXDM: start %s%s\n' "$id" "${template_line#'# .xinitrc for lightXDM: start i3'}" ;;
+            'export XDG_CURRENT_DESKTOP=i3') printf 'export XDG_CURRENT_DESKTOP=%q\n' "$current_desktop" ;;
+            # Like the earlier sed rule: every other `export NAME=i3` names the session after the id.
+            'export '*'=i3') printf '%s=%s\n' "${template_line%=i3}" "$id" ;;
+            '# i3 does not update the activation environment itself, unlike full desktops.')
+              printf '%s\n' '# Window managers often do not update the activation environment themselves.' ;;
+            'exec i3') printf '%s\n' "$exec_line" ;;
+            *) printf '%s\n' "$template_line" ;;
+          esac
+        done <"$SCRIPT_DIR/dotfiles/.xinitrc-i3" >"$dest"
       fi
       chmod 755 "$dest"
       log "Created $dest for $id. Check its exec line, then run: bash install.sh --no-packages --de $id"
@@ -994,7 +1090,8 @@ main() {
   local autologin=0
   local init_template=0
   local wayland=0
-  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland]] [--no-packages] [--keyring <gnome|kwallet>] [--no-keyring] [--autologin]"
+  local from_session=""
+  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland|--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--no-keyring] [--autologin]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1019,6 +1116,8 @@ Options:
   --non-interactive require --de and fail instead of prompting for sudo credentials
   --init-template   create ~/.config/lightxdm/.xinitrc-<id> (or .wayland-session-<id> for Plasma, GNOME and Budgie) for --de <id> to edit, and exit
                     (any lowercase id: a custom one starts from the i3 template unless --wayland is used)
+  --from-session <path> with --init-template --de <custom-id>, use an X11 session entry's Exec and first DesktopNames entry
+                    (literal arguments or plain double-quoted words only; no field codes, backslash escapes or --wayland)
   --wayland         with --init-template --de <custom-id>, create a minimal Wayland template ending in exec <id>
   --no-packages     skip package installation
   --keyring <gnome|kwallet> choose the PAM keyring backend for a custom id (requires --no-packages;
@@ -1081,6 +1180,15 @@ EOF
         wayland=1
         shift
         ;;
+      --from-session)
+        if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then
+          log "Missing argument for --from-session"
+          echo "$usage" >&2
+          exit 1
+        fi
+        from_session="$2"
+        shift 2
+        ;;
       --de)
         if [[ $# -lt 2 || "$2" == -* ]]; then
           log "Missing argument for --de (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
@@ -1099,6 +1207,24 @@ EOF
     esac
   done
 
+  if [[ -n "$from_session" ]]; then
+    if [[ $init_template -eq 0 || $de_specified -eq 0 || -z "$de" ]]; then
+      log "--from-session requires --init-template --de <custom-id>."
+      echo "$usage" >&2
+      exit 1
+    fi
+    if [[ $wayland -eq 1 ]]; then
+      log "--from-session cannot be combined with --wayland."
+      exit 1
+    fi
+    case "$de" in
+      plasma | gnome | budgie | xfce | lxqt | lxde | mate | cinnamon | i3)
+        log "--from-session is only for custom ids; $de has a built-in template."
+        exit 1
+        ;;
+    esac
+  fi
+
   if [[ $wayland -eq 1 && $init_template -eq 0 ]]; then
     log "--wayland requires --init-template --de <custom-id>."
     echo "$usage" >&2
@@ -1113,7 +1239,7 @@ EOF
 
   if [[ $init_template -eq 1 ]]; then
     if [[ $list_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ]]; then
-      log "--init-template takes only --de <id> and optional --wayland for custom ids; it creates the template and exits without installing."
+      log "--init-template takes only --de <id> and optional --wayland or --from-session <path> for custom ids; it creates the template and exits without installing."
       echo "$usage" >&2
       exit 1
     fi
@@ -1127,7 +1253,7 @@ EOF
       log "Do not run --init-template as root or with sudo; run it as the user who will log in."
       exit 1
     fi
-    init_xinitrc_template "$de" "$wayland"
+    init_xinitrc_template "$de" "$wayland" "$from_session"
     exit $?
   fi
 

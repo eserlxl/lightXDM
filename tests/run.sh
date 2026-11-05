@@ -1991,7 +1991,7 @@ for flag in --help -h; do
   set -e
   log_content="$(cat "$STUB_LOG")"
   help_options_ok=1
-  for help_word in --de --list-packages --no-packages --no-keyring /etc/pam.d/login "display managers" uninstall.sh; do
+  for help_word in --de --list-packages --no-packages --no-keyring --from-session /etc/pam.d/login "display managers" uninstall.sh; do
     [[ "$output" == *"$help_word"*"$help_word"* || ( "$help_word" != --* && "$output" == *"$help_word"* ) ]] || help_options_ok=0
   done
   if [[ $status -eq 0 && "$output" == *"Usage:"* && $help_options_ok -eq 1 && -z "$log_content" &&
@@ -7529,6 +7529,149 @@ if [[ $status_mixed -eq 1 && "$out_mixed" == *"--init-template takes only --de"*
 else
   fail "install.sh --init-template with --list-packages (status=$status_mixed, output=$out_mixed)"
 fi
+
+# --from-session imports only [Desktop Entry], retaining literal arguments and the first desktop name.
+init_session_home="$TMP_DIR/init_session_home"
+mkdir -p "$init_session_home"
+init_session_entry="$TMP_DIR/import.desktop"
+cat >"$init_session_entry" <<'EOF'
+Exec=outside-group %U
+DesktopNames=Outside;
+[Desktop Entry]
+Name=Openbox
+Exec=openbox-session --config-file "session config" "$HOME;$(false)"
+DesktopNames=Openbox;Ignored;
+[Desktop Action Other]
+Exec=ignored\command %f
+DesktopNames=Ignored;
+EOF
+: >"$STUB_LOG"
+set +e
+output="$(HOME="$init_session_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de imported-wm --from-session "$init_session_entry" 2>&1)"
+status=$?
+set -e
+init_session_template="$init_session_home/.config/lightxdm/.xinitrc-imported-wm"
+# shellcheck disable=SC2016  # these shell characters must remain literal arguments
+if [[ $status -eq 0 && "$(stat -c '%a' "$init_session_template" 2>/dev/null)" == 755 && ! -s "$STUB_LOG" ]] &&
+  grep -Fxq 'exec openbox-session --config-file session\ config \$HOME\;\$\(false\)' "$init_session_template" &&
+  grep -Fxq 'export DESKTOP_SESSION=imported-wm' "$init_session_template" &&
+  grep -Fxq 'export XDG_CURRENT_DESKTOP=Openbox' "$init_session_template" &&
+  grep -Fxq 'export XDG_SESSION_TYPE=x11' "$init_session_template" &&
+  grep -Fq 'dbus-update-activation-environment --systemd' "$init_session_template"; then
+  pass "--from-session imports the session command, literal arguments and first DesktopNames from [Desktop Entry]"
+else
+  fail "init from session (status=$status, output=$output)"
+fi
+
+# Imported templates keep the existing overwrite refusal, including user edits.
+printf '# user edit\n' >>"$init_session_template"
+init_session_before="$(sha256sum < "$init_session_template")"
+set +e
+output="$(HOME="$init_session_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de imported-wm --from-session "$init_session_entry" 2>&1)"
+status=$?
+set -e
+if [[ $status -eq 1 && "$output" == *"already exists"* && ! -s "$STUB_LOG" &&
+  "$(sha256sum < "$init_session_template")" == "$init_session_before" ]]; then
+  pass "--from-session refuses to overwrite an edited template"
+else
+  fail "init from session overwrite refusal (status=$status, output=$output)"
+fi
+
+# DesktopNames is optional; tabs split literal arguments and a final newline is optional.
+printf '[Desktop Entry]\nExec=startfluxbox\t--no-slit' >"$init_session_entry"
+set +e
+output="$(HOME="$init_session_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --from-session "$init_session_entry" --de fluxbox --init-template 2>&1)"
+status=$?
+set -e
+if [[ $status -eq 0 && ! -s "$STUB_LOG" ]] &&
+  grep -Fxq 'exec startfluxbox --no-slit' "$init_session_home/.config/lightxdm/.xinitrc-fluxbox" &&
+  grep -Fxq 'export XDG_CURRENT_DESKTOP=fluxbox' "$init_session_home/.config/lightxdm/.xinitrc-fluxbox"; then
+  pass "--from-session defaults XDG_CURRENT_DESKTOP to the id when DesktopNames is absent"
+else
+  fail "init from session desktop fallback (status=$status, output=$output)"
+fi
+
+# Unsupported entries fail before even creating the template directory.
+for session_bad_case in field-file field-urls backslash single-quote unclosed-quote joined-quote empty missing other-group duplicate; do
+  case "$session_bad_case" in
+    field-file) session_bad_lines=('Exec=startfluxbox %f') ;;
+    field-urls) session_bad_lines=('Exec=startfluxbox "%U"') ;;
+    backslash) session_bad_lines=('Exec=startfluxbox session\ config') ;;
+    single-quote) session_bad_lines=("Exec=startfluxbox 'session config'") ;;
+    unclosed-quote) session_bad_lines=('Exec=startfluxbox "session config') ;;
+    joined-quote) session_bad_lines=('Exec=startfluxbox "session"config') ;;
+    empty) session_bad_lines=('Exec=   ') ;;
+    missing) session_bad_lines=('Name=Missing Exec') ;;
+    other-group) session_bad_lines=('[Desktop Action Other]' 'Exec=startfluxbox') ;;
+    duplicate) session_bad_lines=('Exec=startfluxbox' 'Exec=other-command') ;;
+  esac
+  printf '%s\n' '[Desktop Entry]' "${session_bad_lines[@]}" >"$init_session_entry"
+  session_bad_home="$TMP_DIR/session_bad_$session_bad_case"
+  mkdir -p "$session_bad_home"
+  set +e
+  output="$(HOME="$session_bad_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de rejected --from-session "$init_session_entry" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 1 && "$output" == *Exec* && ! -e "$session_bad_home/.config" && ! -s "$STUB_LOG" ]]; then
+    pass "--from-session refuses $session_bad_case before creating any template"
+  else
+    fail "init from session $session_bad_case refusal (status=$status, output=$output)"
+  fi
+done
+
+# Every invalid option combination must stop before changes or privilege checks.
+printf '%s\n' '[Desktop Entry]' 'Exec=startfluxbox' >"$init_session_entry"
+session_reject_home="$TMP_DIR/session_reject_home"
+mkdir -p "$session_reject_home"
+for session_reject_case in no-init no-id empty-id missing-path empty-path option-path wayland \
+  plasma gnome budgie xfce lxqt lxde mate cinnamon i3 \
+  --list-packages --dry-run --non-interactive --no-packages --no-keyring --keyring --no-polkit-rule --autologin; do
+  session_reject_args=(--init-template --de rejected --from-session "$init_session_entry")
+  session_reject_message='--init-template takes only'
+  case "$session_reject_case" in
+    no-init)
+      session_reject_args=(--de rejected --from-session "$init_session_entry")
+      session_reject_message='--from-session requires --init-template --de'
+      ;;
+    no-id)
+      session_reject_args=(--init-template --from-session "$init_session_entry")
+      session_reject_message='--from-session requires --init-template --de'
+      ;;
+    empty-id)
+      session_reject_args=(--init-template --de '' --from-session "$init_session_entry")
+      session_reject_message='--from-session requires --init-template --de'
+      ;;
+    missing-path | empty-path | option-path)
+      session_reject_args=(--init-template --de rejected --from-session)
+      case "$session_reject_case" in
+        empty-path) session_reject_args+=('') ;;
+        option-path) session_reject_args+=(--wayland) ;;
+      esac
+      session_reject_message='Missing argument for --from-session'
+      ;;
+    wayland)
+      session_reject_args+=(--wayland)
+      session_reject_message='--from-session cannot be combined with --wayland'
+      ;;
+    plasma | gnome | budgie | xfce | lxqt | lxde | mate | cinnamon | i3)
+      session_reject_args=(--init-template --de "$session_reject_case" --from-session "$init_session_entry")
+      session_reject_message='--from-session is only for custom ids'
+      ;;
+    --keyring) session_reject_args+=(--keyring kwallet) ;;
+    --autologin) session_reject_args+=(--autologin --no-keyring) ;;
+    *) session_reject_args+=("$session_reject_case") ;;
+  esac
+  set +e
+  output="$(HOME="$session_reject_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" "${session_reject_args[@]}" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 1 && "$output" == *"$session_reject_message"* &&
+    ! -e "$session_reject_home/.config" && ! -s "$STUB_LOG" ]]; then
+    pass "--from-session refuses $session_reject_case before changes"
+  else
+    fail "from-session option refusal ($session_reject_case, status=$status, output=$output)"
+  fi
+done
 
 # --init-template --wayland creates an exact minimal custom template, mode 755.
 init_wayland_home="$TMP_DIR/init_wayland_home"
