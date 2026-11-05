@@ -70,7 +70,7 @@ Desktop environments such as KDE Plasma, GNOME, LXQt, LXDE, MATE, Cinnamon, and 
 
 * Plug in a USB drive — it should mount without password prompts.
 * Click shutdown or suspend from the KDE application launcher — it should work instantly.
-* Use `journalctl -b | grep polkit` to confirm rule loading.
+* Run `pkcheck --action-id org.freedesktop.login1.power-off --process $$` in a terminal of the session — it exits 0 without printing anything when power-off is allowed.
 
 ---
 
