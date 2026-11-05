@@ -8315,6 +8315,25 @@ for gnome_edited_de in gnome xfce; do
   else
     fail "$gnome_edited_de edited GNOME block (status=$status, output=$output)"
   fi
+  : >"$STUB_LOG"
+  set +e
+  output="$(env -u SHELLOPTS -u SUDO_USER HOME="$dr_preview_home" USER="$gnome_user" \
+    PATH="$dr_bin:$PATH" LOGIN_FILE="$LOGIN_FILE" \
+    GNOME_SESSION_TYPE_DEST="$GNOME_SESSION_TYPE_DEST" DM_STATE_FILE="$TMP_DIR/gnome-preview-dm" \
+    DISPLAY_MANAGER_LINK="$TMP_DIR/gnome-preview-display-manager" \
+    AUTOLOGIN_DROPIN_DIR="$TMP_DIR/gnome-preview-getty.d" \
+    bash "$REPO_ROOT/install.sh" --dry-run --de "$gnome_edited_de" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -ne 0 && "$output" == *"ERROR: Edited lightXDM GNOME block in $LOGIN_FILE; remove lightXDM's GNOME lines by hand or restore ${LOGIN_FILE}.lightxdm.bak."* ]] &&
+    ! grep -q '^sudo ' "$STUB_LOG" &&
+    cmp -s "$LOGIN_FILE" "$TMP_DIR/gnome-edited-login" &&
+    cmp -s "$GNOME_SESSION_TYPE_DEST" "$TMP_DIR/gnome-edited-config" &&
+    cmp -s "${LOGIN_FILE}.lightxdm.bak" "$TMP_DIR/gnome-edited-backup"; then
+    pass "$gnome_edited_de dry-run refuses an edited GNOME block without sudo or file changes"
+  else
+    fail "$gnome_edited_de dry-run edited GNOME block (status=$status, output=$output)"
+  fi
 done
 cp "$TMP_DIR/gnome-original" "$LOGIN_FILE"
 rm -f "$GNOME_SESSION_TYPE_DEST"

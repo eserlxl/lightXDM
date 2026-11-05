@@ -740,7 +740,24 @@ configure_gnome_session_type() (
   if [[ -f "$LOGIN_FILE" && ( $preview -eq 0 || -r "$LOGIN_FILE" ) ]] && grep -Fxq -- "$marker" "$LOGIN_FILE"; then
     has_block=1
   fi
+  validate_gnome_block() {
+    if [[ $has_block -eq 1 ]]; then
+      local check_line check_tty check_user check_env
+      while IFS= read -r check_line || [[ -n "$check_line" ]]; do
+        [[ "$check_line" == "$marker" ]] || continue
+        if ! {
+          IFS= read -r check_tty && [[ "$check_tty" == "$tty_gate" ]] &&
+            IFS= read -r check_user && [[ "$check_user" =~ $user_gate_re ]] &&
+            { IFS= read -r check_env || [[ -n "$check_env" ]]; } && [[ "$check_env" == "$env_line" ]]
+        }; then
+          log "ERROR: Edited lightXDM GNOME block in $LOGIN_FILE; remove lightXDM's GNOME lines by hand or restore ${LOGIN_FILE}.lightxdm.bak."
+          return 1
+        fi
+      done < "$LOGIN_FILE"
+    fi
+  }
   if [[ $preview -eq 1 ]]; then
+    validate_gnome_block || return 1
     printf 'GNOME session type: %s\n' "$LOGIN_FILE"
     if [[ ! -r "$LOGIN_FILE" ]]; then
       printf '  existing block: unknown (needs root)\n'
@@ -771,20 +788,7 @@ configure_gnome_session_type() (
     log "ERROR: $LOGIN_FILE is missing; lightXDM will not create it."
     return 1
   fi
-  if [[ $has_block -eq 1 ]]; then
-    local check_line check_tty check_user check_env
-    while IFS= read -r check_line || [[ -n "$check_line" ]]; do
-      [[ "$check_line" == "$marker" ]] || continue
-      if ! {
-        IFS= read -r check_tty && [[ "$check_tty" == "$tty_gate" ]] &&
-          IFS= read -r check_user && [[ "$check_user" =~ $user_gate_re ]] &&
-          { IFS= read -r check_env || [[ -n "$check_env" ]]; } && [[ "$check_env" == "$env_line" ]]
-      }; then
-        log "ERROR: Edited lightXDM GNOME block in $LOGIN_FILE; remove lightXDM's GNOME lines by hand or restore ${LOGIN_FILE}.lightxdm.bak."
-        return 1
-      fi
-    done < "$LOGIN_FILE"
-  fi
+  validate_gnome_block || return 1
   adopt_legacy_pam_backup || return 1
 
   local tmp line newline inserted=0 block_line=0
