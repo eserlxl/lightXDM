@@ -454,6 +454,9 @@ copy_dotfiles() {
   template="$(xinitrc_template "$de")"
   base="${template##*/}"
   if [[ -f "$template" ]]; then
+    if [[ "$template" == "$user_home/.config/lightxdm/"* ]]; then
+      log "Using your session template $template"
+    fi
     if [[ "$base" == .wayland-session-* ]]; then
       local wayland_templates=("$SCRIPT_DIR"/dotfiles/.wayland-session-*)
       if [[ -e "$user_home/.wayland-session.lightxdm.bak" || -L "$user_home/.wayland-session.lightxdm.bak" ||

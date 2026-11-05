@@ -7433,6 +7433,34 @@ for wl_previous_session in foreign plasma gnome budgie; do
   fi
 done
 
+# Case 77g: copy_dotfiles logs when a user session template overrides the bundled one
+user_tmpl_log_dir="$TMP_DIR/user_template_log"
+user_tmpl_custom_home="$user_tmpl_log_dir/home_custom"
+mkdir -p "$user_tmpl_custom_home/.config/lightxdm"
+cp "$REPO_ROOT/dotfiles/.xinitrc-xfce" "$user_tmpl_custom_home/.config/lightxdm/.xinitrc-xfce"
+echo "# user template modification" >>"$user_tmpl_custom_home/.config/lightxdm/.xinitrc-xfce"
+
+user_tmpl_custom_out="$(
+  export HOME="$user_tmpl_custom_home"
+  export USER="testuser"
+  copy_dotfiles "xfce" 2>&1
+)"
+
+user_tmpl_fresh_home="$user_tmpl_log_dir/home_fresh"
+mkdir -p "$user_tmpl_fresh_home"
+user_tmpl_fresh_out="$(
+  export HOME="$user_tmpl_fresh_home"
+  export USER="testuser"
+  copy_dotfiles "xfce" 2>&1
+)"
+
+if [[ "$user_tmpl_custom_out" == *"Using your session template $user_tmpl_custom_home/.config/lightxdm/.xinitrc-xfce"* &&
+  "$user_tmpl_fresh_out" != *"Using your session template"* ]]; then
+  pass "copy_dotfiles logs when using a user session template and stays quiet for bundled templates"
+else
+  fail "copy_dotfiles session template logging (custom_out=$user_tmpl_custom_out, fresh_out=$user_tmpl_fresh_out)"
+fi
+
 # Case 78: main refuses when Wayland template is ~/.wayland-session itself, and backs up a symlink ~/.wayland-session pointing to the template
 wl_self_dir="$TMP_DIR/wayland_self_guard"
 wl_self_home="$wl_self_dir/home_self"
