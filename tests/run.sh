@@ -2634,6 +2634,33 @@ for startup_template_case in last-exec missing-session no-exec expression path l
   fi
 done
 
+# An unreadable custom template must stop before changing session dotfiles.
+if [[ $EUID -eq 0 ]]; then
+  skip "main stops before changing dotfiles when a custom template is unreadable"
+else
+  unreadable_home="$TMP_DIR/unreadable_template_home"
+  unreadable_bin="$TMP_DIR/unreadable_template_bin"
+  mkdir -p "$unreadable_home/.config/lightxdm" "$unreadable_bin"
+  unreadable_template="$unreadable_home/.config/lightxdm/.xinitrc-dwm"
+  sed 's/^exec i3$/exec lightxdm-test-session/' "$REPO_ROOT/dotfiles/.xinitrc-i3" >"$unreadable_template"
+  cp "$STUB_BIN/chown" "$unreadable_bin/lightxdm-test-session"
+  printf 'existing profile\n' >"$unreadable_home/.bash_profile"
+  cp "$unreadable_home/.bash_profile" "$TMP_DIR/unreadable_profile_original"
+  chmod 000 "$unreadable_template"
+  set +e
+  output="$(HOME="$unreadable_home" run_main_with_stubs "$unreadable_bin:$sudo_pw_dir" --no-packages --de dwm 2>&1)"
+  status=$?
+  set -e
+  chmod 600 "$unreadable_template"
+  if [[ $status -ne 0 && "$output" == *"Cannot read $unreadable_template; fix its permissions and re-run."* &&
+    ! -e "$unreadable_home/.bash_profile.lightxdm.bak" && ! -e "$unreadable_home/.gpg-agent-gnome" ]] &&
+    cmp -s "$unreadable_home/.bash_profile" "$TMP_DIR/unreadable_profile_original"; then
+    pass "main stops before changing dotfiles when a custom template is unreadable"
+  else
+    fail "main unreadable custom template (status=$status, output=$output)"
+  fi
+fi
+
 # Case 43a: custom session templates work with --no-packages in either option order
 custom_template_dir="$TMP_DIR/custom_template"
 mkdir -p "$custom_template_dir"

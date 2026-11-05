@@ -354,6 +354,10 @@ EOF
 # Check startup commands before changing the user's session configuration
 check_session_commands() {
   local template="$1" base="${1##*/}" line session_line="" session_command package
+  if [[ ! -r "$template" ]]; then
+    log "Cannot read $template; fix its permissions and re-run."
+    return 1
+  fi
   if [[ "$base" == .wayland-session-* ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
       case "$line" in
