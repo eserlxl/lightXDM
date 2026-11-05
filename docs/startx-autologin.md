@@ -104,3 +104,5 @@ To restore desktop auto-start at the next TTY1 login:
 ```sh
 rm ~/.config/lightxdm/no-autostart
 ```
+
+To keep the session's output, create `~/.config/lightxdm/session-journal` with `mkdir -p ~/.config/lightxdm && touch ~/.config/lightxdm/session-journal`. From the next TTY1 login, the session's stdout and stderr go to the journal; read them with `journalctl -b -t lightxdm` (or `journalctl -b -1 -t lightxdm` after a reboot). This needs `systemd-cat` (part of systemd). Remove the file to send the output to the terminal again.

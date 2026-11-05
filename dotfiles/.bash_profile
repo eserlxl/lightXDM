@@ -38,6 +38,9 @@ if [[ $- == *i* && -z $DISPLAY && -z $WAYLAND_DISPLAY && $(tty) == /dev/tty1 && 
                 printf '%s\n' "${_lightxdm_recent[@]}" "$_lightxdm_now" 2>/dev/null > "$_lightxdm_attempts" || :
             fi
             unset _lightxdm_attempts _lightxdm_now _lightxdm_lines _lightxdm_recent _lightxdm_ts
+            if [[ -e $HOME/.config/lightxdm/session-journal ]] && command -v systemd-cat >/dev/null 2>&1; then
+                exec systemd-cat -t lightxdm "$_lightxdm_launcher"
+            fi
             exec "$_lightxdm_launcher"
         fi
     else

@@ -4680,7 +4680,7 @@ EOF
   done
 done
 
-# Case 58: .bash_profile starts X only on interactive tty1 outside X without the marker, before .bashrc
+# Case 58: .bash_profile starts X only on interactive tty1 outside X without no-autostart, before .bashrc
 profile_home="$TMP_DIR/bash_profile/home"
 profile_bin="$TMP_DIR/bash_profile/bin"
 mkdir -p "$profile_home/.local/bin" "$profile_home/.config/lightxdm" "$profile_bin"
@@ -4696,15 +4696,30 @@ cat >"$profile_bin/startx" <<'EOF'
 #!/bin/bash
 printf 'startx|%s\n' "$PATH" >>"$HOME/profile.log"
 EOF
-chmod +x "$profile_bin/tty" "$profile_bin/startx"
+cat >"$profile_bin/systemd-cat" <<'EOF'
+#!/bin/bash
+printf 'systemd-cat|%s\n' "$*" >>"$HOME/profile.log"
+[[ $# -ge 3 && $1 == -t && $2 == lightxdm ]] || exit 1
+shift 2
+exec "$@"
+EOF
+chmod +x "$profile_bin/tty" "$profile_bin/startx" "$profile_bin/systemd-cat"
 
-for profile_case in interactive no-autostart autostart-restored non-interactive display tty2 missing-startx; do
+for profile_case in interactive journal journal-no-systemd-cat no-autostart autostart-restored non-interactive display tty2 missing-startx; do
   profile_flags=(-i)
   profile_display=''
   profile_tty=/dev/tty1
   profile_path="$profile_bin:/usr/bin:/bin"
-  rm -f "$profile_home/.config/lightxdm/no-autostart" "$profile_home/.local/state/lightxdm/startx-attempts"
+  rm -f "$profile_home/.config/lightxdm/no-autostart" "$profile_home/.config/lightxdm/session-journal" \
+    "$profile_home/.local/state/lightxdm/startx-attempts"
   case "$profile_case" in
+    journal) touch "$profile_home/.config/lightxdm/session-journal" ;;
+    journal-no-systemd-cat)
+      touch "$profile_home/.config/lightxdm/session-journal"
+      mv "$profile_bin/systemd-cat" "$profile_bin/systemd-cat.off"
+      # Exclude any host systemd-cat; tty and startx use only Bash builtins.
+      profile_path="$profile_bin"
+      ;;
     no-autostart) touch "$profile_home/.config/lightxdm/no-autostart" ;;
     non-interactive) profile_flags=() ;;
     display) profile_display=:0 ;;
@@ -4729,15 +4744,22 @@ for profile_case in interactive no-autostart autostart-restored non-interactive 
   actual_log="$(cat "$profile_home/profile.log")"
   expected_log="bashrc|$profile_home/.local/bin:$profile_path"
   expected_output=after
-  if [[ "$profile_case" == interactive || "$profile_case" == autostart-restored ]]; then
+  if [[ "$profile_case" == interactive || "$profile_case" == autostart-restored ||
+    "$profile_case" == journal || "$profile_case" == journal-no-systemd-cat ]]; then
     expected_log="startx|$profile_home/.local/bin:$profile_path"
     expected_output=''
+  fi
+  if [[ "$profile_case" == journal ]]; then
+    expected_log=$'systemd-cat|-t lightxdm startx\n'"$expected_log"
   fi
   if [[ $status -eq 0 && "$actual_log" == "$expected_log" && ! -s "$profile_home/profile.err" &&
     "$output" == "$expected_output" ]]; then
     pass ".bash_profile $profile_case preserves PATH and startup order"
   else
     fail ".bash_profile $profile_case (status=$status, log=$actual_log, expected=$expected_log, output=$output, stderr=$(cat "$profile_home/profile.err"))"
+  fi
+  if [[ "$profile_case" == journal-no-systemd-cat ]]; then
+    mv "$profile_bin/systemd-cat.off" "$profile_bin/systemd-cat"
   fi
 done
 mv "$profile_bin/startx.off" "$profile_bin/startx"

@@ -409,6 +409,9 @@ def main():
         login1_ok = reboot_and_login(qmp, "login1")
         if login1_ok:
             session_checks("login1", qmp)
+            rc, out, err = ssh("journalctl -b -q -t lightxdm -o cat")
+            check("login1: default session has no lightxdm journal entries", rc == 0 and not out.strip(),
+                  (out + err).strip())
         if os.environ.get("LIGHTXDM_VM_KEEP") == "1":
             kept = True
             log(f"LIGHTXDM_VM_KEEP=1: VM left running (qemu pid {proc.pid})")
@@ -418,8 +421,14 @@ def main():
                 lock_keyring("relogin")
             if login1_ok and relogin(qmp, "relogin"):
                 session_checks("relogin", qmp)
-        elif login1_ok and reboot_and_login(qmp, "login2"):
-            session_checks("login2", qmp)
+        elif login1_ok:
+            rc, out, err = ssh(f"su - {USER} -c 'mkdir -p ~/.config/lightxdm && : > ~/.config/lightxdm/session-journal'")
+            check("session-journal marker created as the user", rc == 0, (out + err).strip())
+            if reboot_and_login(qmp, "login2"):
+                session_checks("login2", qmp)
+                rc, out, err = ssh("journalctl -b -q -t lightxdm -o cat")
+                check("login2: session output appears in the lightxdm journal", rc == 0 and bool(out.strip()),
+                      (out + err).strip())
         if MODE == "lightdm":
             rc, out, err = ssh(f"su - {USER} -c 'cd ~/lightXDM && sudo bash uninstall.sh' 2>&1", timeout=600)
             with open(os.path.join(RUN, "uninstall.log"), "w") as f:
