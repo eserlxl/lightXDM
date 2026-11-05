@@ -333,7 +333,9 @@ run_main_with_stubs() (
     fi
   }
   install_packages() { stub_install_step install_packages "$@"; }
-  copy_dotfiles() { stub_install_step copy_dotfiles "$1"; }
+  if [[ "${STUB_REAL_COPY_DOTFILES:-0}" != 1 ]]; then
+    copy_dotfiles() { stub_install_step copy_dotfiles "$1"; }
+  fi
   configure_pam() { stub_install_step configure_pam "$1"; }
   configure_gnome_session_type() {
     if [[ "${STUB_RECORD_GNOME_STEP:-0}" == 1 || "${STUB_FAIL_STEP:-}" == configure_gnome_session_type ]]; then
@@ -2633,6 +2635,151 @@ for custom_rejection in packages missing-template invalid-id empty-id; do
     pass "main rejects a custom session ($custom_rejection)"
   else
     fail "main custom session rejection ($custom_rejection, status=$status, log=$log_content, output=$output)"
+  fi
+done
+
+# Custom Wayland sessions select the user template and install it through main.
+custom_wayland_home="$TMP_DIR/custom_wayland_home"
+custom_wayland_bin="$TMP_DIR/custom_wayland_bin"
+mkdir -p "$custom_wayland_home/.config/lightxdm" "$custom_wayland_bin"
+custom_wayland_template="$custom_wayland_home/.config/lightxdm/.wayland-session-sway"
+printf '#!/bin/bash\nexec sway\n' >"$custom_wayland_template"
+cp "$STUB_BIN/chown" "$custom_wayland_bin/sway"
+resolved_custom_wayland="$(HOME="$custom_wayland_home" xinitrc_template sway)"
+if [[ "$resolved_custom_wayland" == "$custom_wayland_template" ]]; then
+  pass "xinitrc_template selects a user's custom Wayland template"
+else
+  fail "xinitrc_template custom Wayland (resolved=$resolved_custom_wayland)"
+fi
+
+: >"$STUB_LOG"
+set +e
+output="$(HOME="$custom_wayland_home" run_main_with_stubs "$sudo_pw_dir" --de sway 2>&1)"
+status=$?
+set -e
+if [[ $status -eq 1 && "$output" == *"Custom sessions need --no-packages"* &&
+  ! -s "$STUB_LOG" && ! -e "$custom_wayland_home/.bash_profile" && ! -e "$custom_wayland_home/.wayland-session" ]]; then
+  pass "custom Wayland sessions require --no-packages before any installation step"
+else
+  fail "custom Wayland without --no-packages (status=$status, log=$(cat "$STUB_LOG"), output=$output)"
+fi
+
+: >"$STUB_LOG"
+set +e
+output="$(
+  HOME="$custom_wayland_home" PATH="$custom_wayland_bin:$PATH" STUB_REAL_COPY_DOTFILES=1 \
+    run_main_with_stubs "$sudo_pw_dir" --no-packages --de sway 2>&1
+)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 0 && "$output" == *"lightXDM install complete!"* &&
+  "$log_content" == $'sudo -v\nconfigure_pam sway\ninstall_polkit_rule\ndisable_display_managers' &&
+  -f "$custom_wayland_home/.wayland-session" && ! -L "$custom_wayland_home/.wayland-session" &&
+  "$(stat -c '%a' "$custom_wayland_home/.wayland-session")" == 755 &&
+  ! -e "$custom_wayland_home/.xinitrc" && -f "$custom_wayland_home/.gpg-agent-gnome" ]] &&
+  cmp -s "$custom_wayland_template" "$custom_wayland_home/.wayland-session"; then
+  pass "main --no-packages --de sway installs ~/.wayland-session and the GNOME helper without ~/.xinitrc"
+else
+  fail "main custom Wayland install (status=$status, log=$log_content, output=$output)"
+fi
+
+# With an isolated PATH, a missing sway must stop before dotfiles or other configuration.
+missing_sway_home="$TMP_DIR/missing_sway_home"
+mkdir -p "$missing_sway_home/.config/lightxdm"
+cp "$custom_wayland_template" "$missing_sway_home/.config/lightxdm/.wayland-session-sway"
+: >"$STUB_LOG"
+set +e
+output="$(
+  HOME="$missing_sway_home" PATH="$startup_bin" STUB_REAL_COPY_DOTFILES=1 \
+    run_main_with_stubs "$sudo_pw_dir" --no-packages --de sway 2>&1
+)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 1 && "$log_content" == "sudo -v" &&
+  "$output" == *"Missing command: sway. Install your session and ensure its command is on PATH"* &&
+  "$output" == *"Install stopped during check_session_commands; already done: none"* &&
+  "$output" != *"lightXDM install complete!"* &&
+  ! -e "$missing_sway_home/.bash_profile" && ! -e "$missing_sway_home/.wayland-session" &&
+  ! -e "$missing_sway_home/.xinitrc" && ! -e "$missing_sway_home/.gpg-agent-gnome" ]]; then
+  pass "main stops before configuration when a custom Wayland command is missing"
+else
+  fail "main missing sway (status=$status, log=$log_content, output=$output)"
+fi
+
+# Refuse ambiguity before sudo or any install step, preserving both templates and existing files.
+conflict_wayland_home="$TMP_DIR/conflict_wayland_home"
+mkdir -p "$conflict_wayland_home/.config/lightxdm"
+conflict_wayland_template="$conflict_wayland_home/.config/lightxdm/.wayland-session-sway"
+conflict_x11_template="$conflict_wayland_home/.config/lightxdm/.xinitrc-sway"
+cp "$custom_wayland_template" "$conflict_wayland_template"
+printf '#!/bin/bash\nexec dwm\n' >"$conflict_x11_template"
+printf '# original profile\n' >"$conflict_wayland_home/.bash_profile"
+conflict_before="$(
+  sha256sum "$conflict_wayland_template" "$conflict_x11_template" "$conflict_wayland_home/.bash_profile"
+)"
+for conflict_args in with-no-packages without-no-packages; do
+  custom_args=(--de sway)
+  if [[ "$conflict_args" == with-no-packages ]]; then
+    custom_args+=(--no-packages)
+  fi
+  : >"$STUB_LOG"
+  set +e
+  output="$(HOME="$conflict_wayland_home" STUB_REAL_COPY_DOTFILES=1 run_main_with_stubs "$sudo_pw_dir" "${custom_args[@]}" 2>&1)"
+  status=$?
+  set -e
+  conflict_after="$(
+    sha256sum "$conflict_wayland_template" "$conflict_x11_template" "$conflict_wayland_home/.bash_profile"
+  )"
+  if [[ $status -eq 1 && ! -s "$STUB_LOG" && "$conflict_before" == "$conflict_after" &&
+    "$output" == *"$conflict_wayland_template"* && "$output" == *"$conflict_x11_template"* &&
+    "$output" == *"keep only one session template"* &&
+    ! -e "$conflict_wayland_home/.wayland-session" && ! -e "$conflict_wayland_home/.xinitrc" &&
+    ! -e "$conflict_wayland_home/.gpg-agent-gnome" && ! -e "$conflict_wayland_home/.bash_profile.lightxdm.bak" ]]; then
+    pass "main refuses both custom session templates without changes ($conflict_args)"
+  else
+    fail "main custom template conflict ($conflict_args, status=$status, log=$(cat "$STUB_LOG"), output=$output)"
+  fi
+done
+
+# Wayland checks the last literal exec command and includes ~/.local/bin on PATH.
+wayland_command_home="$TMP_DIR/wayland_command_home"
+mkdir -p "$wayland_command_home/.local/bin"
+cp "$STUB_BIN/chown" "$wayland_command_home/.local/bin/lightxdm-local-session"
+wayland_command_template="$wayland_command_home/.wayland-session-custom"
+for wayland_command_case in last-exec missing-command local-bin no-exec expression; do
+  expected_wayland_status=0
+  wayland_command_path="$PATH"
+  case "$wayland_command_case" in
+    last-exec) wayland_command_content=$'exec lightxdm-missing-session\nexec dwm --example' ;;
+    missing-command)
+      wayland_command_content=$'exec dwm\nexec lightxdm-missing-session --example'
+      expected_wayland_status=1
+      ;;
+    local-bin)
+      wayland_command_content='exec lightxdm-local-session'
+      # No startx on this PATH; the compositor is found only through ~/.local/bin.
+      wayland_command_path="$custom_wayland_bin"
+      ;;
+    no-exec) wayland_command_content='# No exec line' ;;
+    expression)
+      # shellcheck disable=SC2016  # literal shell expression, never evaluated
+      wayland_command_content='exec "$SESSION"'
+      ;;
+  esac
+  printf '%s' "$wayland_command_content" >"$wayland_command_template"
+  set +e
+  output="$(HOME="$wayland_command_home" PATH="$wayland_command_path" check_session_commands "$wayland_command_template" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq $expected_wayland_status ]] && {
+    [[ $status -eq 0 && -z "$output" ]] ||
+    [[ $status -eq 1 && "$output" == *"Missing command: lightxdm-missing-session. Install your session"* ]];
+  }; then
+    pass "check_session_commands checks a custom Wayland template ($wayland_command_case)"
+  else
+    fail "custom Wayland command ($wayland_command_case, status=$status, output=$output)"
   fi
 done
 
@@ -6632,6 +6779,80 @@ if [[ $status_mixed -eq 1 && "$out_mixed" == *"--init-template takes only --de"*
 else
   fail "install.sh --init-template with --list-packages (status=$status_mixed, output=$out_mixed)"
 fi
+
+# --init-template --wayland creates an exact minimal custom template, mode 755.
+init_wayland_home="$TMP_DIR/init_wayland_home"
+mkdir -p "$init_wayland_home"
+expected_sway_template="$TMP_DIR/expected_wayland_sway"
+cat >"$expected_sway_template" <<'EOF'
+#!/bin/bash
+# Wayland session for lightXDM: start sway
+
+export DESKTOP_SESSION=sway
+export XDG_CURRENT_DESKTOP=sway
+export XDG_SESSION_TYPE=wayland
+
+if [[ -f ~/.gpg-agent-gnome ]]; then
+  source ~/.gpg-agent-gnome
+fi
+
+exec sway
+EOF
+: >"$STUB_LOG"
+set +e
+output="$(HOME="$init_wayland_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --wayland --de sway 2>&1)"
+status=$?
+set -e
+init_sway="$init_wayland_home/.config/lightxdm/.wayland-session-sway"
+if [[ $status -eq 0 && "$output" == *"Created $init_sway"* &&
+  "$output" == *"bash install.sh --no-packages --de sway"* && ! -s "$STUB_LOG" &&
+  "$(stat -c '%a' "$init_sway")" == 755 && ! -e "$init_wayland_home/.config/lightxdm/.xinitrc-sway" ]] &&
+  cmp -s "$init_sway" "$expected_sway_template"; then
+  pass "--init-template --wayland --de sway creates the exact minimal template (755) without sudo"
+else
+  fail "init custom Wayland template (status=$status, output=$output)"
+fi
+
+printf '# user edit\n' >>"$init_sway"
+init_sway_before="$(sha256sum < "$init_sway")"
+set +e
+output="$(HOME="$init_wayland_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --wayland --de sway 2>&1)"
+status=$?
+set -e
+if [[ $status -eq 1 && "$output" == *"$init_sway already exists"* && ! -s "$STUB_LOG" &&
+  "$(sha256sum < "$init_sway")" == "$init_sway_before" && "$(stat -c '%a' "$init_sway")" == 755 ]]; then
+  pass "--init-template --wayland refuses to overwrite an existing edited template"
+else
+  fail "init custom Wayland overwrite refusal (status=$status, output=$output)"
+fi
+
+# --wayland requires template initialization and a custom id; refuse before writing.
+reject_wayland_home="$TMP_DIR/reject_wayland_home"
+mkdir -p "$reject_wayland_home"
+: >"$STUB_LOG"
+set +e
+output="$(HOME="$reject_wayland_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --wayland --no-packages --de sway 2>&1)"
+status=$?
+set -e
+if [[ $status -eq 1 && "$output" == *"--wayland requires --init-template"* && "$output" == *"Usage:"* &&
+  ! -s "$STUB_LOG" && ! -e "$reject_wayland_home/.config" ]]; then
+  pass "--wayland without --init-template prints usage before any changes"
+else
+  fail "--wayland without --init-template (status=$status, output=$output)"
+fi
+
+for reject_wayland_de in plasma gnome budgie xfce lxqt lxde mate cinnamon i3; do
+  set +e
+  output="$(HOME="$reject_wayland_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --wayland --de "$reject_wayland_de" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 1 && "$output" == *"--wayland is only for custom ids"* &&
+    ! -s "$STUB_LOG" && ! -e "$reject_wayland_home/.config" ]]; then
+    pass "--init-template --wayland refuses the built-in $reject_wayland_de id before writing"
+  else
+    fail "--init-template --wayland built-in rejection ($reject_wayland_de, status=$status, output=$output)"
+  fi
+done
 
 # uninstall.sh --keyring-only removes lightXDM's PAM lines and leaves everything else in place
 if [[ $can_unshare -eq 0 ]]; then

@@ -23,6 +23,9 @@ bash install.sh
 # bash install.sh --no-keyring --autologin --de i3
 # Or create ~/.config/lightxdm/.xinitrc-<id> to customize before installing (no sudo):
 # bash install.sh --init-template --de i3
+# Or create a custom Wayland template, edit it, then configure an installed compositor:
+# bash install.sh --init-template --wayland --de sway
+# bash install.sh --no-packages --de sway
 # Every script has a read-only help: bash install.sh --help, bash uninstall.sh --help, bash enable-autologin.sh --help
 ```
 
@@ -37,14 +40,29 @@ Plasma, GNOME, and Budgie start on Wayland through `~/.wayland-session`, which `
   - polkit-kde-agent for Plasma
   - polkit-gnome for all other supported DEs.
 - Pass `--list-packages --de <id>` (`plasma`, `gnome`, `budgie`, `xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, or `i3`; combinable with `--no-keyring`) to print the package set `install.sh` would install, one per line, and exit 0 without needing `sudo` or changing anything—useful to review the packages beforehand or install them yourself before running `--no-packages`.
-- Pass `--no-packages` (optionally with `--de <id>`) to skip all package installation when you already have the required packages. Before changing dotfiles, PAM, Polkit or display managers, the installer checks the session commands (also after package installation): for an X11 desktop, `startx` and the plain command name in the selected template's last `exec ` line must be on PATH; for Plasma, GNOME, and Budgie, every absolute path on the last `exec` line of the Wayland template must be executable (no `startx` needed). Templates without a simple `exec` command skip the session-command check. Dotfiles, PAM, Polkit and display manager setup then run. For a custom session, create `~/.config/lightxdm/.xinitrc-<id>` and run, for example, `bash install.sh --no-packages --de dwm` with `~/.config/lightxdm/.xinitrc-dwm` present (`~/.config/lightxdm/.xinitrc-<id>` also overrides any bundled `dotfiles/.xinitrc-<id>` template). `bash install.sh --init-template --de <id>` creates that file for you without sudo: a copy of the bundled template for a built-in id, or the i3 template with the session id and `exec` command swapped for a custom one; it never overwrites an existing file. For Plasma, GNOME, and Budgie it creates `~/.config/lightxdm/.wayland-session-<id>` instead, which also overrides the bundled Wayland template. Custom ids must match `^[a-z0-9_][a-z0-9_-]*$` (no leading hyphen) and use GNOME Keyring for PAM (pass `--no-keyring` to skip keyring PAM setup); install the required packages yourself.
+- Pass `--no-packages` (optionally with `--de <id>`) to skip all package installation when you already have the required packages. Before changing dotfiles, PAM, Polkit or display managers, the installer checks session commands (also after package installation). For X11, `startx` and the plain command name in the selected template's last `exec ` line must be on PATH. For Wayland, every absolute path on that line must be executable, and a plain command name such as `sway` must be on PATH; `startx` is not required. Both command-name checks include `~/.local/bin` on PATH. Templates without a simple `exec` command skip the template-command check. Dotfiles, PAM, Polkit and display manager setup then run.
+- Pass `--init-template --de <id>` without sudo to create an editable template: a copy of the bundled template for a built-in id, or the i3 X11 template with the session id and `exec` command swapped for a custom one. It creates `~/.config/lightxdm/.xinitrc-<id>`, or `.wayland-session-<id>` for Plasma, GNOME, and Budgie. These user templates override the bundled templates. For a custom Wayland compositor, add `--wayland` as described below. Existing files are never overwritten.
 - Pass `--no-keyring` (combinable with `--de <id>`, `--list-packages`, `--no-packages`, and `--no-polkit-rule`) to omit `gnome-keyring` and `kwallet-pam` from package installation and skip `/etc/pam.d/login` keyring setup. GNOME's separate session-type PAM block is still installed.
 - Pass `--no-polkit-rule` (combinable with `--de <id>`, `--no-packages`, and `--no-keyring`) to skip installing `/etc/polkit-1/rules.d/49-nopasswd.rules` and keep your existing Polkit authorization policy.
-- Copies dotfiles to your home: `.bash_profile`, the session template as `~/.xinitrc` (X11 desktops) or `~/.wayland-session` (Plasma, GNOME, and Budgie), and the gpg-agent helper (`~/.gpg-agent-kwallet` for Plasma, `~/.gpg-agent-gnome` otherwise).
+- Copies dotfiles to your home: `.bash_profile`, the session template as `~/.xinitrc` (X11 sessions) or `~/.wayland-session` (Wayland sessions, including custom compositors), and the gpg-agent helper (`~/.gpg-agent-kwallet` for Plasma, `~/.gpg-agent-gnome` otherwise).
 - Appends PAM lines to `/etc/pam.d/login` (unless `--no-keyring` is passed; after a one-time backup at `/etc/pam.d/login.lightxdm.bak`; `uninstall.sh` removes the lines lightXDM added and restores the backup when nothing else changed, otherwise it keeps your other edits and leaves the backup for review) for keyring auto-unlock: KWallet (`pam_kwallet5.so`) for Plasma, GNOME Keyring (`pam_gnome_keyring.so`) for the other desktops.
 - For GNOME only, inserts a [session-type PAM block](#gnome-session-requirements) before the first session line, including with `--no-keyring`.
 - Configures Polkit (unless `--no-polkit-rule` is passed) for passwordless power-off, reboot, suspend, and hibernate for local active `wheel` users on seat0, while USB mounting uses `udisks2` defaults.
 - Your DE will start automatically on TTY1 after login—no need to run 'startx'.
+
+### Custom sessions
+
+Custom ids use `~/.config/lightxdm/.wayland-session-<id>` when present, otherwise `~/.config/lightxdm/.xinitrc-<id>` for X11. If both exist, the installer refuses before making changes and names both files; keep only the template you want. Custom ids must contain only lowercase ASCII letters, digits, `_` and `-`, with no leading hyphen. They require `--no-packages`: install the compositor or window manager and its dependencies yourself. PAM uses GNOME Keyring, or pass `--no-keyring` to skip keyring setup.
+
+For example, create and edit a Sway template, then install it:
+
+```sh
+bash install.sh --init-template --wayland --de sway
+# Edit ~/.config/lightxdm/.wayland-session-sway as needed.
+bash install.sh --no-packages --de sway
+```
+
+`--wayland` is accepted only with `--init-template` and a custom id. Plasma, GNOME, and Budgie already have Wayland templates; the six built-in X11 ids also refuse this flag. The generated file has mode `755`, exports `DESKTOP_SESSION=<id>`, `XDG_CURRENT_DESKTOP=<id>` and `XDG_SESSION_TYPE=wayland`, sources `~/.gpg-agent-gnome` when present, and ends with `exec <id>`. Edit that line if the executable differs from your id, for example `exec Hyprland` for a `hyprland` id. A missing plain command stops installation before configuration. For custom X11, use `--init-template --de dwm` and then `--no-packages --de dwm` instead.
 
 ### Session files and backups
 

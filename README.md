@@ -37,7 +37,8 @@ You need Arch Linux (or a derivative) with systemd, and a user in the `wheel` gr
 - `--list-packages --de <id>`: print the packages it would install, change nothing
 - `--no-packages`, `--no-keyring`, `--no-polkit-rule`: skip packages, PAM keyring setup, or the Polkit rule
 - `--no-keyring --autologin`: log in on TTY1 without a password, in the same run
-- `--init-template --de <id>`: create `~/.config/lightxdm/.xinitrc-<id>` (or `.wayland-session-<id>` for Wayland desktops) to edit first (no sudo)
+- `--init-template --de <id>`: create `~/.config/lightxdm/.xinitrc-<id>` (or `.wayland-session-<id>` for Plasma, GNOME, and Budgie) to edit first (no sudo)
+- `--init-template --wayland --de sway`: create `~/.config/lightxdm/.wayland-session-sway` for a custom Wayland compositor; edit it, then install with `--no-packages --de sway`. `--wayland` requires `--init-template` and a custom id; keep only one X11 or Wayland template per custom id.
 
 `bash install.sh --help` lists every option. [docs/installation.md](docs/installation.md) explains each step and option in full.
 
@@ -50,7 +51,7 @@ You need Arch Linux (or a derivative) with systemd, and a user in the `wheel` gr
 | Budgie (`budgie`) | Wayland, through `~/.wayland-session` | GNOME Keyring | polkit-gnome |
 | XFCE, LXDE, MATE, Cinnamon, i3 | `startx`, through `~/.xinitrc` | GNOME Keyring | polkit-gnome |
 | LXQt (`lxqt`) | `startx`, through `~/.xinitrc` | GNOME Keyring | lxqt-policykit |
-| Your own window manager | `startx`, with your template and `--no-packages` | GNOME Keyring (or `--no-keyring`) | your choice |
+| Your own window manager | X11 or Wayland, with your template and `--no-packages` | GNOME Keyring (or `--no-keyring`) | your choice |
 
 Wayland desktops do not install `xorg-server` or `xorg-xinit`. See [GNOME session requirements](docs/installation.md#gnome-session-requirements) before choosing GNOME.
 
@@ -75,7 +76,7 @@ What the installer changes outside your home, so nothing comes as a surprise:
 - For **GNOME only**, it inserts a PAM block before the first session line in `/etc/pam.d/login`, using `/etc/lightxdm/gnome-session-type.conf` to register a Wayland session **only for the installing user on TTY1**, including with `--no-keyring`. Installing another desktop or running `uninstall.sh` removes the block and config; `uninstall.sh --keyring-only` keeps them. See [why GNOME needs this](docs/installation.md#gnome-session-requirements).
 - It installs `/etc/polkit-1/rules.d/49-nopasswd.rules`, which lets local active `wheel` users on seat0 **power off, reboot, suspend and hibernate without a password**, unless you pass `--no-polkit-rule`.
 
-In your home it replaces `~/.bash_profile` and `~/.xinitrc` (or `~/.wayland-session` for Plasma, GNOME, and Budgie), keeping your copies as `*.lightxdm.bak`. An executable `~/.wayland-session` takes precedence over `startx`; installing an X11 desktop moves it aside and removes it, and uninstall restores it. See [session backups](docs/installation.md#session-files-and-backups). If your desktop keeps crashing, TTY1 auto-start pauses itself; see [Recovery](docs/startx-autologin.md#recovery).
+In your home it replaces `~/.bash_profile` and `~/.xinitrc` (or `~/.wayland-session` for Wayland sessions), keeping your copies as `*.lightxdm.bak`. An executable `~/.wayland-session` takes precedence over `startx`; installing an X11 desktop moves it aside and removes it, and uninstall restores it. See [session backups](docs/installation.md#session-files-and-backups). If your desktop keeps crashing, TTY1 auto-start pauses itself; see [Recovery](docs/startx-autologin.md#recovery).
 
 ## Uninstall
 

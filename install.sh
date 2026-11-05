@@ -263,6 +263,17 @@ xinitrc_template() {
   local name=".xinitrc-$1"
   case "$1" in
     plasma | gnome | budgie) name=".wayland-session-$1" ;;
+    xfce | lxqt | lxde | mate | cinnamon | i3) ;;
+    *)
+      local wayland_template="$HOME/.config/lightxdm/.wayland-session-$1"
+      if [[ -f "$wayland_template" ]]; then
+        if [[ -f "$HOME/.config/lightxdm/$name" ]]; then
+          log "Both $HOME/.config/lightxdm/$name and $wayland_template exist; keep only one session template for $1."
+          return 1
+        fi
+        name=".wayland-session-$1"
+      fi
+      ;;
   esac
   if [[ -f "$HOME/.config/lightxdm/$name" ]]; then
     printf '%s\n' "$HOME/.config/lightxdm/$name"
@@ -272,9 +283,9 @@ xinitrc_template() {
 }
 
 # Create ~/.config/lightxdm/.xinitrc-<id> (or .wayland-session-<id>) to edit: a copy of the
-# built-in template, or for a custom window manager the i3 template with its session id and command swapped.
+# built-in template, or a custom X11 (from i3) or minimal Wayland template.
 init_xinitrc_template() {
-  local id="$1" dest="$HOME/.config/lightxdm/.xinitrc-$1"
+  local id="$1" wayland="${2:-0}" dest="$HOME/.config/lightxdm/.xinitrc-$1"
   case "$id" in
     plasma | gnome | budgie) dest="$HOME/.config/lightxdm/.wayland-session-$id" ;;
   esac
@@ -282,6 +293,19 @@ init_xinitrc_template() {
   if [[ -z "$id" || "$id" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* ]]; then
     log "Invalid desktop id: $id (use lowercase letters, digits, _ and -)"
     return 1
+  fi
+  if [[ $wayland -eq 1 ]]; then
+    case "$id" in
+      plasma | gnome | budgie)
+        log "--wayland is only for custom ids; $id already has a Wayland template. Use --init-template --de $id."
+        return 1
+        ;;
+      xfce | lxqt | lxde | mate | cinnamon | i3)
+        log "--wayland is only for custom ids; $id uses an X11 template."
+        return 1
+        ;;
+    esac
+    dest="$HOME/.config/lightxdm/.wayland-session-$id"
   fi
   if [[ -e "$dest" || -L "$dest" ]]; then
     log "$dest already exists; edit it, or remove it to start over."
@@ -300,10 +324,27 @@ init_xinitrc_template() {
       log "Created $dest from the built-in $id template. Edit it, then run: bash install.sh --de $id"
       ;;
     *)
-      LC_ALL=C sed -e "s/^# \.xinitrc for lightXDM: start i3 /# .xinitrc for lightXDM: start $id /" \
-        -e "s/^\(export [A-Z_]*\)=i3\$/\1=$id/" \
-        -e "s/^# i3 does not update the activation environment itself, unlike full desktops\.\$/# Window managers often do not update the activation environment themselves./" \
-        -e "s/^exec i3\$/exec $id/" "$SCRIPT_DIR/dotfiles/.xinitrc-i3" >"$dest"
+      if [[ $wayland -eq 1 ]]; then
+        cat >"$dest" <<EOF
+#!/bin/bash
+# Wayland session for lightXDM: start $id
+
+export DESKTOP_SESSION=$id
+export XDG_CURRENT_DESKTOP=$id
+export XDG_SESSION_TYPE=wayland
+
+if [[ -f ~/.gpg-agent-gnome ]]; then
+  source ~/.gpg-agent-gnome
+fi
+
+exec $id
+EOF
+      else
+        LC_ALL=C sed -e "s/^# \.xinitrc for lightXDM: start i3 /# .xinitrc for lightXDM: start $id /" \
+          -e "s/^\(export [A-Z_]*\)=i3\$/\1=$id/" \
+          -e "s/^# i3 does not update the activation environment itself, unlike full desktops\.\$/# Window managers often do not update the activation environment themselves./" \
+          -e "s/^exec i3\$/exec $id/" "$SCRIPT_DIR/dotfiles/.xinitrc-i3" >"$dest"
+      fi
       chmod 755 "$dest"
       log "Created $dest for $id. Check its exec line, then run: bash install.sh --no-packages --de $id"
       ;;
@@ -342,6 +383,13 @@ check_session_commands() {
         return 1
       fi
     done
+    read -r session_command _ <<< "$session_line"
+    # As with X11 templates, inspect only a literal command name.
+    if [[ "$session_command" =~ ^[[:alnum:]_][[:alnum:]_.+-]*$ ]] &&
+      ! PATH="$HOME/.local/bin:$PATH" command -v "$session_command" >/dev/null 2>&1; then
+      log "Missing command: $session_command. Install your session and ensure its command is on PATH, then re-run."
+      return 1
+    fi
     return 0
   fi
 
@@ -689,7 +737,8 @@ main() {
   local no_polkit_rule=0
   local autologin=0
   local init_template=0
-  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--init-template] [--no-packages] [--no-keyring] [--no-polkit-rule] [--autologin]"
+  local wayland=0
+  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--init-template [--wayland]] [--no-packages] [--no-keyring] [--no-polkit-rule] [--autologin]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -700,7 +749,7 @@ main() {
 Sets up a desktop from a TTY1 login instead of a display manager: X11 desktops start with startx and Plasma, GNOME and Budgie start on Wayland.
 A default run, as your regular user, asks for your sudo password up front (again only if the package download outlasts sudo's timeout):
   - installs the packages for the desktop (detected, chosen from a menu, or --de)
-  - copies ~/.bash_profile and ~/.xinitrc (or ~/.wayland-session for Plasma, GNOME and Budgie), backing up or saving any existing copies
+  - copies ~/.bash_profile and ~/.xinitrc (or ~/.wayland-session for Wayland sessions), backing up or saving any existing copies
   - appends keyring unlock lines to /etc/pam.d/login (backup at /etc/pam.d/login.lightxdm.bak)
   - for GNOME, adds a TTY1-only PAM line to register the login session as Wayland
   - installs a Polkit rule for passwordless power-off, reboot, suspend and hibernate
@@ -708,10 +757,12 @@ A default run, as your regular user, asks for your sudo password up front (again
 
 Options:
   --de <id>         configure this desktop: plasma gnome xfce lxqt lxde mate cinnamon budgie i3, or a custom
-                    id that has a ~/.config/lightxdm/.xinitrc-<id> template (with --no-packages)
+                    id with a ~/.config/lightxdm/.xinitrc-<id> or .wayland-session-<id> template
+                    (requires --no-packages; uses GNOME Keyring or --no-keyring; refuses if both templates exist)
   --list-packages   print the packages for --de <id> and exit; changes nothing
   --init-template   create ~/.config/lightxdm/.xinitrc-<id> (or .wayland-session-<id> for Plasma, GNOME and Budgie) for --de <id> to edit, and exit
-                    (any lowercase id: a custom one starts from the i3 template)
+                    (any lowercase id: a custom one starts from the i3 template unless --wayland is used)
+  --wayland         with --init-template --de <custom-id>, create a minimal Wayland template ending in exec <id>
   --no-packages     skip package installation
   --no-keyring      skip keyring packages and keyring PAM lines (use with autologin)
   --no-polkit-rule  keep your Polkit policy; do not install the rule
@@ -745,6 +796,10 @@ EOF
         init_template=1
         shift
         ;;
+      --wayland)
+        wayland=1
+        shift
+        ;;
       --de)
         if [[ $# -lt 2 || "$2" == -* ]]; then
           log "Missing argument for --de (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
@@ -762,6 +817,12 @@ EOF
     esac
   done
 
+  if [[ $wayland -eq 1 && $init_template -eq 0 ]]; then
+    log "--wayland requires --init-template --de <custom-id>."
+    echo "$usage" >&2
+    exit 1
+  fi
+
   if [[ $autologin -eq 1 && $no_keyring -eq 0 ]]; then
     log "--autologin requires --no-keyring: autologin passes no password, so PAM cannot unlock the keyring."
     echo "$usage" >&2
@@ -770,7 +831,7 @@ EOF
 
   if [[ $init_template -eq 1 ]]; then
     if [[ $list_only -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || $no_polkit_rule -eq 1 || $autologin -eq 1 ]]; then
-      log "--init-template takes only --de <id>; it creates the template and exits without installing."
+      log "--init-template takes only --de <id> and optional --wayland for custom ids; it creates the template and exits without installing."
       echo "$usage" >&2
       exit 1
     fi
@@ -784,7 +845,7 @@ EOF
       log "Do not run --init-template as root or with sudo; run it as the user who will log in."
       exit 1
     fi
-    init_xinitrc_template "$de"
+    init_xinitrc_template "$de" "$wayland"
     exit $?
   fi
 
@@ -815,10 +876,14 @@ EOF
       plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
       *)
         # Explicit character list: [a-z] ranges miss "i" under some locales (for example tr_TR).
-        if [[ $no_packages -ne 1 || -z "$de" || "$de" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* || ! -f "$(xinitrc_template "$de")" ]]; then
+        local custom_template=""
+        if [[ -n "$de" && "$de" != *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* ]]; then
+          custom_template="$(xinitrc_template "$de")" || exit 1
+        fi
+        if [[ $no_packages -ne 1 || -z "$de" || "$de" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* || ! -f "$custom_template" ]]; then
           log "Unsupported desktop environment: $de (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
           if [[ -n "$de" && "$de" != *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* ]]; then
-            if [[ ! -f "$(xinitrc_template "$de")" ]]; then
+            if [[ ! -f "$custom_template" ]]; then
               log "For a custom session, create its template first: bash install.sh --init-template --de $de"
             else
               log "Custom sessions need --no-packages (install their packages yourself): bash install.sh --no-packages --de $de"
