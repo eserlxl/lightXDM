@@ -6925,6 +6925,40 @@ else
   else
     fail "uninstall.sh two .lightxde backups (status=$status, output=$output, login=$(cat "$old_dir/login"))"
   fi
+  # A re-install over an old install adopts the .lightxde backup, so uninstall still restores the original.
+  rm -f -- "$old_dir/login" "$old_dir"/login.*.bak*
+  printf %b "$old_stock" >"$old_dir/login.lightxde.bak.1751000000"
+  printf %b "$old_stock$PAM_KWALLET_AUTH\n$PAM_KWALLET_SESSION\n" >"$old_dir/login"
+  # shellcheck disable=SC2016  # expand inside the child shell
+  old_pam_log="$(env LOGIN_FILE="$old_dir/login" bash -c 'source "$1/install.sh" && configure_pam xfce' bash "$REPO_ROOT" 2>&1)"
+  if cmp -s "$old_dir/login.lightxdm.bak" "$old_dir/login.expected" && ! grep -q pam_kwallet5 "$old_dir/login" &&
+    [[ ! -e "$old_dir/login.lightxde.bak.1751000000" && "$old_pam_log" == *"Using $old_dir/login.lightxde.bak.1751000000 as the original"* ]]; then
+    pass "configure_pam adopts the oldest .lightxde backup and removes the old install's KWallet lines"
+  else
+    fail "configure_pam adopt .lightxde backup (log=$old_pam_log, login=$(cat "$old_dir/login"))"
+  fi
+  set +e
+  output="$("${old_uninstall_env[@]}" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && "$output" == *"Restoring $old_dir/login from backup"* && "$output" != *"lines lightXDM did not add"* && ! -e "$old_dir/login.lightxde.bak.1751000000" ]] &&
+    cmp -s "$old_dir/login" "$old_dir/login.expected"; then
+    pass "uninstall.sh after a re-install over an old install restores the pre-lightXDM login file"
+  else
+    fail "uninstall.sh after re-install over old install (status=$status, output=$output, login=$(cat "$old_dir/login"))"
+  fi
+  # An existing .lightxdm.bak wins; the .lightxde backup is not moved.
+  rm -f -- "$old_dir/login" "$old_dir"/login.*.bak*
+  printf %b "$old_stock" >"$old_dir/login.lightxdm.bak"
+  printf %b "$old_stock$old_keyring" >"$old_dir/login.lightxde.bak.1751000000"
+  printf %b "$old_stock" >"$old_dir/login"
+  # shellcheck disable=SC2016  # expand inside the child shell
+  env LOGIN_FILE="$old_dir/login" bash -c 'source "$1/install.sh" && configure_pam xfce' bash "$REPO_ROOT" >/dev/null 2>&1 || true
+  if [[ -f "$old_dir/login.lightxde.bak.1751000000" ]] && cmp -s "$old_dir/login.lightxdm.bak" "$old_dir/login.expected"; then
+    pass "configure_pam leaves .lightxde backups alone when .lightxdm.bak exists"
+  else
+    fail "configure_pam moved a .lightxde backup despite .lightxdm.bak ($(ls "$old_dir"))"
+  fi
   rm -rf -- "$old_dir"
 fi
 

@@ -515,6 +515,25 @@ copy_dotfiles() {
   fi
 }
 
+# Installs before 2026-11-03 backed up to .lightxde.bak.<epoch>; adopt the oldest one as the
+# original so a re-install does not back up a login file that already holds old keyring lines.
+adopt_legacy_pam_backup() {
+  local backup_file="${LOGIN_FILE}.lightxdm.bak" old_backup epoch oldest_epoch=""
+  if [[ -e "$backup_file" || -L "$backup_file" ]]; then
+    return 0
+  fi
+  for old_backup in "${LOGIN_FILE}".lightxde.bak.*; do
+    epoch="${old_backup##*.lightxde.bak.}"
+    if [[ -f "$old_backup" && "$epoch" =~ ^[0-9]+$ ]] && { [[ -z "$oldest_epoch" ]] || ((10#$epoch < 10#$oldest_epoch)); }; then
+      oldest_epoch="$epoch"
+    fi
+  done
+  if [[ -n "$oldest_epoch" ]]; then
+    log "Using ${LOGIN_FILE}.lightxde.bak.${oldest_epoch} as the original $LOGIN_FILE backup."
+    sudo mv -- "${LOGIN_FILE}.lightxde.bak.${oldest_epoch}" "$backup_file" || return 1
+  fi
+}
+
 # Configure PAM for KWallet/GNOME Keyring auto-unlock
 configure_pam() {
   local de
@@ -529,6 +548,7 @@ configure_pam() {
     fi
     return 1
   fi
+  adopt_legacy_pam_backup || return 1
   local module auth_line session_line other_module other_auth_line other_session_line
   case "$de" in
     plasma)
@@ -636,6 +656,7 @@ configure_gnome_session_type() (
     log "ERROR: $LOGIN_FILE is missing; lightXDM will not create it."
     return 1
   fi
+  adopt_legacy_pam_backup || return 1
 
   local tmp line newline inserted=0 block_line=0
   tmp="$(mktemp)" || return 1
