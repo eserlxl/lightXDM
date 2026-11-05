@@ -272,6 +272,22 @@ def user_bus(cmd):
     return ssh(f"sudo -u {USER} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u {USER})/bus {cmd}")
 
 
+def keyring_collection():
+    return "kdewallet" if KEYRING == "kwallet" else "login"
+
+
+def lock_keyring(tag):
+    # A keyring daemon can outlive the logout, so lock the collection first: the relogin's unlock
+    # check then proves that the relogin's own PAM stack unlocked it again.
+    path = f"/org/freedesktop/secrets/collection/{keyring_collection()}"
+    user_bus(f"busctl --user call org.freedesktop.secrets /org/freedesktop/secrets "
+             f"org.freedesktop.Secret.Service Lock ao 1 {path}")
+    _, out, err = user_bus(f"busctl --user get-property org.freedesktop.secrets {path} "
+                           "org.freedesktop.Secret.Collection Locked")
+    check(f"{tag}: keyring collection '{keyring_collection()}' is locked before logout", out.strip() == "b true",
+          (out + err).strip())
+
+
 def session_checks(tag, qmp):
     check(f"{tag}: {PROCS[0]} runs for {USER}", wait_proc(PROCS[0]))
     if tag == "login1" and TARGET in FIRST_LOGIN_KEYS:
@@ -318,9 +334,7 @@ def session_checks(tag, qmp):
         if KEYRING == "kwallet":
             # KDE Frameworks 6.31+: PAM starts ksecretd --pam-login, which serves org.freedesktop.secrets.
             check(f"{tag}: ksecretd was started by PAM", ssh(f"pgrep -u {USER} -f 'ksecretd --pam-login'")[0] == 0)
-            collection = "kdewallet"
-        else:
-            collection = "login"
+        collection = keyring_collection()
         _, out, err = user_bus("busctl --user get-property org.freedesktop.secrets "
                                f"/org/freedesktop/secrets/collection/{collection} org.freedesktop.Secret.Collection Locked")
         check(f"{tag}: keyring collection '{collection}' is unlocked without a prompt", out.strip() == "b false",
@@ -400,6 +414,8 @@ def main():
             log(f"LIGHTXDM_VM_KEEP=1: VM left running (qemu pid {proc.pid})")
             return
         if MODE == "relogin":
+            if login1_ok:
+                lock_keyring("relogin")
             if login1_ok and relogin(qmp, "relogin"):
                 session_checks("relogin", qmp)
         elif login1_ok and reboot_and_login(qmp, "login2"):
