@@ -193,37 +193,63 @@ def reboot_and_login(qmp, tag):
 
 
 def relogin(qmp, tag):
-    name = f"{tag}: previous session ended and getty@tty1 is back"
+    logout_commands = {
+        "plasma": "busctl --user call org.kde.Shutdown /Shutdown org.kde.Shutdown logout",
+        "xfce": "busctl --user call org.xfce.SessionManager /org/xfce/SessionManager "
+                "org.xfce.Session.Manager Logout bb false true",
+        "gnome": "busctl --user call org.gnome.SessionManager /org/gnome/SessionManager "
+                 "org.gnome.SessionManager Logout u 1",
+    }
+    desktop_logout = TARGET in logout_commands
+    name = (f"{tag}: logged out through the desktop and the login prompt is back" if desktop_logout else
+            f"{tag}: forced logout (loginctl terminate-user) and the login prompt is back")
     try:
-        rc, out, err = ssh(f"loginctl terminate-user {USER}", timeout=20)
+        if desktop_logout:
+            rc, out, err = user_bus(logout_commands[TARGET])
+        else:
+            rc, out, err = ssh(f"loginctl terminate-user {USER}", timeout=20)
     except subprocess.TimeoutExpired:
-        check(name, False, "terminating the previous user session timed out")
+        check(name, False, "logout command timed out")
         return False
     if rc != 0:
-        check(name, False, (out + err).strip() or f"loginctl terminate-user returned {rc}")
+        check(name, False, (out + err).strip() or f"logout command returned {rc}")
         return False
 
-    end = time.time() + 120
+    display_server = {"plasma": "kwin_wayland", "gnome": "gnome-shell"}.get(
+        TARGET, "Xorg" if SESSION_TYPE == "x11" else PROCS[0])
+    display_command = ("pgrep -x Xorg" if display_server == "Xorg" else
+                       f"pgrep -u {USER} -x {display_server}")
+    end = time.monotonic() + 120
     ok = False
-    detail = "timed out waiting for the previous session to end and getty@tty1 to return"
-    while time.time() < end:
+    display_state = "unknown"
+    getty_state = "unknown"
+    while time.monotonic() < end:
         try:
-            rc, sessions, err = ssh("loginctl list-sessions --no-legend", timeout=15)
-            getty_rc, getty, getty_err = ssh("systemctl is-active getty@tty1", timeout=15)
-            has_session = any(len(fields) > 2 and fields[2] == USER
-                              for fields in (line.split() for line in sessions.splitlines()))
-            ok = rc == 0 and not has_session and getty_rc == 0 and getty.strip() == "active"
-            detail = f"sessions: {(sessions + err).strip()}; getty@tty1: {(getty + getty_err).strip()}"
+            display_state = "unknown (ssh timed out)"
+            rc, _, err = ssh(display_command, timeout=min(15, end - time.monotonic()))
+            display_state = "running" if rc == 0 else "exited" if rc == 1 else f"unknown: {err.strip()} (rc={rc})"
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                break
+            getty_state = "unknown (ssh timed out)"
+            getty_rc, getty, getty_err = ssh("systemctl is-active getty@tty1", timeout=min(15, remaining))
+            getty_state = (getty + getty_err).strip() or f"rc={getty_rc}"
+            ok = rc == 1 and getty_rc == 0 and getty.strip() == "active"
             if ok:
                 break
         except subprocess.TimeoutExpired:
-            detail = "ssh timed out waiting for the previous session to end and getty@tty1 to return"
-        time.sleep(2)
+            pass
+        time.sleep(min(1, max(0, end - time.monotonic())))
 
-    check(name, ok, detail)
+    try:
+        _, left, _ = ssh(f"ps -u {USER} -o comm= | sort -u | tr '\\n' ' '", timeout=15)
+        log(f"{tag}: still running after logout: {left.strip() or 'nothing'}")
+    except subprocess.TimeoutExpired:
+        log(f"{tag}: still running after logout: unavailable (ssh timed out)")
+    check(name, ok, f"{display_server}: {display_state}; getty@tty1: {getty_state}")
     if not ok:
         return False
-    time.sleep(5)
+    time.sleep(3)
     qmp.type(USER + "\n")
     time.sleep(3)
     qmp.type(PASSWORD + "\n")
