@@ -6106,6 +6106,10 @@ EOF
 #!/usr/bin/env bash
 if [[ "$*" == 'is-enabled getty@tty1.service' ]]; then
   echo "$GETTY_STATE"
+  # Like the real systemctl, report masked states with a failing exit status.
+  case "$GETTY_STATE" in
+    masked | masked-runtime) exit 1 ;;
+  esac
 else
   echo "$*" >>"$GETTY_LOG"
 fi
