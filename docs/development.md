@@ -36,7 +36,7 @@ lightXDM/
 ├── pam/
 │   └── gnome-session-type.conf
 ├── polkit/
-│   └── 49-nopasswd.rules  # rule older versions installed; uninstall.sh uses it to recognize and remove it
+│   └── 49-nopasswd.rules  # last rule older versions installed; frozen: uninstall.sh pins its sha256 in LIGHTXDM_OLD_POLKIT_HASHES and the tests install it as the old rule, so an edit fails them
 ├── docs/
 │   ├── development.md
 │   ├── features.md
