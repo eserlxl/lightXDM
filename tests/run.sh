@@ -288,6 +288,56 @@ for non_plasma_de in xfce lxqt lxde mate cinnamon budgie i3 dwm; do
   fi
 done
 
+# Case 8b: configure_pam replaces lightXDM-added keyring lines when switching desktops and keeps pre-install backup lines
+rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+write_stock_login
+configure_pam "xfce" 2>/dev/null
+switch_to_plasma_log="$(configure_pam "plasma" 2>&1)"
+plasma_after_switch="$(cat "$LOGIN_FILE")"
+configure_pam "plasma" 2>/dev/null
+plasma_rerun_after_switch="$(cat "$LOGIN_FILE")"
+if [[ "$plasma_after_switch" == "$plasma_rerun_after_switch" &&
+  "$switch_to_plasma_log" == *"pam_gnome_keyring.so"* ]] &&
+  grep -Fxq -- "$PAM_KWALLET_AUTH" "$LOGIN_FILE" &&
+  grep -Fxq -- "$PAM_KWALLET_SESSION" "$LOGIN_FILE" &&
+  ! grep -q 'pam_gnome_keyring\.so' "$LOGIN_FILE"; then
+  pass "configure_pam xfce then plasma leaves only KWallet lines and is idempotent on rerun"
+else
+  fail "configure_pam xfce then plasma (content=$plasma_rerun_after_switch, log=$switch_to_plasma_log)"
+fi
+
+rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+write_stock_login
+configure_pam "plasma" 2>/dev/null
+switch_to_xfce_log="$(configure_pam "xfce" 2>&1)"
+xfce_after_switch="$(cat "$LOGIN_FILE")"
+configure_pam "xfce" 2>/dev/null
+xfce_rerun_after_switch="$(cat "$LOGIN_FILE")"
+if [[ "$xfce_after_switch" == "$xfce_rerun_after_switch" &&
+  "$switch_to_xfce_log" == *"pam_kwallet5.so"* ]] &&
+  grep -Fxq -- "$PAM_GNOME_KEYRING_AUTH" "$LOGIN_FILE" &&
+  grep -Fxq -- "$PAM_GNOME_KEYRING_SESSION" "$LOGIN_FILE" &&
+  ! grep -q 'pam_kwallet5\.so' "$LOGIN_FILE"; then
+  pass "configure_pam plasma then xfce leaves only GNOME Keyring lines and is idempotent on rerun"
+else
+  fail "configure_pam plasma then xfce (content=$xfce_rerun_after_switch, log=$switch_to_xfce_log)"
+fi
+
+rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
+write_stock_login
+printf '%s\n' "$PAM_GNOME_KEYRING_AUTH" >>"$LOGIN_FILE"
+configure_pam "xfce" 2>/dev/null
+configure_pam "plasma" 2>/dev/null
+preexisting_switch_content="$(cat "$LOGIN_FILE")"
+if grep -Fxq -- "$PAM_GNOME_KEYRING_AUTH" "$LOGIN_FILE" &&
+  ! grep -Fxq -- "$PAM_GNOME_KEYRING_SESSION" "$LOGIN_FILE" &&
+  grep -Fxq -- "$PAM_KWALLET_AUTH" "$LOGIN_FILE" &&
+  grep -Fxq -- "$PAM_KWALLET_SESSION" "$LOGIN_FILE"; then
+  pass "configure_pam keeps a pam_gnome_keyring.so line already in the backup when switching to plasma"
+else
+  fail "configure_pam pre-existing pam_gnome_keyring.so on switch to plasma (content=$preexisting_switch_content)"
+fi
+
 # Case 9: main gets past sudo checks when sudo -n fails but sudo -v succeeds
 sudo_pw_dir="$TMP_DIR/sudo_pw"
 mkdir -p "$sudo_pw_dir"
@@ -1017,7 +1067,7 @@ if [[ -f "${LOGIN_FILE}.lightxdm.bak" ]]; then
   backup_content="$(cat "${LOGIN_FILE}.lightxdm.bak")"
 fi
 if [[ -f "${LOGIN_FILE}.lightxdm.bak" && "$backup_content" == "$stock_login" ]] &&
-  grep -q 'pam_kwallet5\.so' "$LOGIN_FILE" &&
+  ! grep -q 'pam_kwallet5\.so' "$LOGIN_FILE" &&
   grep -q 'pam_gnome_keyring\.so' "$LOGIN_FILE" &&
   ! compgen -G "${LOGIN_FILE}.lightxde.bak*" >/dev/null; then
   pass "configure_pam creates login.lightxdm.bak once and keeps pristine backup on reruns"
@@ -1619,10 +1669,12 @@ write_stock_login
 echo "# auth optional pam_gnome_keyring.so" >>"$LOGIN_FILE"
 echo "# session optional pam_kwallet5.so force_run" >>"$LOGIN_FILE"
 configure_pam "gnome" 2>/dev/null
+gnome_commented_content="$(cat "$LOGIN_FILE")"
 configure_pam "plasma" 2>/dev/null
 commented_content="$(cat "$LOGIN_FILE")"
-if grep -Eq '^auth[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so$' "$LOGIN_FILE" &&
-  grep -Eq '^session[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so auto_start$' "$LOGIN_FILE" &&
+if grep -Eq '^auth[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so$' <<<"$gnome_commented_content" &&
+  grep -Eq '^session[[:space:]]+optional[[:space:]]+pam_gnome_keyring\.so auto_start$' <<<"$gnome_commented_content" &&
+  ! grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]].*pam_gnome_keyring\.so' "$LOGIN_FILE" &&
   grep -Eq '^auth[[:space:]]+optional[[:space:]]+pam_kwallet5\.so$' "$LOGIN_FILE" &&
   grep -Eq '^session[[:space:]]+optional[[:space:]]+pam_kwallet5\.so force_run$' "$LOGIN_FILE"; then
   pass "configure_pam appends active rules when only commented module lines exist"
@@ -3731,7 +3783,10 @@ fi
 rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
 write_stock_login
 configure_pam "plasma" 2>/dev/null
+plasma_pam_content="$(cat "$LOGIN_FILE")"
 configure_pam "gnome" 2>/dev/null
+gnome_pam_content="$(cat "$LOGIN_FILE")"
+pam_written_lines="$plasma_pam_content"$'\n'"$gnome_pam_content"
 pam_sync_errors=()
 pam_seen_lines=()
 uninstall_active_lines="$(grep -Ev '^[[:space:]]*#' "$REPO_ROOT/uninstall.sh")"
@@ -3751,7 +3806,7 @@ for pam_const in PAM_KWALLET_AUTH PAM_KWALLET_SESSION PAM_GNOME_KEYRING_AUTH PAM
     done
   fi
   pam_seen_lines+=("$pam_line")
-  if ! grep -Fxq -- "$pam_line" "$LOGIN_FILE"; then
+  if ! grep -Fxq -- "$pam_line" <<<"$pam_written_lines"; then
     pam_sync_errors+=("${pam_const}:not-written-by-configure_pam")
   fi
   pam_pattern="^${pam_line//./\\.}\$"

@@ -500,19 +500,39 @@ configure_pam() {
     fi
     return 1
   fi
-  local module auth_line session_line
+  local module auth_line session_line other_module other_auth_line other_session_line
   case "$de" in
     plasma)
       module="pam_kwallet5.so"
       auth_line="$PAM_KWALLET_AUTH"
       session_line="$PAM_KWALLET_SESSION"
+      other_module="pam_gnome_keyring.so"
+      other_auth_line="$PAM_GNOME_KEYRING_AUTH"
+      other_session_line="$PAM_GNOME_KEYRING_SESSION"
       ;;
     *)
       module="pam_gnome_keyring.so"
       auth_line="$PAM_GNOME_KEYRING_AUTH"
       session_line="$PAM_GNOME_KEYRING_SESSION"
+      other_module="pam_kwallet5.so"
+      other_auth_line="$PAM_KWALLET_AUTH"
+      other_session_line="$PAM_KWALLET_SESSION"
       ;;
   esac
+
+  local backup_file="${LOGIN_FILE}.lightxdm.bak"
+  if [[ -f "$backup_file" ]]; then
+    local pam_sed=() other_line
+    for other_line in "$other_auth_line" "$other_session_line"; do
+      if grep -Fxq -- "$other_line" "$LOGIN_FILE" && ! grep -Fxq -- "$other_line" "$backup_file"; then
+        pam_sed+=(-e "/^${other_line//./\\.}\$/d")
+      fi
+    done
+    if [[ ${#pam_sed[@]} -gt 0 ]]; then
+      sudo sed -i --follow-symlinks "${pam_sed[@]}" "$LOGIN_FILE"
+      log "Removed $other_module from $LOGIN_FILE."
+    fi
+  fi
 
   local module_re="${module//./\\.}"
   local lines_to_add=()
@@ -524,8 +544,6 @@ configure_pam() {
   fi
 
   if [[ ${#lines_to_add[@]} -gt 0 ]]; then
-    local backup_file
-    backup_file="${LOGIN_FILE}.lightxdm.bak"
     if [[ ! -e "$backup_file" ]]; then
       log "Backing up $LOGIN_FILE to $backup_file"
       sudo cp "$LOGIN_FILE" "$backup_file"
