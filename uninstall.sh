@@ -52,6 +52,19 @@ LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
 readonly GNOME_SESSION_TYPE_DEST="${GNOME_SESSION_TYPE_DEST:-/etc/lightxdm/gnome-session-type.conf}"
 DM_STATE_FILE="${DM_STATE_FILE:-/etc/lightxdm/disabled-display-managers}"
 BACKUP_FILE="${LOGIN_FILE}.lightxdm.bak"
+# Installs before 2026-11-03 backed up to .lightxde.bak.<epoch>; the oldest one is the original.
+if [[ ! -f "$BACKUP_FILE" ]]; then
+  oldest_epoch=""
+  for old_backup in "${LOGIN_FILE}".lightxde.bak.*; do
+    epoch="${old_backup##*.lightxde.bak.}"
+    if [[ -f "$old_backup" && "$epoch" =~ ^[0-9]+$ ]] && { [[ -z "$oldest_epoch" ]] || ((10#$epoch < 10#$oldest_epoch)); }; then
+      oldest_epoch="$epoch"
+    fi
+  done
+  if [[ -n "$oldest_epoch" ]]; then
+    BACKUP_FILE="${LOGIN_FILE}.lightxde.bak.${oldest_epoch}"
+  fi
+fi
 
 files_match() {
   [[ "$(sha256sum < "$1")" == "$(sha256sum < "$2")" ]]
@@ -96,6 +109,7 @@ if [ -f "$BACKUP_FILE" ]; then
       '^auth       optional   pam_kwallet5\.so$' \
       '^session    optional   pam_kwallet5\.so force_run$' \
       '^auth       optional   pam_gnome_keyring\.so$' \
+      '^auth       optional   pam_gnome_keyring\.so auto_start$' \
       '^session    optional   pam_gnome_keyring\.so auto_start$'; do
       if [[ -z "$(sed -n "/${pam_re}/p" "$BACKUP_FILE")" ]]; then
         pam_sed+=(-e "/${pam_re}/d")

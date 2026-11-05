@@ -3863,7 +3863,9 @@ for pam_const in PAM_KWALLET_AUTH PAM_KWALLET_SESSION PAM_GNOME_KEYRING_AUTH PAM
   fi
 done
 uninstall_pam_count="$(grep -Ec "^[[:space:]]*'\^-?(auth|session|account|password)[[:space:]]" <<<"$uninstall_active_lines" || true)"
-if [[ "$uninstall_pam_count" -ne 4 ]]; then
+# Four current lines plus the auth line installs before 2026-11-03 appended.
+if [[ "$uninstall_pam_count" -ne 5 ]] ||
+  ! grep -Fq -- "'^auth       optional   pam_gnome_keyring\.so auto_start\$'" <<<"$uninstall_active_lines"; then
   pam_sync_errors+=("uninstall_pam_count=${uninstall_pam_count}")
 fi
 if [[ ${#pam_sync_errors[@]} -eq 0 ]]; then
@@ -6887,6 +6889,49 @@ else
   else
     fail "uninstall.sh --keyring-only foreign keyring line (status=$status, output=$output)"
   fi
+fi
+
+# uninstall.sh removes keyring lines an install before 2026-11-03 added and restores its .lightxde backup
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh old .lightxde backup (unshare -r unavailable)"
+else
+  old_dir="$TMP_DIR/old_lightxde"
+  mkdir -p "$old_dir/home"
+  old_stock='#%PAM-1.0\nauth       include      system-local-login\n'
+  old_keyring='auth       optional   pam_gnome_keyring.so auto_start\nsession    optional   pam_gnome_keyring.so auto_start\n'
+  old_uninstall_env=(env -u SUDO_USER TARGET_HOME="$old_dir/home" LOGIN_FILE="$old_dir/login" AUTOLOGIN_DROPIN="$old_dir/autologin.conf" OVERRIDE_FILE="$old_dir/override.conf" POLKIT_RULE="$old_dir/polkit.rules" DM_STATE_FILE="$old_dir/dm" GNOME_SESSION_TYPE_DEST="$old_dir/gnome-session-type.conf")
+  printf %b "$old_stock" >"$old_dir/login.expected"
+  for old_mode in full keyring-only; do
+    printf %b "$old_stock$old_keyring" >"$old_dir/login"
+    printf %b "$old_stock" >"$old_dir/login.lightxde.bak.1751000000"
+    old_args=()
+    [[ $old_mode == keyring-only ]] && old_args=(--keyring-only)
+    set +e
+    output="$("${old_uninstall_env[@]}" unshare -r bash "$REPO_ROOT/uninstall.sh" "${old_args[@]}" 2>&1)"
+    status=$?
+    set -e
+    if [[ $status -eq 0 && "$output" == *"Restoring $old_dir/login from backup"* && "$output" != *"lines lightXDM did not add"* && ! -e "$old_dir/login.lightxde.bak.1751000000" ]] &&
+      cmp -s "$old_dir/login" "$old_dir/login.expected"; then
+      pass "uninstall.sh ($old_mode) removes old keyring lines and restores the .lightxde backup"
+    else
+      fail "uninstall.sh ($old_mode) old .lightxde backup (status=$status, output=$output, login=$(cat "$old_dir/login"))"
+    fi
+  done
+  # With two old backups the oldest is the original; the newer one is left alone.
+  printf %b "$old_stock$old_keyring" >"$old_dir/login"
+  printf %b "$old_stock" >"$old_dir/login.lightxde.bak.1751000000"
+  printf %b "$old_stock$old_keyring" >"$old_dir/login.lightxde.bak.1752000000"
+  set +e
+  output="$("${old_uninstall_env[@]}" unshare -r bash "$REPO_ROOT/uninstall.sh" --keyring-only 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && "$output" == *"Restoring $old_dir/login from backup"* && ! -e "$old_dir/login.lightxde.bak.1751000000" && -f "$old_dir/login.lightxde.bak.1752000000" ]] &&
+    cmp -s "$old_dir/login" "$old_dir/login.expected"; then
+    pass "uninstall.sh uses and removes the oldest .lightxde backup and leaves newer ones"
+  else
+    fail "uninstall.sh two .lightxde backups (status=$status, output=$output, login=$(cat "$old_dir/login"))"
+  fi
+  rm -rf -- "$old_dir"
 fi
 
 # uninstall.sh warns about an autologin drop-in it did not write
