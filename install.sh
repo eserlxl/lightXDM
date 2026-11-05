@@ -1143,6 +1143,10 @@ lightXDM install complete!
 Your login shell ($login_shell) does not read ~/.bash_profile, so $de will not auto-start on TTY1 until you add the auto-start block to ~/$shell_profile (or run '$manual_start' manually).
 EOF
   fi
+
+  if [[ "$de" == gnome ]]; then
+    log "WARNING: GNOME cannot lock the screen without GDM (see README.md, Before you install)."
+  fi
 }
 
 # Run only when executed directly, so tests can source the functions.

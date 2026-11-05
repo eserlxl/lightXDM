@@ -7743,6 +7743,15 @@ else
   fail "main GNOME session-type step order (log=$(cat "$STUB_LOG"), output=$output)"
 fi
 
+output_gnome="$(USER="$gnome_user" run_main_with_stubs "$sudo_pw_dir" --de gnome --no-keyring 2>&1)"
+output_xfce="$(USER="$gnome_user" run_main_with_stubs "$sudo_pw_dir" --de xfce --no-keyring 2>&1)"
+if [[ "$output_gnome" == *"GNOME cannot lock the screen without GDM"* &&
+  "$output_xfce" != *"GNOME cannot lock the screen without GDM"* ]]; then
+  pass "main warns that GNOME cannot lock the screen without GDM and omits warning for xfce"
+else
+  fail "main GNOME screen-lock warning (gnome output=$output_gnome, xfce output=$output_xfce)"
+fi
+
 if [[ $can_unshare -eq 0 ]]; then
   skip "GNOME session-type uninstall modes (unshare -r unavailable)"
 else
