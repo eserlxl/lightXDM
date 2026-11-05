@@ -3045,6 +3045,43 @@ else
   fi
 fi
 
+# Case 44b: uninstall.sh replaces a symlink planted at the .lightxdm-edited name instead of moving the dotfile into its target
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh does not follow a symlink planted at the .lightxdm-edited name (unshare -r unavailable)"
+else
+  race_dir="$TMP_DIR/uninstall_edited_race"
+  race_home="$race_dir/home"
+  race_victim="$race_dir/victim"
+  race_real_mv="$(command -v mv)"
+  mkdir -p "$race_home" "$race_victim" "$race_dir/shim" "$race_dir/override"
+  echo "# user profile" >"$race_home/.bash_profile"
+  : >"$race_home/.bash_profile.lightxdm.absent"
+  # The shim plants the symlink right before the real mv runs, like a racing home owner.
+  cat >"$race_dir/shim/mv" <<SHIM
+#!/bin/bash
+last="\${!#}"
+if [[ "\$last" == *.lightxdm-edited ]]; then
+  ln -s "$race_victim" "\$last"
+fi
+exec "$race_real_mv" "\$@"
+SHIM
+  chmod +x "$race_dir/shim/mv"
+  set +e
+  out_race="$(PATH="$race_dir/shim:$PATH" TARGET_HOME="$race_home" OVERRIDE_DIR="$race_dir/override" POLKIT_RULE="$race_dir/polkit.rules" \
+    LOGIN_FILE="$race_dir/login" DM_STATE_FILE="$race_dir/dm-state" GNOME_SESSION_TYPE_DEST="$race_dir/gnome-session-type.conf" \
+    unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status_race=$?
+  set -e
+  if [[ $status_race -eq 0 && ! -e "$race_victim/.bash_profile" ]] &&
+    [[ -f "$race_home/.bash_profile.lightxdm-edited" && ! -L "$race_home/.bash_profile.lightxdm-edited" ]] &&
+    [[ "$(cat "$race_home/.bash_profile.lightxdm-edited")" == "# user profile" ]]; then
+    pass "uninstall.sh replaces a symlink planted at the .lightxdm-edited name instead of following it"
+  else
+    fail "uninstall.sh followed a planted .lightxdm-edited symlink (status=$status_race, output=$out_race)"
+  fi
+  rm -rf "$race_dir"
+fi
+
 # Case 45: main requires exact wheel membership (rejecting wheel-dev) and falls back to id -un when USER is unset
 id_wheel_dev_dir="$TMP_DIR/id_wheel_dev"
 mkdir -p "$id_wheel_dev_dir"

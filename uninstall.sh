@@ -154,7 +154,7 @@ save_edited_dotfile() {
     edited_dest="${edited_dest}.${n}"
   fi
   echo "Saving edited $src to $edited_dest..."
-  mv -- "$src" "$edited_dest"
+  mv -T -- "$src" "$edited_dest"
 }
 
 # Hashes of the Polkit rules older lightXDM versions installed at this path (git history of polkit/49-nopasswd.rules).
@@ -289,7 +289,7 @@ for dotfile in .bash_profile .xinitrc .wayland-session .gpg-agent-kwallet .gpg-a
       fi
     fi
     echo "Restoring $TARGET_HOME/$dotfile from backup..."
-    mv -- "$TARGET_HOME/${dotfile}.lightxdm.bak" "$TARGET_HOME/$dotfile"
+    mv -T -- "$TARGET_HOME/${dotfile}.lightxdm.bak" "$TARGET_HOME/$dotfile"
     rm -f -- "$TARGET_HOME/${dotfile}.lightxdm.absent"
   elif [[ $past_backup -eq 1 || -e "$TARGET_HOME/${dotfile}.lightxdm.absent" || -L "$TARGET_HOME/${dotfile}.lightxdm.absent" ]]; then
     if [[ -e "$TARGET_HOME/$dotfile" || -L "$TARGET_HOME/$dotfile" ]]; then
