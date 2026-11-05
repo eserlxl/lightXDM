@@ -272,6 +272,13 @@ def user_bus(cmd):
     return ssh(f"sudo -u {USER} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u {USER})/bus {cmd}")
 
 
+def launcher_stdout():
+    # The TTY1 login shell execs the session launcher (through systemd-cat when the session-journal
+    # marker exists), so the user's oldest process on tty1 holds the session's stdout.
+    _, out, err = ssh(f"pid=$(pgrep -o -u {USER} -t tty1) && readlink /proc/$pid/fd/1")
+    return (out + err).strip()
+
+
 def keyring_collection():
     return "kdewallet" if KEYRING == "kwallet" else "login"
 
@@ -416,6 +423,8 @@ def main():
             rc, out, err = ssh("journalctl -b -q -t lightxdm -o cat")
             check("login1: default session has no lightxdm journal entries", rc == 0 and not out.strip(),
                   (out + err).strip())
+            stdout = launcher_stdout()
+            check("login1: the default session launcher writes to /dev/tty1", stdout == "/dev/tty1", stdout)
         if os.environ.get("LIGHTXDM_VM_KEEP") == "1":
             kept = True
             log(f"LIGHTXDM_VM_KEEP=1: VM left running (qemu pid {proc.pid})")
@@ -430,9 +439,12 @@ def main():
             check("session-journal marker created as the user", rc == 0, (out + err).strip())
             if reboot_and_login(qmp, "login2"):
                 session_checks("login2", qmp)
-                rc, out, err = ssh("journalctl -b -q -t lightxdm -o cat")
-                check("login2: session output appears in the lightxdm journal", rc == 0 and bool(out.strip()),
-                      (out + err).strip())
+                # A quiet session (Plasma logs through systemd user units) prints nothing to the launcher,
+                # so check where the launcher writes rather than whether it wrote anything.
+                stdout = launcher_stdout()
+                _, lines, _ = ssh("journalctl -b -q -t lightxdm -o cat | wc -l")
+                check("login2: with session-journal the session launcher writes to a journal stream",
+                      stdout.startswith("socket:"), f"stdout={stdout}, lightxdm journal lines={lines.strip()}")
         if MODE == "lightdm":
             rc, out, err = ssh(f"su - {USER} -c 'cd ~/lightXDM && sudo bash uninstall.sh' 2>&1", timeout=600)
             with open(os.path.join(RUN, "uninstall.log"), "w") as f:
