@@ -6865,7 +6865,7 @@ else
   fail "main plasma missing session command (status=$wl_main_miss_st, log=$wl_main_miss_log, output=$wl_main_miss_out)"
 fi
 
-# Case 77: X11 copy_dotfiles removes lightXDM-owned ~/.wayland-session (restoring .bak if present) and warns on foreign ~/.wayland-session
+# Case 77: X11 copy_dotfiles preserves ~/.wayland-session for uninstall and removes it from the startup path
 wl_switch_dir="$TMP_DIR/wayland_to_x11"
 
 # 77a: bundled lightXDM ~/.wayland-session without backup -> removed cleanly
@@ -6882,20 +6882,37 @@ wl_sw_bundled_out="$(
   copy_dotfiles "xfce" 2>&1
 )"
 if [[ ! -e "$wl_sw_bundled/.wayland-session" && ! -L "$wl_sw_bundled/.wayland-session" &&
-  ! -e "$wl_sw_bundled/.wayland-session.lightxdm.absent" &&
+  -f "$wl_sw_bundled/.wayland-session.lightxdm.absent" &&
+  ! -e "$wl_sw_bundled/.wayland-session.lightxdm.bak" &&
+  ! -e "$wl_sw_bundled/.wayland-session.lightxdm-edited" &&
   -x "$wl_sw_bundled/.xinitrc" &&
   "$wl_sw_bundled_out" != *"WARNING:"* ]]; then
-  pass "copy_dotfiles xfce removes a bundled lightXDM ~/.wayland-session and its .absent marker without warning"
+  pass "copy_dotfiles xfce removes a bundled lightXDM ~/.wayland-session and keeps its .absent marker for uninstall"
 else
   fail "copy_dotfiles xfce after bundled plasma (output=$wl_sw_bundled_out)"
 fi
 
-# 77b: user ~/.config/lightxdm/.wayland-session-plasma override + pre-existing ~/.wayland-session.lightxdm.bak -> restores backup
+# 77a: an X11 install into a home without ~/.wayland-session leaves no Wayland marker behind
+wl_sw_plain="$wl_switch_dir/home_x11_only"
+mkdir -p "$wl_sw_plain"
+(
+  export HOME="$wl_sw_plain"
+  export USER="testuser"
+  copy_dotfiles "xfce" 2>/dev/null
+)
+if [[ -x "$wl_sw_plain/.xinitrc" && ! -e "$wl_sw_plain/.wayland-session" &&
+  ! -e "$wl_sw_plain/.wayland-session.lightxdm.absent" && ! -e "$wl_sw_plain/.wayland-session.lightxdm.bak" ]]; then
+  pass "copy_dotfiles xfce in an X11-only home creates no .wayland-session marker or backup"
+else
+  fail "copy_dotfiles xfce X11-only home left Wayland files ($(compgen -G "$wl_sw_plain/.wayland-session*" | tr '\n' ' '))"
+fi
+
+# 77b: a user Wayland template is removed while the original backup stays intact for uninstall
 wl_sw_bak="$wl_switch_dir/home_with_bak"
 mkdir -p "$wl_sw_bak/.config/lightxdm"
 printf '#!/bin/bash\nexec custom-user-compositor\n' >"$wl_sw_bak/.wayland-session"
 chmod 755 "$wl_sw_bak/.wayland-session"
-wl_sw_orig_hash="$(sha256sum < "$wl_sw_bak/.wayland-session")"
+cp "$wl_sw_bak/.wayland-session" "$wl_sw_bak/wayland.expected"
 printf '#!/bin/bash\n# custom plasma override\nexec /usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland\n' >"$wl_sw_bak/.config/lightxdm/.wayland-session-plasma"
 chmod 755 "$wl_sw_bak/.config/lightxdm/.wayland-session-plasma"
 (
@@ -6908,18 +6925,19 @@ wl_sw_bak_out="$(
   export USER="testuser"
   copy_dotfiles "i3" 2>&1
 )"
-if [[ -f "$wl_sw_bak/.wayland-session" && ! -L "$wl_sw_bak/.wayland-session" &&
-  "$(sha256sum < "$wl_sw_bak/.wayland-session")" == "$wl_sw_orig_hash" &&
-  ! -e "$wl_sw_bak/.wayland-session.lightxdm.bak" &&
+if [[ ! -e "$wl_sw_bak/.wayland-session" && ! -L "$wl_sw_bak/.wayland-session" &&
+  -f "$wl_sw_bak/.wayland-session.lightxdm.bak" &&
   ! -e "$wl_sw_bak/.wayland-session.lightxdm.absent" &&
+  ! -e "$wl_sw_bak/.wayland-session.lightxdm-edited" &&
   -x "$wl_sw_bak/.xinitrc" &&
-  "$wl_sw_bak_out" == *"WARNING: ~/.wayland-session takes precedence over startx"* ]]; then
-  pass "copy_dotfiles i3 restores ~/.wayland-session.lightxdm.bak over a user-template lightXDM ~/.wayland-session and warns that it takes precedence"
+  "$wl_sw_bak_out" != *"WARNING:"* ]] &&
+  cmp -s "$wl_sw_bak/wayland.expected" "$wl_sw_bak/.wayland-session.lightxdm.bak"; then
+  pass "copy_dotfiles i3 removes the user-template Wayland session and keeps the original backup byte-identical"
 else
-  fail "copy_dotfiles i3 restore wayland backup (output=$wl_sw_bak_out)"
+  fail "copy_dotfiles i3 preserves wayland backup (output=$wl_sw_bak_out)"
 fi
 
-# 77c: foreign regular file and symlink ~/.wayland-session -> preserved with warning naming ~/.wayland-session and <de>
+# 77c: foreign regular files and symlinks are backed up and removed from the startup path
 for wl_foreign_kind in regular symlink; do
   wl_sw_foreign="$wl_switch_dir/home_foreign_$wl_foreign_kind"
   mkdir -p "$wl_sw_foreign"
@@ -6929,25 +6947,120 @@ for wl_foreign_kind in regular symlink; do
   else
     ln -s "$REPO_ROOT/dotfiles/.wayland-session-plasma" "$wl_sw_foreign/.wayland-session"
   fi
+  cp -P "$wl_sw_foreign/.wayland-session" "$wl_sw_foreign/wayland.expected"
   wl_sw_foreign_out="$(
     export HOME="$wl_sw_foreign"
     export USER="testuser"
     copy_dotfiles "lxqt" 2>&1
   )"
   wl_foreign_intact=0
-  if [[ "$wl_foreign_kind" == regular && -f "$wl_sw_foreign/.wayland-session" && ! -L "$wl_sw_foreign/.wayland-session" &&
-    "$(cat "$wl_sw_foreign/.wayland-session")" == $'#!/bin/bash\nexec sway' ]]; then
+  if [[ "$wl_foreign_kind" == regular && -f "$wl_sw_foreign/.wayland-session.lightxdm.bak" &&
+    ! -L "$wl_sw_foreign/.wayland-session.lightxdm.bak" ]] &&
+    cmp -s "$wl_sw_foreign/wayland.expected" "$wl_sw_foreign/.wayland-session.lightxdm.bak"; then
     wl_foreign_intact=1
-  elif [[ "$wl_foreign_kind" == symlink && -L "$wl_sw_foreign/.wayland-session" ]]; then
+  elif [[ "$wl_foreign_kind" == symlink && -L "$wl_sw_foreign/.wayland-session.lightxdm.bak" &&
+    "$(readlink "$wl_sw_foreign/.wayland-session.lightxdm.bak")" == "$(readlink "$wl_sw_foreign/wayland.expected")" ]]; then
     wl_foreign_intact=1
   fi
   if [[ $wl_foreign_intact -eq 1 && -x "$wl_sw_foreign/.xinitrc" &&
-    "$wl_sw_foreign_out" == *"WARNING:"* &&
-    "$wl_sw_foreign_out" == *"~/.wayland-session"* &&
-    "$wl_sw_foreign_out" == *"lxqt"* ]]; then
-    pass "copy_dotfiles lxqt keeps foreign $wl_foreign_kind ~/.wayland-session and logs precedence warning"
+    ! -e "$wl_sw_foreign/.wayland-session" && ! -L "$wl_sw_foreign/.wayland-session" &&
+    ! -e "$wl_sw_foreign/.wayland-session.lightxdm.absent" &&
+    ! -e "$wl_sw_foreign/.wayland-session.lightxdm-edited" &&
+    "$wl_sw_foreign_out" == *"Backing up $wl_sw_foreign/.wayland-session to $wl_sw_foreign/.wayland-session.lightxdm.bak"* &&
+    "$wl_sw_foreign_out" != *"WARNING:"* ]]; then
+    pass "copy_dotfiles lxqt backs up foreign $wl_foreign_kind ~/.wayland-session and removes it for X11 startup"
   else
     fail "copy_dotfiles lxqt foreign $wl_foreign_kind ~/.wayland-session (intact=$wl_foreign_intact, output=$wl_sw_foreign_out)"
+  fi
+done
+
+# 77d: post-install edits use preserve_dotfile's numbered save without overwriting the original backup
+wl_sw_edited="$wl_switch_dir/home_edited"
+mkdir -p "$wl_sw_edited"
+printf '#!/bin/bash\nexec river\n' >"$wl_sw_edited/.wayland-session"
+chmod 755 "$wl_sw_edited/.wayland-session"
+cp "$wl_sw_edited/.wayland-session" "$wl_sw_edited/wayland.expected"
+HOME="$wl_sw_edited" copy_dotfiles plasma 2>/dev/null
+printf '# post-install edit\n' >>"$wl_sw_edited/.wayland-session"
+cp "$wl_sw_edited/.wayland-session" "$wl_sw_edited/edited.expected"
+printf '# previous saved edit\n' >"$wl_sw_edited/.wayland-session.lightxdm-edited"
+wl_sw_edited_out="$(HOME="$wl_sw_edited" copy_dotfiles xfce 2>&1)"
+if [[ ! -e "$wl_sw_edited/.wayland-session" && ! -L "$wl_sw_edited/.wayland-session" &&
+  "$(cat "$wl_sw_edited/.wayland-session.lightxdm-edited")" == '# previous saved edit' &&
+  "$wl_sw_edited_out" == *"Saving edited $wl_sw_edited/.wayland-session to $wl_sw_edited/.wayland-session.lightxdm-edited.1"* ]] &&
+  cmp -s "$wl_sw_edited/wayland.expected" "$wl_sw_edited/.wayland-session.lightxdm.bak" &&
+  cmp -s "$wl_sw_edited/edited.expected" "$wl_sw_edited/.wayland-session.lightxdm-edited.1"; then
+  pass "copy_dotfiles xfce saves Wayland edits in .lightxdm-edited.1 and keeps the original backup intact"
+else
+  fail "copy_dotfiles xfce with edited Wayland session (output=$wl_sw_edited_out)"
+fi
+
+# 77e: uninstall restores the user's session byte-identically after switching to X11
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh restores Wayland sessions after X11 installs (unshare -r unavailable)"
+else
+  for wl_roundtrip_kind in with_bak foreign_regular foreign_symlink edited; do
+    wl_roundtrip_home="$wl_switch_dir/home_$wl_roundtrip_kind"
+    set +e
+    output="$(env TARGET_HOME="$wl_roundtrip_home" LOGIN_FILE="$wl_switch_dir/login" \
+      GNOME_SESSION_TYPE_DEST="$wl_switch_dir/gnome-session-type.conf" \
+      AUTOLOGIN_DROPIN="$wl_switch_dir/autologin.conf" OVERRIDE_FILE="$wl_switch_dir/override.conf" \
+      POLKIT_RULE="$wl_switch_dir/polkit.rules" DM_STATE_FILE="$wl_switch_dir/dm" \
+      unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+    status=$?
+    set -e
+    wl_restored_type=0
+    if [[ "$wl_roundtrip_kind" == foreign_symlink ]]; then
+      if [[ -L "$wl_roundtrip_home/.wayland-session" &&
+        "$(readlink "$wl_roundtrip_home/.wayland-session")" == "$(readlink "$wl_roundtrip_home/wayland.expected")" ]]; then
+        wl_restored_type=1
+      fi
+    elif [[ -f "$wl_roundtrip_home/.wayland-session" && ! -L "$wl_roundtrip_home/.wayland-session" ]]; then
+      wl_restored_type=1
+    fi
+    if [[ $status -eq 0 && $wl_restored_type -eq 1 && -x "$wl_roundtrip_home/.wayland-session" &&
+      ! -e "$wl_roundtrip_home/.wayland-session.lightxdm.bak" &&
+      ! -L "$wl_roundtrip_home/.wayland-session.lightxdm.bak" &&
+      ! -e "$wl_roundtrip_home/.wayland-session.lightxdm.absent" ]] &&
+      cmp -s "$wl_roundtrip_home/wayland.expected" "$wl_roundtrip_home/.wayland-session" &&
+      { [[ "$wl_roundtrip_kind" != edited ]] ||
+        cmp -s "$wl_roundtrip_home/edited.expected" "$wl_roundtrip_home/.wayland-session.lightxdm-edited.1"; }; then
+      pass "uninstall.sh restores the original Wayland session byte-identically after X11 ($wl_roundtrip_kind)"
+    else
+      fail "uninstall.sh Wayland to X11 round trip ($wl_roundtrip_kind, status=$status, output=$output)"
+    fi
+  done
+fi
+
+# 77f: main's X11 auto-start summary agrees with the real dotfiles installed on disk
+for wl_previous_session in foreign plasma gnome budgie; do
+  wl_summary_home="$wl_switch_dir/summary_$wl_previous_session"
+  mkdir -p "$wl_summary_home"
+  printf '#!/bin/bash\nexec custom-user-compositor\n' >"$wl_summary_home/.wayland-session"
+  chmod 755 "$wl_summary_home/.wayland-session"
+  cp "$wl_summary_home/.wayland-session" "$wl_summary_home/wayland.expected"
+  if [[ "$wl_previous_session" != foreign ]]; then
+    HOME="$wl_summary_home" copy_dotfiles "$wl_previous_session" 2>/dev/null
+  fi
+  set +e
+  output="$(
+    export HOME="$wl_summary_home" USER=testuser PATH="$bash_stub_dir:$sudo_pw_dir:$PATH"
+    # shellcheck disable=SC2317,SC2329  # overrides are called indirectly through main
+    configure_gnome_session_type() { :; }
+    # shellcheck disable=SC2317,SC2329
+    disable_display_managers() { :; }
+    main --de i3 --no-packages --no-keyring --no-polkit-rule 2>&1
+  )"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && "$output" == *"- i3 will auto-start on TTY1 for testuser"* &&
+    "$output" == *"No need to run 'startx'."* && -x "$wl_summary_home/.xinitrc" &&
+    ! -e "$wl_summary_home/.wayland-session" && ! -L "$wl_summary_home/.wayland-session" &&
+    ! -x "$wl_summary_home/.wayland-session" ]] &&
+    cmp -s "$wl_summary_home/wayland.expected" "$wl_summary_home/.wayland-session.lightxdm.bak"; then
+    pass "main reports i3 auto-start with no Wayland session left on the startup path (after $wl_previous_session)"
+  else
+    fail "main X11 auto-start after $wl_previous_session (status=$status, output=$output)"
   fi
 done
 

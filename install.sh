@@ -419,29 +419,13 @@ copy_dotfiles() {
       install -Dm755 "$template" "$user_home/.xinitrc"
 
       local wl_session="$user_home/.wayland-session"
+      # An executable ~/.wayland-session would start instead of startx, so move it aside like
+      # ~/.xinitrc; skip absent files so X11-only homes get no .lightxdm.absent marker.
       if [[ -e "$wl_session" || -L "$wl_session" ]]; then
-        local wl_match=0 wl_sum wl_tmpl
-        if [[ -f "$wl_session" && ! -L "$wl_session" ]]; then
-          wl_sum="$(sha256sum < "$wl_session")"
-          for wl_tmpl in "$SCRIPT_DIR"/dotfiles/.wayland-session-* "$user_home"/.config/lightxdm/.wayland-session-*; do
-            [[ "$wl_tmpl" -ef "$wl_session" ]] && continue
-            if [[ -f "$wl_tmpl" && "$wl_sum" == "$(sha256sum < "$wl_tmpl")" ]]; then
-              wl_match=1
-              break
-            fi
-          done
-        fi
-        if [[ $wl_match -eq 1 ]]; then
-          rm -f -- "$wl_session"
-          if [[ -e "${wl_session}.lightxdm.bak" || -L "${wl_session}.lightxdm.bak" ]]; then
-            log "Restoring $wl_session from ${wl_session}.lightxdm.bak"
-            mv -- "${wl_session}.lightxdm.bak" "$wl_session"
-            log "WARNING: ~/.wayland-session takes precedence over startx at TTY1 login and must be removed for $de to start."
-          fi
-          rm -f -- "${wl_session}.lightxdm.absent"
-        else
-          log "WARNING: ~/.wayland-session takes precedence over startx at TTY1 login and must be removed for $de to start."
-        fi
+        local wl_templates=("$SCRIPT_DIR"/dotfiles/.wayland-session-* "$user_home"/.config/lightxdm/.wayland-session-*)
+        preserve_dotfile "$wl_session" "${wl_templates[@]}"
+        rm -f -- "$wl_session"
+        log "Removed $wl_session so $de can start on TTY1 (originals: ${wl_session}.lightxdm.bak; saved edits: ${wl_session}.lightxdm-edited*)."
       fi
     fi
   else
