@@ -504,13 +504,11 @@ EOF
   esac
 }
 
-# Check startup commands before changing the user's session configuration
-check_session_commands() {
-  local template="$1" base="${1##*/}" line session_line="" session_command package
-  if [[ ! -r "$template" ]]; then
-    log "Cannot read $template; fix its permissions and re-run."
-    return 1
-  fi
+# Parse Bash templates without executing them, before installing packages or previewing changes.
+check_template_syntax() {
+  local template="$1"
+  # Leave unreadable templates to check_session_commands and the preview's existing reporting.
+  [[ -r "$template" ]] || return 0
   local first_line="" parse_error
   IFS= read -r first_line < "$template" || true
   if [[ "$first_line" =~ ^('#!/bin/bash'|'#!/usr/bin/bash'|'#!/usr/bin/env bash')[[:blank:]]*$ ]]; then
@@ -518,6 +516,15 @@ check_session_commands() {
       log "Invalid Bash syntax in $template: ${parse_error//$'\n'/ }"
       return 1
     fi
+  fi
+}
+
+# Check startup commands before changing the user's session configuration
+check_session_commands() {
+  local template="$1" base="${1##*/}" line session_line="" session_command package
+  if [[ ! -r "$template" ]]; then
+    log "Cannot read $template; fix its permissions and re-run."
+    return 1
   fi
   if [[ "$base" == .wayland-session-* ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -1081,6 +1088,7 @@ disable_display_managers() {
 preview_install() {
   local de="$1" no_packages="$2" no_keyring="$3" autologin="$4" keyring="${5:-}" template real_user
   template="$(xinitrc_template "$de")" || return 1
+  check_template_syntax "$template" || return 1
   real_user="${USER:-$(id -un)}"
   printf 'Desktop: %s\nTemplate: %s\n' "$de" "$template"
   if [[ ! -r "$template" ]]; then
@@ -1488,6 +1496,8 @@ EOF
 
   local template is_wayland=0 session_dotfile=".xinitrc" manual_start="startx"
   template="$(xinitrc_template "$de")"
+  install_step="check_template_syntax"
+  check_template_syntax "$template" || exit 1
   if [[ "${template##*/}" == .wayland-session-* ]]; then
     is_wayland=1
     session_dotfile=".wayland-session"

@@ -426,7 +426,9 @@ run_main_with_stubs() (
       return "${STUB_FAIL_STATUS:-1}"
     fi
   }
-  install_packages() { stub_install_step install_packages "$@"; }
+  if [[ "${STUB_REAL_INSTALL_PACKAGES:-0}" != 1 ]]; then
+    install_packages() { stub_install_step install_packages "$@"; }
+  fi
   if [[ "${STUB_REAL_COPY_DOTFILES:-0}" != 1 ]]; then
     copy_dotfiles() { stub_install_step copy_dotfiles "$1"; }
   fi
@@ -2935,17 +2937,18 @@ for syntax_session_type in x11 wayland; do
     printf '%s\n' "$syntax_shebang" "$syntax_template_body" >"$syntax_template"
     set +e
     # shellcheck disable=SC2016  # expand inside the child shell
-    output="$(HOME="$syntax_home" bash -c 'source "$1/install.sh"; check_session_commands "$2"' bash "$REPO_ROOT" "$syntax_template" 2>&1)"
+    output="$(HOME="$syntax_home" bash -c 'source "$1/install.sh"; check_template_syntax "$2"' bash "$REPO_ROOT" "$syntax_template" 2>&1)"
     status=$?
     set -e
     if [[ $status -eq 1 && "$output" == *"Invalid Bash syntax in $syntax_template:"* &&
       "$output" == *"syntax error: unexpected end of file"* && "$output" != *$'\n'* &&
       ! -e "$syntax_home/template-executed" ]]; then
-      pass "check_session_commands refuses malformed $syntax_session_type Bash syntax ($syntax_shebang)"
+      pass "check_template_syntax refuses malformed $syntax_session_type Bash syntax ($syntax_shebang)"
     else
       fail "malformed $syntax_session_type template ($syntax_shebang, status=$status, output=$output)"
     fi
   done
+  syntax_refusal="$output"
 
   printf 'existing profile\n' >"$syntax_home/.bash_profile"
   : >"$STUB_LOG"
@@ -2960,7 +2963,7 @@ for syntax_session_type in x11 wayland; do
   if [[ $status -eq 1 && "$log_content" == "sudo -v" &&
     "$output" == *"Invalid Bash syntax in $syntax_template:"* &&
     "$output" == *"syntax error: unexpected end of file"* &&
-    "$output" == *"Install stopped during check_session_commands; already done: none"* &&
+    "$output" != *"Skipping package installation"* &&
     "$output" != *"lightXDM install complete!"* &&
     "$(cat "$syntax_home/.bash_profile")" == 'existing profile' &&
     ! -e "$syntax_home/.bash_profile.lightxdm.bak" && ! -e "$syntax_home/.xinitrc" &&
@@ -2972,16 +2975,33 @@ for syntax_session_type in x11 wayland; do
     fail "main malformed $syntax_session_type template (status=$status, log=$log_content, output=$output)"
   fi
 
-  # Other interpreters retain the existing command checks even with the same malformed body.
+  : >"$STUB_LOG"
+  set +e
+  output="$(env -u SHELLOPTS -u SUDO_USER HOME="$syntax_home" \
+    bash "$REPO_ROOT/install.sh" --dry-run --no-packages --de "$syntax_id" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 1 && "$output" == "$syntax_refusal" && ! -s "$STUB_LOG" &&
+    "$(cat "$syntax_home/.bash_profile")" == 'existing profile' &&
+    ! -e "$syntax_home/.bash_profile.lightxdm.bak" && ! -e "$syntax_home/.xinitrc" &&
+    ! -e "$syntax_home/.wayland-session" && ! -e "$syntax_home/.gpg-agent-gnome" &&
+    ! -e "$syntax_home/.config/autostart/lightxdm-gpg-agent-tty.desktop" &&
+    ! -e "$syntax_home/template-executed" ]]; then
+    pass "--dry-run reports the same malformed $syntax_session_type Bash syntax refusal without changes"
+  else
+    fail "--dry-run malformed $syntax_session_type template (status=$status, output=$output, log=$(cat "$STUB_LOG"))"
+  fi
+
+  # Other interpreters skip Bash parsing even with the same malformed body.
   printf '%s\n' '#!/bin/sh' "$syntax_template_body" >"$syntax_template"
   set +e
   # shellcheck disable=SC2016  # expand inside the child shell
-  output="$(HOME="$syntax_home" bash -c 'source "$1/install.sh"; check_session_commands "$2"' bash "$REPO_ROOT" "$syntax_template" 2>&1)"
+  output="$(HOME="$syntax_home" bash -c 'source "$1/install.sh"; check_template_syntax "$2"' bash "$REPO_ROOT" "$syntax_template" 2>&1)"
   status=$?
   set -e
   if [[ "$output" != *"Invalid Bash syntax"* && "$output" != *"syntax error"* &&
     ! -e "$syntax_home/template-executed" ]]; then
-    pass "check_session_commands skips Bash parsing for a non-Bash $syntax_session_type template"
+    pass "check_template_syntax skips Bash parsing for a non-Bash $syntax_session_type template"
   else
     fail "non-Bash $syntax_session_type template (status=$status, output=$output)"
   fi
@@ -2991,15 +3011,44 @@ for syntax_session_type in x11 wayland; do
   printf '%s\n' '#!/bin/bash' 'printf executed > "$HOME/template-executed"' 'exec dwm' >"$syntax_template"
   set +e
   # shellcheck disable=SC2016  # expand inside the child shell
-  output="$(HOME="$syntax_home" bash -c 'source "$1/install.sh"; check_session_commands "$2"' bash "$REPO_ROOT" "$syntax_template" 2>&1)"
+  output="$(HOME="$syntax_home" bash -c 'source "$1/install.sh"; check_template_syntax "$2"' bash "$REPO_ROOT" "$syntax_template" 2>&1)"
   status=$?
   set -e
   if [[ $status -eq 0 && -z "$output" && ! -e "$syntax_home/template-executed" ]]; then
-    pass "check_session_commands accepts valid $syntax_session_type Bash syntax without executing it"
+    pass "check_template_syntax accepts valid $syntax_session_type Bash syntax without executing it"
   else
     fail "valid $syntax_session_type template (status=$status, output=$output)"
   fi
 done
+
+# A malformed built-in override must also stop before the real package helper reaches pacman.
+syntax_packages_home="$TMP_DIR/syntax_packages_home"
+mkdir -p "$syntax_packages_home/.config/lightxdm"
+syntax_packages_template="$syntax_packages_home/.config/lightxdm/.xinitrc-xfce"
+printf '%s\n' '#!/bin/bash' "$syntax_template_body" >"$syntax_packages_template"
+printf 'existing profile\n' >"$syntax_packages_home/.bash_profile"
+: >"$STUB_LOG"
+set +e
+output="$(
+  HOME="$syntax_packages_home" STUB_REAL_INSTALL_PACKAGES=1 STUB_REAL_COPY_DOTFILES=1 STUB_RECORD_GNOME_STEP=1 \
+    run_main_with_stubs "$sudo_pw_dir" --de xfce 2>&1
+)"
+status=$?
+set -e
+log_content="$(cat "$STUB_LOG")"
+if [[ $status -eq 1 && "$log_content" == "sudo -v" &&
+  "$output" == *"Invalid Bash syntax in $syntax_packages_template:"* &&
+  "$output" == *"syntax error: unexpected end of file"* &&
+  "$output" != *"lightXDM install complete!"* &&
+  "$(cat "$syntax_packages_home/.bash_profile")" == 'existing profile' &&
+  ! -e "$syntax_packages_home/.bash_profile.lightxdm.bak" && ! -e "$syntax_packages_home/.xinitrc" &&
+  ! -e "$syntax_packages_home/.gpg-agent-gnome" &&
+  ! -e "$syntax_packages_home/.config/autostart/lightxdm-gpg-agent-tty.desktop" &&
+  ! -e "$syntax_packages_home/template-executed" ]]; then
+  pass "main refuses malformed built-in Bash syntax before pacman, dotfile, PAM or display-manager changes"
+else
+  fail "main malformed built-in template with packages enabled (status=$status, log=$log_content, output=$output)"
+fi
 
 # An unreadable custom template must stop before changing session dotfiles.
 if [[ $EUID -eq 0 ]]; then
