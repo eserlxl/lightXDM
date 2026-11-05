@@ -4020,6 +4020,23 @@ else
   fail "is_past_lightxdm_template differs between install.sh and uninstall.sh"
 fi
 
+# lint.sh checks a hand-written list; every tracked shell script and session template must be on it.
+if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  lint_listed="$(sed -n '/^scripts=(/,/^)/p' "$REPO_ROOT/lint.sh" | sed -e '1d' -e '$d' -e 's/^[[:space:]]*//')"
+  lint_missing=()
+  while IFS= read -r lint_file; do
+    [[ -z "$lint_file" || "$lint_file" == *.desktop ]] && continue
+    grep -Fxq -- "$lint_file" <<<"$lint_listed" || lint_missing+=("$lint_file")
+  done < <(git -C "$REPO_ROOT" ls-files -- '*.sh' 'dotfiles/.*')
+  if [[ ${#lint_missing[@]} -eq 0 ]]; then
+    pass "lint.sh lists every tracked shell script and session template"
+  else
+    fail "lint.sh misses tracked shell files: ${lint_missing[*]}"
+  fi
+else
+  skip "lint.sh file-list coverage (not a git checkout)"
+fi
+
 # Case 57: .xinitrc-* templates merge X resources/keymaps, export session vars, source xinitrc.d before gpg-agent, manage activation/polkit per DE, and exec the session command
 xinit_test_dir="$TMP_DIR/xinitrc_templates"
 xinit_home="$xinit_test_dir/home"
