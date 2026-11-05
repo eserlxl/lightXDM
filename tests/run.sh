@@ -7996,6 +7996,30 @@ else
   fail "Switching to XFCE did not clean up GNOME session-type configuration (output=$output)"
 fi
 
+# An inserted line inside the marked block must stop both a rewrite and removal.
+configure_gnome_session_type gnome "$gnome_user" 2>/dev/null || fail "configure_gnome_session_type gnome \"$gnome_user\" returned $?"
+sed -i '/^session    \[success=2 default=ignore\] pam_succeed_if\.so quiet tty notin tty1:\/dev\/tty1$/a # user comment inside the GNOME block' "$LOGIN_FILE"
+for gnome_edited_de in gnome xfce; do
+  cp "$LOGIN_FILE" "$TMP_DIR/gnome-edited-login"
+  cp "$GNOME_SESSION_TYPE_DEST" "$TMP_DIR/gnome-edited-config"
+  cp "${LOGIN_FILE}.lightxdm.bak" "$TMP_DIR/gnome-edited-backup"
+  set +e
+  output="$(configure_gnome_session_type "$gnome_edited_de" "$gnome_user" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -ne 0 && "$output" == *"ERROR:"* && "$output" == *"$LOGIN_FILE"* &&
+    "$output" == *"remove lightXDM's GNOME lines by hand"* && "$output" == *"restore ${LOGIN_FILE}.lightxdm.bak"* ]] &&
+    cmp -s "$LOGIN_FILE" "$TMP_DIR/gnome-edited-login" &&
+    cmp -s "$GNOME_SESSION_TYPE_DEST" "$TMP_DIR/gnome-edited-config" &&
+    cmp -s "${LOGIN_FILE}.lightxdm.bak" "$TMP_DIR/gnome-edited-backup"; then
+    pass "$gnome_edited_de refuses an edited GNOME block without changing files"
+  else
+    fail "$gnome_edited_de edited GNOME block (status=$status, output=$output)"
+  fi
+done
+cp "$TMP_DIR/gnome-original" "$LOGIN_FILE"
+rm -f "$GNOME_SESSION_TYPE_DEST"
+
 # A missing session stack must not produce a backup, config or login edit.
 rm -f "${LOGIN_FILE}.lightxdm.bak"
 printf '#%%PAM-1.0\nauth include system-local-login\n' >"$LOGIN_FILE"

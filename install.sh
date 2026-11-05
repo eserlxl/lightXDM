@@ -680,6 +680,20 @@ configure_gnome_session_type() (
     log "ERROR: $LOGIN_FILE is missing; lightXDM will not create it."
     return 1
   fi
+  if [[ $has_block -eq 1 ]]; then
+    local check_line check_tty check_user check_env
+    while IFS= read -r check_line || [[ -n "$check_line" ]]; do
+      [[ "$check_line" == "$marker" ]] || continue
+      if ! {
+        IFS= read -r check_tty && [[ "$check_tty" == "$tty_gate" ]] &&
+          IFS= read -r check_user && [[ "$check_user" =~ $user_gate_re ]] &&
+          { IFS= read -r check_env || [[ -n "$check_env" ]]; } && [[ "$check_env" == "$env_line" ]]
+      }; then
+        log "ERROR: Edited lightXDM GNOME block in $LOGIN_FILE; remove lightXDM's GNOME lines by hand or restore ${LOGIN_FILE}.lightxdm.bak."
+        return 1
+      fi
+    done < "$LOGIN_FILE"
+  fi
   adopt_legacy_pam_backup || return 1
 
   local tmp line newline inserted=0 block_line=0
