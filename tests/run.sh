@@ -7059,20 +7059,31 @@ else
   cp "$ko_dir/login.lightxdm.bak" "$ko_dir/login"
   cp "$ko_dir/login.lightxdm.bak" "$ko_dir/login.expected"
   printf 'auth       optional   pam_gnome_keyring.so\nsession    optional   pam_gnome_keyring.so auto_start\n' >>"$ko_dir/login"
-  printf '[Service]\n' >"$ko_dir/getty.d/lightxdm-autologin.conf"
+  # shellcheck disable=SC2016  # the drop-in holds a literal $TERM
+  printf '[Service]\nExecStart=-/sbin/agetty --autologin testuser --noclear %%I $TERM\n' >"$ko_dir/getty.d/lightxdm-autologin.conf"
   printf 'rule\n' >"$ko_dir/polkit.rules"
   printf 'xfce\n' >"$ko_dir/home/.xinitrc"
   printf 'sddm.service\n' >"$ko_dir/dm"
   : >"$STUB_LOG"
   set +e
-  output="$(env -u SUDO_USER TARGET_HOME= LOGIN_FILE="$ko_dir/login" OVERRIDE_DIR="$ko_dir/getty.d" POLKIT_RULE="$ko_dir/polkit.rules" DM_STATE_FILE="$ko_dir/dm" unshare -r bash "$REPO_ROOT/uninstall.sh" --keyring-only 2>&1)"
+  output="$(env -u SUDO_USER TARGET_HOME= LOGIN_FILE="$ko_dir/login" OVERRIDE_DIR="$ko_dir/getty.d" POLKIT_RULE="$ko_dir/polkit.rules" DM_STATE_FILE="$ko_dir/dm" GNOME_SESSION_TYPE_DEST="$ko_dir/gnome-session-type.conf" unshare -r bash "$REPO_ROOT/uninstall.sh" --keyring-only 2>&1)"
   status=$?
   set -e
-  if [[ $status -eq 0 && "$output" == *"Done (--keyring-only)"* && -f "$ko_dir/getty.d/lightxdm-autologin.conf" && -f "$ko_dir/polkit.rules" && -f "$ko_dir/home/.xinitrc" ]] &&
+  if [[ $status -eq 0 && "$output" == *"Done (--keyring-only)"* && "$output" != *"enable-autologin.sh"* && -f "$ko_dir/getty.d/lightxdm-autologin.conf" && -f "$ko_dir/polkit.rules" && -f "$ko_dir/home/.xinitrc" ]] &&
     cmp -s "$ko_dir/login" "$ko_dir/login.expected" && [[ "$(cat "$ko_dir/dm")" == sddm.service ]] && ! grep -q systemctl "$STUB_LOG"; then
     pass "uninstall.sh --keyring-only restores PAM and keeps autologin, Polkit, dotfiles and disabled display managers"
   else
     fail "uninstall.sh --keyring-only (status=$status, output=$output, login=$(cat "$ko_dir/login"))"
+  fi
+  rm -f "$ko_dir/getty.d/lightxdm-autologin.conf"
+  set +e
+  output="$(env -u SUDO_USER TARGET_HOME= LOGIN_FILE="$ko_dir/login" OVERRIDE_DIR="$ko_dir/getty.d" POLKIT_RULE="$ko_dir/polkit.rules" DM_STATE_FILE="$ko_dir/dm" GNOME_SESSION_TYPE_DEST="$ko_dir/gnome-session-type.conf" unshare -r bash "$REPO_ROOT/uninstall.sh" --keyring-only 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && "$output" == *"To log in on TTY1 without a password, run: sudo bash enable-autologin.sh <user>"* ]]; then
+    pass "uninstall.sh --keyring-only suggests enabling autologin when disabled"
+  else
+    fail "uninstall.sh --keyring-only autologin hint (status=$status, output=$output)"
   fi
   # A keyring line lightXDM did not add stays, with a warning
   printf '#%%PAM-1.0\nauth       optional   pam_kwallet5.so\n' >"$ko_dir/login"

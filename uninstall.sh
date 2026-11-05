@@ -138,6 +138,10 @@ if [[ $keyring_only -eq 1 ]]; then
     echo "Warning: $LOGIN_FILE still configures PAM keyring unlock (lines lightXDM did not add); remove them by hand if you use autologin." >&2
   fi
   echo "Done (--keyring-only): dotfiles, autologin, the Polkit rule and display managers are unchanged."
+  autologin_status="$(bash "$SCRIPT_DIR/enable-autologin.sh" --status 2>/dev/null)"
+  if [[ "$autologin_status" != "enabled for"* ]]; then
+    echo "To log in on TTY1 without a password, run: sudo bash enable-autologin.sh ${SUDO_USER:-<user>}"
+  fi
   exit 0
 fi
 
