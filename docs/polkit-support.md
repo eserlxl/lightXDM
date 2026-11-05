@@ -14,61 +14,17 @@ Polkit (PolicyKit) is a framework for defining and handling **authorization** fo
 
 ...these actions are controlled by `polkit` rules.
 
-Without a display manager nothing else starts the desktop's authentication agent, so lightXDM makes sure one runs; power actions are allowed by systemd's own policy in an active local session, and lightXDM adds a rule that keeps them allowed (next section).
+Without a display manager nothing else starts the desktop's authentication agent, so lightXDM makes sure one runs; power actions are allowed by systemd's own policy in an active local session, so lightXDM installs no Polkit rule.
 
 ---
 
-## 🔒 The Default Polkit Rule (Hybrid: Secure & Usable)
+## 🔒 Power actions use systemd's defaults
 
-By default, `lightXDM` now installs a hybrid rule at (pass `--no-polkit-rule` to `install.sh` to keep the system's own policy instead; packages and the desktop's authentication agent are still set up):
+Systemd's `login1` policy allows power-off, reboot, suspend and hibernate without a password in an active local session, including when other sessions are open. Remote or inactive sessions still need authentication. USB mounting uses `udisks2` defaults.
 
-```
-/etc/polkit-1/rules.d/49-nopasswd.rules
-```
+### The rule older versions installed
 
-**Content:**
-
-```js
-// Allow local, active wheel users on seat0 to shutdown/reboot/suspend/hibernate without password
-polkit.addRule(function(action, subject) {
-  if (
-    subject.isInGroup("wheel") &&
-    subject.local &&
-    subject.active &&
-    subject.seat === "seat0"
-  ) {
-    // Allow shutdown, reboot, suspend and hibernate without password,
-    // also while other sessions are open (the -multiple-sessions variants)
-    var powerActions = [
-      "org.freedesktop.login1.power-off",
-      "org.freedesktop.login1.power-off-multiple-sessions",
-      "org.freedesktop.login1.reboot",
-      "org.freedesktop.login1.reboot-multiple-sessions",
-      "org.freedesktop.login1.suspend",
-      "org.freedesktop.login1.suspend-multiple-sessions",
-      "org.freedesktop.login1.hibernate",
-      "org.freedesktop.login1.hibernate-multiple-sessions"
-    ];
-    if (powerActions.indexOf(action.id) !== -1) {
-      return polkit.Result.YES;
-    }
-  }
-});
-```
-
-### ✅ What this allows:
-
-* **Shutdown, reboot, suspend, hibernate** from the GUI: systemd's defaults already allow these actions (including while other sessions are open) for active local sessions; the rule keeps them allowed without a password for local, active users in the `wheel` group on seat0 if those defaults are tightened later (by changed action defaults or a rule that sorts after `49-nopasswd.rules`)
-* **Mounting removable drives** (`udisks2` defaults) and **power management** (`UPower` defaults) for active local users without overriding upstream policies
-
-### ❌ What it doesn't allow:
-
-* Arbitrary admin-level system changes
-* Package installations via polkit
-* Actions from unknown services
-* Remote or inactive users, or sessions on other seats, to shutdown/reboot/suspend
-
-This hybrid rule balances usability and security: systemd already allows power actions for active local sessions and the rule keeps them allowed for local active wheel users on seat0 if those defaults are tightened later, but other privileged actions still require authentication.
+Older versions installed `/etc/polkit-1/rules.d/49-nopasswd.rules`, which redundantly granted the same actions to local active `wheel` users on seat0. `uninstall.sh` still removes it or restores the rule it replaced from `49-nopasswd.rules.lightxdm.bak`; `--no-polkit-rule` is accepted but has no effect.
 
 > **Note:** The correct polkit agent is installed automatically for your desktop environment:
 > - Plasma: polkit-kde-agent
@@ -139,7 +95,7 @@ These provide the Polkit backend and the authentication dialog for your desktop.
 | Feature        | Enabled By                          |
 | -------------- | ----------------------------------- |
 | USB automount  | `udisks2` defaults + polkit agent   |
-| Reboot/Suspend/Hibernate | `login1` rule              |
+| Reboot/Suspend/Hibernate | systemd's `login1` defaults |
 | Brightness     | `UPower` defaults                   |
 | GUI prompt     | polkit-kde-agent (Plasma), lxqt-policykit (LXQt), polkit-gnome (XFCE, i3), the desktop's own agent (GNOME, Cinnamon, Budgie, LXDE, MATE) |
 

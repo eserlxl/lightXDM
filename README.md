@@ -3,7 +3,7 @@
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![Platform: Arch Linux](https://img.shields.io/badge/platform-Arch%20Linux-1793d1.svg)](https://archlinux.org)
 
-A lightweight, display-manager-free desktop environment for minimalists, Arch Linux users, and those who prefer a TTY1 login over SDDM/LightDM: X11 desktops start with `startx`; KDE Plasma, GNOME, and Budgie start on Wayland. Log in on TTY1 and your desktop starts; the installer sets up keyring unlock through PAM, a Polkit rule for power actions, and turns off display managers. `uninstall.sh` reverts these configuration changes; the packages it installed stay.
+A lightweight, display-manager-free desktop environment for minimalists, Arch Linux users, and those who prefer a TTY1 login over SDDM/LightDM: X11 desktops start with `startx`; KDE Plasma, GNOME, and Budgie start on Wayland. Log in on TTY1 and your desktop starts; the installer sets up keyring unlock through PAM and turns off display managers. `uninstall.sh` reverts these configuration changes; the packages it installed stay.
 
 ## Contents
 
@@ -35,7 +35,7 @@ You need Arch Linux (or a derivative) with systemd, and a user in the `wheel` gr
 
 - `--de <id>`: configure this desktop (`plasma`, `gnome`, `budgie`, `xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, `i3`, or a custom id with `--no-packages`)
 - `--list-packages --de <id>`: print the packages it would install, change nothing
-- `--no-packages`, `--no-keyring`, `--no-polkit-rule`: skip packages, PAM keyring setup, or the Polkit rule
+- `--no-packages`, `--no-keyring`: skip packages or PAM keyring setup
 - `--no-keyring --autologin`: log in on TTY1 without a password, in the same run
 - `--init-template --de <id>`: create `~/.config/lightxdm/.xinitrc-<id>` (or `.wayland-session-<id>` for Plasma, GNOME, and Budgie) to edit first (no sudo)
 - `--init-template --wayland --de sway`: create `~/.config/lightxdm/.wayland-session-sway` for a custom Wayland compositor; edit it, then install with `--no-packages --de sway`. `--wayland` requires `--init-template` and a custom id; keep only one X11 or Wayland template per custom id.
@@ -77,7 +77,7 @@ What the installer changes outside your home, so nothing comes as a surprise:
 - It **disables enabled display managers** (SDDM, LightDM, GDM, LXDM, `ly@tty1`, and whatever `display-manager.service` points to), so the next boot ends at a TTY1 login. `uninstall.sh` re-enables them.
 - It **appends keyring lines to `/etc/pam.d/login`** (backup at `/etc/pam.d/login.lightxdm.bak`) unless you pass `--no-keyring`.
 - For **GNOME only**, it inserts a PAM block before the first session line in `/etc/pam.d/login`, using `/etc/lightxdm/gnome-session-type.conf` to register a Wayland session **only for the installing user on TTY1**, including with `--no-keyring`. Installing another desktop or running `uninstall.sh` removes the block and config; `uninstall.sh --keyring-only` keeps them. See [why GNOME needs this](docs/installation.md#gnome-session-requirements).
-- It installs `/etc/polkit-1/rules.d/49-nopasswd.rules`: systemd already allows power-off, reboot, suspend and hibernate (including with other sessions open) for active local sessions, and the rule keeps them allowed without a password for local active `wheel` users on seat0 if those defaults are tightened later; `--no-polkit-rule` keeps the system's own policy.
+- It installs no Polkit rule: systemd already allows power-off, reboot, suspend and hibernate in an active local session. Older versions installed `/etc/polkit-1/rules.d/49-nopasswd.rules`; `uninstall.sh` still removes it (or restores the rule it replaced), and `--no-polkit-rule` is accepted but no longer needed.
 
 In your home it replaces `~/.bash_profile` and `~/.xinitrc` (or `~/.wayland-session` for Wayland sessions), keeping your copies as `*.lightxdm.bak`. An executable `~/.wayland-session` takes precedence over `startx`; installing an X11 desktop moves it aside and removes it, and uninstall restores it. See [session backups](docs/installation.md#session-files-and-backups). If your desktop keeps crashing, TTY1 auto-start pauses itself; see [Recovery](docs/startx-autologin.md#recovery).
 
@@ -96,7 +96,7 @@ User guides:
 | [TTY1 auto-start and autologin](docs/startx-autologin.md) | how the desktop starts, autologin, zsh/fish, recovery |
 | [KWallet auto-unlock](docs/kwallet-autounlock.md) | KWallet unlock through PAM on Plasma |
 | [GPG agent](docs/gpg-agent.md) | `gpg-agent` startup and SSH support |
-| [Polkit](docs/polkit-support.md) | the power rule, agents, and what stays protected |
+| [Polkit](docs/polkit-support.md) | agents, systemd's power defaults, and the rule older versions installed |
 
 Maintainer docs:
 

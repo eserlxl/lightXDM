@@ -36,7 +36,7 @@ lightXDM/
 ├── pam/
 │   └── gnome-session-type.conf
 ├── polkit/
-│   └── 49-nopasswd.rules
+│   └── 49-nopasswd.rules  # rule older versions installed; uninstall.sh uses it to recognize and remove it
 ├── docs/
 │   ├── development.md
 │   ├── features.md
