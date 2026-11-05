@@ -52,7 +52,7 @@ fail() {
   failures=$((failures + 1))
 }
 
-pacman -Syu --noconfirm --needed python-pam kwallet-pam gnome-keyring
+pacman -Syu --noconfirm --needed python-pam kwallet-pam gnome-keyring diffutils
 
 for module in /usr/lib/security/pam_kwallet5.so /usr/lib/security/pam_gnome_keyring.so; do
   if [[ ! -f "$module" ]]; then
@@ -194,6 +194,12 @@ PY
 }
 
 # 1. configure_pam plasma + PAM auth/session checks
+if HOME="/home/$test_user" USER="$test_user" bash "$REPO_ROOT/install.sh" --dry-run --de plasma &&
+  cmp -s /etc/pam.d/login "$orig_login"; then
+  pass "--dry-run previews the install and leaves /etc/pam.d/login byte-identical"
+else
+  fail "--dry-run failed or changed /etc/pam.d/login before the real install"
+fi
 configure_pam plasma
 if grep -Eq '^[[:space:]]*auth[[:space:]]+optional[[:space:]]+pam_kwallet5\.so$' /etc/pam.d/login &&
   grep -Eq '^[[:space:]]*session[[:space:]]+optional[[:space:]]+pam_kwallet5\.so force_run$' /etc/pam.d/login; then

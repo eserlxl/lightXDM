@@ -465,33 +465,47 @@ check_session_commands() {
   return 0
 }
 
-# Copy dotfiles to the user's home directory
+# Preview or preserve and install a dotfile, using the same destination and templates.
+copy_dotfile() {
+  local preview="$1" mode="$2" source="$3" target="$4"
+  shift 4
+  if [[ "$preview" == 1 ]]; then
+    printf 'Dotfile: %s\n' "$target"
+    return 0
+  fi
+  if [[ $# -eq 0 ]]; then
+    preserve_dotfile "$target" "$source"
+  else
+    preserve_dotfile "$target" "$@"
+  fi
+  install -Dm"$mode" "$source" "$target"
+}
+
+# Copy dotfiles to the user's home directory (or print destinations with preview=1).
 copy_dotfiles() {
-  local de
+  local de preview="${2:-0}"
   de=$1
   local user_home
   user_home=$HOME
 
-  log "Copying dotfiles to $user_home..."
-  preserve_dotfile "$user_home/.bash_profile" "$SCRIPT_DIR/dotfiles/.bash_profile"
-  install -Dm644 "$SCRIPT_DIR/dotfiles/.bash_profile" "$user_home/.bash_profile"
+  if [[ $preview -eq 0 ]]; then
+    log "Copying dotfiles to $user_home..."
+  fi
+  copy_dotfile "$preview" 644 "$SCRIPT_DIR/dotfiles/.bash_profile" "$user_home/.bash_profile"
 
   if [[ "$de" == "plasma" ]]; then
-    preserve_dotfile "$user_home/.gpg-agent-kwallet" "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome"
-    install -Dm744 "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome" "$user_home/.gpg-agent-kwallet"
+    copy_dotfile "$preview" 744 "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome" "$user_home/.gpg-agent-kwallet"
   else
-    preserve_dotfile "$user_home/.gpg-agent-gnome" "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome"
-    install -Dm744 "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome" "$user_home/.gpg-agent-gnome"
+    copy_dotfile "$preview" 744 "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome" "$user_home/.gpg-agent-gnome"
   fi
   # The helper runs before a Wayland compositor starts; this re-runs its refresh inside the session.
-  preserve_dotfile "$user_home/.config/autostart/lightxdm-gpg-agent-tty.desktop" "$SCRIPT_DIR/dotfiles/lightxdm-gpg-agent-tty.desktop"
-  install -Dm644 "$SCRIPT_DIR/dotfiles/lightxdm-gpg-agent-tty.desktop" "$user_home/.config/autostart/lightxdm-gpg-agent-tty.desktop"
+  copy_dotfile "$preview" 644 "$SCRIPT_DIR/dotfiles/lightxdm-gpg-agent-tty.desktop" "$user_home/.config/autostart/lightxdm-gpg-agent-tty.desktop"
 
   local template base
   template="$(xinitrc_template "$de")"
   base="${template##*/}"
   if [[ -f "$template" ]]; then
-    if [[ "$template" == "$user_home/.config/lightxdm/"* ]]; then
+    if [[ $preview -eq 0 && "$template" == "$user_home/.config/lightxdm/"* ]]; then
       log "Using your session template $template"
     fi
     if [[ "$base" == .wayland-session-* ]]; then
@@ -500,25 +514,27 @@ copy_dotfiles() {
         -e "$user_home/.wayland-session.lightxdm.absent" || -L "$user_home/.wayland-session.lightxdm.absent" ]]; then
         wayland_templates=("$user_home"/.config/lightxdm/.wayland-session-* "${wayland_templates[@]}")
       fi
-      preserve_dotfile "$user_home/.wayland-session" "${wayland_templates[@]}"
-      install -Dm755 "$template" "$user_home/.wayland-session"
+      copy_dotfile "$preview" 755 "$template" "$user_home/.wayland-session" "${wayland_templates[@]}"
     else
       local xinitrc_templates=("$SCRIPT_DIR"/dotfiles/.xinitrc-*)
       if [[ -e "$user_home/.xinitrc.lightxdm.bak" || -L "$user_home/.xinitrc.lightxdm.bak" ||
         -e "$user_home/.xinitrc.lightxdm.absent" || -L "$user_home/.xinitrc.lightxdm.absent" ]]; then
         xinitrc_templates=("$HOME"/.config/lightxdm/.xinitrc-* "${xinitrc_templates[@]}")
       fi
-      preserve_dotfile "$user_home/.xinitrc" "${xinitrc_templates[@]}"
-      install -Dm755 "$template" "$user_home/.xinitrc"
+      copy_dotfile "$preview" 755 "$template" "$user_home/.xinitrc" "${xinitrc_templates[@]}"
 
       local wl_session="$user_home/.wayland-session"
       # An executable ~/.wayland-session would start instead of startx, so move it aside like
       # ~/.xinitrc; skip absent files so X11-only homes get no .lightxdm.absent marker.
       if [[ -e "$wl_session" || -L "$wl_session" ]]; then
         local wl_templates=("$SCRIPT_DIR"/dotfiles/.wayland-session-* "$user_home"/.config/lightxdm/.wayland-session-*)
-        preserve_dotfile "$wl_session" "${wl_templates[@]}"
-        rm -f -- "$wl_session"
-        log "Removed $wl_session so $de can start on TTY1 (originals: ${wl_session}.lightxdm.bak; saved edits: ${wl_session}.lightxdm-edited*)."
+        if [[ $preview -eq 1 ]]; then
+          printf 'Remove dotfile (preserving existing content): %s\n' "$wl_session"
+        else
+          preserve_dotfile "$wl_session" "${wl_templates[@]}"
+          rm -f -- "$wl_session"
+          log "Removed $wl_session so $de can start on TTY1 (originals: ${wl_session}.lightxdm.bak; saved edits: ${wl_session}.lightxdm-edited*)."
+        fi
       fi
     fi
   else
@@ -555,12 +571,51 @@ adopt_legacy_pam_backup() {
   fi
 }
 
-# Configure PAM for KWallet/GNOME Keyring auto-unlock
+# Print only the keyring rules missing from the current login stack.
+pam_lines_to_add() {
+  local module_re="${1//./\\.}" auth_line="$2" session_line="$3"
+  if ! grep -Eq "^[[:space:]]*-?auth[[:space:]][^#]*${module_re}" "$LOGIN_FILE"; then
+    printf '%s\n' "$auth_line"
+  fi
+  if ! grep -Eq "^[[:space:]]*-?session[[:space:]][^#]*${module_re}" "$LOGIN_FILE"; then
+    printf '%s\n' "$session_line"
+  fi
+}
+
+# Print other keyring rules introduced since the original backup.
+pam_lines_to_remove() {
+  local other_module="$1" other_auth_line="$2" other_session_line="$3"
+  local backup_file="${LOGIN_FILE}.lightxdm.bak" other_line
+  local other_lines=("$other_auth_line" "$other_session_line")
+  [[ -f "$backup_file" ]] || return 0
+  if [[ "$other_module" == "pam_gnome_keyring.so" ]]; then
+    other_lines+=("auth       optional   pam_gnome_keyring.so auto_start")
+  fi
+  for other_line in "${other_lines[@]}"; do
+    if grep -Fxq -- "$other_line" "$LOGIN_FILE" && ! grep -Fxq -- "$other_line" "$backup_file"; then
+      printf '%s\n' "$other_line"
+    fi
+  done
+}
+
+# Configure PAM for KWallet/GNOME Keyring auto-unlock, or preview the missing lines.
 configure_pam() {
-  local de
+  local de preview="${2:-0}"
   de=$1
 
-  log "Configuring PAM for $de..."
+  if [[ $preview -eq 1 ]]; then
+    printf 'PAM keyring: %s\n' "$LOGIN_FILE"
+    if [[ ! -r "$LOGIN_FILE" ]]; then
+      if [[ ! -e "$LOGIN_FILE" && -x "$(dirname -- "$LOGIN_FILE")" ]]; then
+        printf '  missing (installation would stop)\n'
+      else
+        printf '  unknown (needs root)\n'
+      fi
+      return 0
+    fi
+  else
+    log "Configuring PAM for $de..."
+  fi
   # Never create the login PAM file: a file holding only the optional keyring lines is an unsafe login stack.
   if [[ ! -f "$LOGIN_FILE" ]]; then
     log "ERROR: $LOGIN_FILE is missing; lightXDM will not create it."
@@ -569,7 +624,6 @@ configure_pam() {
     fi
     return 1
   fi
-  adopt_legacy_pam_backup || return 1
   local module auth_line session_line other_module other_auth_line other_session_line
   case "$de" in
     plasma)
@@ -590,6 +644,22 @@ configure_pam() {
       ;;
   esac
 
+  if [[ $preview -eq 1 ]]; then
+    local additions removals removal
+    if [[ -e "${LOGIN_FILE}.lightxdm.bak" && ! -r "${LOGIN_FILE}.lightxdm.bak" ]]; then
+      printf '  removals: unknown (needs root)\n'
+    else
+      removals="$(pam_lines_to_remove "$other_module" "$other_auth_line" "$other_session_line")"
+      while IFS= read -r removal; do
+        [[ -n "$removal" ]] && printf '  remove: %s\n' "$removal"
+      done <<<"$removals"
+    fi
+    additions="$(pam_lines_to_add "$module" "$auth_line" "$session_line")"
+    printf '%s\n' "${additions:-  no lines to add (already configured)}"
+    return 0
+  fi
+  adopt_legacy_pam_backup || return 1
+
   local package
   if [[ "$module" == "pam_kwallet5.so" ]]; then
     package="kwallet-pam"
@@ -602,29 +672,18 @@ configure_pam() {
 
   local backup_file="${LOGIN_FILE}.lightxdm.bak"
   if [[ -f "$backup_file" ]]; then
-    local pam_sed=() other_line other_lines=("$other_auth_line" "$other_session_line")
-    if [[ "$other_module" == "pam_gnome_keyring.so" ]]; then
-      other_lines+=("auth       optional   pam_gnome_keyring.so auto_start")
-    fi
-    for other_line in "${other_lines[@]}"; do
-      if grep -Fxq -- "$other_line" "$LOGIN_FILE" && ! grep -Fxq -- "$other_line" "$backup_file"; then
-        pam_sed+=(-e "/^${other_line//./\\.}\$/d")
-      fi
-    done
+    local pam_sed=() other_line
+    while IFS= read -r other_line; do
+      [[ -n "$other_line" ]] && pam_sed+=(-e "/^${other_line//./\\.}\$/d")
+    done < <(pam_lines_to_remove "$other_module" "$other_auth_line" "$other_session_line")
     if [[ ${#pam_sed[@]} -gt 0 ]]; then
       sudo sed -i --follow-symlinks "${pam_sed[@]}" "$LOGIN_FILE"
       log "Removed $other_module from $LOGIN_FILE."
     fi
   fi
 
-  local module_re="${module//./\\.}"
   local lines_to_add=()
-  if ! grep -Eq "^[[:space:]]*-?auth[[:space:]][^#]*${module_re}" "$LOGIN_FILE"; then
-    lines_to_add+=("$auth_line")
-  fi
-  if ! grep -Eq "^[[:space:]]*-?session[[:space:]][^#]*${module_re}" "$LOGIN_FILE"; then
-    lines_to_add+=("$session_line")
-  fi
+  mapfile -t lines_to_add < <(pam_lines_to_add "$module" "$auth_line" "$session_line")
 
   if [[ ${#lines_to_add[@]} -gt 0 ]]; then
     if [[ ! -e "$backup_file" ]]; then
@@ -650,25 +709,57 @@ configure_pam() {
   done
 }
 
+# Print the block shared by the GNOME configuration and its preview.
+gnome_session_type_block() {
+  printf '%s\n' \
+    '# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)' \
+    'session    [success=2 default=ignore] pam_succeed_if.so quiet tty notin tty1:/dev/tty1' \
+    "session    [success=1 default=ignore] pam_succeed_if.so quiet user != $1" \
+    "session    optional   pam_env.so readenv=0 user_readenv=0 conffile=$GNOME_SESSION_TYPE_DEST"
+}
+
 # Register GNOME's TTY1 login as Wayland before the session stack runs pam_systemd.
 configure_gnome_session_type() (
-  local de="$1" user="$2"
+  local de="$1" user="$2" preview="${3:-0}"
   if [[ -z "$user" || "$user" == -* || "$user" == *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]* ]]; then
     log "ERROR: Invalid user name: $user (use letters, digits, ., _ and -; do not start with -)"
     return 1
   fi
 
-  local marker='# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)'
+  local block=()
+  mapfile -t block < <(gnome_session_type_block "$user")
+  local marker="${block[0]}"
   local user_re='[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*'
   # A numeric jump in PAM means "ok" plus a jump, so a failed condition would fail the whole
   # session stack. Each gate therefore jumps when it does NOT match and ignores its own result
   # otherwise; login passes the tty as "tty1" or "/dev/tty1".
-  local tty_gate='session    [success=2 default=ignore] pam_succeed_if.so quiet tty notin tty1:/dev/tty1'
+  local tty_gate="${block[1]}"
   local user_gate_re="^session    \\[success=1 default=ignore\\] pam_succeed_if\\.so quiet user != ${user_re}$"
-  local env_line="session    optional   pam_env.so readenv=0 user_readenv=0 conffile=$GNOME_SESSION_TYPE_DEST"
+  local env_line="${block[3]}"
   local has_block=0
-  if [[ -f "$LOGIN_FILE" ]] && grep -Fxq -- "$marker" "$LOGIN_FILE"; then
+  if [[ -f "$LOGIN_FILE" && ( $preview -eq 0 || -r "$LOGIN_FILE" ) ]] && grep -Fxq -- "$marker" "$LOGIN_FILE"; then
     has_block=1
+  fi
+  if [[ $preview -eq 1 ]]; then
+    printf 'GNOME session type: %s\n' "$LOGIN_FILE"
+    if [[ ! -r "$LOGIN_FILE" ]]; then
+      printf '  existing block: unknown (needs root)\n'
+    fi
+    if [[ "$de" == gnome ]]; then
+      printf '%s\n' "${block[@]}"
+      printf 'Session-type file: %s (from %s)\n' "$GNOME_SESSION_TYPE_DEST" "$SCRIPT_DIR/pam/gnome-session-type.conf"
+    else
+      if [[ $has_block -eq 1 ]]; then
+        printf '  remove the lightXDM GNOME block\n'
+      fi
+      if [[ -e "$GNOME_SESSION_TYPE_DEST" ]]; then
+        printf '  remove %s\n' "$GNOME_SESSION_TYPE_DEST"
+      fi
+      if [[ $has_block -eq 0 && -r "$LOGIN_FILE" && ! -e "$GNOME_SESSION_TYPE_DEST" ]]; then
+        printf '  no GNOME configuration to remove\n'
+      fi
+    fi
+    return 0
   fi
   if [[ "$de" != gnome && $has_block -eq 0 ]]; then
     if [[ -e "$GNOME_SESSION_TYPE_DEST" ]]; then
@@ -725,9 +816,7 @@ configure_gnome_session_type() (
       block_line=0
     fi
     if [[ "$de" == gnome && $inserted -eq 0 && "$line" =~ ^[[:space:]]*-?session[[:space:]] ]]; then
-      printf '%s\n' "$marker" "$tty_gate" \
-        "session    [success=1 default=ignore] pam_succeed_if.so quiet user != $user" \
-        "$env_line"
+      printf '%s\n' "${block[@]}"
       inserted=1
     fi
     printf '%s%s' "$line" "$newline"
@@ -765,6 +854,10 @@ configure_gnome_session_type() (
 # Record a display manager before disabling it
 record_and_disable_unit() {
   local unit="$1"
+  if [[ "${2:-0}" == 1 ]]; then
+    printf 'Display manager: %s\n' "$unit"
+    return 0
+  fi
   if ! sudo grep -Fxq -- "$unit" "$DM_STATE_FILE" 2>/dev/null; then
     printf '%s\n' "$unit" | sudo tee -a "$DM_STATE_FILE" > /dev/null || return
   fi
@@ -778,14 +871,17 @@ enable_autologin() {
 }
 
 disable_display_managers() {
-  log "Disabling any installed display managers..."
-  sudo mkdir -p "$(dirname -- "$DM_STATE_FILE")"
+  local preview="${1:-0}"
+  if [[ $preview -eq 0 ]]; then
+    log "Disabling any installed display managers..."
+    sudo mkdir -p "$(dirname -- "$DM_STATE_FILE")"
+  fi
   local dm dm_unit recorded_units
   local disabled_dms=()
   for dm in "${DM_LIST[@]}"; do
     if systemctl list-unit-files | grep -q "${dm}.service"; then
       if [[ "$(systemctl is-enabled "${dm}.service" 2>/dev/null || true)" == "enabled" ]]; then
-        record_and_disable_unit "${dm}.service" || return
+        record_and_disable_unit "${dm}.service" "$preview" || return
         disabled_dms+=("$dm")
       fi
     fi
@@ -794,13 +890,23 @@ disable_display_managers() {
     dm_unit="${dm_unit##*/}"
     dm="${dm_unit%.service}"
     if [[ " ${disabled_dms[*]} " != *" $dm "* ]] && [[ "$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)" == "enabled" ]]; then
-      record_and_disable_unit "$dm_unit" || return
+      record_and_disable_unit "$dm_unit" "$preview" || return
       disabled_dms+=("$dm")
     fi
   fi
   if [[ " ${disabled_dms[*]} " != *" ly@tty1 "* ]] && [[ "$(systemctl is-enabled ly@tty1.service 2>/dev/null || true)" == "enabled" ]]; then
-    record_and_disable_unit "ly@tty1.service" || return
+    record_and_disable_unit "ly@tty1.service" "$preview" || return
     disabled_dms+=("ly@tty1")
+  fi
+  if [[ $preview -eq 1 ]]; then
+    if [[ ${#disabled_dms[@]} -eq 0 ]]; then
+      printf 'Display managers: none enabled\n'
+    fi
+    printf 'Display-manager state file: %s\n' "$DM_STATE_FILE"
+    if [[ -e "$DM_STATE_FILE" && ! -r "$DM_STATE_FILE" ]]; then
+      printf '  existing records: unknown (needs root)\n'
+    fi
+    return 0
   fi
   if [[ ${#disabled_dms[@]} -gt 0 ]]; then
     display_manager_disabled=1
@@ -818,6 +924,36 @@ disable_display_managers() {
   done <<<"$recorded_units"
 }
 
+# Resolve the install using the configuration helpers' read-only preview paths.
+preview_install() {
+  local de="$1" no_packages="$2" no_keyring="$3" autologin="$4" template real_user
+  template="$(xinitrc_template "$de")" || return 1
+  real_user="${USER:-$(id -un)}"
+  printf 'Desktop: %s\nTemplate: %s\n' "$de" "$template"
+  if [[ ! -r "$template" ]]; then
+    printf '  template contents: unknown (needs root)\n'
+  fi
+  copy_dotfiles "$de" 1 || return 1
+  if [[ $no_packages -eq 1 ]]; then
+    printf 'Packages: skipped (--no-packages)\n'
+  else
+    printf 'Packages:\n'
+    list_packages "$de" "$no_keyring" || return 1
+  fi
+  if [[ $no_keyring -eq 1 ]]; then
+    printf 'PAM keyring: skipped (--no-keyring)\n'
+  else
+    configure_pam "$de" 1 || return 1
+  fi
+  configure_gnome_session_type "$de" "$real_user" 1 || return 1
+  disable_display_managers 1 || return 1
+  if [[ $autologin -eq 1 ]]; then
+    printf 'TTY1 autologin: enable for %s (--autologin)\n' "$real_user"
+  else
+    printf 'TTY1 autologin: unchanged (--autologin not requested)\n'
+  fi
+}
+
 # --- Main ---
 
 main() {
@@ -825,13 +961,14 @@ main() {
   local de=""
   local de_specified=0
   local list_only=0
+  local dry_run=0
   local no_packages=0
   local no_keyring=0
   local no_polkit_rule=0
   local autologin=0
   local init_template=0
   local wayland=0
-  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--init-template [--wayland]] [--no-packages] [--no-keyring] [--autologin]"
+  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--dry-run] [--init-template [--wayland]] [--no-packages] [--no-keyring] [--autologin]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -852,6 +989,7 @@ Options:
                     id with a ~/.config/lightxdm/.xinitrc-<id> or .wayland-session-<id> template
                     (requires --no-packages; uses GNOME Keyring or --no-keyring; refuses if both templates exist)
   --list-packages   print the packages for --de <id> and exit; changes nothing
+  --dry-run         preview the resolved install for --de <id> and exit; no sudo or file changes
   --init-template   create ~/.config/lightxdm/.xinitrc-<id> (or .wayland-session-<id> for Plasma, GNOME and Budgie) for --de <id> to edit, and exit
                     (any lowercase id: a custom one starts from the i3 template unless --wayland is used)
   --wayland         with --init-template --de <custom-id>, create a minimal Wayland template ending in exec <id>
@@ -865,6 +1003,10 @@ EOF
         ;;
       --list-packages)
         list_only=1
+        shift
+        ;;
+      --dry-run)
+        dry_run=1
         shift
         ;;
       --no-packages)
@@ -922,7 +1064,7 @@ EOF
   fi
 
   if [[ $init_template -eq 1 ]]; then
-    if [[ $list_only -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || $no_polkit_rule -eq 1 || $autologin -eq 1 ]]; then
+    if [[ $list_only -eq 1 || $dry_run -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || $no_polkit_rule -eq 1 || $autologin -eq 1 ]]; then
       log "--init-template takes only --de <id> and optional --wayland for custom ids; it creates the template and exits without installing."
       echo "$usage" >&2
       exit 1
@@ -943,6 +1085,18 @@ EOF
 
   if [[ $no_polkit_rule -eq 1 ]]; then
     log "--no-polkit-rule is no longer needed: lightXDM does not install a Polkit rule."
+  fi
+
+  if [[ $dry_run -eq 1 ]]; then
+    if [[ $de_specified -eq 0 ]]; then
+      log "--dry-run requires --de <id>"
+      echo "$usage" >&2
+      exit 1
+    fi
+    if [[ $list_only -eq 1 ]]; then
+      log "Use either --dry-run or --list-packages."
+      exit 1
+    fi
   fi
 
   if [[ $list_only -eq 1 ]]; then
@@ -989,6 +1143,11 @@ EOF
         fi
         ;;
     esac
+  fi
+
+  if [[ $dry_run -eq 1 ]]; then
+    preview_install "$de" "$no_packages" "$no_keyring" "$autologin"
+    return $?
   fi
 
   check_root

@@ -6759,6 +6759,231 @@ for lp_bad_case in custom custom-no-packages unknown empty; do
   fi
 done
 
+# Dry-run resolves the same destinations as a real install without changing its inputs.
+dr_dir="$TMP_DIR/dry_run"
+dr_bin="$dr_dir/bin"
+mkdir -p "$dr_bin"
+cat >"$dr_bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+echo "sudo $*" >>"$STUB_LOG"
+[[ "${1:-}" == -v ]] && exit 0
+exec "$@"
+EOF
+cat >"$dr_bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+echo "systemctl $*" >>"$STUB_LOG"
+case "$1" in
+  list-unit-files)
+    printf '%s\n' 'sddm.service enabled' 'lightdm.service disabled' 'gdm.service static' 'lxdm.service enabled'
+    ;;
+  is-enabled)
+    case "$2" in
+      sddm.service | lxdm.service) echo enabled ;;
+      *) echo disabled; exit 1 ;;
+    esac
+    ;;
+  disable) exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$dr_bin/sudo" "$dr_bin/systemctl"
+
+for dr_de in xfce plasma gnome custom-x11 custom-wayland; do
+  dr_case="$dr_dir/$dr_de"
+  dr_preview_home="$dr_case/preview-home"
+  dr_real_home="$dr_case/real-home"
+  dr_flags=()
+  dr_template=".xinitrc-$dr_de"
+  case "$dr_de" in
+    plasma | gnome) dr_template=".wayland-session-$dr_de" ;;
+    custom-x11) dr_flags=(--no-packages) ;;
+    custom-wayland) dr_flags=(--no-packages); dr_template=".wayland-session-$dr_de" ;;
+  esac
+  for dr_home in "$dr_preview_home" "$dr_real_home"; do
+    mkdir -p "$dr_home/.config/lightxdm"
+    printf 'keep this file\n' >"$dr_home/keep"
+    case "$dr_de" in
+      custom-*) printf '#!/bin/bash\nexec i3\n' >"$dr_home/.config/lightxdm/$dr_template" ;;
+      *) cp "$REPO_ROOT/dotfiles/$dr_template" "$dr_home/.config/lightxdm/$dr_template" ;;
+    esac
+  done
+  mkdir -p "$dr_case/preview-system" "$dr_case/real-system"
+  for dr_system in "$dr_case/preview-system" "$dr_case/real-system"; do
+    printf '#%%PAM-1.0\nauth include system-local-login\nsession include system-local-login\n' >"$dr_system/login"
+    printf 'previous.service\n' >"$dr_system/dm-state"
+  done
+  cp -a "$dr_preview_home" "$dr_case/home-before"
+  cp -a "$dr_case/preview-system" "$dr_case/system-before"
+  dr_home_tree="$(find "$dr_preview_home" -printf '%P %y %m %l\n' | sort)"
+  find "$dr_real_home" -type f -printf '%P\n' | sort >"$dr_case/files-before"
+
+  : >"$STUB_LOG"
+  set +e
+  dr_out="$(env -u SHELLOPTS -u SUDO_USER HOME="$dr_preview_home" USER=testuser \
+    PATH="$dr_bin:$PATH" LOGIN_FILE="$dr_case/preview-system/login" \
+    DM_STATE_FILE="$dr_case/preview-system/dm-state" \
+    GNOME_SESSION_TYPE_DEST="$dr_case/preview-system/gnome-session-type.conf" \
+    DISPLAY_MANAGER_LINK="$dr_case/preview-system/display-manager.service" \
+    AUTOLOGIN_DROPIN_DIR="$dr_case/preview-system/getty.d" OVERRIDE_DIR="$dr_case/preview-system/getty.d" \
+    bash "$REPO_ROOT/install.sh" --dry-run --de "$dr_de" "${dr_flags[@]}" 2>"$dr_case/preview.err")"
+  dr_status=$?
+  set -e
+  if [[ $dr_status -eq 0 && ! -s "$dr_case/preview.err" &&
+    "$dr_home_tree" == "$(find "$dr_preview_home" -printf '%P %y %m %l\n' | sort)" ]] &&
+    diff -r "$dr_case/home-before" "$dr_preview_home" >/dev/null &&
+    diff -r "$dr_case/system-before" "$dr_case/preview-system" >/dev/null &&
+    ! grep -Eq '^(sudo |pacman |systemctl (disable|enable|daemon-reload))' "$STUB_LOG"; then
+    pass "--dry-run --de $dr_de leaves HOME, PAM and display-manager state untouched without sudo"
+  else
+    fail "--dry-run --de $dr_de changed inputs or failed (status=$dr_status, out=$dr_out, err=$(cat "$dr_case/preview.err"), log=$(cat "$STUB_LOG"))"
+  fi
+
+  # Use the real configuration helpers with command stubs and a separate home/system.
+  # shellcheck disable=SC2016  # source and override check_root inside the isolated child
+  if env -u SHELLOPTS -u SUDO_USER HOME="$dr_real_home" USER=testuser \
+    PATH="$dr_bin:$STUB_BIN:$PATH" LOGIN_FILE="$dr_case/real-system/login" \
+    DM_STATE_FILE="$dr_case/real-system/dm-state" \
+    GNOME_SESSION_TYPE_DEST="$dr_case/real-system/gnome-session-type.conf" \
+    DISPLAY_MANAGER_LINK="$dr_case/real-system/display-manager.service" \
+    AUTOLOGIN_DROPIN_DIR="$dr_case/real-system/getty.d" OVERRIDE_DIR="$dr_case/real-system/getty.d" \
+    bash -c 'source "$1/install.sh"; shift; check_root() { :; }; main "$@"' \
+    _ "$REPO_ROOT" --de "$dr_de" "${dr_flags[@]}" >"$dr_case/install.out" 2>&1; then
+    dr_destinations=()
+    while IFS= read -r dr_line; do
+      case "$dr_line" in
+        "Dotfile: $dr_preview_home/"*) dr_destinations+=("${dr_line#"Dotfile: $dr_preview_home/"}") ;;
+      esac
+    done <<<"$dr_out"
+    printf '%s\n' "${dr_destinations[@]}" | sort >"$dr_case/preview-files"
+    # Preservation markers accompany the dotfiles; they are not dotfile destinations.
+    find "$dr_real_home" -type f ! -name '*.lightxdm.absent' -printf '%P\n' | sort >"$dr_case/files-after"
+    comm -13 "$dr_case/files-before" "$dr_case/files-after" >"$dr_case/created-files"
+    dr_packages="$(sed -n '/^Packages:$/,/^PAM keyring:/{ /^Packages:$/d; /^PAM keyring:/d; p; }' <<<"$dr_out")"
+    if cmp -s "$dr_case/preview-files" "$dr_case/created-files" &&
+      [[ "$dr_out" == *"Desktop: $dr_de"* && "$dr_out" == *"Template: $dr_preview_home/.config/lightxdm/$dr_template"* &&
+      "$dr_out" == *'TTY1 autologin: unchanged'* ]] &&
+      { [[ ${#dr_flags[@]} -gt 0 && "$dr_out" == *'Packages: skipped (--no-packages)'* ]] ||
+        [[ "$dr_packages" == "$(list_packages "$dr_de")" ]]; }; then
+      pass "--dry-run --de $dr_de lists exactly the real install's dotfile destinations and packages"
+    else
+      fail "--dry-run destinations/packages differ from the real $dr_de install (preview=$dr_out, created=$(cat "$dr_case/created-files"))"
+    fi
+    dr_units="$(sed -n 's/^Display manager: //p' <<<"$dr_out")"
+    if [[ "$dr_units" == $'sddm.service\nlxdm.service' &&
+      "$(cat "$dr_case/real-system/dm-state")" == $'previous.service\nsddm.service\nlxdm.service' ]] &&
+      grep -Fxq -- "$(sed -n '/^auth.*optional/p' <<<"$dr_out")" "$dr_case/real-system/login" &&
+      grep -Fxq -- "$(sed -n '/^session.*optional.*pam_\(kwallet5\|gnome_keyring\)/p' <<<"$dr_out")" "$dr_case/real-system/login"; then
+      pass "--dry-run --de $dr_de agrees with real PAM additions and enabled display managers"
+    else
+      fail "--dry-run --de $dr_de PAM/display-manager preview (out=$dr_out)"
+    fi
+    if [[ "$dr_de" == gnome ]] &&
+      ! grep -Fxq 'session    [success=1 default=ignore] pam_succeed_if.so quiet user != testuser' <<<"$dr_out"; then
+      fail "GNOME dry-run omits the resolved session-type block"
+    fi
+  else
+    fail "real stubbed install for dry-run comparison ($dr_de): $(cat "$dr_case/install.out")"
+  fi
+done
+
+
+# Preview the exact GNOME rules a Plasma install removes, including the legacy auth rule.
+dr_remove_dir="$dr_dir/removals"
+mkdir -p "$dr_remove_dir/home/.config/lightxdm" "$dr_remove_dir/system"
+cp "$REPO_ROOT/dotfiles/.wayland-session-plasma" "$dr_remove_dir/home/.config/lightxdm/"
+printf '#%%PAM-1.0\n' >"$dr_remove_dir/system/login.lightxdm.bak"
+{
+  cat "$dr_remove_dir/system/login.lightxdm.bak"
+  printf '%s\n' "$PAM_GNOME_KEYRING_AUTH" "$PAM_GNOME_KEYRING_SESSION" \
+    'auth       optional   pam_gnome_keyring.so auto_start'
+} >"$dr_remove_dir/system/login"
+cp "$dr_remove_dir/system/login" "$dr_remove_dir/login-before"
+: >"$STUB_LOG"
+dr_remove_out="$(env -u SHELLOPTS -u SUDO_USER HOME="$dr_remove_dir/home" USER=testuser \
+  PATH="$dr_bin:$STUB_BIN:$PATH" LOGIN_FILE="$dr_remove_dir/system/login" \
+  DM_STATE_FILE="$dr_remove_dir/system/dm-state" AUTOLOGIN_DROPIN_DIR="$dr_remove_dir/system/getty.d" \
+  DISPLAY_MANAGER_LINK="$dr_remove_dir/system/display-manager.service" \
+  bash "$REPO_ROOT/install.sh" --dry-run --de plasma)"
+# shellcheck disable=SC2016  # expand inside the child shell
+if cmp -s "$dr_remove_dir/login-before" "$dr_remove_dir/system/login" &&
+  ! grep -q '^sudo ' "$STUB_LOG" &&
+  env -u SHELLOPTS -u SUDO_USER HOME="$dr_remove_dir/home" USER=testuser \
+    PATH="$dr_bin:$STUB_BIN:$PATH" LOGIN_FILE="$dr_remove_dir/system/login" \
+    DM_STATE_FILE="$dr_remove_dir/system/dm-state" AUTOLOGIN_DROPIN_DIR="$dr_remove_dir/system/getty.d" \
+    DISPLAY_MANAGER_LINK="$dr_remove_dir/system/display-manager.service" \
+    bash -c 'source "$1/install.sh"; shift; check_root() { :; }; main "$@"' \
+    _ "$REPO_ROOT" --de plasma >"$dr_remove_dir/install.out" 2>&1; then
+  sed -n 's/^  remove: //p' <<<"$dr_remove_out" | sort >"$dr_remove_dir/preview-removals"
+  comm -23 <(sort "$dr_remove_dir/login-before") <(sort "$dr_remove_dir/system/login") >"$dr_remove_dir/actual-removals"
+  if [[ $(wc -l <"$dr_remove_dir/actual-removals") -eq 3 ]] &&
+    cmp -s "$dr_remove_dir/preview-removals" "$dr_remove_dir/actual-removals"; then
+    pass "Plasma dry-run lists the GNOME keyring rules removed by installation"
+  else
+    fail "Plasma dry-run PAM removals differ from installation (preview=$dr_remove_out)"
+  fi
+else
+  fail "Plasma PAM removal preview changed the login file or installation failed"
+fi
+
+: >"$STUB_LOG"
+set +e
+dr_missing_out="$(run_main_with_stubs "$dr_bin" --dry-run 2>&1)"
+dr_missing_status=$?
+dr_conflict_out="$(run_main_with_stubs "$dr_bin" --dry-run --init-template --de xfce 2>&1)"
+dr_conflict_status=$?
+set -e
+if [[ $dr_missing_status -eq 1 && "$dr_missing_out" == *'--dry-run requires --de'* &&
+  $dr_conflict_status -eq 1 && "$dr_conflict_out" == *'--init-template takes only'* && ! -s "$STUB_LOG" ]]; then
+  pass "--dry-run requires --de and refuses template creation before checks or writes"
+else
+  fail "--dry-run argument validation ($dr_missing_status:$dr_missing_out | $dr_conflict_status:$dr_conflict_out)"
+fi
+
+: >"$STUB_LOG"
+set +e
+dr_skip_out="$(env HOME="$dr_preview_home" USER=testuser PATH="$dr_bin:$PATH" \
+  LOGIN_FILE="$dr_case/preview-system/login" DM_STATE_FILE="$dr_case/preview-system/dm-state" \
+  DISPLAY_MANAGER_LINK="$dr_case/preview-system/display-manager.service" \
+  GNOME_SESSION_TYPE_DEST="$dr_case/preview-system/gnome-session-type.conf" \
+  bash "$REPO_ROOT/install.sh" --dry-run --de gnome --no-packages --no-keyring --autologin 2>&1)"
+dr_skip_status=$?
+set -e
+if [[ $dr_skip_status -eq 0 && "$dr_skip_out" == *'Packages: skipped (--no-packages)'* &&
+  "$dr_skip_out" == *'PAM keyring: skipped (--no-keyring)'* &&
+  "$dr_skip_out" == *'pam_env.so readenv=0 user_readenv=0'* &&
+  "$dr_skip_out" == *'TTY1 autologin: enable for testuser'* &&
+  "$dr_skip_out" != *pam_gnome_keyring.so* ]] &&
+  ! grep -Eq '^(sudo |pacman |systemctl (disable|enable|daemon-reload))' "$STUB_LOG" &&
+  diff -r "$dr_case/home-before" "$dr_preview_home" >/dev/null &&
+  diff -r "$dr_case/system-before" "$dr_case/preview-system" >/dev/null; then
+  pass "GNOME dry-run respects skip flags and autologin while retaining its session-type block"
+else
+  fail "GNOME dry-run skip/autologin flags (status=$dr_skip_status, output=$dr_skip_out)"
+fi
+
+if [[ $EUID -ne 0 ]]; then
+  chmod 000 "$dr_case/preview-system/login" "$dr_case/preview-system/dm-state"
+  : >"$STUB_LOG"
+  set +e
+  dr_private_out="$(env HOME="$dr_preview_home" USER=testuser PATH="$dr_bin:$PATH" \
+    LOGIN_FILE="$dr_case/preview-system/login" DM_STATE_FILE="$dr_case/preview-system/dm-state" \
+    DISPLAY_MANAGER_LINK="$dr_case/preview-system/display-manager.service" \
+    GNOME_SESSION_TYPE_DEST="$dr_case/preview-system/gnome-session-type.conf" \
+    bash "$REPO_ROOT/install.sh" --dry-run --de xfce 2>&1)"
+  dr_private_status=$?
+  set -e
+  chmod 644 "$dr_case/preview-system/login" "$dr_case/preview-system/dm-state"
+  if [[ $dr_private_status -eq 0 && "$dr_private_out" == *'unknown (needs root)'* &&
+    "$dr_private_out" == *'existing records: unknown (needs root)'* &&
+    "$dr_private_out" != *pam_gnome_keyring.so* ]] &&
+    ! grep -Eq '^(sudo |pacman |systemctl (disable|enable|daemon-reload))' "$STUB_LOG" &&
+    diff -r "$dr_case/system-before" "$dr_case/preview-system" >/dev/null; then
+    pass "--dry-run reports unreadable PAM and display-manager records as unknown without sudo"
+  else
+    fail "--dry-run with unreadable inputs (status=$dr_private_status, output=$dr_private_out)"
+  fi
+fi
+
 # Case 74: multi-desktop detection lists all matches and offers Wayland and X11 desktops together
 multi_detect_bin="$TMP_DIR/pacman_multi_detect"
 mkdir -p "$multi_detect_bin"
