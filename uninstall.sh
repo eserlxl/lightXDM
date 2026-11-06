@@ -61,6 +61,7 @@ readonly LIGHTXDM_KEYRING_LINES=(
 readonly GNOME_SESSION_TYPE_DEST="${GNOME_SESSION_TYPE_DEST:-/etc/lightxdm/gnome-session-type.conf}"
 DM_STATE_FILE="${DM_STATE_FILE:-/etc/lightxdm/disabled-display-managers}"
 PAM_KEYRING_STATE="${PAM_KEYRING_STATE:-/etc/lightxdm/pam-keyring}"
+PAM_LOGIN_BASE_STATE="${PAM_LOGIN_BASE_STATE:-/etc/lightxdm/pam-login-base}"
 BACKUP_FILE="${LOGIN_FILE}.lightxdm.bak"
 # Installs before 2026-11-03 backed up to .lightxde.bak.<epoch>; the oldest one is the original.
 if [[ ! -f "$BACKUP_FILE" ]]; then
@@ -103,6 +104,9 @@ if [[ $keyring_only -eq 0 ]]; then
     fi
   fi
   rm -f -- "$GNOME_SESSION_TYPE_DEST"
+  # The packaged login version install.sh --update recorded after a .pacnew merge; --keyring-only keeps
+  # it for the GNOME block that stays.
+  rm -f -- "$PAM_LOGIN_BASE_STATE"
 fi
 
 # Remove only the exact PAM lines configure_pam appends.

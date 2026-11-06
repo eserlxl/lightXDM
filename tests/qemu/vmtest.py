@@ -565,30 +565,56 @@ def main():
             rc, _, err = ssh("test ! -e /etc/lightxdm/disabled-display-managers")
             check("uninstall.sh removed the display-manager state file", rc == 0, err.strip())
         if MODE == "package" and login1_ok:
-            # Keyring lines removed by hand are the user's choice: --update leaves the edited file alone.
-            rc, out, err = ssh("sed -i -E '/pam_(gnome_keyring|kwallet5)[.]so/d' /etc/pam.d/login && "
-                               "echo '# a line the user wrote' >> /etc/pam.d/login")
-            check("keyring lines removed from /etc/pam.d/login by hand", rc == 0, (out + err).strip())
-            rc, out, err = ssh(f"su - {USER} -c 'lightxdm-update' 2>&1", timeout=1800)
-            with open(os.path.join(RUN, "update-hand-edit.log"), "w") as f:
-                f.write(out + err)
-            _, lines, _ = ssh("grep -cE 'pam_(gnome_keyring|kwallet5)[.]so' /etc/pam.d/login")
-            check("lightxdm-update leaves a hand-edited /etc/pam.d/login alone and says so",
-                  rc == 0 and "which has your own edits" in out and lines.strip() == "0", out[-400:])
-            # A pacdiff merge that takes util-linux's login.pacnew drops every lightXDM line from the file.
-            rc, out, err = ssh("cp /etc/pam.d/login.lightxdm.bak /etc/pam.d/login && "
-                               "! grep -qE 'pam_(gnome_keyring|kwallet5)[.]so' /etc/pam.d/login")
-            check("a simulated .pacnew merge left /etc/pam.d/login without keyring lines", rc == 0,
+            # Removing only lightXDM's lines by hand brings back the file util-linux ships, which pacman calls
+            # unmodified, just as after a .pacnew merge; --update must still leave the user's removal alone.
+            # On GNOME the hand edit also removes lightXDM's session-type block.
+            strip_lightxdm = ("sed -i -E -e '/pam_(gnome_keyring|kwallet5)[.]so/d' "
+                              "-e '/lightXDM: GNOME on TTY1|pam_succeed_if[.]so quiet (tty|user)|gnome-session-type[.]conf/d' "
+                              "/etc/pam.d/login")
+            login_stock = "LC_ALL=C pacman -Qii util-linux | grep -F '/etc/pam.d/login [unmodified]'"
+            rc, out, err = ssh(f"{strip_lightxdm} && {login_stock}")
+            check("removing lightXDM's lines by hand leaves /etc/pam.d/login as util-linux ships it", rc == 0,
                   (out + err).strip())
-            rc, out, err = ssh(f"su - {USER} -c 'lightxdm-update' 2>&1", timeout=1800)
-            with open(os.path.join(RUN, "update.log"), "w") as f:
-                f.write(out + err)
-            check("lightxdm-update reruns the saved choices",
-                  rc == 0 and f"Updating with the saved choices: --de {TARGET}" in out, out[-400:])
-            check("lightxdm-update reports the keyring lines the merge removed", "keyring lines are missing" in out,
-                  out[-400:])
-            _, out, err = ssh("grep -cE '^(auth|session) +optional +pam_(gnome_keyring|kwallet5)[.]so' /etc/pam.d/login")
-            check("lightxdm-update added the keyring lines back", out.strip() == "2", (out + err).strip())
+            for attempt in ("hand-edit", "hand-edit-after-merge"):
+                rc, out, err = ssh(f"su - {USER} -c 'lightxdm-update' 2>&1", timeout=1800)
+                with open(os.path.join(RUN, f"update-{attempt}.log"), "w") as f:
+                    f.write(out + err)
+                _, lines, _ = ssh("grep -cE 'pam_(gnome_keyring|kwallet5)[.]so' /etc/pam.d/login")
+                check(f"{attempt}: lightxdm-update leaves out the keyring lines removed by hand and says so",
+                      rc == 0 and "which has your own edits" in out and lines.strip() == "0", out[-400:])
+                if TARGET == "gnome":
+                    _, blocks, _ = ssh("grep -c 'lightXDM: GNOME on TTY1' /etc/pam.d/login")
+                    check(f"{attempt}: lightxdm-update leaves out the GNOME block removed by hand and says so",
+                          "GNOME session-type block is not in" in out and blocks.strip() == "0", out[-400:])
+                if attempt == "hand-edit-after-merge":
+                    rc, out, err = ssh("cp -p /root/login.restored /etc/pam.d/login && rm -f /root/login.restored")
+                    check("restored lightXDM's lines for the next login", rc == 0, (out + err).strip())
+                    break
+                # A pacdiff merge that takes util-linux's login.pacnew drops every lightXDM line, and the version
+                # it brings differs from lightXDM's backup (here, a backup taken from an older util-linux).
+                rc, out, err = ssh("echo '# a line an older util-linux shipped' >> /etc/pam.d/login.lightxdm.bak && "
+                                   f"{login_stock}")
+                check("a simulated .pacnew merge left /etc/pam.d/login as util-linux ships it", rc == 0,
+                      (out + err).strip())
+                rc, out, err = ssh(f"su - {USER} -c 'lightxdm-update' 2>&1", timeout=1800)
+                with open(os.path.join(RUN, "update.log"), "w") as f:
+                    f.write(out + err)
+                check("lightxdm-update reruns the saved choices",
+                      rc == 0 and f"Updating with the saved choices: --de {TARGET}" in out, out[-400:])
+                check("lightxdm-update reports the keyring lines the merge removed", "keyring lines are missing" in out,
+                      out[-400:])
+                _, out, err = ssh("grep -cE '^(auth|session) +optional +pam_(gnome_keyring|kwallet5)[.]so' /etc/pam.d/login")
+                check("lightxdm-update added the keyring lines back", out.strip() == "2", (out + err).strip())
+                if TARGET == "gnome":
+                    _, out, err = ssh("grep -c 'lightXDM: GNOME on TTY1' /etc/pam.d/login")
+                    check("lightxdm-update put the GNOME block back after the .pacnew merge", out.strip() == "1",
+                          (out + err).strip())
+                rc, out, err = ssh("test -s /etc/lightxdm/pam-login-base")
+                check("lightxdm-update recorded the version the .pacnew merge brought", rc == 0, (out + err).strip())
+                # Removing lightXDM's lines by hand after the merge brings back the merged version: still the user's.
+                rc, out, err = ssh(f"cp -p /etc/pam.d/login /root/login.restored && {strip_lightxdm} && {login_stock}")
+                check("removing lightXDM's lines after the merge leaves the merged version", rc == 0,
+                      (out + err).strip())
             if reboot_and_login(qmp, "login3"):
                 session_checks("login3", qmp)
             rc, out, err = ssh(f"su - {USER} -c 'sudo lightxdm-uninstall' 2>&1", timeout=600)
@@ -600,6 +626,10 @@ def main():
                   (out + err).strip())
             rc, _, err = ssh(f"test ! -e /home/{USER}/.local/state/lightxdm/install-choices")
             check("lightxdm-uninstall removed the saved install choices", rc == 0, err.strip())
+            # The merged version stays: uninstall never puts the older backup back over it.
+            rc, out, err = ssh(f"test ! -e /etc/lightxdm/pam-login-base && {login_stock}")
+            check("lightxdm-uninstall removed the merge record and left /etc/pam.d/login as util-linux ships it",
+                  rc == 0, (out + err).strip())
             rc, out, err = ssh("pacman -R --noconfirm lightxdm 2>&1", timeout=600)
             check("pacman -R removes lightxdm and prints the pre_remove note",
                   rc == 0 and "run sudo lightxdm-uninstall" in out, out[-400:])

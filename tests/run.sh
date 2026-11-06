@@ -106,12 +106,20 @@ EOF
 cat >"$STUB_BIN/pacman" <<'EOF'
 #!/usr/bin/env bash
 echo "pacman $*" >>"${STUB_LOG:-/dev/null}"
-# Owner and backup-file status of the login file, for install.sh's login_file_is_stock.
+# Owner and backup-file status of the login file, for install.sh's login_file_replaced_by_package.
 if [[ "${1:-}" == -Qqo && -n "${STUB_PACMAN_OWNER:-}" ]]; then
   echo "$STUB_PACMAN_OWNER"
   exit 0
 elif [[ "${1:-}" == -Qii && -n "${STUB_PACMAN_BACKUP:-}" ]]; then
   echo "Backup Files    : $STUB_PACMAN_BACKUP"
+  exit 0
+elif [[ "${1:-}" == -Qii && -n "${STUB_PACMAN_STOCK:-}" ]]; then
+  # Like pacman, compare the login file as it is now with the packaged copy.
+  if cmp -s -- "$LOGIN_FILE" "$STUB_PACMAN_STOCK"; then
+    echo "Backup Files    : $LOGIN_FILE [unmodified]"
+  else
+    echo "Backup Files    : $LOGIN_FILE [modified]"
+  fi
   exit 0
 fi
 exit "${STUB_PACMAN_EXIT:-0}"
@@ -174,6 +182,7 @@ export POLKIT_RULE_DEST="$TMP_DIR/49-nopasswd.rules"
 export DISPLAY_MANAGER_LINK="$TMP_DIR/display-manager.service"
 export DM_STATE_FILE="$TMP_DIR/lightxdm/disabled-display-managers"
 export PAM_KEYRING_STATE="$TMP_DIR/lightxdm/pam-keyring"
+export PAM_LOGIN_BASE_STATE="$TMP_DIR/lightxdm/pam-login-base"
 
 # shellcheck source=install.sh disable=SC1091
 source "$REPO_ROOT/install.sh"
@@ -9736,8 +9745,10 @@ else
   fail "install choices file (status=$status, file=$(cat "$update_choices" 2>&1), output=$output)"
 fi
 update_record="$TMP_DIR/update_pam_keyring"
+update_base="$TMP_DIR/update_pam_login_base"
 update_run() {
   env -u SHELLOPTS -u SUDO_USER HOME="$1" LOGIN_FILE="$update_login" PAM_KEYRING_STATE="$update_record" \
+    PAM_LOGIN_BASE_STATE="$update_base" \
     STUB_PACMAN_OWNER="${STUB_PACMAN_OWNER:-}" STUB_PACMAN_BACKUP="${STUB_PACMAN_BACKUP:-}" \
     bash "$REPO_ROOT/install.sh" "${@:2}" 2>&1
 }
@@ -9795,12 +9806,15 @@ if [[ $update_ok -eq 1 ]]; then
 else
   fail "install.sh --update:$update_report"
 fi
-# With a keyring record, --update brings back keyring lines a .pacnew merge removed (the login file
-# is back to its packaged version) and leaves a login file with the user's own edits alone.
+# With a keyring record, --update brings back keyring lines a .pacnew merge removed (pacman sees the
+# packaged version, and it is neither lightXDM's backup of the original nor a merged version lightXDM
+# already restored into) and leaves the login file alone when the user edited it or removed the lines.
+update_backup="$update_login.lightxdm.bak"
 record_ok=1
 record_report=""
 printf 'de=i3\nno_packages=1\n' >"$update_choices"
 printf 'gnome\n' >"$update_record"
+printf '%s\n' "# the login stack before the .pacnew merge" >"$update_backup"
 printf '%s\n' "# stock login stack after a .pacnew merge" >"$update_login"
 set +e
 output="$(STUB_PACMAN_OWNER=util-linux STUB_PACMAN_BACKUP="$update_login [unmodified]" \
@@ -9808,11 +9822,34 @@ output="$(STUB_PACMAN_OWNER=util-linux STUB_PACMAN_BACKUP="$update_login [unmodi
 status=$?
 set -e
 if [[ $status -ne 0 || "$output" != *"Updating with the saved choices: --de i3 --no-packages --dry-run"* ||
-  "$output" != *"lightXDM's gnome keyring lines are missing from $update_login, which is back to the version its package ships"* ||
-  "$output" != *"PAM keyring: $update_login"* ]]; then
+  "$output" != *"lightXDM's gnome keyring lines are missing from $update_login, which a .pacnew merge replaced"* ||
+  "$output" != *"PAM keyring: $update_login"* ||
+  "$output" != *"record: $update_base (the version the .pacnew merge brought)"* ]]; then
   record_ok=0
-  record_report+=" [gnome record, stock file without lines: status=$status, output=$output]"
+  record_report+=" [gnome record, merged file without lines: status=$status, output=$output]"
 fi
+# Removing only lightXDM's lines by hand brings back the backed-up original, or the merged version
+# lightXDM recorded; pacman calls both unmodified, and both stay as the user left them.
+for revert_case in original merged; do
+  if [[ "$revert_case" == original ]]; then
+    cp -- "$update_backup" "$update_login"
+    rm -f -- "$update_base"
+  else
+    printf '%s\n' "# stock login stack after a .pacnew merge" >"$update_login"
+    sha256sum <"$update_login" | cut -d' ' -f1 >"$update_base"
+  fi
+  set +e
+  output="$(STUB_PACMAN_OWNER=util-linux STUB_PACMAN_BACKUP="$update_login [unmodified]" \
+    update_run "$update_home" --update --dry-run)"
+  status=$?
+  set -e
+  if [[ $status -ne 0 || "$output" != *"Updating with the saved choices: --de i3 --no-packages --no-keyring --dry-run"* ||
+    "$output" != *"lightXDM's gnome keyring lines are not in $update_login, which has your own edits"* ]]; then
+    record_ok=0
+    record_report+=" [gnome record, lines removed by hand from the $revert_case version: status=$status, output=$output]"
+  fi
+done
+rm -f -- "$update_base"
 printf '%s\n' "# login stack the user edited by hand" >"$update_login"
 set +e
 output="$(STUB_PACMAN_OWNER=util-linux STUB_PACMAN_BACKUP="$update_login [modified]" \
@@ -9847,8 +9884,71 @@ if [[ "$output" != *"Updating with the saved choices: --de custom --no-packages 
   record_ok=0
   record_report+=" [kwallet record for a custom id: output=$output]"
 fi
+# --update leaves out a GNOME block the user removed (from an edited file, or back to the original) and
+# puts it back into a file a .pacnew merge replaced; an explicit install still adds it.
+gnome_marker='# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)'
+gnome_report=""
+printf 'de=gnome\nno_packages=1\n' >"$update_choices"
+rm -f -- "$update_record" "$update_base"
+printf '%s\n' '#%PAM-1.0' '# the login stack before lightXDM' 'session    include      system-local-login' >"$update_backup"
+for gnome_case in "modified|--update" "unmodified|--update" "revert|--update" "modified|--de"; do
+  IFS='|' read -r gnome_status gnome_mode <<<"$gnome_case"
+  printf '%s\n' '#%PAM-1.0' 'session    include      system-local-login' >"$update_login"
+  if [[ "$gnome_status" == revert ]]; then
+    cp -- "$update_backup" "$update_login"
+    gnome_status=unmodified
+  fi
+  gnome_args=(--update --dry-run)
+  [[ "$gnome_mode" == --update ]] || gnome_args=(--dry-run --no-packages --de gnome)
+  set +e
+  output="$(STUB_PACMAN_OWNER=util-linux STUB_PACMAN_BACKUP="$update_login [$gnome_status]" \
+    update_run "$update_home" "${gnome_args[@]}")"
+  status=$?
+  set -e
+  if [[ "$gnome_case" == "unmodified|--update" || "$gnome_mode" == --de ]]; then
+    [[ $status -eq 0 && "$output" == *"$gnome_marker"* && "$output" != *"left alone"* ]] ||
+      gnome_report+=" [$gnome_case: status=$status, output=$output]"
+  else
+    [[ $status -eq 0 && "$output" == *"left alone: the block is not in $update_login, which has your own edits"* &&
+      "$output" != *"$gnome_marker"* ]] || gnome_report+=" [$gnome_case: status=$status, output=$output]"
+  fi
+done
+rm -f -- "$update_backup"
+if [[ -z "$gnome_report" ]]; then
+  pass "install.sh --update leaves out a GNOME block the user removed; a merged file and an explicit install get it"
+else
+  fail "install.sh --update GNOME block:$gnome_report"
+fi
+# The real run decides before configure_pam changes the file: once the keyring lines are back, pacman
+# calls the file modified, yet the GNOME block must follow them; the merged version is then recorded,
+# so removing lightXDM's lines by hand afterwards stays.
+merge_dir="$TMP_DIR/update_merge"
+mkdir -p "$merge_dir"
+printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$merge_dir/stock"
+printf '%s\n' '#%PAM-1.0' '# a line an older util-linux shipped' 'auth       include      system-local-login' \
+  'session    include      system-local-login' >"$merge_dir/login.lightxdm.bak"
+cp -- "$merge_dir/stock" "$merge_dir/login"
+printf 'gnome\n' >"$merge_dir/pam-keyring"
+merge_env=(LOGIN_FILE="$merge_dir/login" PAM_KEYRING_STATE="$merge_dir/pam-keyring" PAM_LOGIN_BASE_STATE="$merge_dir/pam-login-base"
+  GNOME_SESSION_TYPE_DEST="$merge_dir/gnome-session-type.conf" STUB_PACMAN_OWNER=util-linux STUB_PACMAN_STOCK="$merge_dir/stock")
+set +e
+# shellcheck disable=SC2016  # expand inside the child shell
+merge_log="$(env "${merge_env[@]}" bash -c 'source "$1/install.sh" && start_update_run &&
+  configure_pam gnome && configure_gnome_session_type gnome tester' _ "$REPO_ROOT" 2>&1)"
+status=$?
+cp -- "$merge_dir/stock" "$merge_dir/login"
+# shellcheck disable=SC2016  # expand inside the child shell
+merge_again="$(env "${merge_env[@]}" bash -c 'source "$1/install.sh" && start_update_run && echo "restore=$UPDATE_RESTORE_PAM"' _ "$REPO_ROOT" 2>&1)"
+set -e
+merge_sum="$(sha256sum <"$merge_dir/stock")"
+if [[ $status -eq 0 && "$merge_log" == *"Configured GNOME session type"* && "$merge_log" == *"Configured pam_gnome_keyring.so"* &&
+  "$(cat "$merge_dir/pam-login-base" 2>/dev/null)" == "${merge_sum%% *}" && "$merge_again" == "restore=0" ]]; then
+  pass "install.sh --update puts the keyring lines and the GNOME block back after a .pacnew merge and records the merged version"
+else
+  fail "install.sh --update merge restore (status=$status, log=$merge_log, base=$(cat "$merge_dir/pam-login-base" 2>&1), again=$merge_again)"
+fi
 if [[ $record_ok -eq 1 ]]; then
-  pass "install.sh --update restores recorded keyring lines only in a login file back to its packaged version"
+  pass "install.sh --update restores recorded keyring lines only into a login file a .pacnew merge replaced"
 else
   fail "install.sh --update keyring record:$record_report"
 fi
@@ -9870,28 +9970,34 @@ else
   else
     fail "uninstall.sh saved install choices (status=$status, output=$output)"
   fi
-  # Both uninstall modes drop the keyring record together with the keyring lines.
+  # Both uninstall modes drop the keyring record together with the keyring lines; the merged-version
+  # record goes only with a full uninstall, since --keyring-only keeps GNOME's block.
   record_uninstall_report=""
   for record_mode in full --keyring-only; do
     record_file="$TMP_DIR/record_uninstall/pam-keyring"
+    base_file="$TMP_DIR/record_uninstall/pam-login-base"
     mkdir -p "${record_file%/*}" "$TMP_DIR/record_uninstall/home"
     printf 'gnome\n' >"$record_file"
+    printf '%s\n' 0123abcd >"$base_file"
     record_args=()
     [[ "$record_mode" == full ]] || record_args=("$record_mode")
     set +e
     output="$(env TARGET_HOME="$TMP_DIR/record_uninstall/home" LOGIN_FILE="$TMP_DIR/record_uninstall/login" \
-      DM_STATE_FILE="$TMP_DIR/record_uninstall/dm" PAM_KEYRING_STATE="$record_file" \
+      DM_STATE_FILE="$TMP_DIR/record_uninstall/dm" PAM_KEYRING_STATE="$record_file" PAM_LOGIN_BASE_STATE="$base_file" \
       GNOME_SESSION_TYPE_DEST="$TMP_DIR/record_uninstall/gnome-session-type.conf" \
       OVERRIDE_DIR="$TMP_DIR/record_uninstall/getty.d" POLKIT_RULE="$TMP_DIR/record_uninstall/49-nopasswd.rules" \
       unshare -r bash "$REPO_ROOT/uninstall.sh" "${record_args[@]}" 2>&1)"
     status=$?
     set -e
-    if [[ $status -ne 0 || -e "$record_file" ]]; then
-      record_uninstall_report+=" [$record_mode: status=$status, output=$output]"
+    if [[ $status -ne 0 || -e "$record_file" ]] ||
+      { [[ "$record_mode" == full ]] && [[ -e "$base_file" ]]; } ||
+      { [[ "$record_mode" != full ]] && [[ ! -e "$base_file" ]]; }; then
+      record_uninstall_report+=" [$record_mode: status=$status, base=$([[ -e "$base_file" ]] && echo kept || echo removed), output=$output]"
     fi
+    rm -f -- "$base_file"
   done
   if [[ -z "$record_uninstall_report" ]]; then
-    pass "uninstall.sh and uninstall.sh --keyring-only remove the keyring record"
+    pass "uninstall.sh removes the keyring and merged-version records; --keyring-only removes only the keyring record"
   else
     fail "uninstall.sh keyring record:$record_uninstall_report"
   fi

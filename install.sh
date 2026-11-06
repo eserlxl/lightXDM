@@ -13,6 +13,7 @@ readonly DM_STATE_FILE="${DM_STATE_FILE:-/etc/lightxdm/disabled-display-managers
 readonly LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
 readonly GNOME_SESSION_TYPE_DEST="${GNOME_SESSION_TYPE_DEST:-/etc/lightxdm/gnome-session-type.conf}"
 readonly PAM_KEYRING_STATE="${PAM_KEYRING_STATE:-/etc/lightxdm/pam-keyring}"
+readonly PAM_LOGIN_BASE_STATE="${PAM_LOGIN_BASE_STATE:-/etc/lightxdm/pam-login-base}"
 readonly AUTOLOGIN_DROPIN_DIR="${AUTOLOGIN_DROPIN_DIR:-/etc/systemd/system/getty@tty1.service.d}"
 readonly PAM_KWALLET_AUTH="auth       optional   pam_kwallet5.so"
 readonly PAM_KWALLET_SESSION="session    optional   pam_kwallet5.so force_run"
@@ -812,6 +813,9 @@ configure_pam() {
     additions="$(pam_lines_to_add "$module" "$auth_line" "$session_line" "$removals")"
     printf '%s\n' "${additions:-  no lines to add (already configured)}"
     printf '  record: %s (%s)\n' "$PAM_KEYRING_STATE" "$backend"
+    if [[ -n "$additions" && "${UPDATE_RESTORE_PAM:-0}" == 1 ]]; then
+      printf '  record: %s (the version the .pacnew merge brought)\n' "$PAM_LOGIN_BASE_STATE"
+    fi
     return 0
   fi
   adopt_legacy_pam_backup || return 1
@@ -856,6 +860,7 @@ configure_pam() {
     fi
     printf '%s\n' "${lines_to_add[@]}" | sudo tee -a "$LOGIN_FILE" > /dev/null
     log "Configured $module in $LOGIN_FILE."
+    record_login_base || return 1
   else
     log "PAM configuration for $module already exists. Skipping."
   fi
@@ -906,6 +911,11 @@ configure_gnome_session_type() (
   if [[ -f "$LOGIN_FILE" && ( $preview -eq 0 || -r "$LOGIN_FILE" ) ]] && grep -Fxq -- "$marker" "$LOGIN_FILE"; then
     has_block=1
   fi
+  # An update must not undo a hand edit: it puts a missing block back only into a login file a
+  # .pacnew merge replaced (start_update_run decided that before configure_pam ran).
+  block_removed_by_user() {
+    [[ "$de" == gnome && $has_block -eq 0 && "${UPDATE_RUN:-0}" == 1 && "${UPDATE_RESTORE_PAM:-0}" != 1 ]]
+  }
   validate_gnome_block() {
     if [[ $has_block -eq 1 ]]; then
       local check_line check_tty check_user check_env
@@ -933,9 +943,14 @@ configure_gnome_session_type() (
     if [[ ! -r "$LOGIN_FILE" ]]; then
       printf '  existing block: unknown (needs root)\n'
     fi
-    if [[ "$de" == gnome ]]; then
+    if block_removed_by_user; then
+      printf '  left alone: the block is not in %s, which has your own edits (--update)\n' "$LOGIN_FILE"
+    elif [[ "$de" == gnome ]]; then
       printf '%s\n' "${block[@]}"
       printf 'Session-type file: %s (from %s)\n' "$GNOME_SESSION_TYPE_DEST" "$SCRIPT_DIR/pam/gnome-session-type.conf"
+      if [[ $has_block -eq 0 && "${UPDATE_RESTORE_PAM:-0}" == 1 ]]; then
+        printf '  record: %s (the version the .pacnew merge brought)\n' "$PAM_LOGIN_BASE_STATE"
+      fi
     else
       if [[ $has_block -eq 1 ]]; then
         printf '  remove the lightXDM GNOME block\n'
@@ -960,6 +975,10 @@ configure_gnome_session_type() (
     return 1
   fi
   validate_gnome_block || return 1
+  if block_removed_by_user; then
+    log "lightXDM's GNOME session-type block is not in $LOGIN_FILE, which has your own edits, so --update leaves it alone; GNOME on TTY1 needs it to start on Wayland. Add it back with $(script_cmd install.sh) --de gnome."
+    return 0
+  fi
   adopt_legacy_pam_backup || return 1
 
   local tmp line newline inserted=0 block_line=0
@@ -1020,6 +1039,9 @@ configure_gnome_session_type() (
     # shellcheck disable=SC2024  # the temporary input file belongs to the calling user
     sudo tee "$LOGIN_FILE" < "$tmp" > /dev/null || return 1
     log "Configured GNOME session type in $LOGIN_FILE for $de."
+    if [[ "$de" == gnome ]]; then
+      record_login_base || return 1
+    fi
   fi
   if [[ "$de" != gnome && -e "$GNOME_SESSION_TYPE_DEST" ]]; then
     sudo rm -f -- "$GNOME_SESSION_TYPE_DEST" || return 1
@@ -1155,11 +1177,41 @@ save_install_choices() {
     log "WARNING: Could not save the install choices for --update in $file."
   fi
 }
-# True when $LOGIN_FILE is byte-identical to the version its package ships, as pacman checks backup files.
-login_file_is_stock() {
-  local owner
+# True when a .pacnew merge replaced $LOGIN_FILE: pacman sees the version its package ships (an
+# unmodified backup file), and that version is neither lightXDM's backup of the original nor the
+# packaged version lightXDM already put its lines back into after an earlier merge. Removing only
+# lightXDM's lines by hand brings back one of those two, so the user's removal stays. Without a
+# backup there is no proof either way, so the answer is no.
+login_file_replaced_by_package() {
+  local backup="${LOGIN_FILE}.lightxdm.bak" sum base="" owner
+  [[ -f "$backup" && -r "$backup" && -r "$LOGIN_FILE" ]] || return 1
+  sum="$(sha256sum < "$LOGIN_FILE")"
+  [[ -r "$PAM_LOGIN_BASE_STATE" ]] && base="$(<"$PAM_LOGIN_BASE_STATE")"
+  [[ "$sum" != "$(sha256sum < "$backup")" && "${sum%% *}" != "$base" ]] || return 1
   owner="$(pacman -Qqo -- "$LOGIN_FILE" 2>/dev/null)" && [[ -n "$owner" ]] || return 1
   LC_ALL=C pacman -Qii -- "$owner" 2>/dev/null | grep -Fq -- "$LOGIN_FILE [unmodified]"
+}
+
+# --update decides once, before any step changes $LOGIN_FILE, whether a .pacnew merge replaced it;
+# only then do lightXDM's missing PAM lines go back in (saved_install_args, configure_gnome_session_type).
+start_update_run() {
+  UPDATE_RUN=1
+  UPDATE_RESTORE_PAM=0
+  UPDATE_LOGIN_SUM=""
+  if login_file_replaced_by_package; then
+    UPDATE_RESTORE_PAM=1
+    UPDATE_LOGIN_SUM="$(sha256sum < "$LOGIN_FILE")"
+    UPDATE_LOGIN_SUM="${UPDATE_LOGIN_SUM%% *}"
+  fi
+}
+
+# After lightXDM's lines went back into a login file a .pacnew merge replaced, remember that packaged
+# version, so a later removal of the lines by hand is not taken for another merge.
+record_login_base() {
+  [[ "${UPDATE_RESTORE_PAM:-0}" == 1 && -n "${UPDATE_LOGIN_SUM:-}" ]] || return 0
+  [[ "$(cat -- "$PAM_LOGIN_BASE_STATE" 2>/dev/null)" != "$UPDATE_LOGIN_SUM" ]] || return 0
+  sudo mkdir -p -- "$(dirname -- "$PAM_LOGIN_BASE_STATE")" || return 1
+  printf '%s\n' "$UPDATE_LOGIN_SUM" | sudo tee -- "$PAM_LOGIN_BASE_STATE" > /dev/null
 }
 # Print the options --update re-runs, one per line: the saved desktop and package choice, and the
 # keyring backend recorded in $PAM_KEYRING_STATE, else the one the active auth lines in $LOGIN_FILE
@@ -1198,9 +1250,9 @@ saved_install_args() {
   case "$record" in
     gnome | kwallet)
       if [[ " ${backends[*]} " != *" $record "* ]]; then
-        # Only a login file reset to its packaged version lost the lines without the user: put
-        # lightXDM's own lines back there, and leave a file with the user's own edits alone.
-        if ! login_file_is_stock; then
+        # Only a login file a .pacnew merge replaced lost the lines without the user: put lightXDM's
+        # own lines back there, and leave a file the user edited (or reverted by hand) alone.
+        if [[ "${UPDATE_RESTORE_PAM:-0}" != 1 ]]; then
           local hint="--de $de"
           [[ $no_packages -eq 0 ]] || hint+=" --no-packages"
           case "$de" in
@@ -1211,7 +1263,7 @@ saved_install_args() {
           printf '%s\n' --no-keyring
           return 0
         fi
-        log "lightXDM's $record keyring lines are missing from $LOGIN_FILE, which is back to the version its package ships (a .pacnew merge); adding them back."
+        log "lightXDM's $record keyring lines are missing from $LOGIN_FILE, which a .pacnew merge replaced with the version its package ships; adding them back."
       fi
       backends=("$record")
       ;;
@@ -1284,9 +1336,9 @@ Options:
   --no-keyring      skip keyring packages and keyring PAM lines (use with autologin)
   --autologin       also log in on TTY1 without a password (requires --no-keyring)
   --update          rerun the last finished install with its saved desktop and --no-packages choice, to
-                    apply a newer lightXDM; the keyring choice stays (keyring lines a .pacnew merge
-                    removed come back, lines you removed by hand stay removed), autologin stays as
-                    it is (combinable with --dry-run and --non-interactive)
+                    apply a newer lightXDM; the keyring choice stays (lightXDM's PAM lines a .pacnew
+                    merge removed come back, lines you removed by hand stay removed), autologin stays
+                    as it is (combinable with --dry-run and --non-interactive)
 
 uninstall.sh reverts these changes; installed packages stay.
 EOF
@@ -1394,6 +1446,7 @@ EOF
       log "--update reuses the saved choices and takes only --dry-run and --non-interactive; to change a choice, run $(script_cmd install.sh) with its options."
       exit 1
     fi
+    start_update_run
     local saved_output saved_args=()
     saved_output="$(saved_install_args)" || exit 1
     mapfile -t saved_args <<<"$saved_output"
