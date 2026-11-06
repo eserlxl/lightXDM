@@ -4,6 +4,7 @@
 # enable-autologin.sh: Enable or disable TTY1 autologin for a user using systemd override
 set -e
 
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 OVERRIDE_DIR="${OVERRIDE_DIR:-/etc/systemd/system/getty@tty1.service.d}"
 OVERRIDE_FILE="$OVERRIDE_DIR/lightxdm-autologin.conf"
 LEGACY_OVERRIDE_FILE="$OVERRIDE_DIR/override.conf"
@@ -40,7 +41,7 @@ is_legacy_autologin_override() {
 
 warn_keyring_unlock() {
   if [[ -f "$LOGIN_FILE" ]] && grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*(pam_kwallet5\.so|pam_gnome_keyring\.so)([[:space:]]|$)' "$LOGIN_FILE"; then
-    echo "Warning: PAM keyring unlock is configured in $LOGIN_FILE; the keyring will not unlock automatically with autologin and will ask for its password in the desktop, unless its password is empty. To remove the keyring lines lightXDM added, run 'sudo bash uninstall.sh --keyring-only'."
+    echo "Warning: PAM keyring unlock is configured in $LOGIN_FILE; the keyring will not unlock automatically with autologin and will ask for its password in the desktop, unless its password is empty. To remove the keyring lines lightXDM added, run 'sudo $(printf 'bash %q' "$SCRIPT_DIR/uninstall.sh") --keyring-only'."
   fi
 }
 

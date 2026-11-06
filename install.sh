@@ -24,6 +24,10 @@ readonly PAM_GNOME_KEYRING_SESSION="session    optional   pam_gnome_keyring.so a
 log() {
   echo "=> $1" >&2
 }
+# Print how to run bundled script $1 from any directory: bash and its shell-escaped path
+script_cmd() {
+  printf 'bash %q' "$SCRIPT_DIR/$1"
+}
 
 # Check for root privileges
 check_root() {
@@ -453,12 +457,12 @@ init_xinitrc_template() {
     plasma | gnome | budgie)
       cp -- "$SCRIPT_DIR/dotfiles/.wayland-session-$id" "$dest"
       chmod 755 "$dest"
-      log "Created $dest from the built-in $id template. Edit it, then run: bash install.sh --de $id"
+      log "Created $dest from the built-in $id template. Edit it, then run: $(script_cmd install.sh) --de $id"
       ;;
     xfce | lxqt | lxde | mate | cinnamon | i3)
       cp -- "$SCRIPT_DIR/dotfiles/.xinitrc-$id" "$dest"
       chmod 755 "$dest"
-      log "Created $dest from the built-in $id template. Edit it, then run: bash install.sh --de $id"
+      log "Created $dest from the built-in $id template. Edit it, then run: $(script_cmd install.sh) --de $id"
       ;;
     *)
       if [[ $wayland -eq 1 ]]; then
@@ -495,7 +499,7 @@ EOF
         done <"$SCRIPT_DIR/dotfiles/.xinitrc-i3" >"$dest"
       fi
       chmod 755 "$dest"
-      log "Created $dest for $id. Check its exec line, then run: bash install.sh --no-packages --de $id"
+      log "Created $dest for $id. Check its exec line, then run: $(script_cmd install.sh) --no-packages --de $id"
       ;;
   esac
 }
@@ -851,7 +855,7 @@ configure_pam() {
   local drop_in
   for drop_in in "$AUTOLOGIN_DROPIN_DIR"/*.conf; do
     if [[ -f "$drop_in" ]] && grep -Eqs '^[[:space:]]*ExecStart[[:space:]]*=.*--autologin' "$drop_in"; then
-      log "WARNING: TTY1 autologin is enabled ($drop_in); it cannot unlock the keyring. Disable it with 'sudo bash enable-autologin.sh --disable', or keep autologin and remove the keyring lines with 'sudo bash uninstall.sh --keyring-only'."
+      log "WARNING: TTY1 autologin is enabled ($drop_in); it cannot unlock the keyring. Disable it with 'sudo $(script_cmd enable-autologin.sh) --disable', or keep autologin and remove the keyring lines with 'sudo $(script_cmd uninstall.sh) --keyring-only'."
       break
     fi
   done
@@ -1411,9 +1415,9 @@ EOF
           log "Unsupported desktop environment: $de (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
           if [[ -n "$de" && "$de" != *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* ]]; then
             if [[ ! -f "$custom_template" ]]; then
-              log "For a custom session, create its template first: bash install.sh --init-template --de $de"
+              log "For a custom session, create its template first: $(script_cmd install.sh) --init-template --de $de"
             else
-              log "Custom sessions need --no-packages (install their packages yourself): bash install.sh --no-packages --de $de"
+              log "Custom sessions need --no-packages (install their packages yourself): $(script_cmd install.sh) --no-packages --de $de"
             fi
           fi
           exit 1
@@ -1610,7 +1614,7 @@ EOF
   fi
 
   if [[ $autologin -eq 1 ]]; then
-    unlock_summary+="; TTY1 autologin is enabled (sudo bash enable-autologin.sh --disable reverts it)"
+    unlock_summary+="; TTY1 autologin is enabled (sudo $(script_cmd enable-autologin.sh) --disable reverts it)"
   fi
 
   trap - EXIT

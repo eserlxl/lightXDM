@@ -83,6 +83,10 @@ set --
 
 REPO_ROOT="$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+# The command each script prints to run another one from this checkout: bash and its escaped path.
+printf -v CMD_INSTALL 'bash %q' "$REPO_ROOT/install.sh"
+printf -v CMD_UNINSTALL 'bash %q' "$REPO_ROOT/uninstall.sh"
+printf -v CMD_AUTOLOGIN 'bash %q' "$REPO_ROOT/enable-autologin.sh"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -1021,7 +1025,8 @@ for status_case in disabled missing enabled legacy both foreign later kwallet gn
       fi
       ;;
     kwallet|gnome)
-      if [[ "$output" == *"Warning: PAM keyring unlock is configured in $status_dir/login; the keyring will not unlock automatically with autologin"* ]]; then
+      if [[ "$output" == *"Warning: PAM keyring unlock is configured in $status_dir/login; the keyring will not unlock automatically with autologin"* &&
+        "$output" == *"run 'sudo $CMD_UNINSTALL --keyring-only'."* ]]; then
         status_warnings_ok=1
       fi
       ;;
@@ -6185,8 +6190,8 @@ for autologin_pam_case in without with; do
   status=$?
   set -e
   if [[ $status -eq 0 ]] && {
-    [[ "$autologin_pam_case" == with && "$output" == *"TTY1 autologin is enabled"* && "$output" == *"enable-autologin.sh --disable"* &&
-      "$output" == *"sudo bash uninstall.sh --keyring-only"* ]] ||
+    [[ "$autologin_pam_case" == with && "$output" == *"TTY1 autologin is enabled"* && "$output" == *"sudo $CMD_AUTOLOGIN --disable"* &&
+      "$output" == *"sudo $CMD_UNINSTALL --keyring-only"* ]] ||
     [[ "$autologin_pam_case" == without && "$output" != *"TTY1 autologin is enabled"* ]];
   }; then
     pass "configure_pam autologin warning ($autologin_pam_case autologin drop-in)"
@@ -7890,10 +7895,29 @@ if [[ $status_builtin -eq 0 && "$out_builtin" == *"Created $init_xfce"* ]] && cm
 else
   fail "install.sh --init-template built-in (status=$status_builtin/$status_again, output=$out_builtin / $out_again)"
 fi
+# A printed command names the script by its shell-escaped absolute path, so it runs from any directory.
+spaced_root="$TMP_DIR/dir with space/lightxdm"
+spaced_home="$TMP_DIR/spaced_home"
+mkdir -p "$spaced_root" "$spaced_home"
+cp -- "$REPO_ROOT/install.sh" "$REPO_ROOT/uninstall.sh" "$REPO_ROOT/enable-autologin.sh" "$spaced_root/"
+cp -r -- "$REPO_ROOT/dotfiles" "$REPO_ROOT/pam" "$spaced_root/"
+set +e
+spaced_out="$(cd / && HOME="$spaced_home" PATH="$sudo_pw_dir:$PATH" bash "$spaced_root/install.sh" --init-template --de plasma 2>&1)"
+spaced_cmd="${spaced_out##*then run: }"
+spaced_cmd="${spaced_cmd%% --de plasma*}"
+spaced_help="$(cd / && eval "$spaced_cmd --help" 2>&1)"
+spaced_status=$?
+set -e
+if [[ "$spaced_cmd" == 'bash '*'/dir\ with\ space/lightxdm/install.sh' && $spaced_status -eq 0 && "$spaced_help" == *"Usage:"* ]]; then
+  pass "a printed command names the script by its shell-escaped absolute path and runs from another directory"
+else
+  fail "printed command from a path with a space (cmd=$spaced_cmd, status=$spaced_status)"
+fi
+rm -rf "$TMP_DIR/dir with space" "$spaced_home"
 resolved_plasma_override="$(HOME="$init_home" xinitrc_template plasma)"
 resolved_plasma_bundled="$(HOME="$TMP_DIR/empty_plasma_home" xinitrc_template plasma)"
 if [[ $status_plasma_init -eq 0 && "$out_plasma_init" == *"Created $init_plasma"* &&
-  "$out_plasma_init" == *"bash install.sh --de plasma"* ]] &&
+  "$out_plasma_init" == *"$CMD_INSTALL --de plasma"* ]] &&
   cmp -s "$init_plasma" "$REPO_ROOT/dotfiles/.wayland-session-plasma" &&
   [[ "$(stat -c '%a' "$init_plasma")" == 755 && ! -e "$init_home/.config/lightxdm/.xinitrc-plasma" &&
     $status_plasma_again -eq 1 && "$out_plasma_again" == *"already exists"* &&
@@ -7927,7 +7951,7 @@ for init_wl_de in gnome budgie; do
   resolved_wl_override="$(HOME="$init_home" xinitrc_template "$init_wl_de")"
   resolved_wl_bundled="$(HOME="$TMP_DIR/empty_wayland_home" xinitrc_template "$init_wl_de")"
   if [[ $status_wl_init -eq 0 && "$out_wl_init" == *"Created $init_wl"* &&
-    "$out_wl_init" == *"bash install.sh --de $init_wl_de"* ]] &&
+    "$out_wl_init" == *"$CMD_INSTALL --de $init_wl_de"* ]] &&
     cmp -s "$init_wl" "$REPO_ROOT/dotfiles/.wayland-session-$init_wl_de" &&
     [[ "$(stat -c '%a' "$init_wl")" == 755 && ! -e "$init_home/.config/lightxdm/.xinitrc-$init_wl_de" &&
       $status_wl_again -eq 1 && "$out_wl_again" == *"already exists"* &&
@@ -8172,7 +8196,7 @@ status=$?
 set -e
 init_sway="$init_wayland_home/.config/lightxdm/.wayland-session-sway"
 if [[ $status -eq 0 && "$output" == *"Created $init_sway"* &&
-  "$output" == *"bash install.sh --no-packages --de sway"* && ! -s "$STUB_LOG" &&
+  "$output" == *"$CMD_INSTALL --no-packages --de sway"* && ! -s "$STUB_LOG" &&
   "$(stat -c '%a' "$init_sway")" == 755 && ! -e "$init_wayland_home/.config/lightxdm/.xinitrc-sway" ]] &&
   cmp -s "$init_sway" "$expected_sway_template"; then
   pass "--init-template --wayland --de sway creates the exact minimal template (755) without sudo"
@@ -8271,7 +8295,7 @@ else
   output="$(env -u SUDO_USER TARGET_HOME= LOGIN_FILE="$ko_dir/login" OVERRIDE_DIR="$ko_dir/getty.d" POLKIT_RULE="$ko_dir/polkit.rules" DM_STATE_FILE="$ko_dir/dm" GNOME_SESSION_TYPE_DEST="$ko_dir/gnome-session-type.conf" unshare -r bash "$REPO_ROOT/uninstall.sh" --keyring-only 2>&1)"
   status=$?
   set -e
-  if [[ $status -eq 0 && "$output" == *"To log in on TTY1 without a password, run: sudo bash enable-autologin.sh <user>"* ]]; then
+  if [[ $status -eq 0 && "$output" == *"To log in on TTY1 without a password, run: sudo $CMD_AUTOLOGIN <user>"* ]]; then
     pass "uninstall.sh --keyring-only suggests enabling autologin when disabled"
   else
     fail "uninstall.sh --keyring-only autologin hint (status=$status, output=$output)"
