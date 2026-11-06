@@ -885,12 +885,18 @@ pam_lines_to_add() {
 # Print the lightXDM keyring lines to remove: each line lightXDM ever appended that the login file
 # has, the original backup lacks, and the chosen backend ($1 auth, $2 session line) no longer uses.
 pam_lines_to_remove() {
-  local keep_auth="$1" keep_session="$2" backup_file="${LOGIN_FILE}.lightxdm.bak" line
+  local keep_auth="$1" keep_session="$2" backup_file="${LOGIN_FILE}.lightxdm.bak" line module=""
   if [[ ! -e "$backup_file" && ! -L "$backup_file" ]]; then
     backup_file="$(legacy_pam_backup_candidate)"
   fi
   [[ -f "$backup_file" ]] || return 0
+  [[ ! "$keep_auth" =~ (pam_[[:alnum:]_]+\.so) ]] || module="${BASH_REMATCH[1]}"
   for line in "${LIGHTXDM_KEYRING_LINES[@]}"; do
+    # --update refreshes only an older form of the backend's own lines: the other backend's lines are
+    # the user's, since only an explicit install switches desktops.
+    if [[ "${UPDATE_RUN:-0}" == 1 && "$line" != *" $module"* ]]; then
+      continue
+    fi
     if [[ "$line" != "$keep_auth" && "$line" != "$keep_session" ]] &&
       grep -Fxq -- "$line" "$LOGIN_FILE" && ! grep -Fxq -- "$line" "$backup_file"; then
       printf '%s\n' "$line"

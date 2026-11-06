@@ -10230,6 +10230,33 @@ if [[ -z "$ged_report" ]]; then
 else
   fail "install.sh --update edited GNOME block:$ged_report"
 fi
+# --update refreshes an older form of the backend's own keyring line but keeps the other backend's
+# lines, which only the user can have added (an explicit install removes them on a desktop switch).
+ob_dir="$TMP_DIR/update_other_backend"
+mkdir -p "$ob_dir"
+printf '%s\n' '# the original login stack' >"$ob_dir/login.lightxdm.bak"
+printf '%s\n' '# the original login stack' "$PAM_KWALLET_AUTH" "$PAM_KWALLET_SESSION" \
+  'auth       optional   pam_gnome_keyring.so auto_start' "$PAM_GNOME_KEYRING_SESSION" >"$ob_dir/login"
+ob_report=""
+for ob_mode in update install; do
+  cp -- "$ob_dir/login" "$ob_dir/login.$ob_mode"
+  cp -- "$ob_dir/login.lightxdm.bak" "$ob_dir/login.$ob_mode.lightxdm.bak"
+  # shellcheck disable=SC2016  # expand inside the child shell
+  ob_log="$(env LOGIN_FILE="$ob_dir/login.$ob_mode" PAM_KEYRING_STATE="$ob_dir/pam-keyring.$ob_mode" \
+    bash -c 'source "$1/install.sh" && { [[ "$2" != update ]] || UPDATE_RUN=1; } && configure_pam xfce' _ "$REPO_ROOT" "$ob_mode" 2>&1)" ||
+    ob_report+=" [$ob_mode failed: $ob_log]"
+  grep -Fxq -- "$PAM_GNOME_KEYRING_AUTH" "$ob_dir/login.$ob_mode" &&
+    ! grep -Fxq -- 'auth       optional   pam_gnome_keyring.so auto_start' "$ob_dir/login.$ob_mode" ||
+    ob_report+=" [$ob_mode did not refresh the older gnome auth line: $(cat "$ob_dir/login.$ob_mode")]"
+done
+grep -Fxq -- "$PAM_KWALLET_AUTH" "$ob_dir/login.update" && grep -Fxq -- "$PAM_KWALLET_SESSION" "$ob_dir/login.update" ||
+  ob_report+=" [--update removed the other backend's lines: $(cat "$ob_dir/login.update")]"
+! grep -q 'pam_kwallet5' "$ob_dir/login.install" || ob_report+=" [an explicit install kept the other backend's lines]"
+if [[ -z "$ob_report" ]]; then
+  pass "--update keeps the other keyring backend's lines and refreshes only the backend's older line; an install removes them"
+else
+  fail "--update other keyring backend:$ob_report"
+fi
 if [[ $record_ok -eq 1 ]]; then
   pass "install.sh --update restores recorded keyring lines only into a login file a .pacnew merge replaced"
 else
