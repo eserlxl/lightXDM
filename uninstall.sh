@@ -285,6 +285,11 @@ matches_lightxdm_template() {
 }
 
 for dotfile in .bash_profile .xinitrc .wayland-session .gpg-agent-kwallet .gpg-agent-gnome .config/autostart/lightxdm-gpg-agent-tty.desktop; do
+  # The current template install.sh --update put beside a dotfile the user edited.
+  if [[ -f "$TARGET_HOME/${dotfile}.lightxdm-new" && ! -L "$TARGET_HOME/${dotfile}.lightxdm-new" ]]; then
+    echo "Removing $TARGET_HOME/${dotfile}.lightxdm-new..."
+    rm -f -- "$TARGET_HOME/${dotfile}.lightxdm-new"
+  fi
   past_backup=0
   # A backup equal to an older bundled template is a lightXDM file an earlier install backed up
   # as the user's original: drop it and treat the dotfile as one lightXDM created.
@@ -325,10 +330,10 @@ for dotfile in .bash_profile .xinitrc .wayland-session .gpg-agent-kwallet .gpg-a
 done
 
 # The .bash_profile respawn guard keeps launch timestamps here, and install.sh the choices --update
-# reuses; copies under a custom XDG_STATE_HOME are not removed.
+# reuses and what it wrote into each dotfile; copies under a custom XDG_STATE_HOME are not removed.
 state_dir="$TARGET_HOME/.local/state/lightxdm"
 state_removed=0
-for state_file in startx-attempts install-choices; do
+for state_file in startx-attempts install-choices installed-dotfiles; do
   if [[ ! -L "$state_dir" && -f "$state_dir/$state_file" && ! -L "$state_dir/$state_file" ]]; then
     rm -f -- "$state_dir/$state_file"
     state_removed=1

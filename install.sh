@@ -613,10 +613,98 @@ check_session_commands() {
   return 0
 }
 
+# Where lightXDM keeps the hash of what it last wrote into each home dotfile, so --update can tell
+# its own unchanged copy from the user's edit.
+dotfile_record_file() {
+  printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/lightxdm/installed-dotfiles"
+}
+
+# Print the recorded hash of what lightXDM last wrote into home dotfile $1, if there is one.
+recorded_dotfile_sum() {
+  local rel="${1#"$HOME"/}" file line sum=""
+  file="$(dotfile_record_file)"
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "${line:66}" != "$rel" ]] || sum="${line:0:64}"
+  done <"$file"
+  [[ -z "$sum" ]] || printf '%s\n' "$sum"
+}
+
+# Record what lightXDM just wrote into home dotfile $1 ("<sha256>  <path under HOME>" per line).
+record_dotfile() {
+  local target="$1" file rel sum line kept=()
+  file="$(dotfile_record_file)"
+  rel="${target#"$HOME"/}"
+  sum="$(sha256sum <"$target")" || return 1
+  if [[ -f "$file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "${line:66}" == "$rel" ]] || kept+=("$line")
+    done <"$file"
+  fi
+  mkdir -p -- "${file%/*}" && printf '%s\n' "${kept[@]}" "${sum%% *}  $rel" >"$file"
+}
+
+# True when lightXDM put home dotfile $1 there before: it recorded what it wrote, or it backed up the
+# user's original or noted there was none (installs from before the record).
+dotfile_installed_before() {
+  local target="$1"
+  [[ -n "$(recorded_dotfile_sum "$target")" || -e "${target}.lightxdm.bak" || -L "${target}.lightxdm.bak" ||
+    -e "${target}.lightxdm.absent" || -L "${target}.lightxdm.absent" ]]
+}
+
+# True when home dotfile $1 is lightXDM's own unchanged copy: what lightXDM last wrote there, the
+# template it would write now ($2), or a template an older lightXDM bundled.
+dotfile_unchanged() {
+  local target="$1" source="$2" sum
+  [[ -f "$target" && ! -L "$target" ]] || return 1
+  sum="$(sha256sum <"$target")"
+  [[ "${sum%% *}" == "$(recorded_dotfile_sum "$target")" || "$sum" == "$(sha256sum <"$source")" ]] ||
+    is_past_lightxdm_template "$target" "${target#"$HOME"/}"
+}
+
+# --update refreshes a dotfile only while it is lightXDM's own unchanged copy. An edited file (or a
+# symlink) stays, with the current template beside it as *.lightxdm-new; a dotfile the user removed
+# stays removed; one this lightXDM version adds for the first time is installed.
+update_dotfile() {
+  local preview="$1" mode="$2" source="$3" target="$4"
+  local new="${target}.lightxdm-new"
+  if [[ ! -e "$target" && ! -L "$target" ]] && dotfile_installed_before "$target"; then
+    if [[ "$preview" == 1 ]]; then
+      printf 'Dotfile: %s (stays removed: --update)\n' "$target"
+    else
+      log "$target is gone, so --update leaves it out; to put it back, run: $(printf 'install -Dm%s %q %q' "$mode" "$source" "$target")"
+    fi
+    return 0
+  fi
+  if [[ ! -e "$target" && ! -L "$target" ]] || dotfile_unchanged "$target" "$source"; then
+    if [[ "$preview" == 1 ]]; then
+      printf 'Dotfile: %s\n' "$target"
+      return 0
+    fi
+    if [[ ! -e "$target" ]]; then
+      preserve_dotfile "$target" "$source"
+    fi
+    install -Dm"$mode" "$source" "$target" || return
+    record_dotfile "$target" || log "WARNING: Could not record $target in $(dotfile_record_file)."
+    rm -f -- "$new"
+    return 0
+  fi
+  if [[ "$preview" == 1 ]]; then
+    printf 'Dotfile: %s (stays: your own edits; current template to %s)\n' "$target" "$new"
+    return 0
+  fi
+  install -Dm"$mode" "$source" "$new" || return
+  log "$target has your own edits, so --update leaves it alone; the current template is in $new (compare: $(printf 'diff -u %q %q' "$target" "$new"))."
+}
+
 # Preview or preserve and install a dotfile, using the same destination and templates.
 copy_dotfile() {
   local preview="$1" mode="$2" source="$3" target="$4"
   shift 4
+  if [[ "${UPDATE_RUN:-0}" == 1 ]]; then
+    update_dotfile "$preview" "$mode" "$source" "$target"
+    return
+  fi
   if [[ "$preview" == 1 ]]; then
     printf 'Dotfile: %s\n' "$target"
     return 0
@@ -626,7 +714,8 @@ copy_dotfile() {
   else
     preserve_dotfile "$target" "$@"
   fi
-  install -Dm"$mode" "$source" "$target"
+  install -Dm"$mode" "$source" "$target" || return
+  record_dotfile "$target" || log "WARNING: Could not record $target in $(dotfile_record_file); --update will treat it as edited."
 }
 
 # Copy dotfiles to the user's home directory (or print destinations with preview=1).
@@ -676,7 +765,14 @@ copy_dotfiles() {
       # ~/.xinitrc; skip absent files so X11-only homes get no .lightxdm.absent marker.
       if [[ -e "$wl_session" || -L "$wl_session" ]]; then
         local wl_templates=("$SCRIPT_DIR"/dotfiles/.wayland-session-* "$user_home"/.config/lightxdm/.wayland-session-*)
-        if [[ $preview -eq 1 ]]; then
+        if [[ "${UPDATE_RUN:-0}" == 1 ]]; then
+          # Only an explicit install moves the user's file away; --update says what it changes.
+          if [[ -x "$wl_session" && $preview -eq 1 ]]; then
+            printf 'Dotfile: %s (stays: it starts instead of startx; --update)\n' "$wl_session"
+          elif [[ -x "$wl_session" ]]; then
+            log "$wl_session is executable, so TTY1 starts it instead of startx; --update leaves it alone. Remove it, or make it non-executable, to start $de on TTY1."
+          fi
+        elif [[ $preview -eq 1 ]]; then
           printf 'Remove dotfile (preserving existing content): %s\n' "$wl_session"
         else
           preserve_dotfile "$wl_session" "${wl_templates[@]}"
@@ -1164,6 +1260,7 @@ preview_install() {
     printf 'TTY1 autologin: unchanged (--autologin not requested)\n'
   fi
   printf 'Install choices: %s\n' "$(install_choices_file)"
+  printf 'Dotfile record: %s\n' "$(dotfile_record_file)"
 }
 # Where a finished install keeps the choices that --update reuses
 install_choices_file() {

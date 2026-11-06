@@ -7471,6 +7471,7 @@ for dr_de in xfce plasma gnome custom-x11 custom-wayland custom-gnome custom-kwa
       case "$dr_line" in
         "Dotfile: $dr_preview_home/"*) dr_destinations+=("${dr_line#"Dotfile: $dr_preview_home/"}") ;;
         "Install choices: $dr_preview_home/"*) dr_destinations+=("${dr_line#"Install choices: $dr_preview_home/"}") ;;
+        "Dotfile record: $dr_preview_home/"*) dr_destinations+=("${dr_line#"Dotfile record: $dr_preview_home/"}") ;;
       esac
     done <<<"$dr_out"
     printf '%s\n' "${dr_destinations[@]}" | sort >"$dr_case/preview-files"
@@ -9947,6 +9948,96 @@ if [[ $status -eq 0 && "$merge_log" == *"Configured GNOME session type"* && "$me
 else
   fail "install.sh --update merge restore (status=$status, log=$merge_log, base=$(cat "$merge_dir/pam-login-base" 2>&1), again=$merge_again)"
 fi
+# --update refreshes only lightXDM's unchanged dotfiles: an edited file or a symlink stays (the template
+# goes beside it as *.lightxdm-new), a removed one stays removed, an executable ~/.wayland-session on an
+# X11 desktop stays; a copy an older lightXDM wrote (the recorded hash) is refreshed.
+upd_home="$TMP_DIR/update_dotfiles_home"
+mkdir -p "$upd_home"
+upd_dotfiles() {
+  # shellcheck disable=SC2016  # expand inside the child shell
+  env HOME="$upd_home" bash -c 'source "$1/install.sh" || exit 1; [[ "$2" == install ]] || UPDATE_RUN=1
+    if [[ "$2" == preview ]]; then copy_dotfiles xfce 1; else copy_dotfiles xfce; fi' _ "$REPO_ROOT" "$1" 2>&1
+}
+upd_report=""
+upd_record="$upd_home/.local/state/lightxdm/installed-dotfiles"
+upd_log="$(upd_dotfiles install)" || upd_report+=" [install: $upd_log]"
+for upd_rel in .bash_profile .gpg-agent-gnome .config/autostart/lightxdm-gpg-agent-tty.desktop .xinitrc; do
+  upd_sum="$(sha256sum <"$upd_home/$upd_rel")"
+  grep -Fqx -- "${upd_sum%% *}  $upd_rel" "$upd_record" 2>/dev/null || upd_report+=" [install did not record $upd_rel]"
+done
+printf '%s\n' '# what an older lightXDM wrote' >"$upd_home/.bash_profile"
+upd_old="$(sha256sum <"$upd_home/.bash_profile")"
+grep -v -F -- '  .bash_profile' "$upd_record" >"$upd_record.tmp" || true
+printf '%s  .bash_profile\n' "${upd_old%% *}" >>"$upd_record.tmp"
+mv -- "$upd_record.tmp" "$upd_record"
+printf '%s\n' 'stale' >"$upd_home/.bash_profile.lightxdm-new"
+printf '%s\n' '# a line the user wrote' >>"$upd_home/.xinitrc"
+cp -- "$upd_home/.xinitrc" "$TMP_DIR/update_dotfiles_xinitrc"
+rm -f -- "$upd_home/.gpg-agent-gnome"
+printf '%s\n' '[Desktop Entry]' >"$TMP_DIR/update_dotfiles_desktop"
+ln -sf -- "$TMP_DIR/update_dotfiles_desktop" "$upd_home/.config/autostart/lightxdm-gpg-agent-tty.desktop"
+printf '%s\n' '#!/bin/sh' >"$upd_home/.wayland-session"
+chmod 755 "$upd_home/.wayland-session"
+upd_before="$(cd "$upd_home" && find . -print0 | sort -z | xargs -0 ls -ld --time-style=+%s 2>&1 | sha256sum)"
+upd_preview="$(upd_dotfiles preview)"
+upd_after="$(cd "$upd_home" && find . -print0 | sort -z | xargs -0 ls -ld --time-style=+%s 2>&1 | sha256sum)"
+[[ "$upd_before" == "$upd_after" ]] || upd_report+=" [preview changed the home]"
+for upd_line in "Dotfile: $upd_home/.bash_profile" \
+  "Dotfile: $upd_home/.xinitrc (stays: your own edits; current template to $upd_home/.xinitrc.lightxdm-new)" \
+  "Dotfile: $upd_home/.gpg-agent-gnome (stays removed: --update)" \
+  "Dotfile: $upd_home/.config/autostart/lightxdm-gpg-agent-tty.desktop (stays: your own edits; current template to $upd_home/.config/autostart/lightxdm-gpg-agent-tty.desktop.lightxdm-new)" \
+  "Dotfile: $upd_home/.wayland-session (stays: it starts instead of startx; --update)"; do
+  grep -Fqx -- "$upd_line" <<<"$upd_preview" || upd_report+=" [preview lacks: $upd_line]"
+done
+upd_log="$(upd_dotfiles update)" || upd_report+=" [update failed: $upd_log]"
+cmp -s "$upd_home/.bash_profile" "$REPO_ROOT/dotfiles/.bash_profile" || upd_report+=" [older copy not refreshed]"
+[[ ! -e "$upd_home/.bash_profile.lightxdm-new" ]] || upd_report+=" [stale .lightxdm-new kept]"
+cmp -s "$upd_home/.xinitrc" "$TMP_DIR/update_dotfiles_xinitrc" || upd_report+=" [edited .xinitrc changed]"
+if ! cmp -s "$upd_home/.xinitrc.lightxdm-new" "$REPO_ROOT/dotfiles/.xinitrc-xfce" ||
+  [[ "$(stat -c %a "$upd_home/.xinitrc.lightxdm-new")" != 755 ]]; then
+  upd_report+=" [.xinitrc.lightxdm-new missing, different or not 755]"
+fi
+[[ "$upd_log" == *"$upd_home/.xinitrc has your own edits, so --update leaves it alone; the current template is in $upd_home/.xinitrc.lightxdm-new (compare: diff -u"* ]] ||
+  upd_report+=" [no edited-file note]"
+[[ ! -e "$upd_home/.gpg-agent-gnome" && "$upd_log" == *"$upd_home/.gpg-agent-gnome is gone, so --update leaves it out; to put it back, run: install -Dm744 $REPO_ROOT/dotfiles/.gpg-agent-gnome $upd_home/.gpg-agent-gnome"* ]] ||
+  upd_report+=" [removed dotfile recreated or no note]"
+[[ "$(readlink "$upd_home/.config/autostart/lightxdm-gpg-agent-tty.desktop")" == "$TMP_DIR/update_dotfiles_desktop" ]] ||
+  upd_report+=" [symlink replaced]"
+[[ -x "$upd_home/.wayland-session" && "$upd_log" == *"$upd_home/.wayland-session is executable, so TTY1 starts it instead of startx; --update leaves it alone"* ]] ||
+  upd_report+=" [executable .wayland-session moved or no note]"
+if compgen -G "$upd_home/*.lightxdm-edited*" >/dev/null || compgen -G "$upd_home/.*.lightxdm-edited*" >/dev/null; then
+  upd_report+=" [--update saved an edited copy]"
+fi
+# A dotfile this version adds for the first time (no record, no marker) is installed.
+rm -f -- "$upd_home/.config/autostart/lightxdm-gpg-agent-tty.desktop"* 
+grep -v -F -- 'lightxdm-gpg-agent-tty.desktop' "$upd_record" >"$upd_record.tmp" || true
+mv -- "$upd_record.tmp" "$upd_record"
+upd_log="$(upd_dotfiles update)" || upd_report+=" [update for a new dotfile failed: $upd_log]"
+cmp -s "$upd_home/.config/autostart/lightxdm-gpg-agent-tty.desktop" "$REPO_ROOT/dotfiles/lightxdm-gpg-agent-tty.desktop" ||
+  upd_report+=" [new dotfile not installed]"
+if [[ -z "$upd_report" ]]; then
+  pass "install.sh --update refreshes only unchanged lightXDM dotfiles and leaves edited, symlinked and removed ones as they are"
+else
+  fail "install.sh --update dotfiles:$upd_report"
+fi
+# A session template under ~/.config/lightxdm that changed since the last install still reaches
+# ~/.xinitrc through --update, because the old copy is the one lightXDM recorded.
+cus_home="$TMP_DIR/update_custom_home"
+mkdir -p "$cus_home/.config/lightxdm"
+printf '%s\n' '#!/bin/sh' 'exec startxfce4' >"$cus_home/.config/lightxdm/.xinitrc-xfce"
+cus_report=""
+# shellcheck disable=SC2016  # expand inside the child shell
+cus_log="$(env HOME="$cus_home" bash -c 'source "$1/install.sh" && copy_dotfiles xfce' _ "$REPO_ROOT" 2>&1)" || cus_report+=" [install: $cus_log]"
+printf '%s\n' '#!/bin/sh' '# version 2' 'exec startxfce4' >"$cus_home/.config/lightxdm/.xinitrc-xfce"
+# shellcheck disable=SC2016  # expand inside the child shell
+cus_log="$(env HOME="$cus_home" bash -c 'source "$1/install.sh" && UPDATE_RUN=1 && copy_dotfiles xfce' _ "$REPO_ROOT" 2>&1)" || cus_report+=" [update: $cus_log]"
+cmp -s "$cus_home/.xinitrc" "$cus_home/.config/lightxdm/.xinitrc-xfce" || cus_report+=" [changed template not installed: $cus_log]"
+[[ ! -e "$cus_home/.xinitrc.lightxdm-new" ]] || cus_report+=" [.lightxdm-new written]"
+if [[ -z "$cus_report" ]]; then
+  pass "install.sh --update installs a changed ~/.config/lightxdm template over the copy lightXDM recorded"
+else
+  fail "install.sh --update custom template:$cus_report"
+fi
 if [[ $record_ok -eq 1 ]]; then
   pass "install.sh --update restores recorded keyring lines only into a login file a .pacnew merge replaced"
 else
@@ -9959,14 +10050,19 @@ else
   choices_home="$TMP_DIR/choices_home"
   mkdir -p "$choices_home/.local/state/lightxdm"
   printf 'de=i3\nno_packages=0\n' >"$choices_home/.local/state/lightxdm/install-choices"
+  printf '%s  .xinitrc\n' 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+    >"$choices_home/.local/state/lightxdm/installed-dotfiles"
+  printf '%s\n' '# a user edit' >"$choices_home/.xinitrc"
+  printf '%s\n' '# the template --update left beside it' >"$choices_home/.xinitrc.lightxdm-new"
   set +e
   output="$(env TARGET_HOME="$choices_home" LOGIN_FILE="$TMP_DIR/choices_login" DM_STATE_FILE="$TMP_DIR/choices_dm" \
     GNOME_SESSION_TYPE_DEST="$TMP_DIR/choices_gnome-session-type.conf" OVERRIDE_DIR="$TMP_DIR/choices_getty.d" \
     POLKIT_RULE="$TMP_DIR/choices_49-nopasswd.rules" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status=$?
   set -e
-  if [[ $status -eq 0 && ! -e "$choices_home/.local/state/lightxdm" ]]; then
-    pass "uninstall.sh removes the saved install choices and the emptied state directory"
+  if [[ $status -eq 0 && ! -e "$choices_home/.local/state/lightxdm" && ! -e "$choices_home/.xinitrc.lightxdm-new" &&
+    "$(cat "$choices_home/.xinitrc" 2>/dev/null)" == '# a user edit' ]]; then
+    pass "uninstall.sh removes the saved install choices, the dotfile record, *.lightxdm-new and the emptied state directory"
   else
     fail "uninstall.sh saved install choices (status=$status, output=$output)"
   fi

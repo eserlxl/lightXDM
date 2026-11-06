@@ -21,7 +21,7 @@ package:
       - "It asks for sudo, installs the packages of your desktop and sets up the TTY1 login (lightxdm-install --help)."
     post_upgrade:
       - "lightXDM was updated. To apply the new version, each user who set it up runs: lightxdm-update"
-      - "It replaces hand-edited ~/.bash_profile, ~/.xinitrc and ~/.wayland-session, keeping them as *.lightxdm-edited: keep changes in ~/.bashrc and ~/.config/lightxdm/."
+      - "It leaves home files you edited alone and puts the new template beside them as *.lightxdm-new; lightxdm-update --dry-run shows what it would change."
     pre_remove:
       - "Removing this package does not undo the lightXDM setup: run sudo lightxdm-uninstall before removing it."
       - "If the package is already removed, reinstall it to get lightxdm-uninstall back."
