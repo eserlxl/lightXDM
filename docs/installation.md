@@ -2,6 +2,24 @@
 
 Everything `install.sh` does, every option, the two login modes, and uninstalling.
 
+## Install from the AUR
+
+```sh
+yay -S lightxdm    # or: paru -S lightxdm
+lightxdm-install   # as your regular user, not root
+```
+
+The [`lightxdm`](https://aur.archlinux.org/packages/lightxdm) package installs only the tool: the scripts and templates in `/usr/share/lightxdm`, these guides in `/usr/share/doc/lightxdm`, and four commands. It changes no setting by itself; pacman prints a note that tells you to run `lightxdm-install`.
+
+| Command | Runs |
+|---------|------|
+| `lightxdm-install [options]` | `install.sh` with the same options: every `bash install.sh` command in this guide works as `lightxdm-install` |
+| `lightxdm-update [--dry-run] [--non-interactive]` | `install.sh --update`: reruns your last install with its saved choices |
+| `sudo lightxdm-uninstall [--keyring-only]` | `uninstall.sh` |
+| `sudo lightxdm-autologin <user>`, `sudo lightxdm-autologin --disable`, `lightxdm-autologin --status` | `enable-autologin.sh` |
+
+A package update replaces only the files in `/usr/share/lightxdm`. Your dotfiles and the PAM lines change when you run `lightxdm-update`, which pacman reminds you of after each update. To remove lightXDM, run `sudo lightxdm-uninstall` first and `sudo pacman -R lightxdm` after it: removing the package alone leaves the setup in place, and reinstalling it brings `lightxdm-uninstall` back.
+
 ## Quick Install (Arch Linux)
 ```sh
 # Clone and run the installer

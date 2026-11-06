@@ -72,3 +72,24 @@ lightXDM/
 
 It needs Docker, `qemu-system-x86_64`, read/write access to `/dev/kvm`, `python3` and `ssh`, and prints `SKIP` when one is missing. Add `--strict` or set `LIGHTXDM_STRICT_TESTS=1` to exit 1 on a `SKIP`; the default is exit 0. The image is reused while the package set and `build-image.sh` are unchanged, and `--rebuild-image` forces a fresh image with current Arch packages. Images, the package cache and per-desktop logs and screenshots live in `${XDG_CACHE_HOME:-~/.cache}/lightxdm-vm` (`LIGHTXDM_VM_DIR`); `LIGHTXDM_VM_JOBS` sets how many VMs run at once (4 GiB each, default 2), and `LIGHTXDM_VM_KEEP=1` leaves each VM running after its first login for debugging. The test copies the working tree, so uncommitted changes are tested as they are.
 
+## Release
+
+The git tag `vX.Y.Z` is the only version source (there is no VERSION file): a fix bumps the patch
+number, a new feature the minor number, a breaking change the major number. Before tagging, run every
+gate on the final tree: `bash lint.sh`, `bash tests/run.sh --strict`, `bash tests/docker-arch.sh --strict`,
+`bash tests/qemu-arch.sh --strict` with the login matrix the change needs (for example
+`plasma gnome xfce xfce+autologin`), and `aurgen --build-only local`, which builds the package with
+makepkg and checks it with namcap without installing it.
+
+```sh
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin main vX.Y.Z
+aurgen aur          # signed release tarball, GitHub release, PKGBUILD and .SRCINFO
+aurgen aur-init     # first release only: sets up the local clone of the AUR repository
+aurgen aur-deploy   # pushes PKGBUILD, .SRCINFO and lightxdm.install to the AUR
+```
+
+`aur/aurgen.install.yaml` decides the package layout (`bin/` to `/usr/bin`, the scripts, `dotfiles/` and
+`pam/` to `/usr/share/lightxdm`, the guides to `/usr/share/doc/lightxdm`), the signing key and the notes
+pacman prints after install and upgrade and before removal. aurgen generates every other file in `aur/`,
+and `aur/.gitignore` keeps them out of git.

@@ -25,6 +25,13 @@ cd lightXDM
 bash install.sh   # as your regular user, not root
 ```
 
+Or install the [`lightxdm`](https://aur.archlinux.org/packages/lightxdm) AUR package, which adds the commands and sets nothing up by itself:
+
+```sh
+yay -S lightxdm    # or: paru -S lightxdm
+lightxdm-install   # same options as install.sh; after a package update, run lightxdm-update
+```
+
 It asks for your sudo password up front (again only if the package download outlasts sudo's timeout).
 
 Reboot (log out only works when no display manager was running), log in on TTY1, and your desktop starts automatically.
@@ -86,7 +93,9 @@ In your home it replaces `~/.bash_profile` and `~/.xinitrc` (or `~/.wayland-sess
 
 ## Uninstall
 
-Run `sudo bash uninstall.sh` from your user account to restore backups and remove lightXDM configuration. Packages the installer installed are not removed. Display managers disabled by the installer are re-enabled for the next boot, using `/etc/lightxdm/disabled-display-managers`; the state file is then removed (a display manager that was removed or masked since install is skipped with a warning; any other unit that fails to re-enable stays recorded there and uninstall exits with an error). Other display managers are left unchanged. To use a different state path, set `DM_STATE_FILE` to the same path for both scripts (pass it through sudo when uninstalling). To keep everything else and remove only the keyring lines lightXDM added to `/etc/pam.d/login` (for example to switch to autologin), run `sudo bash uninstall.sh --keyring-only`.
+**With the AUR package, run `sudo lightxdm-uninstall` first and `sudo pacman -R lightxdm` after it: removing the package alone leaves the setup in place.**
+
+Run `sudo bash uninstall.sh` (`sudo lightxdm-uninstall` with the package) from your user account to restore backups and remove lightXDM configuration. Packages the installer installed are not removed. Display managers disabled by the installer are re-enabled for the next boot, using `/etc/lightxdm/disabled-display-managers`; the state file is then removed (a display manager that was removed or masked since install is skipped with a warning; any other unit that fails to re-enable stays recorded there and uninstall exits with an error). Other display managers are left unchanged. To use a different state path, set `DM_STATE_FILE` to the same path for both scripts (pass it through sudo when uninstalling). To keep everything else and remove only the keyring lines lightXDM added to `/etc/pam.d/login` (for example to switch to autologin), run `sudo bash uninstall.sh --keyring-only`.
 
 ## Documentation
 
@@ -94,7 +103,7 @@ User guides:
 
 | Guide | What it covers |
 |---|---|
-| [Installation](docs/installation.md) | every installer step and option, login modes, uninstall details |
+| [Installation](docs/installation.md) | the AUR package, every installer step and option, login modes, uninstall details |
 | [Features](docs/features.md) | why lightXDM exists and what it sets up per desktop |
 | [TTY1 auto-start and autologin](docs/startx-autologin.md) | how the desktop starts, autologin, zsh/fish, recovery |
 | [KWallet auto-unlock](docs/kwallet-autounlock.md) | KWallet unlock through PAM on Plasma |
@@ -105,7 +114,7 @@ Maintainer docs:
 
 | Guide | What it covers |
 |---|---|
-| [Development](docs/development.md) | project layout, lint and test commands |
+| [Development](docs/development.md) | project layout, lint and test commands, release steps |
 
 ## Development
 
@@ -116,7 +125,7 @@ bash tests/docker-arch.sh  # package lists and real PAM checks in an Arch contai
 bash tests/qemu-arch.sh    # real TTY1 password logins in QEMU VMs (needs Docker and KVM; slow)
 ```
 
-`lint.sh` and `tests/run.sh` must pass for every change; run the Docker and QEMU tests too before a release. [docs/development.md](docs/development.md) describes the QEMU test.
+`lint.sh` and `tests/run.sh` must pass for every change; run the Docker and QEMU tests too before a release. [docs/development.md](docs/development.md) describes the QEMU test and the release steps.
 
 ## License
 
