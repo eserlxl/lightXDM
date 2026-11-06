@@ -121,6 +121,25 @@ elif [[ "${1:-}" == -Qii && -n "${STUB_PACMAN_STOCK:-}" ]]; then
     echo "Backup Files    : $LOGIN_FILE [modified]"
   fi
   exit 0
+elif [[ "${1:-}" == -T ]]; then
+  # Like pacman -T: print the names that are not satisfied (those in STUB_PACMAN_MISSING).
+  shift
+  [[ "${1:-}" != -- ]] || shift
+  unsatisfied=0
+  for name in "$@"; do
+    if [[ " ${STUB_PACMAN_MISSING:-} " == *" $name "* ]]; then
+      echo "$name"
+      unsatisfied=1
+    fi
+  done
+  [[ $unsatisfied -eq 0 ]] || exit 127
+  exit 0
+elif [[ "${1:-}" == -Qg ]]; then
+  # A group with an installed member (one in STUB_PACMAN_GROUPS).
+  shift
+  [[ "${1:-}" != -- ]] || shift
+  [[ " ${STUB_PACMAN_GROUPS:-} " == *" ${1:-} "* ]] || exit 1
+  exit 0
 fi
 exit "${STUB_PACMAN_EXIT:-0}"
 EOF
@@ -10037,6 +10056,57 @@ if [[ -z "$cus_report" ]]; then
   pass "install.sh --update installs a changed ~/.config/lightxdm template over the copy lightXDM recorded"
 else
   fail "install.sh --update custom template:$cus_report"
+fi
+# --update installs only the packages this lightXDM version adds to the saved list and leaves a listed
+# package the user removed uninstalled; a group counts as installed while any member is. Without a
+# saved list it installs nothing. A normal install saves the list it asked for.
+pkg_home="$TMP_DIR/update_packages_home"
+pkg_choices="$pkg_home/.local/state/lightxdm/install-choices"
+pkg_stub_log="$TMP_DIR/update_packages_stub.log"
+mkdir -p "${pkg_choices%/*}"
+pkg_run() {
+  : >"$pkg_stub_log"
+  # shellcheck disable=SC2016  # expand inside the child shell
+  env HOME="$pkg_home" STUB_LOG="$pkg_stub_log" STUB_PACMAN_MISSING="gvfs-afc xfce4" STUB_PACMAN_GROUPS="xfce4" \
+    bash -c 'source "$1/install.sh" || exit 1; [[ "$2" == install ]] || UPDATE_RUN=1
+      install_packages xfce && save_install_choices xfce 0 "${RECORDED_PACKAGES[@]}"' _ "$REPO_ROOT" "$1" 2>&1
+}
+pkg_report=""
+pkg_all="$(list_packages xfce | tr '\n' ' ')"
+pkg_all="${pkg_all% }"
+pkg_log="$(pkg_run install)" || pkg_report+=" [install: $pkg_log]"
+grep -Fqx -- "pacman -S --needed --noconfirm $pkg_all" "$pkg_stub_log" || pkg_report+=" [install did not ask for the list]"
+grep -Fqx -- "packages=$pkg_all" "$pkg_choices" || pkg_report+=" [install did not save the list: $(cat "$pkg_choices")]"
+printf 'de=xfce\nno_packages=0\npackages=%s\n' "${pkg_all/ gnome-keyring/}" >"$pkg_choices"
+pkg_log="$(pkg_run update)" || pkg_report+=" [update: $pkg_log]"
+if ! grep -Fqx -- "pacman -S --needed --noconfirm gnome-keyring" "$pkg_stub_log" ||
+  [[ "$(grep -c -- '-S ' "$pkg_stub_log")" != 1 ]]; then
+  pkg_report+=" [update did not install only the added package: $(cat "$pkg_stub_log")]"
+fi
+[[ "$pkg_log" == *"Not installed, so --update leaves them out: gvfs-afc (lightXDM lists them for xfce). Install them again with: sudo pacman -S --needed gvfs-afc"* &&
+  "$pkg_log" != *"xfce4 (lightXDM"* ]] || pkg_report+=" [missing-package note: $pkg_log]"
+grep -Fqx -- "packages=$pkg_all" "$pkg_choices" || pkg_report+=" [update did not save the new list: $(cat "$pkg_choices")]"
+printf 'de=xfce\nno_packages=0\n' >"$pkg_choices"
+pkg_log="$(pkg_run update)" || pkg_report+=" [update without a list: $pkg_log]"
+! grep -q -- '-S ' "$pkg_stub_log" || pkg_report+=" [update without a saved list installed: $(cat "$pkg_stub_log")]"
+[[ "$pkg_log" == *"Not installed, so --update leaves them out: gvfs-afc"* ]] || pkg_report+=" [no note without a list: $pkg_log]"
+printf 'de=xfce\nno_packages=0\npackages=%s\n' "${pkg_all/ gnome-keyring/}" >"$pkg_choices"
+printf '%s\n' "$PAM_GNOME_KEYRING_AUTH" "$PAM_GNOME_KEYRING_SESSION" >"$update_login"
+set +e
+pkg_preview="$(env -u SHELLOPTS -u SUDO_USER HOME="$pkg_home" STUB_PACMAN_MISSING="gvfs-afc xfce4" STUB_PACMAN_GROUPS="xfce4" \
+  LOGIN_FILE="$update_login" PAM_KEYRING_STATE="$update_record" PAM_LOGIN_BASE_STATE="$update_base" \
+  bash "$REPO_ROOT/install.sh" --update --dry-run 2>&1)"
+status=$?
+set -e
+if [[ $status -ne 0 || "$pkg_preview" != *$'Packages (--update installs only the ones this lightXDM version adds):\n'* ||
+  "$pkg_preview" != *"  install: gnome-keyring"* || "$pkg_preview" != *"  left out, not installed: gvfs-afc"* ||
+  "$pkg_preview" == *"  install: xfce4-session"* ]]; then
+  pkg_report+=" [preview: status=$status, output=$pkg_preview]"
+fi
+if [[ -z "$pkg_report" ]]; then
+  pass "install.sh --update installs only packages a newer lightXDM adds and leaves removed ones out with the command to install them"
+else
+  fail "install.sh --update packages:$pkg_report"
 fi
 if [[ $record_ok -eq 1 ]]; then
   pass "install.sh --update restores recorded keyring lines only into a login file a .pacnew merge replaced"

@@ -235,9 +235,57 @@ install_packages() {
   local de="${1:-}" pkg_output pkgs=()
   pkg_output="$(list_packages "$@")" || exit 1
   mapfile -t pkgs <<<"$pkg_output"
+  if [[ "${UPDATE_RUN:-0}" == 1 ]]; then
+    update_packages "$de" "${pkgs[@]}"
+    return
+  fi
 
   log "Installing required packages for $de..."
-  sudo pacman -S --needed --noconfirm "${pkgs[@]}"
+  sudo pacman -S --needed --noconfirm "${pkgs[@]}" || return
+  RECORDED_PACKAGES=("${pkgs[@]}")
+}
+
+# Print what --update does with each package of the desktop's list ($@): "install <pkg>" for one this
+# lightXDM version added since the run that saved the list, "missing <pkg>" for a listed one that is
+# not installed (the user removed it, or it never was); it stays out. Without a saved list (installs
+# from before it), nothing is installed.
+update_package_plan() {
+  local recorded_line pkg
+  local -a recorded=() unsatisfied=()
+  recorded_line="$(sed -n 's/^packages=//p' "$(install_choices_file)" 2>/dev/null | tail -n 1)"
+  read -r -a recorded <<<"$recorded_line"
+  mapfile -t unsatisfied < <(pacman -T -- "$@" 2>/dev/null)
+  for pkg in "$@"; do
+    if [[ -n "$recorded_line" && " ${recorded[*]} " != *" $pkg "* ]]; then
+      printf 'install %s\n' "$pkg"
+    elif [[ " ${unsatisfied[*]} " == *" $pkg "* ]] && ! pacman -Qg -- "$pkg" >/dev/null 2>&1; then
+      printf 'missing %s\n' "$pkg"
+    fi
+  done
+}
+
+# --update installs only the packages this lightXDM version adds and never reinstalls one the user
+# removed; it says which ones it leaves out and how to install them.
+update_packages() {
+  local de="$1" what pkg
+  shift
+  local -a added=() missing=()
+  while read -r what pkg; do
+    case "$what" in
+      install) added+=("$pkg") ;;
+      missing) missing+=("$pkg") ;;
+    esac
+  done < <(update_package_plan "$@")
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    log "Not installed, so --update leaves them out: ${missing[*]} (lightXDM lists them for $de). Install them again with: sudo pacman -S --needed ${missing[*]}"
+  fi
+  if [[ ${#added[@]} -gt 0 ]]; then
+    log "Installing the packages this lightXDM version adds for $de: ${added[*]}"
+    sudo pacman -S --needed --noconfirm "${added[@]}" || return
+  else
+    log "No new packages for $de."
+  fi
+  RECORDED_PACKAGES=("$@")
 }
 
 # True when $1 is a regular file equal to any version of the bundled template for home dotfile $2
@@ -1243,6 +1291,18 @@ preview_install() {
   copy_dotfiles "$de" 1 || return 1
   if [[ $no_packages -eq 1 ]]; then
     printf 'Packages: skipped (--no-packages)\n'
+  elif [[ "${UPDATE_RUN:-0}" == 1 ]]; then
+    local pkg_list what pkg
+    local -a pkgs=()
+    pkg_list="$(list_packages "$de" "$no_keyring")" || return 1
+    mapfile -t pkgs <<<"$pkg_list"
+    printf 'Packages (--update installs only the ones this lightXDM version adds):\n'
+    while read -r what pkg; do
+      case "$what" in
+        install) printf '  install: %s\n' "$pkg" ;;
+        missing) printf '  left out, not installed: %s\n' "$pkg" ;;
+      esac
+    done < <(update_package_plan "${pkgs[@]}")
   else
     printf 'Packages:\n'
     list_packages "$de" "$no_keyring" || return 1
@@ -1266,11 +1326,13 @@ preview_install() {
 install_choices_file() {
   printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/lightxdm/install-choices"
 }
-# Save the desktop id ($1) and the --no-packages choice ($2) of a finished install for --update
+# Save the desktop id ($1), the --no-packages choice ($2) and the packages the run asked for (the
+# rest; --update installs only ones missing from this list) of a finished install for --update
 save_install_choices() {
   local file
   file="$(install_choices_file)"
-  if ! { mkdir -p -- "${file%/*}" && printf 'de=%s\nno_packages=%s\n' "$1" "$2" >"$file"; } 2>/dev/null; then
+  if ! { mkdir -p -- "${file%/*}" && printf 'de=%s\nno_packages=%s\n' "$1" "$2" >"$file" &&
+    { [[ $# -le 2 ]] || printf 'packages=%s\n' "${*:3}" >>"$file"; }; } 2>/dev/null; then
     log "WARNING: Could not save the install choices for --update in $file."
   fi
 }
@@ -1827,6 +1889,7 @@ EOF
     exit "$install_status"
   ' EXIT
 
+  RECORDED_PACKAGES=()
   if [[ $no_packages -eq 1 ]]; then
     log "Skipping package installation (--no-packages)."
   else
@@ -1894,7 +1957,7 @@ EOF
   fi
 
   trap - EXIT
-  save_install_choices "$de" "$no_packages"
+  save_install_choices "$de" "$no_packages" "${RECORDED_PACKAGES[@]}"
   if [[ -z "$shell_profile" && -e "$HOME/.config/lightxdm/no-autostart" ]]; then
     cat <<EOF
 
