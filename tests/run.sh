@@ -91,7 +91,7 @@ printf -v CMD_AUTOLOGIN 'bash %q' "$REPO_ROOT/enable-autologin.sh"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-unset SUDO_USER LIGHTXDM_STRICT_TESTS
+unset SUDO_USER LIGHTXDM_STRICT_TESTS XDG_STATE_HOME
 export HOME="$TMP_DIR/home"
 mkdir -p "$HOME"
 
@@ -552,6 +552,8 @@ if [[ $ni_status -eq 0 && $(wc -l <"$NI_SUDO_LOG") -gt 1 ]] && ! grep -Evq -- '^
 else
   fail "--non-interactive sudo arguments (status=$ni_status, output=$ni_output)"
 fi
+# The finished install saved its choices for --update; the checks below expect a home with only the sentinel.
+rm -rf -- "$ni_home/.local"
 : >"$NI_SUDO_LOG"
 : >"$STUB_LOG"
 set +e
@@ -2077,7 +2079,7 @@ for flag in --help -h; do
   set -e
   log_content="$(cat "$STUB_LOG")"
   help_options_ok=1
-  for help_word in --de --list-packages --no-packages --no-keyring --from-session /etc/pam.d/login "display managers" uninstall.sh; do
+  for help_word in --de --list-packages --no-packages --no-keyring --from-session --update /etc/pam.d/login "display managers" uninstall.sh; do
     [[ "$output" == *"$help_word"*"$help_word"* || ( "$help_word" != --* && "$output" == *"$help_word"* ) ]] || help_options_ok=0
   done
   if [[ $status -eq 0 && "$output" == *"Usage:"* && $help_options_ok -eq 1 && -z "$log_content" &&
@@ -7449,6 +7451,7 @@ for dr_de in xfce plasma gnome custom-x11 custom-wayland custom-gnome custom-kwa
     while IFS= read -r dr_line; do
       case "$dr_line" in
         "Dotfile: $dr_preview_home/"*) dr_destinations+=("${dr_line#"Dotfile: $dr_preview_home/"}") ;;
+        "Install choices: $dr_preview_home/"*) dr_destinations+=("${dr_line#"Install choices: $dr_preview_home/"}") ;;
       esac
     done <<<"$dr_out"
     printf '%s\n' "${dr_destinations[@]}" | sort >"$dr_case/preview-files"
@@ -9555,6 +9558,96 @@ else
   fail "Integration strict mode (default=$strict_default_status: $strict_default_output; flag=$strict_flag_status: $strict_flag_output; env=$strict_env_status: $strict_env_output; help=$strict_help_status, no Docker=$strict_help_no_docker: $strict_help_output; unknown=$strict_unknown_status, no Docker=$strict_unknown_no_docker: $strict_unknown_output; qemu=$strict_qemu_status: $strict_qemu_output)"
 fi
 
+# install.sh --update reruns the last finished install with its saved choices; the keyring comes from PAM.
+update_home="$TMP_DIR/update_home"
+update_choices="$update_home/.local/state/lightxdm/install-choices"
+update_login="$TMP_DIR/update_login"
+mkdir -p "$update_home"
+: >"$STUB_LOG"
+set +e
+output="$(HOME="$update_home" run_main_with_stubs "$sudo_pw_dir" --no-packages --no-keyring --de i3 2>&1)"
+status=$?
+set -e
+if [[ $status -eq 0 && "$(cat "$update_choices" 2>/dev/null)" == $'de=i3\nno_packages=1' ]]; then
+  pass "a finished install saves its desktop and --no-packages choice for --update"
+else
+  fail "install choices file (status=$status, file=$(cat "$update_choices" 2>&1), output=$output)"
+fi
+update_run() {
+  env -u SHELLOPTS -u SUDO_USER HOME="$1" LOGIN_FILE="$update_login" bash "$REPO_ROOT/install.sh" "${@:2}" 2>&1
+}
+update_ok=1
+update_report=""
+printf '%s\n' "# login stack without keyring lines" >"$update_login"
+set +e
+output="$(update_run "$update_home" --update --dry-run)"
+status=$?
+set -e
+if [[ $status -ne 0 || "$output" != *"Updating with the saved choices: --de i3 --no-packages --no-keyring --dry-run"* ||
+  "$output" != *"PAM keyring: skipped (--no-keyring)"* ]]; then
+  update_ok=0
+  update_report+=" [no keyring lines: status=$status, output=$output]"
+fi
+printf '%s\n' "auth       optional   pam_gnome_keyring.so" "session    optional   pam_gnome_keyring.so auto_start" >"$update_login"
+set +e
+output="$(update_run "$update_home" --update --dry-run)"
+status=$?
+set -e
+if [[ $status -ne 0 || "$output" != *"Updating with the saved choices: --de i3 --no-packages --dry-run"* ||
+  "$output" != *"PAM keyring: $update_login"* ]]; then
+  update_ok=0
+  update_report+=" [built-in with keyring lines: status=$status, output=$output]"
+fi
+mkdir -p "${update_choices%/*}"
+printf 'de=custom\nno_packages=1\n' >"$update_choices"
+printf '%s\n' "auth       optional   pam_kwallet5.so" >"$update_login"
+set +e
+output="$(update_run "$update_home" --update --dry-run)"
+set -e
+if [[ "$output" != *"Updating with the saved choices: --de custom --no-packages --keyring kwallet --dry-run"* ]]; then
+  update_ok=0
+  update_report+=" [custom id with kwallet: output=$output]"
+fi
+set +e
+output="$(update_run "$TMP_DIR/update_empty_home" --update --dry-run)"
+status=$?
+set -e
+if [[ $status -ne 1 || "$output" != *"No saved install choices in $TMP_DIR/update_empty_home/.local/state/lightxdm/install-choices"* ]]; then
+  update_ok=0
+  update_report+=" [missing file: status=$status, output=$output]"
+fi
+set +e
+output="$(update_run "$update_home" --update --de xfce)"
+status=$?
+set -e
+if [[ $status -ne 1 || "$output" != *"--update reuses the saved choices and takes only --dry-run and --non-interactive"* ]]; then
+  update_ok=0
+  update_report+=" [extra option: status=$status, output=$output]"
+fi
+if [[ $update_ok -eq 1 ]]; then
+  pass "install.sh --update reuses the saved choices, reads the keyring from PAM, and refuses a missing file or other options"
+else
+  fail "install.sh --update:$update_report"
+fi
+unset -f update_run
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh removes the saved install choices (unshare -r unavailable)"
+else
+  choices_home="$TMP_DIR/choices_home"
+  mkdir -p "$choices_home/.local/state/lightxdm"
+  printf 'de=i3\nno_packages=0\n' >"$choices_home/.local/state/lightxdm/install-choices"
+  set +e
+  output="$(env TARGET_HOME="$choices_home" LOGIN_FILE="$TMP_DIR/choices_login" DM_STATE_FILE="$TMP_DIR/choices_dm" \
+    GNOME_SESSION_TYPE_DEST="$TMP_DIR/choices_gnome-session-type.conf" OVERRIDE_DIR="$TMP_DIR/choices_getty.d" \
+    POLKIT_RULE="$TMP_DIR/choices_49-nopasswd.rules" unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && ! -e "$choices_home/.local/state/lightxdm" ]]; then
+    pass "uninstall.sh removes the saved install choices and the emptied state directory"
+  else
+    fail "uninstall.sh saved install choices (status=$status, output=$output)"
+  fi
+fi
 # Dotfiles equal to older lightXDM templates (pinned in a temporary copy's list, no git) count as lightXDM's own
 if [[ ! -f "$REPO_ROOT/dotfiles/template-history.sha256" ]]; then
   fail "dotfiles/template-history.sha256 is missing"

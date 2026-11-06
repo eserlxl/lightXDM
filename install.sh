@@ -1127,6 +1127,55 @@ preview_install() {
   else
     printf 'TTY1 autologin: unchanged (--autologin not requested)\n'
   fi
+  printf 'Install choices: %s\n' "$(install_choices_file)"
+}
+# Where a finished install keeps the choices that --update reuses
+install_choices_file() {
+  printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/lightxdm/install-choices"
+}
+# Save the desktop id ($1) and the --no-packages choice ($2) of a finished install for --update
+save_install_choices() {
+  local file
+  file="$(install_choices_file)"
+  if ! { mkdir -p -- "${file%/*}" && printf 'de=%s\nno_packages=%s\n' "$1" "$2" >"$file"; } 2>/dev/null; then
+    log "WARNING: Could not save the install choices for --update in $file."
+  fi
+}
+# Print the options --update re-runs, one per line: the saved desktop and package choice, and the
+# keyring choice read from the active auth lines in $LOGIN_FILE. Autologin is never passed.
+saved_install_args() {
+  local file line de="" no_packages=0 backends=()
+  file="$(install_choices_file)"
+  if [[ -f "$file" ]]; then
+    while IFS= read -r line; do
+      case "$line" in
+        de=*) de="${line#de=}" ;;
+        no_packages=1) no_packages=1 ;;
+      esac
+    done <"$file"
+  fi
+  if [[ -z "$de" ]]; then
+    log "No saved install choices in $file; run $(script_cmd install.sh) with your options first."
+    return 1
+  fi
+  printf '%s\n' --de "$de"
+  if [[ $no_packages -eq 1 ]]; then
+    printf '%s\n' --no-packages
+  fi
+  if grep -Eq '^[[:space:]]*-?auth[[:space:]][^#]*pam_gnome_keyring\.so' "$LOGIN_FILE" 2>/dev/null; then
+    backends+=(gnome)
+  fi
+  if grep -Eq '^[[:space:]]*-?auth[[:space:]][^#]*pam_kwallet5\.so' "$LOGIN_FILE" 2>/dev/null; then
+    backends+=(kwallet)
+  fi
+  if [[ ${#backends[@]} -eq 0 ]]; then
+    printf '%s\n' --no-keyring
+  else
+    case "$de" in
+      plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
+      *) printf '%s\n' --keyring "${backends[0]}" ;;
+    esac
+  fi
 }
 
 # --- Main ---
@@ -1145,10 +1194,11 @@ main() {
   local argument_count=$#
   local no_polkit_rule=0
   local autologin=0
+  local update=0
   local init_template=0
   local wayland=0
   local from_session=""
-  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin]"
+  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1183,6 +1233,9 @@ Options:
                     (use alone, without sudo; no service activation or prompts; 0=unlocked, 1=locked, 2=unavailable)
   --no-keyring      skip keyring packages and keyring PAM lines (use with autologin)
   --autologin       also log in on TTY1 without a password (requires --no-keyring)
+  --update          rerun the last finished install with its saved desktop and --no-packages choice, to
+                    apply a newer lightXDM; the keyring choice is read from /etc/pam.d/login, autologin
+                    stays as it is (combinable with --dry-run and --non-interactive)
 
 uninstall.sh reverts these changes; installed packages stay.
 EOF
@@ -1246,6 +1299,10 @@ EOF
         autologin=1
         shift
         ;;
+      --update)
+        update=1
+        shift
+        ;;
       --init-template)
         init_template=1
         shift
@@ -1281,6 +1338,24 @@ EOF
     esac
   done
 
+  if [[ $update -eq 1 ]]; then
+    if [[ $argument_count -ne $((1 + dry_run + non_interactive)) ]]; then
+      log "--update reuses the saved choices and takes only --dry-run and --non-interactive; to change a choice, run $(script_cmd install.sh) with its options."
+      exit 1
+    fi
+    local saved_output saved_args=()
+    saved_output="$(saved_install_args)" || exit 1
+    mapfile -t saved_args <<<"$saved_output"
+    if [[ $dry_run -eq 1 ]]; then
+      saved_args+=(--dry-run)
+    fi
+    if [[ $non_interactive -eq 1 ]]; then
+      saved_args+=(--non-interactive)
+    fi
+    log "Updating with the saved choices: ${saved_args[*]}"
+    main "${saved_args[@]}"
+    return
+  fi
   if [[ -n "$check_keyring" ]]; then
     if [[ $argument_count -ne 2 ]]; then
       log "--check-keyring cannot be combined with any other option."
@@ -1618,6 +1693,7 @@ EOF
   fi
 
   trap - EXIT
+  save_install_choices "$de" "$no_packages"
   if [[ -z "$shell_profile" && -e "$HOME/.config/lightxdm/no-autostart" ]]; then
     cat <<EOF
 

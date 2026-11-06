@@ -313,11 +313,18 @@ for dotfile in .bash_profile .xinitrc .wayland-session .gpg-agent-kwallet .gpg-a
   fi
 done
 
-# The .bash_profile respawn guard keeps launch timestamps here; a copy under a custom XDG_STATE_HOME is not removed.
-attempts_dir="$TARGET_HOME/.local/state/lightxdm"
-if [[ ! -L "$attempts_dir" && -f "$attempts_dir/startx-attempts" && ! -L "$attempts_dir/startx-attempts" ]]; then
-  rm -f -- "$attempts_dir/startx-attempts"
-  rmdir --ignore-fail-on-non-empty -- "$attempts_dir" 2>/dev/null || true
+# The .bash_profile respawn guard keeps launch timestamps here, and install.sh the choices --update
+# reuses; copies under a custom XDG_STATE_HOME are not removed.
+state_dir="$TARGET_HOME/.local/state/lightxdm"
+state_removed=0
+for state_file in startx-attempts install-choices; do
+  if [[ ! -L "$state_dir" && -f "$state_dir/$state_file" && ! -L "$state_dir/$state_file" ]]; then
+    rm -f -- "$state_dir/$state_file"
+    state_removed=1
+  fi
+done
+if [[ $state_removed -eq 1 ]]; then
+  rmdir --ignore-fail-on-non-empty -- "$state_dir" 2>/dev/null || true
 fi
 
 # Re-enable only display managers disabled by the installer
