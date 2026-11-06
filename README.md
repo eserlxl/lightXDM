@@ -3,7 +3,7 @@
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![Platform: Arch Linux](https://img.shields.io/badge/platform-Arch%20Linux-1793d1.svg)](https://archlinux.org)
 
-A lightweight, display-manager-free desktop environment for minimalists, Arch Linux users, and those who prefer a TTY1 login over SDDM/LightDM: X11 desktops start with `startx`; KDE Plasma, GNOME, and Budgie start on Wayland. Log in on TTY1 and your desktop starts; the installer sets up keyring unlock through PAM and turns off display managers. `uninstall.sh` reverts these configuration changes; the packages it installed stay.
+Display-manager-free TTY1 login: your desktop starts and its keyring unlocks. lightXDM is for minimalists, Arch Linux users, and those who prefer a TTY1 login over SDDM/LightDM: X11 desktops start with `startx`; KDE Plasma, GNOME, and Budgie start on Wayland. The installer sets up keyring unlock through PAM and turns off display managers. `uninstall.sh` reverts these configuration changes; the packages it installed stay.
 
 ## Contents
 
@@ -89,7 +89,7 @@ What the installer changes outside your home, so nothing comes as a surprise:
 - For **GNOME only**, it inserts a PAM block before the first session line in `/etc/pam.d/login`, using `/etc/lightxdm/gnome-session-type.conf` to register a Wayland session **only for the installing user on TTY1**, including with `--no-keyring`. Installing another desktop or running `uninstall.sh` removes the block and config; `uninstall.sh --keyring-only` keeps them. See [why GNOME needs this](docs/installation.md#gnome-session-requirements).
 - It installs no Polkit rule: systemd already allows power-off, reboot, suspend and hibernate in an active local session. Older versions installed `/etc/polkit-1/rules.d/49-nopasswd.rules`; `uninstall.sh` still removes it (or restores the rule it replaced), and `--no-polkit-rule` is accepted but no longer needed.
 
-In your home it replaces `~/.bash_profile` and `~/.xinitrc` (or `~/.wayland-session` for Wayland sessions), keeping your copies as `*.lightxdm.bak`. An executable `~/.wayland-session` takes precedence over `startx`; installing an X11 desktop moves it aside and removes it, and uninstall restores it. See [session backups](docs/installation.md#session-files-and-backups). If your desktop keeps crashing, TTY1 auto-start pauses itself; see [Recovery](docs/startx-autologin.md#recovery).
+In your home it replaces `~/.bash_profile` and `~/.xinitrc` (or `~/.wayland-session` for Wayland sessions), keeping your copies as `*.lightxdm.bak`. A later install or `lightxdm-update` replaces them again and keeps your edits only as `*.lightxdm-edited` copies, so put shell settings in `~/.bashrc` (lightXDM's `~/.bash_profile` reads it) and session changes in a template under `~/.config/lightxdm/` (`install.sh --init-template --de <id>`). An executable `~/.wayland-session` takes precedence over `startx`; installing an X11 desktop moves it aside and removes it, and uninstall restores it. See [session backups](docs/installation.md#session-files-and-backups). If your desktop keeps crashing, TTY1 auto-start pauses itself; see [Recovery](docs/startx-autologin.md#recovery).
 
 ## Uninstall
 
