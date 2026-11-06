@@ -3,11 +3,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Real TTY1 login test for one desktop in a QEMU VM (driven by tests/qemu-arch.sh).
 
-Usage: vmtest.py <desktop|from:to|desktop+autologin|desktop+lightdm|desktop+relogin|desktop+recovery> <repo> <vm-dir> <ssh-port>
+Usage: vmtest.py <desktop|from:to|desktop+autologin|desktop+lightdm|desktop+relogin|desktop+recovery|desktop+package> <repo> <vm-dir> <ssh-port>
 Boots <vm-dir>/root.img with -snapshot (the image stays unchanged), copies the repo's
 working tree into the VM, runs install.sh --de <desktop> as user 'tester' (or <from> then
 <to> when given <from>:<to>), reboots, types the login at the TTY1 getty through QMP, and
 checks the desktop session twice (the second login proves PAM unlocks an existing keyring).
+With +package it copies <vm-dir>/lightxdm.pkg.tar.zst instead, installs it with pacman, sets up
+with lightxdm-install, and after the two logins runs lightxdm-update, a third login,
+sudo lightxdm-uninstall and pacman -R.
 Writes <vm-dir>/run-<spec>/result: one PASS/FAIL line per check, then 'DONE pass=N fail=M'.
 LIGHTXDM_VM_KEEP=1 leaves the VM running after the first login for debugging (ssh -p <port>
 root@127.0.0.1 with <vm-dir>/id_vm).
@@ -44,6 +47,9 @@ SESSION_TYPE, PROCS, KEYRING = DESKTOPS[TARGET]
 # Keys a user presses once on the first login: LXQt asks for a default window manager before it
 # runs its autostart entries (the polkit agent among them); Enter accepts the highlighted one.
 FIRST_LOGIN_KEYS = {"lxqt": "\n"}
+# The package lane runs the installed lightxdm-* commands; every other lane the copied tree.
+INSTALLER = "lightxdm-install" if MODE == "package" else f"bash /home/{USER}/lightXDM/install.sh"
+PACKAGE = os.path.join(VM_DIR, "lightxdm.pkg.tar.zst")
 results = []
 
 
@@ -408,8 +414,7 @@ def session_checks(tag, qmp):
                                f"/org/freedesktop/secrets/collection/{collection} org.freedesktop.Secret.Collection Locked")
         check(f"{tag}: keyring collection '{collection}' is unlocked without a prompt", out.strip() == "b false",
               (out + err).strip())
-        rc, out, err = user_bus(f"bash /home/{USER}/lightXDM/install.sh --check-keyring "
-                               f"{'kwallet' if KEYRING == 'kwallet' else 'gnome'}")
+        rc, out, err = user_bus(f"{INSTALLER} --check-keyring {'kwallet' if KEYRING == 'kwallet' else 'gnome'}")
         check(f"{tag}: --check-keyring reports collection '{collection}' as unlocked",
               rc == 0 and f"collection '{collection}' is unlocked" in out, (out + err).strip())
     # Ask polkitd for an action that needs authentication on behalf of a session process: with an
@@ -442,17 +447,28 @@ def main():
     try:
         qmp = Qmp(QMP_SOCK)
         check("VM boots and answers SSH", wait_ssh())
-        # Copy the working tree (tracked and untracked, not ignored) so uncommitted changes are tested.
-        files = subprocess.run(["git", "-C", REPO, "ls-files", "-z", "-co", "--exclude-standard"],
-                               capture_output=True, check=True).stdout
-        # A tracked file deleted but not staged is still listed, and tar cannot read it.
-        files = b"".join(p + b"\0" for p in files.split(b"\0")
-                         if p and os.path.lexists(os.path.join(os.fsencode(REPO), p)))
-        tar = subprocess.run(["tar", "-C", REPO, "--null", "-T", "-", "-c"], input=files,
-                             capture_output=True, check=True).stdout
-        rc, _, err = ssh(f"mkdir -p /home/{USER}/lightXDM && tar -x -C /home/{USER}/lightXDM && "
-                         f"chown -R {USER}: /home/{USER}/lightXDM", stdin=tar)
-        check("working tree copied into the VM", rc == 0, err)
+        if MODE == "package":
+            with open(PACKAGE, "rb") as f:
+                rc, _, err = ssh("cat > /root/lightxdm.pkg.tar.zst", stdin=f.read())
+            check("package copied into the VM", rc == 0, err)
+            rc, out, err = ssh("pacman -U --noconfirm /root/lightxdm.pkg.tar.zst 2>&1", timeout=600)
+            check("pacman -U installs lightxdm and prints the post_install note",
+                  rc == 0 and "run: lightxdm-install" in out, out[-400:])
+            rc, out, err = ssh("pacman -U --noconfirm /root/lightxdm.pkg.tar.zst 2>&1", timeout=600)
+            check("reinstalling lightxdm prints the post_upgrade note",
+                  rc == 0 and "runs: lightxdm-update" in out, out[-400:])
+        else:
+            # Copy the working tree (tracked and untracked, not ignored) so uncommitted changes are tested.
+            files = subprocess.run(["git", "-C", REPO, "ls-files", "-z", "-co", "--exclude-standard"],
+                                   capture_output=True, check=True).stdout
+            # A tracked file deleted but not staged is still listed, and tar cannot read it.
+            files = b"".join(p + b"\0" for p in files.split(b"\0")
+                             if p and os.path.lexists(os.path.join(os.fsencode(REPO), p)))
+            tar = subprocess.run(["tar", "-C", REPO, "--null", "-T", "-", "-c"], input=files,
+                                 capture_output=True, check=True).stdout
+            rc, _, err = ssh(f"mkdir -p /home/{USER}/lightXDM && tar -x -C /home/{USER}/lightXDM && "
+                             f"chown -R {USER}: /home/{USER}/lightXDM", stdin=tar)
+            check("working tree copied into the VM", rc == 0, err)
         if MODE == "lightdm":
             rc, out, err = ssh("systemctl enable lightdm.service")
             check("lightdm.service enabled before install", rc == 0, (out + err).strip())
@@ -464,12 +480,22 @@ def main():
             if rc != 0:
                 return
         install_args = f"--no-keyring --autologin --de {TARGET}" if MODE in ("autologin", "recovery") else f"--de {TARGET}"
-        rc, out, err = ssh(f"su - {USER} -c 'cd ~/lightXDM && bash install.sh {install_args}' 2>&1", timeout=1800)
+        if MODE == "package":
+            install_name, install_cmd = "lightxdm-install", f"lightxdm-install {install_args}"
+        else:
+            install_name, install_cmd = "install.sh", f"cd ~/lightXDM && bash install.sh {install_args}"
+        rc, out, err = ssh(f"su - {USER} -c '{install_cmd}' 2>&1", timeout=1800)
         with open(os.path.join(RUN, "install.log"), "w") as f:
             f.write(out + err)
-        check(f"install.sh {install_args} exits 0", rc == 0, out[-400:])
+        check(f"{install_name} {install_args} exits 0", rc == 0, out[-400:])
         if rc != 0:
             return
+        if MODE == "package":
+            # The package ships the templates without the executable bit; the installer sets it.
+            launcher = ".wayland-session" if SESSION_TYPE == "wayland" else ".xinitrc"
+            _, out, err = ssh(f"stat -c %a /home/{USER}/{launcher}")
+            check(f"lightxdm-install made ~/{launcher} executable from the packaged template",
+                  out.strip() == "755", (out + err).strip())
         if MODE == "lightdm":
             _, out, err = ssh("systemctl is-enabled lightdm.service")
             check("install.sh disabled lightdm.service", out.strip() == "disabled", (out + err).strip())
@@ -525,6 +551,28 @@ def main():
                   (out + err).strip())
             rc, _, err = ssh("test ! -e /etc/lightxdm/disabled-display-managers")
             check("uninstall.sh removed the display-manager state file", rc == 0, err.strip())
+        if MODE == "package" and login1_ok:
+            rc, out, err = ssh(f"su - {USER} -c 'lightxdm-update' 2>&1", timeout=1800)
+            with open(os.path.join(RUN, "update.log"), "w") as f:
+                f.write(out + err)
+            check("lightxdm-update reruns the saved choices",
+                  rc == 0 and f"Updating with the saved choices: --de {TARGET}" in out, out[-400:])
+            if reboot_and_login(qmp, "login3"):
+                session_checks("login3", qmp)
+            rc, out, err = ssh(f"su - {USER} -c 'sudo lightxdm-uninstall' 2>&1", timeout=600)
+            with open(os.path.join(RUN, "uninstall.log"), "w") as f:
+                f.write(out + err)
+            check("sudo lightxdm-uninstall exits 0", rc == 0, out[-400:])
+            _, out, err = ssh("grep -cE 'pam_(gnome_keyring|kwallet5)[.]so' /etc/pam.d/login")
+            check("lightxdm-uninstall left no keyring line in /etc/pam.d/login", out.strip() == "0",
+                  (out + err).strip())
+            rc, _, err = ssh(f"test ! -e /home/{USER}/.local/state/lightxdm/install-choices")
+            check("lightxdm-uninstall removed the saved install choices", rc == 0, err.strip())
+            rc, out, err = ssh("pacman -R --noconfirm lightxdm 2>&1", timeout=600)
+            check("pacman -R removes lightxdm and prints the pre_remove note",
+                  rc == 0 and "run sudo lightxdm-uninstall" in out, out[-400:])
+            rc, _, err = ssh("test ! -e /usr/share/lightxdm && test ! -e /usr/bin/lightxdm-install")
+            check("pacman -R left no lightxdm files", rc == 0, err.strip())
     except Exception as exc:  # report and shut down, never hang the harness
         check("driver ran without errors", False, repr(exc))
     finally:

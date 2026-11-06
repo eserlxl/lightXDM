@@ -9438,6 +9438,74 @@ EOF
 else
   skip "qemu-arch.sh stale result after early driver exit (/dev/kvm is not accessible)"
 fi
+# A +package lane builds the package in a temporary clone that carries the staged and unstaged
+# changes, hands it to the VM directory, and leaves the checkout's aur/ untouched.
+if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+  qemu_pkg="$TMP_DIR/qemu_pkg"
+  mkdir -p "$qemu_pkg/bin" "$qemu_pkg/vm" "$qemu_pkg/tmp"
+  git clone --quiet "$REPO_ROOT" "$qemu_pkg/repo"
+  cp -- "$REPO_ROOT/tests/qemu-arch.sh" "$qemu_pkg/repo/tests/qemu-arch.sh"
+  echo "<!-- unstaged marker -->" >>"$qemu_pkg/repo/README.md"
+  echo "staged marker" >"$qemu_pkg/repo/staged-new-file"
+  git -C "$qemu_pkg/repo" add -- staged-new-file
+  cat >"$qemu_pkg/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == info ]]; then
+  exit 0
+elif [[ "$1" == run ]]; then
+  touch "$LIGHTXDM_VM_DIR/BUILD_DONE"
+  exit 0
+fi
+exit 1
+EOF
+  for qemu_pkg_tool in qemu-system-x86_64 ssh makepkg; do
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$qemu_pkg/bin/$qemu_pkg_tool"
+  done
+  cat >"$qemu_pkg/bin/ssh-keygen" <<'EOF'
+#!/usr/bin/env bash
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -f ]]; then
+    touch "$2"
+    exit 0
+  fi
+  shift
+done
+exit 0
+EOF
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$qemu_pkg/bin/python3"
+  cat >"$qemu_pkg/bin/aurgen" <<'EOF'
+#!/usr/bin/env bash
+{
+  echo "cwd=$PWD"
+  echo "args=$*"
+  grep -q 'unstaged marker' README.md && echo "unstaged-change-present"
+  git ls-files --error-unmatch staged-new-file >/dev/null 2>&1 && echo "new-file-tracked"
+} >>"$AURGEN_STUB_LOG"
+mkdir -p aur && echo "stub package" >aur/lightxdm-1.0.0-1-any.pkg.tar.zst
+EOF
+  chmod +x "$qemu_pkg"/bin/*
+  set +e
+  output="$(
+    export PATH="$qemu_pkg/bin:$PATH" LIGHTXDM_VM_DIR="$qemu_pkg/vm" TMPDIR="$qemu_pkg/tmp" \
+      AURGEN_STUB_LOG="$qemu_pkg/aurgen.log"
+    bash "$qemu_pkg/repo/tests/qemu-arch.sh" xfce+package 2>&1
+  )"
+  status=$?
+  set -e
+  qemu_pkg_log="$(cat "$qemu_pkg/aurgen.log" 2>/dev/null || true)"
+  if [[ "$output" == *"Building the lightxdm package"* &&
+    "$(cat "$qemu_pkg/vm/lightxdm.pkg.tar.zst" 2>/dev/null)" == "stub package" &&
+    "$qemu_pkg_log" == *"cwd=$qemu_pkg/tmp/"* && "$qemu_pkg_log" == *"args=--build-only local"* &&
+    "$qemu_pkg_log" == *"unstaged-change-present"* && "$qemu_pkg_log" == *"new-file-tracked"* &&
+    -z "$(git -C "$qemu_pkg/repo" status --porcelain --ignored -- aur)" && -z "$(ls -A "$qemu_pkg/tmp")" &&
+    "$output" == *"FAIL: xfce+package: the VM test did not finish"* ]]; then
+    pass "qemu-arch.sh +package builds the package in a temporary clone with the uncommitted changes and leaves aur/ untouched"
+  else
+    fail "qemu-arch.sh +package build (status=$status, aurgen=$qemu_pkg_log, output=$output)"
+  fi
+else
+  skip "qemu-arch.sh +package build (/dev/kvm is not accessible)"
+fi
 
 # qemu-arch.sh reuses a matching image and rebuilds when given --rebuild-image.
 if [[ -r /dev/kvm && -w /dev/kvm ]]; then

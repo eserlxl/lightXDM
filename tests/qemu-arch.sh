@@ -10,7 +10,7 @@ JOBS="${LIGHTXDM_VM_JOBS:-2}"
 
 usage() {
   cat <<EOF
-Usage: bash $0 [-h|--help] [--strict] [--rebuild-image] [desktop | <from>:<to> | <desktop>+autologin | <desktop>+lightdm | <desktop>+relogin | <desktop>+recovery ...]   (default: plasma xfce)
+Usage: bash $0 [-h|--help] [--strict] [--rebuild-image] [desktop | <from>:<to> | <desktop>+autologin | <desktop>+lightdm | <desktop>+relogin | <desktop>+recovery | <desktop>+package ...]   (default: plasma xfce)
 
 Builds an Arch Linux VM image in Docker (once per package set), then for each desktop boots a
 VM, runs install.sh --de <desktop> as a test user, reboots, types the password at the TTY1
@@ -20,6 +20,10 @@ An argument <desktop>+autologin installs with --no-keyring --autologin and boots
 An argument <desktop>+lightdm checks that install.sh disables LightDM and uninstall.sh restores it after both logins.
 An argument <desktop>+relogin logs out and back in on TTY1 in the same boot instead of rebooting for the second login.
 An argument <desktop>+recovery installs with autologin, makes the session crash at once, and checks that TTY1 auto-start pauses, the TTY1 shell works and a repaired launcher starts the desktop.
+An argument <desktop>+package builds the lightxdm package from the tracked files with aurgen (in a temporary
+clone, so aur/ stays untouched; needs aurgen and makepkg), installs it with pacman, sets up with
+lightxdm-install, checks both logins, runs lightxdm-update and a third login, then sudo
+lightxdm-uninstall and pacman -R.
 Prints one PASS/FAIL line per check; exits 1 if any check fails, 0 with SKIP if a tool is missing.
 --strict exits 1 on any SKIP (also enabled by LIGHTXDM_STRICT_TESTS=1).
 --rebuild-image rebuilds the VM image even when the package set is unchanged, to test current Arch packages.
@@ -40,7 +44,7 @@ is_desktop() {
 
 is_mode() {
   case "$1" in
-    autologin | lightdm | relogin | recovery) return 0 ;;
+    autologin | lightdm | relogin | recovery | package) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -103,6 +107,16 @@ for tool in docker qemu-system-x86_64 python3 ssh ssh-keygen git tar; do
     exit "$strict"
   fi
 done
+package_lane=0
+[[ " ${desktops[*]} " != *"+package "* ]] || package_lane=1
+if [[ $package_lane -eq 1 ]]; then
+  for tool in aurgen makepkg; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      echo "SKIP: $tool is unavailable (needed for +package)"
+      exit "$strict"
+    fi
+  done
+fi
 if ! docker info >/dev/null 2>&1; then
   echo "SKIP: docker is unavailable"
   exit "$strict"
@@ -143,6 +157,25 @@ if [[ "$(cat "$VM_DIR/image.stamp" 2>/dev/null || true)" != "$stamp" || ! -f "$V
     exit 1
   fi
   printf '%s\n' "$stamp" >"$VM_DIR/image.stamp"
+fi
+if [[ $package_lane -eq 1 ]]; then
+  # Build like a release does, from the tracked files (staged or not), in a temporary clone so
+  # aurgen's generated files never replace the checkout's aur/ ones.
+  echo "Building the lightxdm package (log: $VM_DIR/package-build.log)"
+  pkg_clone="$(mktemp -d)"
+  trap 'rm -rf -- "$pkg_clone"' EXIT
+  rm -f -- "$VM_DIR/lightxdm.pkg.tar.zst"
+  if ! {
+    git clone --quiet --shared "$REPO_ROOT" "$pkg_clone/lightXDM" &&
+      git -C "$pkg_clone/lightXDM" remote set-url origin "$(git -C "$REPO_ROOT" remote get-url origin)" &&
+      git -C "$REPO_ROOT" diff HEAD --binary | git -C "$pkg_clone/lightXDM" apply --index --allow-empty &&
+      (cd "$pkg_clone/lightXDM" && aurgen --build-only local </dev/null) &&
+      cp -- "$pkg_clone"/lightXDM/aur/lightxdm-*-any.pkg.tar.zst "$VM_DIR/lightxdm.pkg.tar.zst"
+  } >"$VM_DIR/package-build.log" 2>&1; then
+    echo "FAIL: lightxdm package build failed (see $VM_DIR/package-build.log)"
+    exit 1
+  fi
+  rm -rf -- "$pkg_clone"
 fi
 
 port=2230
