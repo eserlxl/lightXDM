@@ -20,6 +20,7 @@ scripts=(
   tests/qemu-arch.sh
   tests/qemu/build-image.sh
   tests/template-history.sh
+  pam/login-pacnew-note.sh
   dotfiles/.bash_profile
   dotfiles/.gpg-agent-gnome
   dotfiles/.wayland-session-budgie

@@ -51,6 +51,13 @@ pam:
   permissions: read-only
   exclude: []
 
+# The pacman hook that reminds users to run lightxdm-update when /etc/pam.d/login.pacnew waits
+alpm:
+  source: alpm
+  destination: usr/share/libalpm/hooks
+  permissions: read-only
+  exclude: []
+
 # User guides and maintainer docs
 docs:
   source: docs

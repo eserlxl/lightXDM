@@ -85,7 +85,7 @@ Wayland desktops do not install `xorg-server` or `xorg-xinit`. See [GNOME sessio
 What the installer changes outside your home, so nothing comes as a surprise:
 
 - It **disables enabled display managers** (SDDM, LightDM, GDM, LXDM, `ly@tty1`, and whatever `display-manager.service` points to), so the next boot ends at a TTY1 login. `uninstall.sh` re-enables them.
-- It **appends keyring lines to `/etc/pam.d/login`** (backup at `/etc/pam.d/login.lightxdm.bak`) unless you pass `--no-keyring`.
+- It **appends keyring lines to `/etc/pam.d/login`** (backup at `/etc/pam.d/login.lightxdm.bak`) unless you pass `--no-keyring`. If a util-linux update leaves `/etc/pam.d/login.pacnew` and you take it over that file, run `lightxdm-update` afterwards to bring the lines back (the AUR package's pacman hook reminds you).
 - For **GNOME only**, it inserts a PAM block before the first session line in `/etc/pam.d/login`, using `/etc/lightxdm/gnome-session-type.conf` to register a Wayland session **only for the installing user on TTY1**, including with `--no-keyring`. Installing another desktop or running `uninstall.sh` removes the block and config; `uninstall.sh --keyring-only` keeps them. See [why GNOME needs this](docs/installation.md#gnome-session-requirements).
 - It installs no Polkit rule: systemd already allows power-off, reboot, suspend and hibernate in an active local session. Older versions installed `/etc/polkit-1/rules.d/49-nopasswd.rules`; `uninstall.sh` still removes it (or restores the rule it replaced), and `--no-polkit-rule` is accepted but no longer needed.
 

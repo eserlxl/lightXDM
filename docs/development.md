@@ -26,6 +26,8 @@ lightXDM/
 ├── enable-autologin.sh
 ├── uninstall.sh
 ├── lint.sh
+├── alpm/
+│   └── lightxdm-login-pacnew.hook  # packaged pacman hook: runs pam/login-pacnew-note.sh after util-linux updates
 ├── aur/
 │   └── aurgen.install.yaml  # aurgen config of the lightxdm AUR package; aurgen generates the other aur/ files
 ├── bin/                     # lightxdm-install, -update, -uninstall, -autologin: the package's /usr/bin launchers
@@ -44,7 +46,8 @@ lightXDM/
 │   ├── .bash_profile
 │   └── template-history.sha256  # sha256 of every template version; tests/template-history.sh regenerates it
 ├── pam/
-│   └── gnome-session-type.conf
+│   ├── gnome-session-type.conf
+│   └── login-pacnew-note.sh  # reminds to run lightxdm-update while /etc/pam.d/login.pacnew waits; reads only
 ├── polkit/
 │   └── 49-nopasswd.rules  # last rule older versions installed; frozen: uninstall.sh pins its sha256 in LIGHTXDM_OLD_POLKIT_HASHES and the tests install it as the old rule, so an edit fails them
 ├── docs/

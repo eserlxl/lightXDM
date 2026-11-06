@@ -496,6 +496,19 @@ def main():
             _, out, err = ssh(f"stat -c %a /home/{USER}/{launcher}")
             check(f"lightxdm-install made ~/{launcher} executable from the packaged template",
                   out.strip() == "755", (out + err).strip())
+            # The package's pacman hook speaks up after a util-linux transaction only while login.pacnew waits.
+            _, version, _ = ssh("pacman -Q util-linux | cut -d' ' -f2")
+            with open(os.path.join(VM_DIR, "pkgcache", f"util-linux-{version.strip()}-x86_64.pkg.tar.zst"), "rb") as f:
+                rc, _, err = ssh("cat > /root/util-linux.pkg.tar.zst", stdin=f.read())
+            check("util-linux package copied into the VM", rc == 0, err)
+            rc, out, err = ssh("pacman -U --noconfirm /root/util-linux.pkg.tar.zst 2>&1", timeout=600)
+            check("reinstalling util-linux runs the lightXDM hook, quiet without login.pacnew",
+                  rc == 0 and "(lightXDM)" in out and "login.pacnew is waiting" not in out, out[-400:])
+            _, out, err = ssh("cp /etc/pam.d/login /etc/pam.d/login.pacnew && "
+                              "pacman -U --noconfirm /root/util-linux.pkg.tar.zst 2>&1; rm -f /etc/pam.d/login.pacnew",
+                              timeout=600)
+            check("with /etc/pam.d/login.pacnew waiting, the hook reminds to run lightxdm-update",
+                  "login.pacnew is waiting" in out and "run lightxdm-update" in out, out[-400:])
         if MODE == "lightdm":
             _, out, err = ssh("systemctl is-enabled lightdm.service")
             check("install.sh disabled lightdm.service", out.strip() == "disabled", (out + err).strip())

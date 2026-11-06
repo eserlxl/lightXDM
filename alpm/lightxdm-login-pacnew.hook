@@ -1,0 +1,11 @@
+# lightXDM: after an update of /etc/pam.d/login's package (util-linux), remind the user to run
+# lightxdm-update when a login.pacnew waits. The script only reads and prints.
+[Trigger]
+Operation = Upgrade
+Type = Path
+Target = etc/pam.d/login
+
+[Action]
+Description = Checking for /etc/pam.d/login.pacnew (lightXDM)...
+When = PostTransaction
+Exec = /usr/bin/sh /usr/share/lightxdm/pam/login-pacnew-note.sh

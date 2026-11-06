@@ -20,6 +20,8 @@ The [`lightxdm`](https://aur.archlinux.org/packages/lightxdm) package installs o
 
 A package update replaces only the files in `/usr/share/lightxdm`. Your dotfiles and the PAM lines change when you run `lightxdm-update`, which pacman reminds you of after each update. To remove lightXDM, run `sudo lightxdm-uninstall` first and `sudo pacman -R lightxdm` after it: removing the package alone leaves the setup in place, and reinstalling it brings `lightxdm-uninstall` back.
 
+A util-linux update can leave `/etc/pam.d/login.pacnew`. If you take it over `/etc/pam.d/login` (for example with `pacdiff`), run `lightxdm-update` afterwards so lightXDM's keyring lines come back. The package installs a pacman hook (`/usr/share/libalpm/hooks/lightxdm-login-pacnew.hook`) that prints this reminder after each such update while the `.pacnew` waits; it only reads and changes no file.
+
 ## Quick Install (Arch Linux)
 ```sh
 # Clone and run the installer

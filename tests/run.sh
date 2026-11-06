@@ -9690,6 +9690,36 @@ if [[ -z "$launcher_report" ]]; then
 else
   fail "package launchers:$launcher_report"
 fi
+# The pacman hook's note prints only while a login.pacnew and lightXDM's keyring record both exist.
+note_dir="$TMP_DIR/pacnew_note"
+mkdir -p "$note_dir"
+: >"$note_dir/login"
+note_report=""
+for note_case in "none||" "pacnew-only|pacnew|" "record-only||record" "both|pacnew|record"; do
+  IFS='|' read -r note_name note_pacnew note_record <<<"$note_case"
+  rm -f -- "$note_dir/login.pacnew" "$note_dir/pam-keyring"
+  [[ -z "$note_pacnew" ]] || : >"$note_dir/login.pacnew"
+  [[ -z "$note_record" ]] || echo gnome >"$note_dir/pam-keyring"
+  set +e
+  note_out="$(env LOGIN_FILE="$note_dir/login" PAM_KEYRING_STATE="$note_dir/pam-keyring" \
+    sh "$REPO_ROOT/pam/login-pacnew-note.sh" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -ne 0 ]] ||
+    { [[ "$note_name" == both ]] && [[ "$note_out" != *"$note_dir/login.pacnew is waiting"*"run lightxdm-update"* ]]; } ||
+    { [[ "$note_name" != both ]] && [[ -n "$note_out" ]]; }; then
+    note_report+=" [$note_name: status=$status, output=$note_out]"
+  fi
+done
+note_exec="$(sed -n 's/^Exec = //p' "$REPO_ROOT/alpm/lightxdm-login-pacnew.hook")"
+if [[ "$note_exec" != "/usr/bin/sh /usr/share/lightxdm/pam/login-pacnew-note.sh" ]]; then
+  note_report+=" [hook Exec: $note_exec]"
+fi
+if [[ -z "$note_report" ]]; then
+  pass "the login.pacnew hook note prints only while a .pacnew and the keyring record both exist"
+else
+  fail "login.pacnew hook note:$note_report"
+fi
 # install.sh --update reruns the last finished install with its saved choices; the keyring comes from PAM.
 update_home="$TMP_DIR/update_home"
 update_choices="$update_home/.local/state/lightxdm/install-choices"
