@@ -60,6 +60,7 @@ readonly LIGHTXDM_KEYRING_LINES=(
 )
 readonly GNOME_SESSION_TYPE_DEST="${GNOME_SESSION_TYPE_DEST:-/etc/lightxdm/gnome-session-type.conf}"
 DM_STATE_FILE="${DM_STATE_FILE:-/etc/lightxdm/disabled-display-managers}"
+PAM_KEYRING_STATE="${PAM_KEYRING_STATE:-/etc/lightxdm/pam-keyring}"
 BACKUP_FILE="${LOGIN_FILE}.lightxdm.bak"
 # Installs before 2026-11-03 backed up to .lightxde.bak.<epoch>; the oldest one is the original.
 if [[ ! -f "$BACKUP_FILE" ]]; then
@@ -136,6 +137,8 @@ if [ -f "$BACKUP_FILE" ]; then
 else
   echo "No $BACKUP_FILE found; skipping PAM restore."
 fi
+# The keyring backend install.sh recorded for --update goes with its lines.
+rm -f -- "$PAM_KEYRING_STATE"
 
 if [[ $keyring_only -eq 1 ]]; then
   if [[ -f "$LOGIN_FILE" ]] && grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*(pam_kwallet5\.so|pam_gnome_keyring\.so)([[:space:]]|$)' "$LOGIN_FILE"; then

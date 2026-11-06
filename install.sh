@@ -12,6 +12,7 @@ readonly DISPLAY_MANAGER_LINK="${DISPLAY_MANAGER_LINK:-/etc/systemd/system/displ
 readonly DM_STATE_FILE="${DM_STATE_FILE:-/etc/lightxdm/disabled-display-managers}"
 readonly LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
 readonly GNOME_SESSION_TYPE_DEST="${GNOME_SESSION_TYPE_DEST:-/etc/lightxdm/gnome-session-type.conf}"
+readonly PAM_KEYRING_STATE="${PAM_KEYRING_STATE:-/etc/lightxdm/pam-keyring}"
 readonly AUTOLOGIN_DROPIN_DIR="${AUTOLOGIN_DROPIN_DIR:-/etc/systemd/system/getty@tty1.service.d}"
 readonly PAM_KWALLET_AUTH="auth       optional   pam_kwallet5.so"
 readonly PAM_KWALLET_SESSION="session    optional   pam_kwallet5.so force_run"
@@ -778,7 +779,7 @@ configure_pam() {
     fi
     return 1
   fi
-  local module auth_line session_line
+  local module auth_line session_line backend
   case "$de" in
     plasma) keyring=kwallet ;;
     gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) keyring=gnome ;;
@@ -788,11 +789,13 @@ configure_pam() {
       module="pam_kwallet5.so"
       auth_line="$PAM_KWALLET_AUTH"
       session_line="$PAM_KWALLET_SESSION"
+      backend=kwallet
       ;;
     *)
       module="pam_gnome_keyring.so"
       auth_line="$PAM_GNOME_KEYRING_AUTH"
       session_line="$PAM_GNOME_KEYRING_SESSION"
+      backend=gnome
       ;;
   esac
 
@@ -808,6 +811,7 @@ configure_pam() {
     fi
     additions="$(pam_lines_to_add "$module" "$auth_line" "$session_line" "$removals")"
     printf '%s\n' "${additions:-  no lines to add (already configured)}"
+    printf '  record: %s (%s)\n' "$PAM_KEYRING_STATE" "$backend"
     return 0
   fi
   adopt_legacy_pam_backup || return 1
@@ -854,6 +858,11 @@ configure_pam() {
     log "Configured $module in $LOGIN_FILE."
   else
     log "PAM configuration for $module already exists. Skipping."
+  fi
+  # --update reads this record to tell keyring lines a .pacnew merge dropped from lines removed on purpose.
+  if [[ "$(cat -- "$PAM_KEYRING_STATE" 2>/dev/null)" != "$backend" ]]; then
+    sudo mkdir -p -- "$(dirname -- "$PAM_KEYRING_STATE")" || return 1
+    printf '%s\n' "$backend" | sudo tee -- "$PAM_KEYRING_STATE" > /dev/null || return 1
   fi
 
   # Autologin passes no password, so keyring unlock cannot work alongside it.
@@ -1146,8 +1155,15 @@ save_install_choices() {
     log "WARNING: Could not save the install choices for --update in $file."
   fi
 }
+# True when $LOGIN_FILE is byte-identical to the version its package ships, as pacman checks backup files.
+login_file_is_stock() {
+  local owner
+  owner="$(pacman -Qqo -- "$LOGIN_FILE" 2>/dev/null)" && [[ -n "$owner" ]] || return 1
+  LC_ALL=C pacman -Qii -- "$owner" 2>/dev/null | grep -Fq -- "$LOGIN_FILE [unmodified]"
+}
 # Print the options --update re-runs, one per line: the saved desktop and package choice, and the
-# keyring choice read from the active auth lines in $LOGIN_FILE. Autologin is never passed.
+# keyring backend recorded in $PAM_KEYRING_STATE, else the one the active auth lines in $LOGIN_FILE
+# use. Autologin is never passed.
 saved_install_args() {
   local file line de="" no_packages=0 backends=()
   file="$(install_choices_file)"
@@ -1173,14 +1189,43 @@ saved_install_args() {
   if grep -Eq '^[[:space:]]*-?auth[[:space:]][^#]*pam_kwallet5\.so' "$LOGIN_FILE" 2>/dev/null; then
     backends+=(kwallet)
   fi
-  if [[ ${#backends[@]} -eq 0 ]]; then
-    printf '%s\n' --no-keyring
-  else
-    case "$de" in
-      plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
-      *) printf '%s\n' --keyring "${backends[0]}" ;;
-    esac
+  # The record tells keyring lines a .pacnew merge dropped from lines removed with uninstall.sh
+  # --keyring-only; installs from before the record fall back to the lines themselves.
+  local record=""
+  if [[ -f "$PAM_KEYRING_STATE" ]]; then
+    record="$(<"$PAM_KEYRING_STATE")"
   fi
+  case "$record" in
+    gnome | kwallet)
+      if [[ " ${backends[*]} " != *" $record "* ]]; then
+        # Only a login file reset to its packaged version lost the lines without the user: put
+        # lightXDM's own lines back there, and leave a file with the user's own edits alone.
+        if ! login_file_is_stock; then
+          local hint="--de $de"
+          [[ $no_packages -eq 0 ]] || hint+=" --no-packages"
+          case "$de" in
+            plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
+            *) hint+=" --keyring $record" ;;
+          esac
+          log "lightXDM's $record keyring lines are not in $LOGIN_FILE, which has your own edits, so --update leaves it alone. Add them back with $(script_cmd install.sh) $hint, or turn keyring unlock off with sudo $(script_cmd uninstall.sh) --keyring-only."
+          printf '%s\n' --no-keyring
+          return 0
+        fi
+        log "lightXDM's $record keyring lines are missing from $LOGIN_FILE, which is back to the version its package ships (a .pacnew merge); adding them back."
+      fi
+      backends=("$record")
+      ;;
+    *)
+      if [[ ${#backends[@]} -eq 0 ]]; then
+        printf '%s\n' --no-keyring
+        return 0
+      fi
+      ;;
+  esac
+  case "$de" in
+    plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
+    *) printf '%s\n' --keyring "${backends[0]}" ;;
+  esac
 }
 
 # --- Main ---
@@ -1239,8 +1284,9 @@ Options:
   --no-keyring      skip keyring packages and keyring PAM lines (use with autologin)
   --autologin       also log in on TTY1 without a password (requires --no-keyring)
   --update          rerun the last finished install with its saved desktop and --no-packages choice, to
-                    apply a newer lightXDM; the keyring choice is read from /etc/pam.d/login, autologin
-                    stays as it is (combinable with --dry-run and --non-interactive)
+                    apply a newer lightXDM; the keyring choice stays (keyring lines a .pacnew merge
+                    removed come back, lines you removed by hand stay removed), autologin stays as
+                    it is (combinable with --dry-run and --non-interactive)
 
 uninstall.sh reverts these changes; installed packages stay.
 EOF

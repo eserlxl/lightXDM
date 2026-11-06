@@ -106,6 +106,14 @@ EOF
 cat >"$STUB_BIN/pacman" <<'EOF'
 #!/usr/bin/env bash
 echo "pacman $*" >>"${STUB_LOG:-/dev/null}"
+# Owner and backup-file status of the login file, for install.sh's login_file_is_stock.
+if [[ "${1:-}" == -Qqo && -n "${STUB_PACMAN_OWNER:-}" ]]; then
+  echo "$STUB_PACMAN_OWNER"
+  exit 0
+elif [[ "${1:-}" == -Qii && -n "${STUB_PACMAN_BACKUP:-}" ]]; then
+  echo "Backup Files    : $STUB_PACMAN_BACKUP"
+  exit 0
+fi
 exit "${STUB_PACMAN_EXIT:-0}"
 EOF
 
@@ -165,6 +173,7 @@ export POLKIT_RULE_SRC="$REPO_ROOT/polkit/49-nopasswd.rules"
 export POLKIT_RULE_DEST="$TMP_DIR/49-nopasswd.rules"
 export DISPLAY_MANAGER_LINK="$TMP_DIR/display-manager.service"
 export DM_STATE_FILE="$TMP_DIR/lightxdm/disabled-display-managers"
+export PAM_KEYRING_STATE="$TMP_DIR/lightxdm/pam-keyring"
 
 # shellcheck source=install.sh disable=SC1091
 source "$REPO_ROOT/install.sh"
@@ -9696,11 +9705,15 @@ if [[ $status -eq 0 && "$(cat "$update_choices" 2>/dev/null)" == $'de=i3\nno_pac
 else
   fail "install choices file (status=$status, file=$(cat "$update_choices" 2>&1), output=$output)"
 fi
+update_record="$TMP_DIR/update_pam_keyring"
 update_run() {
-  env -u SHELLOPTS -u SUDO_USER HOME="$1" LOGIN_FILE="$update_login" bash "$REPO_ROOT/install.sh" "${@:2}" 2>&1
+  env -u SHELLOPTS -u SUDO_USER HOME="$1" LOGIN_FILE="$update_login" PAM_KEYRING_STATE="$update_record" \
+    STUB_PACMAN_OWNER="${STUB_PACMAN_OWNER:-}" STUB_PACMAN_BACKUP="${STUB_PACMAN_BACKUP:-}" \
+    bash "$REPO_ROOT/install.sh" "${@:2}" 2>&1
 }
 update_ok=1
 update_report=""
+rm -f -- "$update_record"
 printf '%s\n' "# login stack without keyring lines" >"$update_login"
 set +e
 output="$(update_run "$update_home" --update --dry-run)"
@@ -9752,6 +9765,63 @@ if [[ $update_ok -eq 1 ]]; then
 else
   fail "install.sh --update:$update_report"
 fi
+# With a keyring record, --update brings back keyring lines a .pacnew merge removed (the login file
+# is back to its packaged version) and leaves a login file with the user's own edits alone.
+record_ok=1
+record_report=""
+printf 'de=i3\nno_packages=1\n' >"$update_choices"
+printf 'gnome\n' >"$update_record"
+printf '%s\n' "# stock login stack after a .pacnew merge" >"$update_login"
+set +e
+output="$(STUB_PACMAN_OWNER=util-linux STUB_PACMAN_BACKUP="$update_login [unmodified]" \
+  update_run "$update_home" --update --dry-run)"
+status=$?
+set -e
+if [[ $status -ne 0 || "$output" != *"Updating with the saved choices: --de i3 --no-packages --dry-run"* ||
+  "$output" != *"lightXDM's gnome keyring lines are missing from $update_login, which is back to the version its package ships"* ||
+  "$output" != *"PAM keyring: $update_login"* ]]; then
+  record_ok=0
+  record_report+=" [gnome record, stock file without lines: status=$status, output=$output]"
+fi
+printf '%s\n' "# login stack the user edited by hand" >"$update_login"
+set +e
+output="$(STUB_PACMAN_OWNER=util-linux STUB_PACMAN_BACKUP="$update_login [modified]" \
+  update_run "$update_home" --update --dry-run)"
+status=$?
+set -e
+if [[ $status -ne 0 || "$output" != *"Updating with the saved choices: --de i3 --no-packages --no-keyring --dry-run"* ||
+  "$output" != *"lightXDM's gnome keyring lines are not in $update_login, which has your own edits"* ||
+  "$output" != *"$CMD_INSTALL --de i3 --no-packages, or turn keyring unlock off"* ||
+  "$output" != *"PAM keyring: skipped (--no-keyring)"* ]]; then
+  record_ok=0
+  record_report+=" [gnome record, hand-edited file without lines: status=$status, output=$output]"
+fi
+printf '%s\n' "$PAM_GNOME_KEYRING_AUTH" "$PAM_GNOME_KEYRING_SESSION" >"$update_login"
+set +e
+output="$(update_run "$update_home" --update --dry-run)"
+status=$?
+set -e
+if [[ $status -ne 0 || "$output" == *"keyring lines are missing"* ]]; then
+  record_ok=0
+  record_report+=" [gnome record with its lines: status=$status, output=$output]"
+fi
+printf 'de=custom\nno_packages=1\n' >"$update_choices"
+printf 'kwallet\n' >"$update_record"
+printf '%s\n' "# stock login stack after a .pacnew merge" >"$update_login"
+set +e
+output="$(STUB_PACMAN_OWNER=util-linux STUB_PACMAN_BACKUP="$update_login [unmodified]" \
+  update_run "$update_home" --update --dry-run)"
+set -e
+if [[ "$output" != *"Updating with the saved choices: --de custom --no-packages --keyring kwallet --dry-run"* ||
+  "$output" != *"lightXDM's kwallet keyring lines are missing"* ]]; then
+  record_ok=0
+  record_report+=" [kwallet record for a custom id: output=$output]"
+fi
+if [[ $record_ok -eq 1 ]]; then
+  pass "install.sh --update restores recorded keyring lines only in a login file back to its packaged version"
+else
+  fail "install.sh --update keyring record:$record_report"
+fi
 unset -f update_run
 if [[ $can_unshare -eq 0 ]]; then
   skip "uninstall.sh removes the saved install choices (unshare -r unavailable)"
@@ -9770,6 +9840,47 @@ else
   else
     fail "uninstall.sh saved install choices (status=$status, output=$output)"
   fi
+  # Both uninstall modes drop the keyring record together with the keyring lines.
+  record_uninstall_report=""
+  for record_mode in full --keyring-only; do
+    record_file="$TMP_DIR/record_uninstall/pam-keyring"
+    mkdir -p "${record_file%/*}" "$TMP_DIR/record_uninstall/home"
+    printf 'gnome\n' >"$record_file"
+    record_args=()
+    [[ "$record_mode" == full ]] || record_args=("$record_mode")
+    set +e
+    output="$(env TARGET_HOME="$TMP_DIR/record_uninstall/home" LOGIN_FILE="$TMP_DIR/record_uninstall/login" \
+      DM_STATE_FILE="$TMP_DIR/record_uninstall/dm" PAM_KEYRING_STATE="$record_file" \
+      GNOME_SESSION_TYPE_DEST="$TMP_DIR/record_uninstall/gnome-session-type.conf" \
+      OVERRIDE_DIR="$TMP_DIR/record_uninstall/getty.d" POLKIT_RULE="$TMP_DIR/record_uninstall/49-nopasswd.rules" \
+      unshare -r bash "$REPO_ROOT/uninstall.sh" "${record_args[@]}" 2>&1)"
+    status=$?
+    set -e
+    if [[ $status -ne 0 || -e "$record_file" ]]; then
+      record_uninstall_report+=" [$record_mode: status=$status, output=$output]"
+    fi
+  done
+  if [[ -z "$record_uninstall_report" ]]; then
+    pass "uninstall.sh and uninstall.sh --keyring-only remove the keyring record"
+  else
+    fail "uninstall.sh keyring record:$record_uninstall_report"
+  fi
+fi
+# configure_pam records the backend it set up, and its preview names the record.
+record_dir="$TMP_DIR/record_configure"
+mkdir -p "$record_dir"
+printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'account    include      system-local-login' \
+  'session    include      system-local-login' 'password   include      system-local-login' >"$record_dir/login"
+# shellcheck disable=SC2016  # expand inside the child shell
+record_out="$(env LOGIN_FILE="$record_dir/login" PAM_KEYRING_STATE="$record_dir/lightxdm/pam-keyring" bash -c '
+  source "$1/install.sh" && configure_pam xfce 1 && configure_pam xfce >/dev/null 2>&1 &&
+    echo "after xfce: $(cat "$PAM_KEYRING_STATE")" && configure_pam plasma >/dev/null 2>&1 &&
+    echo "after plasma: $(cat "$PAM_KEYRING_STATE")"' bash "$REPO_ROOT" 2>&1)"
+if [[ "$record_out" == *"  record: $record_dir/lightxdm/pam-keyring (gnome)"* &&
+  "$record_out" == *"after xfce: gnome"* && "$record_out" == *"after plasma: kwallet"* ]]; then
+  pass "configure_pam records the keyring backend it set up (gnome, then kwallet) and the preview names the record"
+else
+  fail "configure_pam keyring record (output=$record_out)"
 fi
 # Dotfiles equal to older lightXDM templates (pinned in a temporary copy's list, no git) count as lightXDM's own
 if [[ ! -f "$REPO_ROOT/dotfiles/template-history.sha256" ]]; then

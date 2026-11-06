@@ -46,7 +46,7 @@ You need Arch Linux (or a derivative) with systemd, and a user in the `wheel` gr
 - `--non-interactive --de <id>`: for unattended installs, fail instead of prompting for sudo
 - `--no-packages`, `--no-keyring`: skip packages or PAM keyring setup
 - `--no-keyring --autologin`: log in on TTY1 without a password, in the same run
-- `--update`: rerun the last install with the same desktop and choices, for example to apply a newer lightXDM (the keyring choice is read from `/etc/pam.d/login`; autologin stays as it is)
+- `--update`: rerun the last install with the same desktop and choices, for example to apply a newer lightXDM (keyring lines a `.pacnew` merge removed come back, lines you removed by hand stay removed; autologin stays as it is)
 - `--init-template --de <id>`: create `~/.config/lightxdm/.xinitrc-<id>` (or `.wayland-session-<id>` for Plasma, GNOME, and Budgie) to edit first (no sudo)
 - `--init-template --wayland --de sway`: create `~/.config/lightxdm/.wayland-session-sway` for a custom Wayland compositor; edit it, then install with `--no-packages --de sway`. `--wayland` requires `--init-template` and a custom id; keep only one X11 or Wayland template per custom id.
 

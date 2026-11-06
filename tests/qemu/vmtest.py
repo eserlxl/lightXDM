@@ -552,11 +552,30 @@ def main():
             rc, _, err = ssh("test ! -e /etc/lightxdm/disabled-display-managers")
             check("uninstall.sh removed the display-manager state file", rc == 0, err.strip())
         if MODE == "package" and login1_ok:
+            # Keyring lines removed by hand are the user's choice: --update leaves the edited file alone.
+            rc, out, err = ssh("sed -i -E '/pam_(gnome_keyring|kwallet5)[.]so/d' /etc/pam.d/login && "
+                               "echo '# a line the user wrote' >> /etc/pam.d/login")
+            check("keyring lines removed from /etc/pam.d/login by hand", rc == 0, (out + err).strip())
+            rc, out, err = ssh(f"su - {USER} -c 'lightxdm-update' 2>&1", timeout=1800)
+            with open(os.path.join(RUN, "update-hand-edit.log"), "w") as f:
+                f.write(out + err)
+            _, lines, _ = ssh("grep -cE 'pam_(gnome_keyring|kwallet5)[.]so' /etc/pam.d/login")
+            check("lightxdm-update leaves a hand-edited /etc/pam.d/login alone and says so",
+                  rc == 0 and "which has your own edits" in out and lines.strip() == "0", out[-400:])
+            # A pacdiff merge that takes util-linux's login.pacnew drops every lightXDM line from the file.
+            rc, out, err = ssh("cp /etc/pam.d/login.lightxdm.bak /etc/pam.d/login && "
+                               "! grep -qE 'pam_(gnome_keyring|kwallet5)[.]so' /etc/pam.d/login")
+            check("a simulated .pacnew merge left /etc/pam.d/login without keyring lines", rc == 0,
+                  (out + err).strip())
             rc, out, err = ssh(f"su - {USER} -c 'lightxdm-update' 2>&1", timeout=1800)
             with open(os.path.join(RUN, "update.log"), "w") as f:
                 f.write(out + err)
             check("lightxdm-update reruns the saved choices",
                   rc == 0 and f"Updating with the saved choices: --de {TARGET}" in out, out[-400:])
+            check("lightxdm-update reports the keyring lines the merge removed", "keyring lines are missing" in out,
+                  out[-400:])
+            _, out, err = ssh("grep -cE '^(auth|session) +optional +pam_(gnome_keyring|kwallet5)[.]so' /etc/pam.d/login")
+            check("lightxdm-update added the keyring lines back", out.strip() == "2", (out + err).strip())
             if reboot_and_login(qmp, "login3"):
                 session_checks("login3", qmp)
             rc, out, err = ssh(f"su - {USER} -c 'sudo lightxdm-uninstall' 2>&1", timeout=600)
