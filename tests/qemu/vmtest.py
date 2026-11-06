@@ -565,6 +565,27 @@ def main():
             rc, _, err = ssh("test ! -e /etc/lightxdm/disabled-display-managers")
             check("uninstall.sh removed the display-manager state file", rc == 0, err.strip())
         if MODE == "package" and login1_ok:
+            # lightxdm-update leaves what the user changed: an edited session file stays (the current
+            # template goes beside it as *.lightxdm-new) and a display manager enabled again stays enabled.
+            session = ".wayland-session" if SESSION_TYPE == "wayland" else ".xinitrc"
+            session_path = f"/home/{USER}/{session}"
+            template = f"/usr/share/lightxdm/dotfiles/{session}-{TARGET}"
+            rc, before, err = ssh(f"echo '# a line the user wrote' >> {session_path} && sha256sum < {session_path} && "
+                                  "systemctl enable lightdm.service 2>&1 >/dev/null")
+            check(f"edited ~/{session} by hand and enabled lightdm.service again", rc == 0, (before + err).strip())
+            rc, out, err = ssh(f"su - {USER} -c 'lightxdm-update' 2>&1", timeout=1800)
+            with open(os.path.join(RUN, "update-user-changes.log"), "w") as f:
+                f.write(out + err)
+            _, after, _ = ssh(f"sha256sum < {session_path}")
+            rc_new, _, _ = ssh(f"cmp -s {session_path}.lightxdm-new {template}")
+            check(f"lightxdm-update leaves the edited ~/{session} alone and puts the template beside it",
+                  rc == 0 and after.strip() == before.strip().splitlines()[0] and rc_new == 0
+                  and "has your own edits, so --update leaves it alone" in out, out[-400:])
+            _, enabled, _ = ssh("systemctl is-enabled lightdm.service")
+            check("lightxdm-update leaves the re-enabled lightdm.service enabled and names the command",
+                  enabled.strip() == "enabled" and "sudo systemctl disable lightdm.service" in out, out[-400:])
+            rc, out, err = ssh("systemctl disable lightdm.service")
+            check("disabled lightdm.service again for the next login", rc == 0, (out + err).strip())
             # Removing only lightXDM's lines by hand brings back the file util-linux ships, which pacman calls
             # unmodified, just as after a .pacnew merge; --update must still leave the user's removal alone.
             # On GNOME the hand edit also removes lightXDM's session-type block.
@@ -626,6 +647,8 @@ def main():
                   (out + err).strip())
             rc, _, err = ssh(f"test ! -e /home/{USER}/.local/state/lightxdm/install-choices")
             check("lightxdm-uninstall removed the saved install choices", rc == 0, err.strip())
+            rc, _, err = ssh(f"test ! -e {session_path}.lightxdm-new")
+            check(f"lightxdm-uninstall removed ~/{session}.lightxdm-new", rc == 0, err.strip())
             # The merged version stays: uninstall never puts the older backup back over it.
             rc, out, err = ssh(f"test ! -e /etc/lightxdm/pam-login-base && {login_stock}")
             check("lightxdm-uninstall removed the merge record and left /etc/pam.d/login as util-linux ships it",

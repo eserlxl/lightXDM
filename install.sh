@@ -1195,6 +1195,15 @@ configure_gnome_session_type() (
 # Record a display manager before disabling it
 record_and_disable_unit() {
   local unit="$1"
+  if [[ "${UPDATE_RUN:-0}" == 1 ]]; then
+    # --update never undoes the user's choice: a display manager enabled again stays enabled.
+    if [[ "${2:-0}" == 1 ]]; then
+      printf 'Display manager: %s (stays enabled: --update)\n' "$unit"
+    else
+      log "$unit is enabled, so --update leaves it alone; while it is enabled, its login screen takes the display at boot instead of lightXDM's TTY1 login. To use lightXDM's login again, run: sudo systemctl disable $unit"
+    fi
+    return 0
+  fi
   if [[ "${2:-0}" == 1 ]]; then
     printf 'Display manager: %s\n' "$unit"
     return 0
@@ -1225,7 +1234,7 @@ check_tty1_getty() {
 
 disable_display_managers() {
   local preview="${1:-0}"
-  if [[ $preview -eq 0 ]]; then
+  if [[ $preview -eq 0 && "${UPDATE_RUN:-0}" != 1 ]]; then
     log "Disabling any installed display managers..."
     sudo mkdir -p "$(dirname -- "$DM_STATE_FILE")"
   fi
@@ -1255,10 +1264,16 @@ disable_display_managers() {
     if [[ ${#disabled_dms[@]} -eq 0 ]]; then
       printf 'Display managers: none enabled\n'
     fi
-    printf 'Display-manager state file: %s\n' "$DM_STATE_FILE"
-    if [[ -e "$DM_STATE_FILE" && ! -r "$DM_STATE_FILE" ]]; then
-      printf '  existing records: unknown (needs root)\n'
+    if [[ "${UPDATE_RUN:-0}" != 1 ]]; then
+      printf 'Display-manager state file: %s\n' "$DM_STATE_FILE"
+      if [[ -e "$DM_STATE_FILE" && ! -r "$DM_STATE_FILE" ]]; then
+        printf '  existing records: unknown (needs root)\n'
+      fi
     fi
+    return 0
+  fi
+  # --update disabled nothing (record_and_disable_unit printed each enabled unit instead).
+  if [[ "${UPDATE_RUN:-0}" == 1 ]]; then
     return 0
   fi
   if [[ ${#disabled_dms[@]} -gt 0 ]]; then

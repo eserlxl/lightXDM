@@ -32,7 +32,7 @@ lightXDM has recently expanded to support many desktop environments and improved
 - **Wayland packages:** Plasma, GNOME, and Budgie do not install `xorg-server` or `xorg-xinit`.
 
 ### Display Manager Independence
-- **No Display Manager Needed:** The script disables enabled display managers (SDDM, LightDM, GDM, LXDM, `ly@tty1`, and whatever unit `display-manager.service` points to) to ensure a pure TTY workflow (`startx`, or a Wayland session for Plasma, GNOME, and Budgie); `ly` on other TTYs is left alone unless `display-manager.service` points to it.
+- **No Display Manager Needed:** The script disables enabled display managers (SDDM, LightDM, GDM, LXDM, `ly@tty1`, and whatever unit `display-manager.service` points to) to ensure a pure TTY workflow (`startx`, or a Wayland session for Plasma, GNOME, and Budgie); `ly` on other TTYs is left alone unless `display-manager.service` points to it. `lightxdm-update` never disables one you enabled again; it names it and the command that disables it.
 - **GNOME limitation:** GNOME cannot lock the screen without GDM. See [GNOME session requirements](installation.md#gnome-session-requirements) before choosing it.
 - **Auto-Start on TTY1:** After login on TTY1, your desktop environment starts automatically—no need to run `startx` manually. Optional passwordless autologin is available via `enable-autologin.sh` (with the trade-off that the keyring cannot unlock automatically unless its password is empty).
 

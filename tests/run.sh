@@ -2642,6 +2642,32 @@ if [[ $status -eq 0 && -f "$DM_STATE_FILE" && "$output" == *"display_manager_dis
 else
   fail "disable_display_managers alias (status=$status, log=$log_content, output=$output)"
 fi
+# --update disables no display manager: each enabled one stays, with a note and the command that
+# disables it; the preview marks it and writes no state file line.
+dm_state_before="$(cat "$DM_STATE_FILE" 2>/dev/null)"
+: >"$STUB_LOG"
+set +e
+output="$(
+  export PATH="$dm_stub_dir:$PATH"
+  # shellcheck disable=SC2034  # read by the sourced install.sh functions
+  UPDATE_RUN=1
+  display_manager_disabled=0
+  disable_display_managers 2>&1
+  echo "display_manager_disabled=$display_manager_disabled"
+  disable_display_managers 1 2>&1
+)"
+status=$?
+set -e
+if [[ $status -eq 0 && "$output" == *"display_manager_disabled=0"* && "$(cat "$DM_STATE_FILE" 2>/dev/null)" == "$dm_state_before" ]] &&
+  ! grep -q '^systemctl disable' "$STUB_LOG" &&
+  [[ "$output" == *"sddm.service is enabled, so --update leaves it alone"*"To use lightXDM's login again, run: sudo systemctl disable sddm.service"* ]] &&
+  [[ "$output" == *"greetd.service is enabled, so --update leaves it alone"* ]] &&
+  [[ "$output" == *"Display manager: sddm.service (stays enabled: --update)"* && "$output" != *"Display-manager state file:"* ]] &&
+  [[ "$output" != *"Disabled display manager"* ]]; then
+  pass "--update disables no display manager and names each enabled one with the command that disables it"
+else
+  fail "--update display managers (status=$status, log=$(cat "$STUB_LOG"), output=$output)"
+fi
 
 # Indirect and static units behind display-manager.service are also skipped.
 for dm_unit in ly@.service static-dm.service; do
