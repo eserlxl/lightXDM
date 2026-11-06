@@ -59,7 +59,7 @@ lightXDM has recently expanded to support many desktop environments and improved
 | Display manager free           | disables SDDM, LightDM, GDM, LXDM, ly@tty1 and the display-manager.service unit |
 | Auto-start & optional autologin| TTY1 auto-start via `.bash_profile` (`~/.xinitrc` or `~/.wayland-session`); optional autologin via `enable-autologin.sh` |
 | Polkit integration             | systemd's defaults for power actions, `udisks2` defaults for USB, correct agent for each DE |
-| PAM integration                | appends `pam_kwallet5.so` (Plasma) or `pam_gnome_keyring.so` to `/etc/pam.d/login` with one-time backup |
+| PAM integration                | appends `pam_kwallet5.so` (Plasma) or `pam_gnome_keyring.so` to `/etc/pam.d/login` with one-time backup; custom sessions choose with `--keyring gnome` (default) or `--keyring kwallet` |
 | GPG Agent Integration          | starts `gpg-agent`, sets `SSH_AUTH_SOCK` when `enable-ssh-support` is set, and refreshes its tty via `~/.gpg-agent-kwallet` (Plasma) or `~/.gpg-agent-gnome` |
 | Documentation                  | `README.md`, `docs/`                                        |
 

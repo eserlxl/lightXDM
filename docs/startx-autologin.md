@@ -12,7 +12,7 @@ lightXDM provides a display-manager-free autologin experience by:
 GNOME also needs the installer's [session-type PAM block](installation.md#gnome-session-requirements), which applies only to the installing user on TTY1, including with `--no-keyring`. GNOME cannot lock the screen without GDM.
 
 ## Keyring Unlock Trade-Off
-- **Default mode (password login on TTY1):** You type your password on TTY1, your desktop starts automatically, and PAM unlocks your keyring (KWallet on Plasma, GNOME Keyring on the other supported desktops) using that password.
+- **Default mode (password login on TTY1):** You type your password on TTY1, your desktop starts automatically, and PAM unlocks your keyring (KWallet on Plasma, GNOME Keyring on the other supported desktops; a custom session uses GNOME Keyring unless you install it with `--keyring kwallet`, see [installation.md](installation.md)) using that password.
 - **Autologin mode (`agetty --autologin`):** Login happens without a password, so the PAM keyring module cannot unlock your keyring automatically. The keyring stays locked and asks for its password in the desktop unless its password is empty (`enable-autologin.sh` prints a warning when PAM keyring unlock is configured).
 - **Choosing autologin without keyring unlock:** on a new install, `bash install.sh --no-keyring --autologin` skips the keyring setup and enables autologin in the same run. On an existing default install, `sudo bash uninstall.sh --keyring-only` removes only the keyring lines lightXDM added to `/etc/pam.d/login`, keeping GNOME's session-type block and config; then run `sudo bash enable-autologin.sh YOURUSER`.
 
