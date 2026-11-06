@@ -1,0 +1,5 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2025-2026 Eser KUBALI
+# SPDX-License-Identifier: GPL-3.0-or-later
+# lightxdm-uninstall: run lightXDM's uninstall.sh from the packaged copy (run it with sudo)
+exec bash "${LIGHTXDM_DIR:-/usr/share/lightxdm}/uninstall.sh" "$@"

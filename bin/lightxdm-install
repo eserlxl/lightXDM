@@ -1,0 +1,5 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2025-2026 Eser KUBALI
+# SPDX-License-Identifier: GPL-3.0-or-later
+# lightxdm-install: run lightXDM's install.sh from the packaged copy (LIGHTXDM_DIR overrides its directory)
+exec bash "${LIGHTXDM_DIR:-/usr/share/lightxdm}/install.sh" "$@"

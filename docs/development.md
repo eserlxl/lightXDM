@@ -26,6 +26,9 @@ lightXDM/
 ├── enable-autologin.sh
 ├── uninstall.sh
 ├── lint.sh
+├── aur/
+│   └── aurgen.install.yaml  # aurgen config of the lightxdm AUR package; aurgen generates the other aur/ files
+├── bin/                     # lightxdm-install, -update, -uninstall, -autologin: the package's /usr/bin launchers
 ├── dotfiles/
 │   ├── .gpg-agent-gnome
 │   ├── lightxdm-gpg-agent-tty.desktop

@@ -9593,6 +9593,26 @@ else
   fail "Integration strict mode (default=$strict_default_status: $strict_default_output; flag=$strict_flag_status: $strict_flag_output; env=$strict_env_status: $strict_env_output; help=$strict_help_status, no Docker=$strict_help_no_docker: $strict_help_output; unknown=$strict_unknown_status, no Docker=$strict_unknown_no_docker: $strict_unknown_output; qemu=$strict_qemu_status: $strict_qemu_output)"
 fi
 
+# The package launchers run the right script with the right option; LIGHTXDM_DIR points them here.
+launcher_report=""
+for launcher_case in "lightxdm-install|--help|0|Usage: bash $REPO_ROOT/install.sh " \
+  "lightxdm-update|--dry-run|1|No saved install choices in $TMP_DIR/launcher_home/" \
+  "lightxdm-uninstall|--help|0|Usage: sudo bash $REPO_ROOT/uninstall.sh " \
+  "lightxdm-autologin|--help|0|Usage: sudo bash $REPO_ROOT/enable-autologin.sh "; do
+  IFS='|' read -r launcher launcher_arg launcher_status launcher_text <<<"$launcher_case"
+  set +e
+  launcher_out="$(cd / && HOME="$TMP_DIR/launcher_home" LIGHTXDM_DIR="$REPO_ROOT" "$REPO_ROOT/bin/$launcher" "$launcher_arg" 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -ne $launcher_status || "$launcher_out" != *"$launcher_text"* ]]; then
+    launcher_report+=" [$launcher: status=$status, output=$launcher_out]"
+  fi
+done
+if [[ -z "$launcher_report" ]]; then
+  pass "the bin/ launchers run install.sh, install.sh --update, uninstall.sh and enable-autologin.sh"
+else
+  fail "package launchers:$launcher_report"
+fi
 # install.sh --update reruns the last finished install with its saved choices; the keyring comes from PAM.
 update_home="$TMP_DIR/update_home"
 update_choices="$update_home/.local/state/lightxdm/install-choices"

@@ -1,0 +1,69 @@
+# AURGen configuration for the lightxdm package.
+# The package only installs the tool: the scripts and templates go to /usr/share/lightxdm and the
+# lightxdm-* launchers to /usr/bin. Nothing is set up at install time; the notes below tell each
+# user to run lightxdm-install, lightxdm-update and lightxdm-uninstall themselves.
+package:
+  name: lightxdm
+  description: "Start your desktop from a TTY1 login instead of a display manager, with PAM keyring unlock"
+  check: false
+  source: release
+  arch: [any]
+  gpg_key: 2B0541BF62E91D538C55739DF677BC1E3BD7246E
+  license: [GPL-3.0-or-later]
+  depends:
+    - bash
+    - sudo
+  # The source filter drops dotfiles and docs; the templates are hidden files under dotfiles/.
+  keep: [README.md, docs/, dotfiles/]
+  install_messages:
+    post_install:
+      - "lightXDM is installed, but nothing is set up yet. As your regular user, run: lightxdm-install"
+      - "It asks for sudo, installs the packages of your desktop and sets up the TTY1 login (lightxdm-install --help)."
+    post_upgrade:
+      - "lightXDM was updated. To apply the new version, each user who set it up runs: lightxdm-update"
+    pre_remove:
+      - "Removing this package does not undo the lightXDM setup: run sudo lightxdm-uninstall before removing it."
+      - "If the package is already removed, reinstall it to get lightxdm-uninstall back."
+  # The scripts live at the repository root, which a copy section cannot use as its source.
+  post_package:
+    - 'install -Dm644 -t "$pkgdir/usr/share/$pkgname" install.sh uninstall.sh enable-autologin.sh'
+    - 'install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md'
+
+# Launchers: lightxdm-install, lightxdm-update, lightxdm-uninstall, lightxdm-autologin
+executables:
+  source: bin
+  destination: usr/bin
+  permissions: executable
+  exclude: []
+
+# Session templates, the template history list and gpg-agent helpers that install.sh copies
+dotfiles:
+  source: dotfiles
+  destination: usr/share/$pkgname/dotfiles
+  permissions: read-only
+  exclude: []
+
+# The GNOME session-type PAM file install.sh installs to /etc/lightxdm
+pam:
+  source: pam
+  destination: usr/share/$pkgname/pam
+  permissions: read-only
+  exclude: []
+
+# User guides and maintainer docs
+docs:
+  source: docs
+  destination: usr/share/doc/$pkgname
+  permissions: read-only
+  exclude: []
+
+# AUR Integration Configuration
+aur_integration:
+  # Local AUR repositories directory
+  aur_repo_dir: ~/.local/share/aurgen/aur
+  # Auto-push to AUR after deployment
+  auto_push: true
+  # Commit message template (use {version} for version placeholder)
+  commit_message: "Update to version {version}"
+  # Validate AUR repository before pushing
+  validate_before_push: true

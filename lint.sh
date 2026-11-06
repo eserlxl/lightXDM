@@ -10,6 +10,10 @@ scripts=(
   install.sh
   enable-autologin.sh
   uninstall.sh
+  bin/lightxdm-install
+  bin/lightxdm-update
+  bin/lightxdm-uninstall
+  bin/lightxdm-autologin
   lint.sh
   tests/run.sh
   tests/docker-arch.sh
