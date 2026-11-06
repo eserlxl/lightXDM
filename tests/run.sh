@@ -4499,7 +4499,7 @@ EOF
   fi
 fi
 
-# Case 56: configure_pam PAM constants stay in sync with uninstall.sh strip patterns
+# Case 56: configure_pam PAM constants stay in the keyring line list uninstall.sh shares
 rm -f "$LOGIN_FILE" "${LOGIN_FILE}.lightxdm.bak"
 write_stock_login
 configure_pam "plasma" 2>/dev/null
@@ -4509,7 +4509,7 @@ gnome_pam_content="$(cat "$LOGIN_FILE")"
 pam_written_lines="$plasma_pam_content"$'\n'"$gnome_pam_content"
 pam_sync_errors=()
 pam_seen_lines=()
-uninstall_active_lines="$(grep -Ev '^[[:space:]]*#' "$REPO_ROOT/uninstall.sh")"
+keyring_list_values="$(printf '%s\n' "${LIGHTXDM_KEYRING_LINES[@]}")"
 for pam_const in PAM_KWALLET_AUTH PAM_KWALLET_SESSION PAM_GNOME_KEYRING_AUTH PAM_GNOME_KEYRING_SESSION; do
   pam_decl="$(declare -p "$pam_const" 2>/dev/null || true)"
   pam_line="${!pam_const-}"
@@ -4529,19 +4529,20 @@ for pam_const in PAM_KWALLET_AUTH PAM_KWALLET_SESSION PAM_GNOME_KEYRING_AUTH PAM
   if ! grep -Fxq -- "$pam_line" <<<"$pam_written_lines"; then
     pam_sync_errors+=("${pam_const}:not-written-by-configure_pam")
   fi
-  pam_pattern="^${pam_line//./\\.}\$"
-  if ! grep -Fq -- "$pam_pattern" <<<"$uninstall_active_lines"; then
-    pam_sync_errors+=("${pam_const}:${pam_pattern}")
+  if ! grep -Fxq -- "$pam_line" <<<"$keyring_list_values"; then
+    pam_sync_errors+=("${pam_const}:not-in-LIGHTXDM_KEYRING_LINES")
   fi
 done
-uninstall_pam_count="$(grep -Ec "^[[:space:]]*'\^-?(auth|session|account|password)[[:space:]]" <<<"$uninstall_active_lines" || true)"
+keyring_list_install="$(sed -n '/^readonly LIGHTXDM_KEYRING_LINES=(/,/^)/p' "$REPO_ROOT/install.sh")"
+keyring_list_uninstall="$(sed -n '/^readonly LIGHTXDM_KEYRING_LINES=(/,/^)/p' "$REPO_ROOT/uninstall.sh")"
 # Four current lines plus the auth line installs before 2026-11-03 appended.
-if [[ "$uninstall_pam_count" -ne 5 ]] ||
-  ! grep -Fq -- "'^auth       optional   pam_gnome_keyring\.so auto_start\$'" <<<"$uninstall_active_lines"; then
-  pam_sync_errors+=("uninstall_pam_count=${uninstall_pam_count}")
+if [[ -z "$keyring_list_install" || "$keyring_list_install" != "$keyring_list_uninstall" ||
+  ${#LIGHTXDM_KEYRING_LINES[@]} -ne 5 ]] ||
+  ! grep -Fxq -- "auth       optional   pam_gnome_keyring.so auto_start" <<<"$keyring_list_values"; then
+  pam_sync_errors+=("keyring-list:${#LIGHTXDM_KEYRING_LINES[@]}")
 fi
 if [[ ${#pam_sync_errors[@]} -eq 0 ]]; then
-  pass "configure_pam PAM constants match uninstall.sh strip patterns"
+  pass "configure_pam PAM constants are in the keyring line list install.sh and uninstall.sh share"
 else
   fail "PAM constant drift between install.sh and uninstall.sh (${pam_sync_errors[*]})"
 fi
@@ -8410,6 +8411,40 @@ else
     pass "configure_pam plasma removes the legacy GNOME keyring auth line and adds KWallet lines"
   else
     fail "configure_pam plasma legacy GNOME keyring auth line (log=$old_pam_log, login=$(cat "$old_dir/login"))"
+  fi
+  # Staying on GNOME Keyring replaces the legacy auth line with the current one, as the preview says.
+  rm -f -- "$old_dir/login" "$old_dir"/login.*.bak*
+  printf %b "$old_stock" >"$old_dir/login.lightxde.bak.1751000000"
+  printf %b "$old_stock$old_keyring" >"$old_dir/login"
+  # shellcheck disable=SC2016  # expand inside the child shell
+  old_preview="$(env LOGIN_FILE="$old_dir/login" bash -c 'source "$1/install.sh" && configure_pam gnome 1' bash "$REPO_ROOT" 2>&1)"
+  # shellcheck disable=SC2016  # expand inside the child shell
+  old_pam_log="$(env LOGIN_FILE="$old_dir/login" bash -c 'source "$1/install.sh" && configure_pam gnome' bash "$REPO_ROOT" 2>&1)"
+  if grep -Fxq -- "  remove: auth       optional   pam_gnome_keyring.so auto_start" <<<"$old_preview" &&
+    grep -Fxq -- "$PAM_GNOME_KEYRING_AUTH" <<<"$old_preview"; then
+    pass "the GNOME preview over the legacy auth line lists its removal and the current auth line"
+  else
+    fail "configure_pam gnome preview of the legacy auth line refresh (preview=$old_preview)"
+  fi
+  if ! grep -Fxq -- "auth       optional   pam_gnome_keyring.so auto_start" "$old_dir/login" &&
+    [[ "$(grep -Fxc -- "$PAM_GNOME_KEYRING_AUTH" "$old_dir/login")" -eq 1 &&
+      "$(grep -Fxc -- "$PAM_GNOME_KEYRING_SESSION" "$old_dir/login")" -eq 1 ]] &&
+    cmp -s "$old_dir/login.lightxdm.bak" "$old_dir/login.expected"; then
+    pass "configure_pam gnome replaces the legacy GNOME keyring auth line with the current one"
+  else
+    fail "configure_pam gnome legacy auth line refresh (log=$old_pam_log, login=$(cat "$old_dir/login"))"
+  fi
+  # A legacy-looking line the original login file already had is the user's: it stays.
+  rm -f -- "$old_dir/login" "$old_dir"/login.*.bak*
+  printf %b "$old_stock$old_keyring" >"$old_dir/login.lightxdm.bak"
+  printf %b "$old_stock$old_keyring" >"$old_dir/login"
+  # shellcheck disable=SC2016  # expand inside the child shell
+  old_pam_log="$(env LOGIN_FILE="$old_dir/login" bash -c 'source "$1/install.sh" && configure_pam gnome' bash "$REPO_ROOT" 2>&1)"
+  if grep -Fxq -- "auth       optional   pam_gnome_keyring.so auto_start" "$old_dir/login" &&
+    cmp -s "$old_dir/login" "$old_dir/login.lightxdm.bak"; then
+    pass "configure_pam keeps a legacy-looking keyring line that the original login file already had"
+  else
+    fail "configure_pam user's own legacy-looking line (log=$old_pam_log, login=$(cat "$old_dir/login"))"
   fi
   # An existing .lightxdm.bak wins; the .lightxde backup is not moved.
   rm -f -- "$old_dir/login" "$old_dir"/login.*.bak*

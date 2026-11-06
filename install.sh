@@ -17,6 +17,15 @@ readonly PAM_KWALLET_AUTH="auth       optional   pam_kwallet5.so"
 readonly PAM_KWALLET_SESSION="session    optional   pam_kwallet5.so force_run"
 readonly PAM_GNOME_KEYRING_AUTH="auth       optional   pam_gnome_keyring.so"
 readonly PAM_GNOME_KEYRING_SESSION="session    optional   pam_gnome_keyring.so auto_start"
+# Every keyring line lightXDM ever appended to the login file: the four above and the auth line
+# installs before 2026-11-03 wrote. uninstall.sh keeps an identical list.
+readonly LIGHTXDM_KEYRING_LINES=(
+  "auth       optional   pam_kwallet5.so"
+  "session    optional   pam_kwallet5.so force_run"
+  "auth       optional   pam_gnome_keyring.so"
+  "auth       optional   pam_gnome_keyring.so auto_start"
+  "session    optional   pam_gnome_keyring.so auto_start"
+)
 
 # --- Functions ---
 
@@ -693,9 +702,7 @@ legacy_pam_backup_candidate() {
   fi
   # Without old keyring lines in the login file, an uninstall already restored the original;
   # a newer leftover backup may hold keyring lines and must not become the original.
-  grep -Fxq -e "$PAM_KWALLET_AUTH" -e "$PAM_KWALLET_SESSION" -e "$PAM_GNOME_KEYRING_AUTH" \
-    -e "$PAM_GNOME_KEYRING_SESSION" -e "auth       optional   pam_gnome_keyring.so auto_start" \
-    -- "$LOGIN_FILE" 2>/dev/null || return 0
+  grep -Fxq -f <(printf '%s\n' "${LIGHTXDM_KEYRING_LINES[@]}") -- "$LOGIN_FILE" 2>/dev/null || return 0
   for old_backup in "${LOGIN_FILE}".lightxde.bak.*; do
     epoch="${old_backup##*.lightxde.bak.}"
     if [[ -f "$old_backup" && "$epoch" =~ ^[0-9]+$ ]] && { [[ -z "$oldest_epoch" ]] || ((10#$epoch < 10#$oldest_epoch)); }; then
@@ -716,32 +723,31 @@ adopt_legacy_pam_backup() {
   fi
 }
 
-# Print only the keyring rules missing from the current login stack.
+# Print only the keyring rules missing from the current login stack; the lines in $4 (one per line)
+# do not count, because configure_pam removes them first.
 pam_lines_to_add() {
-  local module_re="${1//./\\.}" auth_line="$2" session_line="$3"
-  if ! grep -Eq "^[[:space:]]*-?auth[[:space:]][^#]*${module_re}" "$LOGIN_FILE"; then
+  local module_re="${1//./\\.}" auth_line="$2" session_line="$3" removed="${4:-}" stack
+  stack="$(grep -Fvx -f <(grep -v '^$' <<<"$removed") -- "$LOGIN_FILE" || true)"
+  if ! grep -Eq "^[[:space:]]*-?auth[[:space:]][^#]*${module_re}" <<<"$stack"; then
     printf '%s\n' "$auth_line"
   fi
-  if ! grep -Eq "^[[:space:]]*-?session[[:space:]][^#]*${module_re}" "$LOGIN_FILE"; then
+  if ! grep -Eq "^[[:space:]]*-?session[[:space:]][^#]*${module_re}" <<<"$stack"; then
     printf '%s\n' "$session_line"
   fi
 }
 
-# Print other keyring rules introduced since the original backup.
+# Print the lightXDM keyring lines to remove: each line lightXDM ever appended that the login file
+# has, the original backup lacks, and the chosen backend ($1 auth, $2 session line) no longer uses.
 pam_lines_to_remove() {
-  local other_module="$1" other_auth_line="$2" other_session_line="$3"
-  local backup_file="${LOGIN_FILE}.lightxdm.bak" other_line
-  local other_lines=("$other_auth_line" "$other_session_line")
+  local keep_auth="$1" keep_session="$2" backup_file="${LOGIN_FILE}.lightxdm.bak" line
   if [[ ! -e "$backup_file" && ! -L "$backup_file" ]]; then
     backup_file="$(legacy_pam_backup_candidate)"
   fi
   [[ -f "$backup_file" ]] || return 0
-  if [[ "$other_module" == "pam_gnome_keyring.so" ]]; then
-    other_lines+=("auth       optional   pam_gnome_keyring.so auto_start")
-  fi
-  for other_line in "${other_lines[@]}"; do
-    if grep -Fxq -- "$other_line" "$LOGIN_FILE" && ! grep -Fxq -- "$other_line" "$backup_file"; then
-      printf '%s\n' "$other_line"
+  for line in "${LIGHTXDM_KEYRING_LINES[@]}"; do
+    if [[ "$line" != "$keep_auth" && "$line" != "$keep_session" ]] &&
+      grep -Fxq -- "$line" "$LOGIN_FILE" && ! grep -Fxq -- "$line" "$backup_file"; then
+      printf '%s\n' "$line"
     fi
   done
 }
@@ -772,7 +778,7 @@ configure_pam() {
     fi
     return 1
   fi
-  local module auth_line session_line other_module other_auth_line other_session_line
+  local module auth_line session_line
   case "$de" in
     plasma) keyring=kwallet ;;
     gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) keyring=gnome ;;
@@ -782,31 +788,25 @@ configure_pam() {
       module="pam_kwallet5.so"
       auth_line="$PAM_KWALLET_AUTH"
       session_line="$PAM_KWALLET_SESSION"
-      other_module="pam_gnome_keyring.so"
-      other_auth_line="$PAM_GNOME_KEYRING_AUTH"
-      other_session_line="$PAM_GNOME_KEYRING_SESSION"
       ;;
     *)
       module="pam_gnome_keyring.so"
       auth_line="$PAM_GNOME_KEYRING_AUTH"
       session_line="$PAM_GNOME_KEYRING_SESSION"
-      other_module="pam_kwallet5.so"
-      other_auth_line="$PAM_KWALLET_AUTH"
-      other_session_line="$PAM_KWALLET_SESSION"
       ;;
   esac
 
   if [[ $preview -eq 1 ]]; then
-    local additions removals removal
+    local additions removals="" removal
     if [[ -e "${LOGIN_FILE}.lightxdm.bak" && ! -r "${LOGIN_FILE}.lightxdm.bak" ]]; then
       printf '  removals: unknown (needs root)\n'
     else
-      removals="$(pam_lines_to_remove "$other_module" "$other_auth_line" "$other_session_line")"
+      removals="$(pam_lines_to_remove "$auth_line" "$session_line")"
       while IFS= read -r removal; do
         [[ -n "$removal" ]] && printf '  remove: %s\n' "$removal"
       done <<<"$removals"
     fi
-    additions="$(pam_lines_to_add "$module" "$auth_line" "$session_line")"
+    additions="$(pam_lines_to_add "$module" "$auth_line" "$session_line" "$removals")"
     printf '%s\n' "${additions:-  no lines to add (already configured)}"
     return 0
   fi
@@ -824,13 +824,18 @@ configure_pam() {
 
   local backup_file="${LOGIN_FILE}.lightxdm.bak"
   if [[ -f "$backup_file" ]]; then
-    local pam_sed=() other_line
-    while IFS= read -r other_line; do
-      [[ -n "$other_line" ]] && pam_sed+=(-e "/^${other_line//./\\.}\$/d")
-    done < <(pam_lines_to_remove "$other_module" "$other_auth_line" "$other_session_line")
+    local pam_sed=() stale_lines=() stale_line
+    while IFS= read -r stale_line; do
+      if [[ -n "$stale_line" ]]; then
+        stale_lines+=("$stale_line")
+        pam_sed+=(-e "/^${stale_line//./\\.}\$/d")
+      fi
+    done < <(pam_lines_to_remove "$auth_line" "$session_line")
     if [[ ${#pam_sed[@]} -gt 0 ]]; then
       sudo sed -i --follow-symlinks "${pam_sed[@]}" "$LOGIN_FILE"
-      log "Removed $other_module from $LOGIN_FILE."
+      for stale_line in "${stale_lines[@]}"; do
+        log "Removed '$stale_line' from $LOGIN_FILE."
+      done
     fi
   fi
 

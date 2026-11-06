@@ -50,6 +50,14 @@ fi
 
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
+# Every keyring line lightXDM ever appended to the login file; install.sh keeps an identical list.
+readonly LIGHTXDM_KEYRING_LINES=(
+  "auth       optional   pam_kwallet5.so"
+  "session    optional   pam_kwallet5.so force_run"
+  "auth       optional   pam_gnome_keyring.so"
+  "auth       optional   pam_gnome_keyring.so auto_start"
+  "session    optional   pam_gnome_keyring.so auto_start"
+)
 readonly GNOME_SESSION_TYPE_DEST="${GNOME_SESSION_TYPE_DEST:-/etc/lightxdm/gnome-session-type.conf}"
 DM_STATE_FILE="${DM_STATE_FILE:-/etc/lightxdm/disabled-display-managers}"
 BACKUP_FILE="${LOGIN_FILE}.lightxdm.bak"
@@ -106,12 +114,8 @@ if [ -f "$BACKUP_FILE" ]; then
   else
     # A line already present before install (it is in the backup) is the user's, not ours.
     pam_sed=()
-    for pam_re in \
-      '^auth       optional   pam_kwallet5\.so$' \
-      '^session    optional   pam_kwallet5\.so force_run$' \
-      '^auth       optional   pam_gnome_keyring\.so$' \
-      '^auth       optional   pam_gnome_keyring\.so auto_start$' \
-      '^session    optional   pam_gnome_keyring\.so auto_start$'; do
+    for pam_line in "${LIGHTXDM_KEYRING_LINES[@]}"; do
+      pam_re="^${pam_line//./\\.}\$"
       if [[ -z "$(sed -n "/${pam_re}/p" "$BACKUP_FILE")" ]]; then
         pam_sed+=(-e "/${pam_re}/d")
       fi
