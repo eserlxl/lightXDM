@@ -567,25 +567,32 @@ def main():
         if MODE == "package" and login1_ok:
             # lightxdm-update leaves what the user changed: an edited session file stays (the current
             # template goes beside it as *.lightxdm-new) and a display manager enabled again stays enabled.
+            # The image has no display manager, so a stand-in lxdm.service plays one.
             session = ".wayland-session" if SESSION_TYPE == "wayland" else ".xinitrc"
             session_path = f"/home/{USER}/{session}"
             template = f"/usr/share/lightxdm/dotfiles/{session}-{TARGET}"
-            rc, before, err = ssh(f"echo '# a line the user wrote' >> {session_path} && sha256sum < {session_path} && "
-                                  "systemctl enable lightdm.service 2>&1 >/dev/null")
-            check(f"edited ~/{session} by hand and enabled lightdm.service again", rc == 0, (before + err).strip())
+            stand_in_dm = ("printf '%s\\n' '[Unit]' 'Description=Stand-in display manager' '[Service]' "
+                           "'ExecStart=/usr/bin/sleep infinity' '[Install]' 'Alias=display-manager.service' "
+                           "> /etc/systemd/system/lxdm.service && systemctl daemon-reload && "
+                           "systemctl enable lxdm.service >/dev/null 2>&1")
+            rc, before, err = ssh(f"echo '# a line the user wrote' >> {session_path} && {stand_in_dm} && "
+                                  f"sha256sum < {session_path}")
+            session_sum = before.strip()
+            check(f"edited ~/{session} by hand and enabled a display manager again", rc == 0, (before + err).strip())
             rc, out, err = ssh(f"su - {USER} -c 'lightxdm-update' 2>&1", timeout=1800)
             with open(os.path.join(RUN, "update-user-changes.log"), "w") as f:
                 f.write(out + err)
             _, after, _ = ssh(f"sha256sum < {session_path}")
             rc_new, _, _ = ssh(f"cmp -s {session_path}.lightxdm-new {template}")
             check(f"lightxdm-update leaves the edited ~/{session} alone and puts the template beside it",
-                  rc == 0 and after.strip() == before.strip().splitlines()[0] and rc_new == 0
+                  rc == 0 and after.strip() == session_sum and rc_new == 0
                   and "has your own edits, so --update leaves it alone" in out, out[-400:])
-            _, enabled, _ = ssh("systemctl is-enabled lightdm.service")
-            check("lightxdm-update leaves the re-enabled lightdm.service enabled and names the command",
-                  enabled.strip() == "enabled" and "sudo systemctl disable lightdm.service" in out, out[-400:])
-            rc, out, err = ssh("systemctl disable lightdm.service")
-            check("disabled lightdm.service again for the next login", rc == 0, (out + err).strip())
+            _, enabled, _ = ssh("systemctl is-enabled lxdm.service")
+            check("lightxdm-update leaves the re-enabled display manager enabled and names the command",
+                  enabled.strip() == "enabled" and "sudo systemctl disable lxdm.service" in out, out[-400:])
+            rc, out, err = ssh("systemctl disable lxdm.service && rm -f /etc/systemd/system/lxdm.service && "
+                               "systemctl daemon-reload")
+            check("removed the stand-in display manager before the next login", rc == 0, (out + err).strip())
             # Removing only lightXDM's lines by hand brings back the file util-linux ships, which pacman calls
             # unmodified, just as after a .pacnew merge; --update must still leave the user's removal alone.
             # On GNOME the hand edit also removes lightXDM's session-type block.
@@ -601,15 +608,29 @@ def main():
                 with open(os.path.join(RUN, f"update-{attempt}.log"), "w") as f:
                     f.write(out + err)
                 _, lines, _ = ssh("grep -cE 'pam_(gnome_keyring|kwallet5)[.]so' /etc/pam.d/login")
-                check(f"{attempt}: lightxdm-update leaves out the keyring lines removed by hand and says so",
-                      rc == 0 and "which has your own edits" in out and lines.strip() == "0", out[-400:])
+                check(f"{attempt}: lightxdm-update leaves out the keyring lines removed by hand and names --pam-only",
+                      rc == 0 and "which has your own edits" in out and lines.strip() == "0"
+                      and f"--pam-only --de {TARGET}," in out, out[-400:])
                 if TARGET == "gnome":
                     _, blocks, _ = ssh("grep -c 'lightXDM: GNOME on TTY1' /etc/pam.d/login")
-                    check(f"{attempt}: lightxdm-update leaves out the GNOME block removed by hand and says so",
-                          "GNOME session-type block is not in" in out and blocks.strip() == "0", out[-400:])
+                    check(f"{attempt}: lightxdm-update leaves out the GNOME block removed by hand and names --pam-only",
+                          "GNOME session-type block is not in" in out and blocks.strip() == "0"
+                          and "--pam-only --de gnome --no-keyring" in out, out[-400:])
                 if attempt == "hand-edit-after-merge":
-                    rc, out, err = ssh("cp -p /root/login.restored /etc/pam.d/login && rm -f /root/login.restored")
-                    check("restored lightXDM's lines for the next login", rc == 0, (out + err).strip())
+                    # The command the note names puts lightXDM's PAM lines back and changes nothing else.
+                    choices = f"/home/{USER}/.local/state/lightxdm/install-choices"
+                    _, choices_before, _ = ssh(f"sha256sum < {choices}")
+                    rc, out, err = ssh(f"su - {USER} -c 'lightxdm-install --pam-only --de {TARGET}' 2>&1", timeout=600)
+                    with open(os.path.join(RUN, "pam-only.log"), "w") as f:
+                        f.write(out + err)
+                    _, lines, _ = ssh("grep -cE '^(auth|session) +optional +pam_(gnome_keyring|kwallet5)[.]so' /etc/pam.d/login")
+                    _, blocks, _ = ssh("grep -c 'lightXDM: GNOME on TTY1' /etc/pam.d/login")
+                    _, choices_after, _ = ssh(f"sha256sum < {choices}")
+                    _, session_now, _ = ssh(f"sha256sum < {session_path}")
+                    check("lightxdm-install --pam-only puts lightXDM's PAM lines back and changes nothing else",
+                          rc == 0 and lines.strip() == "2" and blocks.strip() == ("1" if TARGET == "gnome" else "0")
+                          and choices_after == choices_before and session_now.strip() == session_sum,
+                          out[-400:])
                     break
                 # A pacdiff merge that takes util-linux's login.pacnew drops every lightXDM line, and the version
                 # it brings differs from lightXDM's backup (here, a backup taken from an older util-linux).
@@ -633,7 +654,7 @@ def main():
                 rc, out, err = ssh("test -s /etc/lightxdm/pam-login-base")
                 check("lightxdm-update recorded the version the .pacnew merge brought", rc == 0, (out + err).strip())
                 # Removing lightXDM's lines by hand after the merge brings back the merged version: still the user's.
-                rc, out, err = ssh(f"cp -p /etc/pam.d/login /root/login.restored && {strip_lightxdm} && {login_stock}")
+                rc, out, err = ssh(f"{strip_lightxdm} && {login_stock}")
                 check("removing lightXDM's lines after the merge leaves the merged version", rc == 0,
                       (out + err).strip())
             if reboot_and_login(qmp, "login3"):

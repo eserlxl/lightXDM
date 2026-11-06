@@ -1060,6 +1060,11 @@ configure_gnome_session_type() (
   block_removed_by_user() {
     [[ "$de" == gnome && $has_block -eq 0 && "${UPDATE_RUN:-0}" == 1 && "${UPDATE_RESTORE_PAM:-0}" != 1 ]]
   }
+  # An update leaves a block the user edited (a line removed or commented out) as it is; an explicit
+  # install refuses to touch it (validate_gnome_block).
+  block_edited_on_update() {
+    [[ "${UPDATE_RUN:-0}" == 1 && $has_block -eq 1 ]] && ! validate_gnome_block >/dev/null 2>&1
+  }
   validate_gnome_block() {
     if [[ $has_block -eq 1 ]]; then
       local check_line check_tty check_user check_env
@@ -1077,6 +1082,10 @@ configure_gnome_session_type() (
     fi
   }
   if [[ $preview -eq 1 ]]; then
+    if block_edited_on_update; then
+      printf 'GNOME session type: %s\n  left alone: lightXDM'"'"'s block has your own edits (--update)\n' "$LOGIN_FILE"
+      return 0
+    fi
     validate_gnome_block || return 1
     if [[ "$de" == gnome && $no_keyring -eq 1 && -r "$LOGIN_FILE" ]] &&
       ! grep -Eq '^[[:space:]]*-?session[[:space:]]' "$LOGIN_FILE"; then
@@ -1088,7 +1097,7 @@ configure_gnome_session_type() (
       printf '  existing block: unknown (needs root)\n'
     fi
     if block_removed_by_user; then
-      printf '  left alone: the block is not in %s, which has your own edits (--update)\n' "$LOGIN_FILE"
+      printf '  left alone: the block is not in %s, which has your own edits (--update); add only the block back with: %s --pam-only --de gnome --no-keyring\n' "$LOGIN_FILE" "$(script_cmd install.sh)"
     elif [[ "$de" == gnome ]]; then
       printf '%s\n' "${block[@]}"
       printf 'Session-type file: %s (from %s)\n' "$GNOME_SESSION_TYPE_DEST" "$SCRIPT_DIR/pam/gnome-session-type.conf"
@@ -1118,9 +1127,13 @@ configure_gnome_session_type() (
     log "ERROR: $LOGIN_FILE is missing; lightXDM will not create it."
     return 1
   fi
+  if block_edited_on_update; then
+    log "lightXDM's GNOME session-type block in $LOGIN_FILE has your own edits, so --update leaves it alone."
+    return 0
+  fi
   validate_gnome_block || return 1
   if block_removed_by_user; then
-    log "lightXDM's GNOME session-type block is not in $LOGIN_FILE, which has your own edits, so --update leaves it alone; GNOME on TTY1 needs it to start on Wayland. Add it back with $(script_cmd install.sh) --de gnome."
+    log "lightXDM's GNOME session-type block is not in $LOGIN_FILE, which has your own edits, so --update leaves it alone; GNOME on TTY1 needs it to start on Wayland. Add only the block back with $(script_cmd install.sh) --pam-only --de gnome --no-keyring."
     return 0
   fi
   adopt_legacy_pam_backup || return 1
@@ -1292,6 +1305,19 @@ disable_display_managers() {
   done <<<"$recorded_units"
 }
 
+# Preview a --pam-only run: only lightXDM's lines in /etc/pam.d/login and GNOME's session-type file.
+preview_pam_only() {
+  local de="$1" no_keyring="$2" keyring="${3:-}" real_user
+  real_user="${USER:-$(id -un)}"
+  printf 'Desktop: %s (--pam-only: no packages, dotfiles, display managers or saved choices)\n' "$de"
+  if [[ $no_keyring -eq 1 ]]; then
+    printf 'PAM keyring: skipped (--no-keyring)\n'
+  else
+    configure_pam "$de" 1 "$keyring" || return 1
+  fi
+  configure_gnome_session_type "$de" "$real_user" 1 "$no_keyring"
+}
+
 # Resolve the install using the configuration helpers' read-only preview paths.
 preview_install() {
   local de="$1" no_packages="$2" no_keyring="$3" autologin="$4" keyring="${5:-}" template real_user
@@ -1417,40 +1443,44 @@ saved_install_args() {
   fi
   # The record tells keyring lines a .pacnew merge dropped from lines removed with uninstall.sh
   # --keyring-only; installs from before the record fall back to the lines themselves.
-  local record=""
+  local record="" backend module auth_line session_line
   if [[ -f "$PAM_KEYRING_STATE" ]]; then
     record="$(<"$PAM_KEYRING_STATE")"
   fi
   case "$record" in
-    gnome | kwallet)
-      if [[ " ${backends[*]} " != *" $record "* ]]; then
-        # Only a login file a .pacnew merge replaced lost the lines without the user: put lightXDM's
-        # own lines back there, and leave a file the user edited (or reverted by hand) alone.
-        if [[ "${UPDATE_RESTORE_PAM:-0}" != 1 ]]; then
-          local hint="--de $de"
-          [[ $no_packages -eq 0 ]] || hint+=" --no-packages"
-          case "$de" in
-            plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
-            *) hint+=" --keyring $record" ;;
-          esac
-          log "lightXDM's $record keyring lines are not in $LOGIN_FILE, which has your own edits, so --update leaves it alone. Add them back with $(script_cmd install.sh) $hint, or turn keyring unlock off with sudo $(script_cmd uninstall.sh) --keyring-only."
-          printf '%s\n' --no-keyring
-          return 0
-        fi
-        log "lightXDM's $record keyring lines are missing from $LOGIN_FILE, which a .pacnew merge replaced with the version its package ships; adding them back."
-      fi
-      backends=("$record")
-      ;;
+    gnome | kwallet) backend="$record" ;;
     *)
-      if [[ ${#backends[@]} -eq 0 ]]; then
-        printf '%s\n' --no-keyring
-        return 0
-      fi
+      record=""
+      backend="${backends[0]:-}"
       ;;
   esac
+  if [[ -z "$backend" ]]; then
+    printf '%s\n' --no-keyring
+    return 0
+  fi
+  if [[ "$backend" == kwallet ]]; then
+    module=pam_kwallet5.so auth_line="$PAM_KWALLET_AUTH" session_line="$PAM_KWALLET_SESSION"
+  else
+    module=pam_gnome_keyring.so auth_line="$PAM_GNOME_KEYRING_AUTH" session_line="$PAM_GNOME_KEYRING_SESSION"
+  fi
+  # A keyring line the user removed or commented out stays that way, even when the other one is still
+  # there: only a login file a .pacnew merge replaced lost lightXDM's lines without the user.
+  if [[ -n "$(pam_lines_to_add "$module" "$auth_line" "$session_line")" ]]; then
+    if [[ -z "$record" || "${UPDATE_RESTORE_PAM:-0}" != 1 ]]; then
+      local hint="--pam-only --de $de"
+      case "$de" in
+        plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
+        *) hint+=" --keyring $backend" ;;
+      esac
+      log "Some or all of lightXDM's $backend keyring lines are not in $LOGIN_FILE (removed or commented out), which has your own edits, so --update leaves it alone. Add them back with $(script_cmd install.sh) $hint, or turn keyring unlock off with sudo $(script_cmd uninstall.sh) --keyring-only."
+      printf '%s\n' --no-keyring
+      return 0
+    fi
+    log "lightXDM's $backend keyring lines are missing from $LOGIN_FILE, which a .pacnew merge replaced with the version its package ships; adding them back."
+  fi
   case "$de" in
     plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
-    *) printf '%s\n' --keyring "${backends[0]}" ;;
+    *) printf '%s\n' --keyring "$backend" ;;
   esac
 }
 
@@ -1474,7 +1504,8 @@ main() {
   local init_template=0
   local wayland=0
   local from_session=""
-  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update]"
+  local pam_only=0
+  local usage="Usage: bash $0 [-h|--help] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1509,10 +1540,14 @@ Options:
                     (use alone, without sudo; no service activation or prompts; 0=unlocked, 1=locked, 2=unavailable)
   --no-keyring      skip keyring packages and keyring PAM lines (use with autologin)
   --autologin       also log in on TTY1 without a password (requires --no-keyring)
-  --update          rerun the last finished install with its saved desktop and --no-packages choice, to
-                    apply a newer lightXDM; the keyring choice stays (lightXDM's PAM lines a .pacnew
-                    merge removed come back, lines you removed by hand stay removed), autologin stays
-                    as it is (combinable with --dry-run and --non-interactive)
+  --update          apply a newer lightXDM to the last finished install with its saved choices, changing
+                    only what lightXDM installed and you left as it was: edited dotfiles stay (the template
+                    goes beside them as *.lightxdm-new), removed packages stay removed, display managers you
+                    enabled stay enabled, PAM lines you removed stay removed (ones a .pacnew merge removed
+                    come back); autologin stays as it is (combinable with --dry-run and --non-interactive)
+  --pam-only        only add lightXDM's lines for --de <id> to /etc/pam.d/login (keyring unlock, and GNOME's
+                    session-type block); no packages, dotfiles, display managers or saved choices change
+                    (with --no-keyring, only GNOME's block)
 
 uninstall.sh reverts these changes; installed packages stay.
 EOF
@@ -1578,6 +1613,10 @@ EOF
         ;;
       --update)
         update=1
+        shift
+        ;;
+      --pam-only)
+        pam_only=1
         shift
         ;;
       --init-template)
@@ -1672,6 +1711,16 @@ EOF
     log "--autologin requires --no-keyring: autologin passes no password, so PAM cannot unlock the keyring."
     echo "$usage" >&2
     exit 1
+  fi
+
+  if [[ $pam_only -eq 1 ]]; then
+    if [[ $autologin -eq 1 || $list_only -eq 1 || $init_template -eq 1 ]]; then
+      log "--pam-only changes only $LOGIN_FILE and cannot be combined with --autologin, --list-packages or --init-template."
+      echo "$usage" >&2
+      exit 1
+    fi
+    # A PAM-only run installs no packages (custom ids need --no-packages anyway).
+    no_packages=1
   fi
 
   if [[ $init_template -eq 1 ]]; then
@@ -1780,7 +1829,11 @@ EOF
   fi
 
   if [[ $dry_run -eq 1 ]]; then
-    preview_install "$de" "$no_packages" "$no_keyring" "$autologin" "$keyring"
+    if [[ $pam_only -eq 1 ]]; then
+      preview_pam_only "$de" "$no_keyring" "$keyring"
+    else
+      preview_install "$de" "$no_packages" "$no_keyring" "$autologin" "$keyring"
+    fi
     return $?
   fi
 
@@ -1859,6 +1912,17 @@ EOF
         fi
       fi
     fi
+  fi
+
+  if [[ $pam_only -eq 1 ]]; then
+    if [[ $no_keyring -eq 1 ]]; then
+      log "Skipping keyring PAM configuration (--no-keyring)."
+    else
+      configure_pam "$de" 0 "$keyring"
+    fi
+    configure_gnome_session_type "$de" "$real_user"
+    log "Done (--pam-only): only $LOGIN_FILE and GNOME's session-type file were set up; packages, dotfiles, display managers and saved choices are unchanged."
+    return 0
   fi
 
   local template is_wayland=0 session_dotfile=".xinitrc" manual_start="startx"

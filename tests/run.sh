@@ -9823,7 +9823,7 @@ if [[ $status -ne 0 || "$output" != *"Updating with the saved choices: --de i3 -
 fi
 mkdir -p "${update_choices%/*}"
 printf 'de=custom\nno_packages=1\n' >"$update_choices"
-printf '%s\n' "auth       optional   pam_kwallet5.so" >"$update_login"
+printf '%s\n' "auth       optional   pam_kwallet5.so" "$PAM_KWALLET_SESSION" >"$update_login"
 set +e
 output="$(update_run "$update_home" --update --dry-run)"
 set -e
@@ -9890,12 +9890,31 @@ for revert_case in original merged; do
   status=$?
   set -e
   if [[ $status -ne 0 || "$output" != *"Updating with the saved choices: --de i3 --no-packages --no-keyring --dry-run"* ||
-    "$output" != *"lightXDM's gnome keyring lines are not in $update_login, which has your own edits"* ]]; then
+    "$output" != *"of lightXDM's gnome keyring lines are not in $update_login (removed or commented out), which has your own edits"* ]]; then
     record_ok=0
     record_report+=" [gnome record, lines removed by hand from the $revert_case version: status=$status, output=$output]"
   fi
 done
 rm -f -- "$update_base"
+# Removing or commenting out only one of lightXDM's keyring lines is the user's edit too: --update adds
+# neither line back, with or without the keyring record.
+for partial_case in "session removed" "session commented out" "session removed, no record"; do
+  printf '%s\n' "# the login stack" "$PAM_GNOME_KEYRING_AUTH" >"$update_login"
+  [[ "$partial_case" != "session commented out" ]] || printf '#%s\n' "$PAM_GNOME_KEYRING_SESSION" >>"$update_login"
+  [[ "$partial_case" != *"no record" ]] || rm -f -- "$update_record"
+  set +e
+  output="$(STUB_PACMAN_OWNER=util-linux STUB_PACMAN_BACKUP="$update_login [modified]" \
+    update_run "$update_home" --update --dry-run)"
+  status=$?
+  set -e
+  printf 'gnome\n' >"$update_record"
+  if [[ $status -ne 0 || "$output" != *"Updating with the saved choices: --de i3 --no-packages --no-keyring --dry-run"* ||
+    "$output" != *"of lightXDM's gnome keyring lines are not in $update_login (removed or commented out), which has your own edits"* ||
+    "$output" != *"PAM keyring: skipped (--no-keyring)"* ]]; then
+    record_ok=0
+    record_report+=" [$partial_case: status=$status, output=$output]"
+  fi
+done
 printf '%s\n' "# login stack the user edited by hand" >"$update_login"
 set +e
 output="$(STUB_PACMAN_OWNER=util-linux STUB_PACMAN_BACKUP="$update_login [modified]" \
@@ -9903,8 +9922,8 @@ output="$(STUB_PACMAN_OWNER=util-linux STUB_PACMAN_BACKUP="$update_login [modifi
 status=$?
 set -e
 if [[ $status -ne 0 || "$output" != *"Updating with the saved choices: --de i3 --no-packages --no-keyring --dry-run"* ||
-  "$output" != *"lightXDM's gnome keyring lines are not in $update_login, which has your own edits"* ||
-  "$output" != *"$CMD_INSTALL --de i3 --no-packages, or turn keyring unlock off"* ||
+  "$output" != *"of lightXDM's gnome keyring lines are not in $update_login (removed or commented out), which has your own edits"* ||
+  "$output" != *"$CMD_INSTALL --pam-only --de i3, or turn keyring unlock off"* ||
   "$output" != *"PAM keyring: skipped (--no-keyring)"* ]]; then
   record_ok=0
   record_report+=" [gnome record, hand-edited file without lines: status=$status, output=$output]"
@@ -9956,6 +9975,7 @@ for gnome_case in "modified|--update" "unmodified|--update" "revert|--update" "m
       gnome_report+=" [$gnome_case: status=$status, output=$output]"
   else
     [[ $status -eq 0 && "$output" == *"left alone: the block is not in $update_login, which has your own edits"* &&
+      "$output" == *"add only the block back with: $CMD_INSTALL --pam-only --de gnome --no-keyring"* &&
       "$output" != *"$gnome_marker"* ]] || gnome_report+=" [$gnome_case: status=$status, output=$output]"
   fi
 done
@@ -10133,6 +10153,82 @@ if [[ -z "$pkg_report" ]]; then
   pass "install.sh --update installs only packages a newer lightXDM adds and leaves removed ones out with the command to install them"
 else
   fail "install.sh --update packages:$pkg_report"
+fi
+# --pam-only sets up only lightXDM's lines in the login file (and GNOME's session-type file): no
+# packages, dotfiles, display managers or saved choices change, and its preview shows only that.
+po_dir="$TMP_DIR/pam_only"
+po_home="$po_dir/home"
+mkdir -p "$po_home"
+printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$po_dir/login"
+po_run() {
+  : >"$po_dir/stub.log"
+  # shellcheck disable=SC2016  # expand inside the child shell
+  env HOME="$po_home" PATH="$dr_bin:$STUB_BIN:$PATH" STUB_LOG="$po_dir/stub.log" LOGIN_FILE="$po_dir/login" \
+    PAM_KEYRING_STATE="$po_dir/pam-keyring" PAM_LOGIN_BASE_STATE="$po_dir/pam-login-base" \
+    GNOME_SESSION_TYPE_DEST="$po_dir/gnome-session-type.conf" DM_STATE_FILE="$po_dir/dm-state" \
+    DISPLAY_MANAGER_LINK="$po_dir/display-manager.service" AUTOLOGIN_DROPIN_DIR="$po_dir/getty.d" \
+    bash -c 'source "$1/install.sh"; shift; check_root() { :; }; main "$@"' _ "$REPO_ROOT" "$@" 2>&1
+}
+po_report=""
+po_out="$(po_run --dry-run --pam-only --de gnome --no-keyring)" || po_report+=" [dry-run failed: $po_out]"
+if [[ "$po_out" != *"Desktop: gnome (--pam-only: no packages, dotfiles, display managers or saved choices)"* ||
+  "$po_out" != *"PAM keyring: skipped (--no-keyring)"* || "$po_out" != *"$gnome_marker"* || "$po_out" == *"Dotfile"* ||
+  "$po_out" == *"Packages"* || "$po_out" == *"Display manager"* || "$po_out" == *"Install choices"* ]]; then
+  po_report+=" [dry-run output: $po_out]"
+fi
+po_out="$(po_run --pam-only --de gnome)" || po_report+=" [run failed: $po_out]"
+if ! grep -Fxq -- "$PAM_GNOME_KEYRING_AUTH" "$po_dir/login" || ! grep -Fxq -- "$gnome_marker" "$po_dir/login" ||
+  [[ ! -f "$po_dir/gnome-session-type.conf" ]]; then
+  po_report+=" [login: $(cat "$po_dir/login")]"
+fi
+[[ -z "$(ls -A "$po_home")" ]] || po_report+=" [home changed: $(ls -A "$po_home")]"
+! grep -qE '^pacman -S|systemctl (disable|list-unit-files)' "$po_dir/stub.log" ||
+  po_report+=" [packages or display managers touched: $(cat "$po_dir/stub.log")]"
+[[ "$po_out" == *"Done (--pam-only)"* ]] || po_report+=" [no done line: $po_out]"
+set +e
+po_out="$(po_run --pam-only --no-keyring --autologin --de xfce)"
+status=$?
+set -e
+[[ $status -eq 1 && "$po_out" == *"--pam-only changes only $po_dir/login and cannot be combined with --autologin"* ]] ||
+  po_report+=" [with --autologin: status=$status, output=$po_out]"
+if [[ -z "$po_report" ]]; then
+  pass "install.sh --pam-only adds only lightXDM's PAM lines and GNOME block, and previews only that"
+else
+  fail "install.sh --pam-only:$po_report"
+fi
+# An update leaves a GNOME block the user edited (a line commented out) as it is and goes on; an
+# explicit install still refuses to touch it.
+ged_dir="$TMP_DIR/update_gnome_edited"
+mkdir -p "$ged_dir"
+printf '%s\n' '#%PAM-1.0' 'session    include      system-local-login' >"$ged_dir/login"
+ged_env=(LOGIN_FILE="$ged_dir/login" GNOME_SESSION_TYPE_DEST="$ged_dir/gnome-session-type.conf")
+ged_report=""
+# shellcheck disable=SC2016  # expand inside the child shell
+env "${ged_env[@]}" bash -c 'source "$1/install.sh" && configure_gnome_session_type gnome tester' _ "$REPO_ROOT" >/dev/null 2>&1 ||
+  ged_report+=" [setup failed]"
+sed -i '/pam_succeed_if\.so quiet tty/s/^/#/' "$ged_dir/login"
+cp -- "$ged_dir/login" "$ged_dir/login.edited"
+set +e
+# shellcheck disable=SC2016  # expand inside the child shell
+ged_preview="$(env "${ged_env[@]}" bash -c 'source "$1/install.sh" && UPDATE_RUN=1 && configure_gnome_session_type gnome tester 1 0' _ "$REPO_ROOT" 2>&1)"
+ged_preview_status=$?
+# shellcheck disable=SC2016  # expand inside the child shell
+ged_log="$(env "${ged_env[@]}" bash -c 'source "$1/install.sh" && UPDATE_RUN=1 && configure_gnome_session_type gnome tester' _ "$REPO_ROOT" 2>&1)"
+ged_status=$?
+# shellcheck disable=SC2016  # expand inside the child shell
+ged_refuse="$(env "${ged_env[@]}" bash -c 'source "$1/install.sh" && configure_gnome_session_type gnome tester' _ "$REPO_ROOT" 2>&1)"
+ged_refuse_status=$?
+set -e
+[[ $ged_preview_status -eq 0 && "$ged_preview" == *"left alone: lightXDM's block has your own edits (--update)"* ]] ||
+  ged_report+=" [preview: status=$ged_preview_status, $ged_preview]"
+[[ $ged_status -eq 0 && "$ged_log" == *"GNOME session-type block in $ged_dir/login has your own edits, so --update leaves it alone"* ]] ||
+  ged_report+=" [update: status=$ged_status, $ged_log]"
+[[ $ged_refuse_status -ne 0 && "$ged_refuse" == *"Edited lightXDM GNOME block"* ]] || ged_report+=" [install: status=$ged_refuse_status, $ged_refuse]"
+cmp -s "$ged_dir/login" "$ged_dir/login.edited" || ged_report+=" [edited block changed: $(cat "$ged_dir/login")]"
+if [[ -z "$ged_report" ]]; then
+  pass "install.sh --update leaves a GNOME block the user edited as it is; an explicit install still refuses"
+else
+  fail "install.sh --update edited GNOME block:$ged_report"
 fi
 if [[ $record_ok -eq 1 ]]; then
   pass "install.sh --update restores recorded keyring lines only into a login file a .pacnew merge replaced"
