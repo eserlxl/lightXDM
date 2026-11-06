@@ -12,6 +12,12 @@ bash tests/qemu-arch.sh    # real TTY1 password logins in QEMU VMs (needs Docker
 Both `tests/docker-arch.sh` and `tests/qemu-arch.sh` accept `--strict` (or
 `LIGHTXDM_STRICT_TESTS=1`) to exit 1 instead of 0 when a missing prerequisite causes a `SKIP`.
 
+`install.sh` and `uninstall.sh` recognize a home file that an older lightXDM version installed by
+its sha256 in `dotfiles/template-history.sha256`, which lists every version of every bundled
+template, so the check also works in a copy without `.git`. After editing a template in
+`dotfiles/`, regenerate the list with `bash tests/template-history.sh > dotfiles/template-history.sha256`;
+`tests/run.sh` fails until the list matches the git history.
+
 ## Project Structure
 ```
 lightXDM/
@@ -32,7 +38,8 @@ lightXDM/
 │   ├── .xinitrc-mate
 │   ├── .xinitrc-cinnamon
 │   ├── .xinitrc-i3
-│   └── .bash_profile
+│   ├── .bash_profile
+│   └── template-history.sha256  # sha256 of every template version; tests/template-history.sh regenerates it
 ├── pam/
 │   └── gnome-session-type.conf
 ├── polkit/
@@ -51,7 +58,8 @@ lightXDM/
 │   ├── qemu/
 │   │   ├── build-image.sh  # builds the VM image in a privileged Arch container
 │   │   └── vmtest.py       # boots one VM, installs, types the TTY1 login, checks the session
-│   └── run.sh           # behavior suite (--strict fails on skipped checks; --help)
+│   ├── run.sh           # behavior suite (--strict fails on skipped checks; --help)
+│   └── template-history.sh  # prints dotfiles/template-history.sha256 from the git history
 └── LICENSE
 ```
 

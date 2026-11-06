@@ -15,6 +15,7 @@ scripts=(
   tests/docker-arch.sh
   tests/qemu-arch.sh
   tests/qemu/build-image.sh
+  tests/template-history.sh
   dotfiles/.bash_profile
   dotfiles/.gpg-agent-gnome
   dotfiles/.wayland-session-budgie

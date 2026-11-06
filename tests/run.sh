@@ -4547,6 +4547,17 @@ if [[ -n "$past_helper_install" && "$past_helper_install" == "$past_helper_unins
 else
   fail "is_past_lightxdm_template differs between install.sh and uninstall.sh"
 fi
+# The pinned list must name every version of every bundled home template, the current ones included.
+if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if template_history="$(bash "$REPO_ROOT/tests/template-history.sh")" &&
+    [[ -n "$template_history" && "$template_history" == "$(<"$REPO_ROOT/dotfiles/template-history.sha256")" ]]; then
+    pass "dotfiles/template-history.sha256 lists every version of the bundled home templates"
+  else
+    fail "dotfiles/template-history.sha256 is stale; regenerate it: bash tests/template-history.sh > dotfiles/template-history.sha256"
+  fi
+else
+  skip "dotfiles/template-history.sha256 matches the git history (not a git checkout)"
+fi
 
 # lint.sh checks a hand-written list; every tracked shell script and session template must be on it.
 if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -9520,9 +9531,9 @@ else
   fail "Integration strict mode (default=$strict_default_status: $strict_default_output; flag=$strict_flag_status: $strict_flag_output; env=$strict_env_status: $strict_env_output; help=$strict_help_status, no Docker=$strict_help_no_docker: $strict_help_output; unknown=$strict_unknown_status, no Docker=$strict_unknown_no_docker: $strict_unknown_output; qemu=$strict_qemu_status: $strict_qemu_output)"
 fi
 
-# Dotfiles from older lightXDM templates (git history of a temporary clone) count as lightXDM's own
-if ! command -v git >/dev/null; then
-  skip "install.sh and uninstall.sh recognize dotfiles from older lightXDM templates (git unavailable)"
+# Dotfiles equal to older lightXDM templates (pinned in a temporary copy's list, no git) count as lightXDM's own
+if [[ ! -f "$REPO_ROOT/dotfiles/template-history.sha256" ]]; then
+  fail "dotfiles/template-history.sha256 is missing"
 else
   past_dir="$TMP_DIR/past_templates"
   past_repo="$past_dir/repo"
@@ -9530,17 +9541,14 @@ else
   mkdir -p "$past_repo"
   cp -- "$REPO_ROOT/install.sh" "$REPO_ROOT/uninstall.sh" "$REPO_ROOT/enable-autologin.sh" "$past_repo/"
   cp -r -- "$REPO_ROOT/dotfiles" "$REPO_ROOT/polkit" "$past_repo/"
-  # The removed separate kwallet helper: present in the first commit only
-  { echo "#!/bin/bash"; echo "# old kwallet header"; tail -n +3 "$past_repo/dotfiles/.gpg-agent-gnome"; } >"$past_repo/dotfiles/.gpg-agent-kwallet"
-  past_git=(git -C "$past_repo" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false)
-  cp -- "$past_repo/dotfiles/.bash_profile" "$past_dir/old_bash_profile"
-  "${past_git[@]}" init -q
-  "${past_git[@]}" add -A
-  "${past_git[@]}" commit -q -m "old templates"
-  echo "# newer lightXDM template line" >>"$past_repo/dotfiles/.bash_profile"
-  cp -- "$past_repo/dotfiles/.gpg-agent-kwallet" "$past_dir/old_gpg_agent_kwallet"
-  rm -- "$past_repo/dotfiles/.gpg-agent-kwallet"
-  "${past_git[@]}" commit -q -am "new bash_profile template"
+  # An older ~/.bash_profile template and the removed separate kwallet helper exist only in the list
+  { cat "$past_repo/dotfiles/.bash_profile"; echo "# older lightXDM template line"; } >"$past_dir/old_bash_profile"
+  { echo "#!/bin/bash"; echo "# old kwallet header"; tail -n +3 "$past_repo/dotfiles/.gpg-agent-gnome"; } >"$past_dir/old_gpg_agent_kwallet"
+  for past_entry in "old_bash_profile dotfiles/.bash_profile" "old_gpg_agent_kwallet dotfiles/.gpg-agent-*"; do
+    read -r past_file past_spec <<<"$past_entry"
+    past_hash="$(sha256sum <"$past_dir/$past_file")"
+    printf '%s  %s\n' "${past_hash%% *}" "$past_spec" >>"$past_repo/dotfiles/template-history.sha256"
+  done
 
   # Case A: install neither backs up nor saves as edited an unedited older template
   past_install_ok=1
