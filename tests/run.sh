@@ -9746,33 +9746,48 @@ if [[ -z "$launcher_report" ]]; then
 else
   fail "package launchers:$launcher_report"
 fi
-# The pacman hook's note prints only while a login.pacnew and lightXDM's keyring record both exist.
+# The pacman hook's note prints only while a login.pacnew and lightXDM's keyring record or GNOME session-type config exist.
 note_dir="$TMP_DIR/pacnew_note"
 mkdir -p "$note_dir"
 : >"$note_dir/login"
 note_report=""
-for note_case in "none||" "pacnew-only|pacnew|" "record-only||record" "both|pacnew|record"; do
-  IFS='|' read -r note_name note_pacnew note_record <<<"$note_case"
-  rm -f -- "$note_dir/login.pacnew" "$note_dir/pam-keyring"
+for note_case in "none|||" "pacnew-only|pacnew||" "record-only||record|" "gnome-only|||gnome" \
+  "both-keyring|pacnew|record|" "both-gnome|pacnew||gnome" "both-all|pacnew|record|gnome"; do
+  IFS='|' read -r note_name note_pacnew note_record note_gnome <<<"$note_case"
+  rm -f -- "$note_dir/login.pacnew" "$note_dir/pam-keyring" "$note_dir/gnome-session-type.conf"
   [[ -z "$note_pacnew" ]] || : >"$note_dir/login.pacnew"
   [[ -z "$note_record" ]] || echo gnome >"$note_dir/pam-keyring"
+  [[ -z "$note_gnome" ]] || : >"$note_dir/gnome-session-type.conf"
   set +e
   note_out="$(env LOGIN_FILE="$note_dir/login" PAM_KEYRING_STATE="$note_dir/pam-keyring" \
+    GNOME_SESSION_TYPE_DEST="$note_dir/gnome-session-type.conf" \
     sh "$REPO_ROOT/pam/login-pacnew-note.sh" 2>&1)"
   status=$?
   set -e
-  if [[ $status -ne 0 ]] ||
-    { [[ "$note_name" == both ]] && [[ "$note_out" != *"$note_dir/login.pacnew is waiting"*"run lightxdm-update"* ]]; } ||
-    { [[ "$note_name" != both ]] && [[ -n "$note_out" ]]; }; then
-    note_report+=" [$note_name: status=$status, output=$note_out]"
-  fi
+  case "$note_name" in
+    both-keyring)
+      [[ $status -eq 0 && "$note_out" == *"$note_dir/login.pacnew is waiting"*"run lightxdm-update"*"keyring unlocks at login again."* &&
+        "$note_out" != *"GNOME"* ]] || note_report+=" [$note_name: status=$status, output=$note_out]"
+      ;;
+    both-gnome)
+      [[ $status -eq 0 && "$note_out" == *"$note_dir/login.pacnew is waiting"*"run lightxdm-update"*"GNOME starts on Wayland on TTY1 again."* &&
+        "$note_out" != *"keyring"* ]] || note_report+=" [$note_name: status=$status, output=$note_out]"
+      ;;
+    both-all)
+      [[ $status -eq 0 && "$note_out" == *"$note_dir/login.pacnew is waiting"*"run lightxdm-update"*"keyring unlocks at login and GNOME starts on Wayland on TTY1 again."* ]] ||
+        note_report+=" [$note_name: status=$status, output=$note_out]"
+      ;;
+    *)
+      [[ $status -eq 0 && -z "$note_out" ]] || note_report+=" [$note_name: status=$status, output=$note_out]"
+      ;;
+  esac
 done
 note_exec="$(sed -n 's/^Exec = //p' "$REPO_ROOT/alpm/lightxdm-login-pacnew.hook")"
 if [[ "$note_exec" != "/usr/bin/sh /usr/share/lightxdm/pam/login-pacnew-note.sh" ]]; then
   note_report+=" [hook Exec: $note_exec]"
 fi
 if [[ -z "$note_report" ]]; then
-  pass "the login.pacnew hook note prints only while a .pacnew and the keyring record both exist"
+  pass "the login.pacnew hook note prints only while a .pacnew and the keyring record or GNOME session-type config exist"
 else
   fail "login.pacnew hook note:$note_report"
 fi
