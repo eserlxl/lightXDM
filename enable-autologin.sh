@@ -46,6 +46,19 @@ warn_keyring_unlock() {
   fi
 }
 
+dropin_enables_autologin() {
+  local file="$1" line enabled=0 LC_ALL=C
+  [[ -f "$file" && -r "$file" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ $AUTOLOGIN_EXEC_RE ]]; then
+      enabled=1
+    elif [[ "$line" =~ ^[[:space:]]*ExecStart[[:space:]]*= ]]; then
+      enabled=0
+    fi
+  done < "$file"
+  [[ $enabled -eq 1 ]]
+}
+
 show_status() {
   local file line status_file="" target_user="" reset_file="" foreign_autologin=0 LC_ALL=C
   if [[ -d "$OVERRIDE_DIR" && ! ( -r "$OVERRIDE_DIR" && -x "$OVERRIDE_DIR" ) ]]; then
@@ -88,7 +101,7 @@ show_status() {
       continue
     fi
     [[ -f "$file" && -r "$file" && "$file" != "$status_file" && "$file" != "$reset_file" ]] || continue
-    if grep -Eq "$AUTOLOGIN_EXEC_RE" "$file"; then
+    if dropin_enables_autologin "$file"; then
       echo "Warning: $file still enables autologin."
       foreign_autologin=1
     fi
@@ -146,8 +159,7 @@ main() {
     fi
     local drop_in LC_ALL=C
     for drop_in in "$OVERRIDE_DIR"/*.conf; do
-      if [[ -f "$drop_in" ]] &&
-        grep -Eq "$AUTOLOGIN_EXEC_RE" "$drop_in"; then
+      if dropin_enables_autologin "$drop_in"; then
         echo "Warning: $drop_in still enables autologin."
       fi
     done

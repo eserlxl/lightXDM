@@ -971,7 +971,7 @@ fi
 
 # Status runs directly, without unshare -r, so normal users exercise the read-only path.
 status_dir="$TMP_DIR/autologin_status"
-for status_case in disabled missing enabled enabled-equals enabled-short legacy both foreign foreign-equals foreign-short bare-flag later kwallet gnome commented reset keyring-disabled foreign-keyring reset-legacy; do
+for status_case in disabled missing enabled enabled-equals enabled-short legacy both foreign foreign-equals foreign-short foreign-reset bare-flag later kwallet gnome commented reset keyring-disabled foreign-keyring reset-legacy; do
   rm -rf "$status_dir"
   mkdir -p "$status_dir/getty.d"
   printf '# PAM login\n' >"$status_dir/login"
@@ -1011,6 +1011,9 @@ for status_case in disabled missing enabled enabled-equals enabled-short legacy 
       ;;
     foreign-short)
       printf '[Service]\nExecStart=/usr/bin/agetty -a foreignuser tty1\n' >"$status_dir/getty.d/00-foreign.conf"
+      ;;
+    foreign-reset)
+      printf '[Service]\nExecStart=/usr/bin/agetty --autologin foreignuser tty1\nExecStart=\nExecStart=/usr/bin/agetty tty1\n' >"$status_dir/getty.d/00-foreign.conf"
       ;;
     bare-flag)
       printf '[Service]\nExecStart=/usr/bin/agetty --autologin --noclear tty1\nExecStart=/usr/bin/agetty --autologin= --noclear tty1\n' >"$status_dir/getty.d/lightxdm-autologin.conf"
@@ -4551,6 +4554,12 @@ else
 # ExecStart=-/usr/bin/agetty --autologin commented --noclear %I $TERM
 ExecStart=-/usr/bin/agetty --noclear %I $TERM
 EOF
+  cat >"$dis_warn_dir/20-reset.conf" <<'EOF'
+[Service]
+ExecStart=-/usr/bin/agetty --autologin resetuser --noclear %I $TERM
+ExecStart=
+ExecStart=-/usr/bin/agetty --noclear %I $TERM
+EOF
   cat >"$dis_warn_dir/90-extra.conf" <<'EOF'
 [Service]
   ExecStart = -/usr/bin/agetty --autologin extrauser --noclear %I $TERM
@@ -4580,7 +4589,7 @@ EOF
 
   if [[ $st_dis_warn -eq 0 && ! -e "$dis_warn_dir/lightxdm-autologin.conf" && -f "$dis_warn_dir/override.conf" ]] &&
     [[ "$out_dis_warn" == *"Warning: $dis_warn_dir/90-extra.conf"*"Warning: $dis_warn_dir/override.conf"*"Autologin disabled."* ]] &&
-    [[ "$out_dis_warn" != *"$dis_warn_dir/10-plain.conf"* ]] &&
+    [[ "$out_dis_warn" != *"$dis_warn_dir/10-plain.conf"* && "$out_dis_warn" != *"$dis_warn_dir/20-reset.conf"* ]] &&
     [[ $st_dis_quiet -eq 0 && "$out_dis_quiet" == *"Keeping $dis_warn_dir/override.conf"* && "$out_dis_quiet" != *"Warning:"* ]]; then
     pass "enable-autologin.sh --disable warns by name only for drop-ins still enabling autologin"
   else
@@ -6262,11 +6271,14 @@ fi
 autologin_pam_dir="$TMP_DIR/autologin_pam"
 mkdir -p "$autologin_pam_dir/getty.d"
 printf '#%%PAM-1.0\nauth       include      system-local-login\n' >"$autologin_pam_dir/login"
-for autologin_pam_case in without bare with with-equals with-short; do
+for autologin_pam_case in without bare reset-foreign with with-equals with-short; do
   rm -f "$autologin_pam_dir/getty.d"/*.conf
   case "$autologin_pam_case" in
     bare)
       printf '[Service]\nExecStart=/usr/bin/agetty --autologin --noclear tty1\nExecStart=/usr/bin/agetty -a --noclear tty1\n' >"$autologin_pam_dir/getty.d/00-bare.conf"
+      ;;
+    reset-foreign)
+      printf '[Service]\nExecStart=/usr/bin/agetty --autologin someone tty1\nExecStart=\nExecStart=/usr/bin/agetty tty1\n' >"$autologin_pam_dir/getty.d/00-reset.conf"
       ;;
     with)
       # shellcheck disable=SC2016  # $TERM is literal systemd syntax
@@ -6297,7 +6309,7 @@ for autologin_pam_case in without bare with with-equals with-short; do
     [[ ( "$autologin_pam_case" == with || "$autologin_pam_case" == with-* ) &&
       "$output" == *"TTY1 autologin is enabled"* && "$output" == *"sudo $CMD_AUTOLOGIN --disable"* &&
       "$output" == *"sudo $CMD_UNINSTALL --keyring-only"* ]] ||
-    [[ ( "$autologin_pam_case" == without || "$autologin_pam_case" == bare ) &&
+    [[ ( "$autologin_pam_case" == without || "$autologin_pam_case" == bare || "$autologin_pam_case" == reset-foreign ) &&
       "$output" != *"TTY1 autologin is enabled"* ]];
   }; then
     pass "configure_pam autologin warning ($autologin_pam_case autologin drop-in)"
@@ -8407,6 +8419,17 @@ else
     pass "uninstall.sh --keyring-only suggests enabling autologin when disabled"
   else
     fail "uninstall.sh --keyring-only autologin hint (status=$status, output=$output)"
+  fi
+  printf '[Service]\nExecStart=/usr/bin/agetty --autologin foreignuser tty1\n' >"$ko_dir/getty.d/00-foreign.conf"
+  set +e
+  output="$(env -u SUDO_USER TARGET_HOME= LOGIN_FILE="$ko_dir/login" OVERRIDE_DIR="$ko_dir/getty.d" POLKIT_RULE="$ko_dir/polkit.rules" DM_STATE_FILE="$ko_dir/dm" GNOME_SESSION_TYPE_DEST="$ko_dir/gnome-session-type.conf" unshare -r bash "$REPO_ROOT/uninstall.sh" --keyring-only 2>&1)"
+  status=$?
+  set -e
+  rm -f "$ko_dir/getty.d/00-foreign.conf"
+  if [[ $status -eq 0 && "$output" != *"enable-autologin.sh"* ]]; then
+    pass "uninstall.sh --keyring-only omits autologin hint when a foreign drop-in enables autologin"
+  else
+    fail "uninstall.sh --keyring-only foreign autologin hint (status=$status, output=$output)"
   fi
   # A keyring line lightXDM did not add stays, with a warning
   printf '#%%PAM-1.0\nauth       optional   pam_kwallet5.so\n' >"$ko_dir/login"

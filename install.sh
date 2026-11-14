@@ -1075,13 +1075,28 @@ configure_pam() {
   fi
 
   # Autologin passes no password, so keyring unlock cannot work alongside it.
-  local drop_in autologin_re='^[[:space:]]*ExecStart[[:space:]]*=.*([[:space:]]--autologin([[:space:]]+|=)|[[:space:]]-a[[:space:]]+)([^-[:space:]][^[:space:]]*)'
+  local drop_in
   for drop_in in "$AUTOLOGIN_DROPIN_DIR"/*.conf; do
-    if [[ -f "$drop_in" ]] && LC_ALL=C grep -Eqs "$autologin_re" "$drop_in"; then
+    if dropin_enables_autologin "$drop_in"; then
       log "WARNING: TTY1 autologin is enabled ($drop_in); it cannot unlock the keyring. Disable it with 'sudo $(script_cmd enable-autologin.sh) --disable', or keep autologin and remove the keyring lines with 'sudo $(script_cmd uninstall.sh) --keyring-only'."
       break
     fi
   done
+}
+
+# True when systemd drop-in $1 leaves an autologin ExecStart= active at end of file.
+dropin_enables_autologin() {
+  local file="$1" line enabled=0 LC_ALL=C
+  local autologin_re='^[[:space:]]*ExecStart[[:space:]]*=.*([[:space:]]--autologin([[:space:]]+|=)|[[:space:]]-a[[:space:]]+)([^-[:space:]][^[:space:]]*)'
+  [[ -f "$file" && -r "$file" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ $autologin_re ]]; then
+      enabled=1
+    elif [[ "$line" =~ ^[[:space:]]*ExecStart[[:space:]]*= ]]; then
+      enabled=0
+    fi
+  done < "$file"
+  [[ $enabled -eq 1 ]]
 }
 
 # Print the block shared by the GNOME configuration and its preview.
