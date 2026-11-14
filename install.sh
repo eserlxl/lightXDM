@@ -1449,10 +1449,11 @@ disable_display_managers() {
       sudo chmod 755 -- "$dm_dir" || return
     fi
   fi
-  local dm dm_unit recorded_units
+  local dm dm_unit recorded_units unit_files
   local disabled_dms=()
+  unit_files="$(systemctl list-unit-files || true)"
   for dm in "${DM_LIST[@]}"; do
-    if grep -q -- "${dm}.service" < <(systemctl list-unit-files); then
+    if [[ -n "$unit_files" ]] && grep -E -- "^[[:space:]]*${dm}\.service([[:space:]]|$)" <<<"$unit_files" >/dev/null; then
       if [[ "$(systemctl is-enabled "${dm}.service" 2>/dev/null || true)" == "enabled" ]]; then
         record_and_disable_unit "${dm}.service" "$preview" || return
         disabled_dms+=("$dm")

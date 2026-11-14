@@ -11962,4 +11962,93 @@ else
   fail "configure_gnome_session_type dangling symlink:$gnome_sym_report"
 fi
 
+# disable_display_managers queries systemctl list-unit-files once, ignores failures cleanly, and matches exact ${dm}.service tokens.
+dm_exact_dir="$TMP_DIR/dm_exact_match"
+rm -rf "$dm_exact_dir"
+mkdir -p "$dm_exact_dir/bin"
+dm_exact_log="$dm_exact_dir/systemctl.log"
+dm_exact_state="$dm_exact_dir/disabled-dms"
+dm_exact_report=""
+
+cat >"$dm_exact_dir/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$DM_EXACT_LOG"
+case "${1:-}" in
+  list-unit-files)
+    if [[ "${DM_EXACT_FAIL_LIST:-0}" == 1 ]]; then
+      exit 1
+    fi
+    printf '%s\n' \
+      'UNIT FILE                  STATE' \
+      'custom-gdm.service         enabled' \
+      'gdmXservice.socket         enabled' \
+      'gdm.service-helper.service enabled' \
+      'my-sddm.service            enabled' \
+      '  lightdm.service          enabled'
+    ;;
+  is-enabled)
+    if [[ "${2:-}" == "lightdm.service" ]]; then
+      echo "enabled"
+      exit 0
+    fi
+    echo "enabled"
+    exit 0
+    ;;
+  disable)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOF
+chmod +x "$dm_exact_dir/bin/systemctl"
+
+: >"$dm_exact_log"
+set +e
+dm_exact_out="$(
+  # shellcheck disable=SC2016  # expand inside the child shell
+  env PATH="$dm_exact_dir/bin:$STUB_BIN:$PATH" \
+    DM_EXACT_LOG="$dm_exact_log" \
+    DM_STATE_FILE="$dm_exact_state" \
+    DISPLAY_MANAGER_LINK="$dm_exact_dir/no-dm-link" \
+    bash -c 'set -o pipefail; source "$1/install.sh"; disable_display_managers' _ "$REPO_ROOT" 2>&1
+)"
+dm_exact_rc=$?
+set -e
+list_calls="$(grep -cx -- 'list-unit-files' "$dm_exact_log" || true)"
+if [[ $dm_exact_rc -ne 0 || "$list_calls" != "1" ]] ||
+  [[ "$(cat "$dm_exact_state" 2>/dev/null)" != "lightdm.service" ]] ||
+  grep -Eq -- '(is-enabled|disable) (gdm|sddm|lxdm)\.service' "$dm_exact_log" ||
+  ! grep -Fxq -- 'disable lightdm.service' "$dm_exact_log"; then
+  dm_exact_report+=" [exact match / single call: rc=$dm_exact_rc, list_calls=$list_calls, state=$(cat "$dm_exact_state" 2>/dev/null), log=$(tr '\n' ';' <"$dm_exact_log"), out=$dm_exact_out]"
+fi
+
+# Non-zero exit from systemctl list-unit-files does not abort under pipefail.
+: >"$dm_exact_log"
+rm -f -- "$dm_exact_state"
+set +e
+dm_fail_list_out="$(
+  # shellcheck disable=SC2016  # expand inside the child shell
+  env PATH="$dm_exact_dir/bin:$STUB_BIN:$PATH" \
+    DM_EXACT_LOG="$dm_exact_log" \
+    DM_EXACT_FAIL_LIST=1 \
+    DM_STATE_FILE="$dm_exact_state" \
+    DISPLAY_MANAGER_LINK="$dm_exact_dir/no-dm-link" \
+    bash -c 'set -o pipefail; source "$1/install.sh"; disable_display_managers' _ "$REPO_ROOT" 2>&1
+)"
+dm_fail_list_rc=$?
+set -e
+fail_list_calls="$(grep -cx -- 'list-unit-files' "$dm_exact_log" || true)"
+if [[ $dm_fail_list_rc -ne 0 || "$fail_list_calls" != "1" ]] ||
+  grep -q -- 'is-enabled' "$dm_exact_log"; then
+  dm_exact_report+=" [failed list-unit-files: rc=$dm_fail_list_rc, calls=$fail_list_calls, out=$dm_fail_list_out]"
+fi
+
+if [[ -z "$dm_exact_report" ]]; then
+  pass "disable_display_managers calls list-unit-files once, matches exact DM unit names, and handles list failure"
+else
+  fail "disable_display_managers list-unit-files matching:$dm_exact_report"
+fi
+
 finish_harness
