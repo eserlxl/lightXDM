@@ -367,7 +367,9 @@ fi
 
 # Re-enable only display managers disabled by the installer
 re_enabled=()
-if [[ -f "$DM_STATE_FILE" ]]; then
+if [[ -L "$DM_STATE_FILE" ]]; then
+  rm -f -- "$DM_STATE_FILE"
+elif [[ -f "$DM_STATE_FILE" ]]; then
   failed=()
   while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
     [[ -n "$dm_unit" ]] || continue
@@ -383,10 +385,11 @@ if [[ -f "$DM_STATE_FILE" ]]; then
     fi
   done < "$DM_STATE_FILE"
   if [[ ${#failed[@]} -eq 0 ]]; then
-    rm -f "$DM_STATE_FILE"
+    rm -f -- "$DM_STATE_FILE"
   else
     echo "Failed to re-enable display manager(s): ${failed[*]}" >&2
-    printf '%s\n' "${failed[@]}" > "$DM_STATE_FILE"
+    rm -f -- "$DM_STATE_FILE"
+    (umask 022 && printf '%s\n' "${failed[@]}" > "$DM_STATE_FILE")
     exit 1
   fi
 fi

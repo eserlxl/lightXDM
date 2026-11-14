@@ -250,9 +250,12 @@ install_packages() {
 # not installed (the user removed it, or it never was); it stays out. Without a saved list (installs
 # from before it), nothing is installed.
 update_package_plan() {
-  local recorded_line pkg
+  local choices_file recorded_line="" pkg
   local -a recorded=() unsatisfied=()
-  recorded_line="$(sed -n 's/^packages=//p' "$(install_choices_file)" 2>/dev/null | tail -n 1)"
+  choices_file="$(install_choices_file)"
+  if install_choices_readable "$choices_file"; then
+    recorded_line="$(sed -n 's/^packages=//p' "$choices_file" 2>/dev/null | tail -n 1)"
+  fi
   read -r -a recorded <<<"$recorded_line"
   mapfile -t unsatisfied < <(pacman -T -- "$@" 2>/dev/null)
   for pkg in "$@"; do
@@ -286,9 +289,12 @@ update_packages() {
     log "No new packages for $de."
   fi
   RECORDED_PACKAGES=("$@")
-  local recorded_line full_pkg
+  local choices_file recorded_line="" full_pkg
   local -a recorded=() full_pkgs=()
-  recorded_line="$(sed -n 's/^packages=//p' "$(install_choices_file)" 2>/dev/null | tail -n 1)"
+  choices_file="$(install_choices_file)"
+  if install_choices_readable "$choices_file"; then
+    recorded_line="$(sed -n 's/^packages=//p' "$choices_file" 2>/dev/null | tail -n 1)"
+  fi
   if [[ -n "$recorded_line" ]]; then
     read -r -a recorded <<<"$recorded_line"
     mapfile -t full_pkgs < <(list_packages "$de" 2>/dev/null || true)
@@ -1300,8 +1306,21 @@ record_and_disable_unit() {
     printf 'Display manager: %s\n' "$unit"
     return 0
   fi
-  if ! sudo grep -Fxq -- "$unit" "$DM_STATE_FILE" 2>/dev/null; then
-    printf '%s\n' "$unit" | sudo tee -a "$DM_STATE_FILE" > /dev/null || return
+  local existing_raw="" line has_unit=0 kept=()
+  if ! sudo test -L "$DM_STATE_FILE" && sudo test -f "$DM_STATE_FILE"; then
+    existing_raw="$(sudo cat -- "$DM_STATE_FILE")" || return
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -n "$line" ]] || continue
+      kept+=("$line")
+      [[ "$line" == "$unit" ]] && has_unit=1
+    done <<<"$existing_raw"
+  fi
+  if [[ $has_unit -eq 0 ]]; then
+    kept+=("$unit")
+  fi
+  if [[ $has_unit -eq 0 ]] || sudo test -L "$DM_STATE_FILE" ||
+    [[ ! -r "$DM_STATE_FILE" || "$(stat -c %a -- "$DM_STATE_FILE" 2>/dev/null)" != 644 ]]; then
+    printf '%s\n' "${kept[@]}" | sudo install -TDm644 /dev/stdin "$DM_STATE_FILE" || return
   fi
   sudo systemctl disable "$unit"
 }
@@ -1381,7 +1400,10 @@ disable_display_managers() {
   else
     log "No enabled display managers found."
   fi
-  recorded_units="$(sudo cat -- "$DM_STATE_FILE" 2>/dev/null)" || recorded_units=""
+  recorded_units=""
+  if ! sudo test -L "$DM_STATE_FILE" && sudo test -f "$DM_STATE_FILE"; then
+    recorded_units="$(sudo cat -- "$DM_STATE_FILE" 2>/dev/null)" || recorded_units=""
+  fi
   while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
     if [[ -n "$dm_unit" ]] && systemctl is-active --quiet "$dm_unit"; then
       display_manager_disabled=1
@@ -1453,13 +1475,22 @@ preview_install() {
 install_choices_file() {
   printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/lightxdm/install-choices"
 }
+install_choices_readable() {
+  local file="$1" dir="${1%/*}"
+  [[ ! -L "$dir" && -f "$file" && ! -L "$file" && -r "$file" ]]
+}
 # Save the desktop id ($1), the --no-packages choice ($2) and the packages the run asked for (the
 # rest; --update installs only ones missing from this list) of a finished install for --update
 save_install_choices() {
-  local file
+  local file dir content
   file="$(install_choices_file)"
-  if ! { mkdir -p -- "${file%/*}" && printf 'de=%s\nno_packages=%s\n' "$1" "$2" >"$file" &&
-    { [[ $# -le 2 ]] || printf 'packages=%s\n' "${*:3}" >>"$file"; }; } 2>/dev/null; then
+  dir="${file%/*}"
+  printf -v content 'de=%s\nno_packages=%s\n' "$1" "$2"
+  if [[ $# -gt 2 ]]; then
+    content+="packages=${*:3}"$'\n'
+  fi
+  if ! { [[ ! -L "$dir" ]] && mkdir -p -- "$dir" && [[ ! -L "$dir" ]] &&
+    rm -f -- "$file" && printf '%s' "$content" >"$file"; } 2>/dev/null; then
     log "WARNING: Could not save the install choices for --update in $file."
   fi
 }
@@ -1512,7 +1543,7 @@ record_login_base() {
 saved_install_args() {
   local file line de="" no_packages=0 backends=()
   file="$(install_choices_file)"
-  if [[ -f "$file" ]]; then
+  if install_choices_readable "$file"; then
     while IFS= read -r line || [[ -n "$line" ]]; do
       case "$line" in
         de=*) de="${line#de=}" ;;

@@ -10898,4 +10898,138 @@ else
   fi
 fi
 
+# DM_STATE_FILE and install-choices resist symlinks, strict umask 077, and missing trailing newlines.
+dm_safe_dir="$TMP_DIR/dm_choices_safety"
+mkdir -p "$dm_safe_dir/bin" "$dm_safe_dir/target_dir"
+cat >"$dm_safe_dir/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  list-unit-files)
+    [[ "${STUB_NONE_ENABLED:-0}" == 1 ]] || printf '%s\n' "sddm.service enabled" "lightdm.service enabled"
+    ;;
+  is-enabled)
+    if [[ "${STUB_NONE_ENABLED:-0}" != 1 && ( "${3:-${2:-}}" == sddm.service || "${3:-${2:-}}" == lightdm.service ) ]]; then
+      echo enabled
+      exit 0
+    fi
+    echo disabled
+    exit 1
+    ;;
+  is-active)
+    [[ "${3:-}" == victim.service ]]
+    ;;
+  disable) exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$dm_safe_dir/bin/systemctl"
+printf 'victim.service\n' >"$dm_safe_dir/victim_file"
+mkdir -p "$dm_safe_dir/state1" "$dm_safe_dir/state2" "$dm_safe_dir/state3" "$dm_safe_dir/state4"
+ln -s "$dm_safe_dir/victim_file" "$dm_safe_dir/state1/disabled-display-managers"
+ln -s "$dm_safe_dir/target_dir" "$dm_safe_dir/state2/disabled-display-managers"
+printf 'gdm.service' >"$dm_safe_dir/state3/disabled-display-managers"
+chmod 600 "$dm_safe_dir/state3/disabled-display-managers"
+ln -s "$dm_safe_dir/victim_file" "$dm_safe_dir/state4/disabled-display-managers"
+dm_safe_report=""
+# shellcheck disable=SC2016
+env PATH="$dm_safe_dir/bin:$STUB_BIN:$PATH" DM_STATE_FILE="$dm_safe_dir/state1/disabled-display-managers" \
+  DISPLAY_MANAGER_LINK="$dm_safe_dir/no-link" bash -c 'umask 077 && source "$1/install.sh" && disable_display_managers' \
+  _ "$REPO_ROOT" >/dev/null 2>&1 || dm_safe_report+=" [state1 run failed]"
+# shellcheck disable=SC2016
+env PATH="$dm_safe_dir/bin:$STUB_BIN:$PATH" DM_STATE_FILE="$dm_safe_dir/state2/disabled-display-managers" \
+  DISPLAY_MANAGER_LINK="$dm_safe_dir/no-link" bash -c 'umask 077 && source "$1/install.sh" && disable_display_managers' \
+  _ "$REPO_ROOT" >/dev/null 2>&1 || dm_safe_report+=" [state2 run failed]"
+# shellcheck disable=SC2016
+env PATH="$dm_safe_dir/bin:$STUB_BIN:$PATH" DM_STATE_FILE="$dm_safe_dir/state3/disabled-display-managers" \
+  DISPLAY_MANAGER_LINK="$dm_safe_dir/no-link" bash -c 'umask 077 && source "$1/install.sh" && disable_display_managers' \
+  _ "$REPO_ROOT" >/dev/null 2>&1 || dm_safe_report+=" [state3 run failed]"
+# shellcheck disable=SC2016
+dm_sym_idle="$(env PATH="$dm_safe_dir/bin:$STUB_BIN:$PATH" STUB_NONE_ENABLED=1 \
+  DM_STATE_FILE="$dm_safe_dir/state4/disabled-display-managers" DISPLAY_MANAGER_LINK="$dm_safe_dir/no-link" \
+  bash -c 'source "$1/install.sh" && display_manager_disabled=0 && disable_display_managers >/dev/null 2>&1 &&
+    printf "%s" "$display_manager_disabled"' _ "$REPO_ROOT")" || dm_safe_report+=" [state4 idle failed]"
+[[ "$(cat "$dm_safe_dir/victim_file")" == "victim.service" ]] || dm_safe_report+=" [victim_file modified]"
+[[ -z "$(ls -A "$dm_safe_dir/target_dir")" ]] || dm_safe_report+=" [target_dir populated]"
+for dm_check_state in "$dm_safe_dir/state1/disabled-display-managers" "$dm_safe_dir/state2/disabled-display-managers" "$dm_safe_dir/state3/disabled-display-managers"; do
+  [[ -f "$dm_check_state" && ! -L "$dm_check_state" && "$(stat -c %a "$dm_check_state" 2>/dev/null)" == 644 ]] ||
+    dm_safe_report+=" [$dm_check_state not 0644 regular]"
+done
+[[ "$(cat "$dm_safe_dir/state1/disabled-display-managers")" == $'sddm.service\nlightdm.service' ]] ||
+  dm_safe_report+=" [state1 content=$(cat "$dm_safe_dir/state1/disabled-display-managers")]"
+[[ "$(cat "$dm_safe_dir/state3/disabled-display-managers")" == $'gdm.service\nsddm.service\nlightdm.service' ]] ||
+  dm_safe_report+=" [state3 missing-newline content=$(cat "$dm_safe_dir/state3/disabled-display-managers")]"
+[[ "$dm_sym_idle" == 0 ]] || dm_safe_report+=" [symlink DM_STATE_FILE read as active: $dm_sym_idle]"
+if [[ -z "$dm_safe_report" ]]; then
+  pass "disable_display_managers keeps 0644 regular DM_STATE_FILE under umask 077, replaces symlinks, and separates unterminated lines"
+else
+  fail "DM_STATE_FILE safety:$dm_safe_report"
+fi
+
+choices_safe_dir="$TMP_DIR/choices_symlink_safety"
+mkdir -p "$choices_safe_dir/home1/.local/state/lightxdm" "$choices_safe_dir/home2/.local/state" "$choices_safe_dir/real_state"
+printf 'de=gnome\nno_packages=1\npackages=keepme\n' >"$choices_safe_dir/victim_choices"
+ln -s "$choices_safe_dir/victim_choices" "$choices_safe_dir/home1/.local/state/lightxdm/install-choices"
+ln -s "$choices_safe_dir/real_state" "$choices_safe_dir/home2/.local/state/lightxdm"
+printf 'de=plasma\nno_packages=1\npackages=oldpkg\n' >"$choices_safe_dir/real_state/install-choices"
+choices_safe_report=""
+set +e
+# shellcheck disable=SC2016
+choices_sym_read="$(env HOME="$choices_safe_dir/home1" LOGIN_FILE="$choices_safe_dir/no_login" PAM_KEYRING_STATE="$choices_safe_dir/no_kr" \
+  bash -c 'source "$1/install.sh" && saved_install_args' _ "$REPO_ROOT" 2>&1)"
+choices_sym_rc=$?
+# shellcheck disable=SC2016
+choices_dir_read="$(env HOME="$choices_safe_dir/home2" LOGIN_FILE="$choices_safe_dir/no_login" PAM_KEYRING_STATE="$choices_safe_dir/no_kr" \
+  bash -c 'source "$1/install.sh" && saved_install_args' _ "$REPO_ROOT" 2>&1)"
+choices_dir_rc=$?
+set -e
+[[ $choices_sym_rc -eq 1 && "$choices_sym_read" == *"No saved install choices"* ]] ||
+  choices_safe_report+=" [symlink install-choices was read: rc=$choices_sym_rc out=$choices_sym_read]"
+[[ $choices_dir_rc -eq 1 && "$choices_dir_read" == *"No saved install choices"* ]] ||
+  choices_safe_report+=" [symlink state dir was read: rc=$choices_dir_rc out=$choices_dir_read]"
+# shellcheck disable=SC2016
+choices_pkg_plan="$(env HOME="$choices_safe_dir/home1" STUB_PACMAN_MISSING="" \
+  bash -c 'source "$1/install.sh" && update_package_plan newpkg' _ "$REPO_ROOT" 2>&1)"
+[[ -z "$choices_pkg_plan" ]] || choices_safe_report+=" [update_package_plan read symlink: $choices_pkg_plan]"
+# shellcheck disable=SC2016
+env HOME="$choices_safe_dir/home1" bash -c 'source "$1/install.sh" && save_install_choices i3 0 i3 xterm' _ "$REPO_ROOT" >/dev/null 2>&1
+[[ -f "$choices_safe_dir/home1/.local/state/lightxdm/install-choices" &&
+  ! -L "$choices_safe_dir/home1/.local/state/lightxdm/install-choices" ]] ||
+  choices_safe_report+=" [install-choices symlink not replaced]"
+[[ "$(cat "$choices_safe_dir/victim_choices")" == $'de=gnome\nno_packages=1\npackages=keepme' ]] ||
+  choices_safe_report+=" [victim_choices modified: $(cat "$choices_safe_dir/victim_choices")]"
+# shellcheck disable=SC2016
+choices_dir_warn="$(env HOME="$choices_safe_dir/home2" bash -c 'source "$1/install.sh" && save_install_choices i3 1' _ "$REPO_ROOT" 2>&1)"
+[[ "$choices_dir_warn" == *"WARNING: Could not save the install choices"* &&
+  "$(cat "$choices_safe_dir/real_state/install-choices")" == $'de=plasma\nno_packages=1\npackages=oldpkg' ]] ||
+  choices_safe_report+=" [symlink dir write was not refused: $choices_dir_warn]"
+if [[ -z "$choices_safe_report" ]]; then
+  pass "save_install_choices and --update helpers refuse symlinked state dirs and replace symlinked install-choices"
+else
+  fail "install-choices symlink safety:$choices_safe_report"
+fi
+
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh unlinks a symlinked DM_STATE_FILE without enabling units from its target (unshare -r unavailable)"
+else
+  dm_u_sym_dir="$TMP_DIR/dm_uninstall_symlink"
+  mkdir -p "$dm_u_sym_dir/home"
+  printf 'sddm.service\n' >"$dm_u_sym_dir/victim"
+  ln -s "$dm_u_sym_dir/victim" "$dm_u_sym_dir/dm-state"
+  : >"$STUB_LOG"
+  set +e
+  dm_u_sym_out="$(env TARGET_HOME="$dm_u_sym_dir/home" LOGIN_FILE="$dm_u_sym_dir/login" \
+    DM_STATE_FILE="$dm_u_sym_dir/dm-state" GNOME_SESSION_TYPE_DEST="$dm_u_sym_dir/gnome.conf" \
+    OVERRIDE_DIR="$dm_u_sym_dir/getty.d" POLKIT_RULE="$dm_u_sym_dir/polkit" \
+    unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  dm_u_sym_rc=$?
+  set -e
+  if [[ $dm_u_sym_rc -eq 0 && ! -e "$dm_u_sym_dir/dm-state" && ! -L "$dm_u_sym_dir/dm-state" &&
+    "$(cat "$dm_u_sym_dir/victim")" == "sddm.service" ]] &&
+    ! grep -Fq 'systemctl enable sddm.service' "$STUB_LOG"; then
+    pass "uninstall.sh unlinks a symlinked DM_STATE_FILE without enabling units from its target"
+  else
+    fail "uninstall.sh symlinked DM_STATE_FILE (rc=$dm_u_sym_rc, log=$(cat "$STUB_LOG"), out=$dm_u_sym_out)"
+  fi
+fi
+
 finish_harness
