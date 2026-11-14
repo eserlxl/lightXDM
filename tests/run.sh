@@ -11716,13 +11716,13 @@ atomic_fail_out="$(
   PATH="$atomic_dir/fail_bin:$PATH" \
   REPO_ROOT="$REPO_ROOT" \
   bash -c '
-    set +e
     # shellcheck disable=SC1091
     source "$REPO_ROOT/install.sh"
-    record_dotfile "$HOME/.bash_profile"
-    rd_rc=$?
-    save_install_choices xfce 0 xfwm4
-    sc_rc=$?
+    set +e
+    rd_rc=0
+    record_dotfile "$HOME/.bash_profile" || rd_rc=$?
+    sc_rc=0
+    save_install_choices xfce 0 xfwm4 || sc_rc=$?
     printf "rd=%s sc=%s\n" "$rd_rc" "$sc_rc"
   ' 2>&1
 )"
@@ -11827,6 +11827,7 @@ EOF
   # 2) uninstall.sh DM_STATE_FILE partial failure rewrites atomically with mode 0644 under umask 077.
   set +e
   uninst_dm_ok="$(
+    umask 077
     PATH="$atomic_dir/priv/bin:$PATH" \
       TARGET_HOME="$atomic_dir/priv/home" \
       LOGIN_FILE="$atomic_dir/priv/pam.d/login" \
@@ -11836,7 +11837,7 @@ EOF
       PAM_LOGIN_BASE_STATE="$atomic_dir/priv/state/pam-login-base" \
       POLKIT_RULE="$atomic_dir/priv/polkit/49-nopasswd.rules" \
       OVERRIDE_DIR="$atomic_dir/priv/getty.d" \
-      unshare -r bash -c 'umask 077; exec bash "$1"' _ "$REPO_ROOT/uninstall.sh" 2>&1
+      unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
   )"
   uninst_dm_ok_rc=$?
   set -e
@@ -11869,18 +11870,19 @@ EOF
   ln -sf "$atomic_dir/victim_autologin" "$atomic_dir/priv/getty.d/lightxdm-autologin.conf"
   set +e
   auto_ok_out="$(
+    umask 077
     PATH="$atomic_dir/priv/bin:$PATH" \
       OVERRIDE_DIR="$atomic_dir/priv/getty.d" \
       LOGIN_FILE="$atomic_dir/priv/pam.d/login" \
       USER=testuser \
-      unshare -r bash -c 'umask 077; exec bash "$1" --no-interactive testuser' _ "$REPO_ROOT/enable-autologin.sh" 2>&1
+      unshare -r bash "$REPO_ROOT/enable-autologin.sh" --no-interactive testuser 2>&1
   )"
   auto_ok_rc=$?
   set -e
   if [[ $auto_ok_rc -ne 0 || -L "$atomic_dir/priv/getty.d/lightxdm-autologin.conf" ||
     "$(stat -c %a -- "$atomic_dir/priv/getty.d/lightxdm-autologin.conf")" != "644" ||
     "$(cat "$atomic_dir/victim_autologin")" != "victim-autologin" ]] ||
-    ! grep -Fq -- '--autologin testuser --noclear %I $TERM' "$atomic_dir/priv/getty.d/lightxdm-autologin.conf"; then
+    ! grep -Fq -- "--autologin testuser --noclear %I \$TERM" "$atomic_dir/priv/getty.d/lightxdm-autologin.conf"; then
     atomic_priv_report+=" [autologin symlink/umask077: rc=$auto_ok_rc, out=$auto_ok_out]"
   fi
 
