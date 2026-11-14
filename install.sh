@@ -286,6 +286,22 @@ update_packages() {
     log "No new packages for $de."
   fi
   RECORDED_PACKAGES=("$@")
+  local recorded_line full_pkg
+  local -a recorded=() full_pkgs=()
+  recorded_line="$(sed -n 's/^packages=//p' "$(install_choices_file)" 2>/dev/null | tail -n 1)"
+  if [[ -n "$recorded_line" ]]; then
+    read -r -a recorded <<<"$recorded_line"
+    mapfile -t full_pkgs < <(list_packages "$de" 2>/dev/null || true)
+    for full_pkg in "${full_pkgs[@]}"; do
+      case "$full_pkg" in
+        gnome-keyring | kwallet-pam)
+          if [[ " ${recorded[*]} " == *" $full_pkg "* && " ${RECORDED_PACKAGES[*]} " != *" $full_pkg "* ]]; then
+            RECORDED_PACKAGES+=("$full_pkg")
+          fi
+          ;;
+      esac
+    done
+  fi
 }
 
 # True when $1 is a regular file equal to any version of the bundled template for home dotfile $2
@@ -1449,10 +1465,11 @@ saved_install_args() {
   local file line de="" no_packages=0 backends=()
   file="$(install_choices_file)"
   if [[ -f "$file" ]]; then
-    while IFS= read -r line; do
+    while IFS= read -r line || [[ -n "$line" ]]; do
       case "$line" in
         de=*) de="${line#de=}" ;;
         no_packages=1) no_packages=1 ;;
+        no_packages=0) no_packages=0 ;;
       esac
     done <"$file"
   fi

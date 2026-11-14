@@ -10232,8 +10232,54 @@ if [[ $status -ne 0 || "$pkg_preview" != *$'Packages (--update installs only the
   "$pkg_preview" == *"  install: xfce4-session"* ]]; then
   pkg_report+=" [preview: status=$status, output=$pkg_preview]"
 fi
+# A temporary --no-keyring on --update (for example when PAM has hand edits) keeps a previously saved
+# keyring package in packages= so a later --update after PAM restore does not reinstall a removed one.
+printf 'de=xfce\nno_packages=0\npackages=%s\n' "$pkg_all" >"$pkg_choices"
+: >"$pkg_stub_log"
+# shellcheck disable=SC2016
+pkg_nk_log="$(env HOME="$pkg_home" STUB_LOG="$pkg_stub_log" STUB_PACMAN_MISSING="gnome-keyring" \
+  bash -c 'source "$1/install.sh" && UPDATE_RUN=1 && install_packages xfce --no-keyring &&
+    save_install_choices xfce 0 "${RECORDED_PACKAGES[@]}"' _ "$REPO_ROOT" 2>&1)" ||
+  pkg_report+=" [--no-keyring update failed: $pkg_nk_log]"
+grep -Fq -- ' gnome-keyring' "$pkg_choices" ||
+  pkg_report+=" [--no-keyring update dropped saved gnome-keyring: $(cat "$pkg_choices")]"
+: >"$pkg_stub_log"
+# shellcheck disable=SC2016
+pkg_restore_log="$(env HOME="$pkg_home" STUB_LOG="$pkg_stub_log" STUB_PACMAN_MISSING="gnome-keyring" \
+  bash -c 'source "$1/install.sh" && UPDATE_RUN=1 && install_packages xfce &&
+    save_install_choices xfce 0 "${RECORDED_PACKAGES[@]}"' _ "$REPO_ROOT" 2>&1)" ||
+  pkg_report+=" [restored PAM update failed: $pkg_restore_log]"
+if grep -q -- '-S ' "$pkg_stub_log" ||
+  [[ "$pkg_restore_log" != *"Not installed, so --update leaves them out: gnome-keyring"* ]]; then
+  pkg_report+=" [restored PAM update reinstalled removed gnome-keyring: log=$(cat "$pkg_stub_log"), out=$pkg_restore_log]"
+fi
+# An install that originally chose --no-keyring keeps gnome-keyring out of packages= on --update --no-keyring.
+printf 'de=xfce\nno_packages=0\npackages=%s\n' "${pkg_all/ gnome-keyring/}" >"$pkg_choices"
+# shellcheck disable=SC2016
+env HOME="$pkg_home" STUB_LOG="$pkg_stub_log" \
+  bash -c 'source "$1/install.sh" && UPDATE_RUN=1 && install_packages xfce --no-keyring &&
+    save_install_choices xfce 0 "${RECORDED_PACKAGES[@]}"' _ "$REPO_ROOT" >/dev/null 2>&1 ||
+  pkg_report+=" [orig --no-keyring update failed]"
+! grep -Fq -- 'gnome-keyring' "$pkg_choices" ||
+  pkg_report+=" [orig --no-keyring added gnome-keyring: $(cat "$pkg_choices")]"
+# saved_install_args reads an unterminated final line and honors a later no_packages=0 override.
+printf 'de=i3\nno_packages=1' >"$pkg_choices"
+# shellcheck disable=SC2016
+pkg_saved_unterm="$(env HOME="$pkg_home" LOGIN_FILE="$update_login" PAM_KEYRING_STATE="$update_record" \
+  bash -c 'source "$1/install.sh" && saved_install_args' _ "$REPO_ROOT" 2>&1)" ||
+  pkg_report+=" [unterminated install-choices failed: $pkg_saved_unterm]"
+grep -Fxq -- '--no-packages' <<<"$pkg_saved_unterm" ||
+  pkg_report+=" [unterminated no_packages=1 ignored: $pkg_saved_unterm]"
+printf 'no_packages=1\nde=i3\nno_packages=0' >"$pkg_choices"
+# shellcheck disable=SC2016
+pkg_saved_override="$(env HOME="$pkg_home" LOGIN_FILE="$update_login" PAM_KEYRING_STATE="$update_record" \
+  bash -c 'source "$1/install.sh" && saved_install_args' _ "$REPO_ROOT" 2>&1)" ||
+  pkg_report+=" [no_packages=0 override failed: $pkg_saved_override]"
+if ! grep -Fxq -- 'i3' <<<"$pkg_saved_override" || grep -Fxq -- '--no-packages' <<<"$pkg_saved_override"; then
+  pkg_report+=" [no_packages=0 override ignored: $pkg_saved_override]"
+fi
 if [[ -z "$pkg_report" ]]; then
-  pass "install.sh --update installs only packages a newer lightXDM adds and leaves removed ones out with the command to install them"
+  pass "install.sh --update installs only packages a newer lightXDM adds, preserves saved keyring package choices, and reads unterminated install-choices lines"
 else
   fail "install.sh --update packages:$pkg_report"
 fi
