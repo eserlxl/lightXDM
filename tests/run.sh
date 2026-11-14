@@ -11350,4 +11350,171 @@ else
   fail "saved_install_args without pam-keyring:$norec_report"
 fi
 
+# install.sh --update handles unreadable PAM, backup, and state files across real and --dry-run paths.
+upd_priv_report=""
+if [[ $EUID -ne 0 ]]; then
+  upd_priv="$TMP_DIR/upd_priv"
+  mkdir -p "$upd_priv/bin" "$upd_priv/root/pam.d" "$upd_priv/root/state" "$upd_priv/home/.local/state/lightxdm" "$upd_priv/home/.config/lightxdm" "$upd_priv/getty.d"
+  printf '#!/bin/sh\nexec dwm\n' >"$upd_priv/home/.config/lightxdm/.xinitrc-custom"
+  chmod 755 "$upd_priv/home/.config/lightxdm/.xinitrc-custom"
+  cat >"$upd_priv/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${UPD_PRIV_SUDO_LOG:-/dev/null}"
+if [[ "${1:-}" == -n ]]; then
+  shift
+fi
+if [[ "${1:-}" == -v ]]; then
+  exit 0
+fi
+declare -A dir_modes=() file_modes=() file_inodes=()
+if [[ -n "${UPD_PRIV_ROOT:-}" && -d "$UPD_PRIV_ROOT" ]]; then
+  for d in "$UPD_PRIV_ROOT"/*; do
+    if [[ -d "$d" && ! -L "$d" && "$(stat -c %a -- "$d")" == 600 ]]; then
+      dir_modes["$d"]=600
+      chmod 700 -- "$d"
+    fi
+  done
+  for f in "$UPD_PRIV_ROOT"/*/*; do
+    if [[ -f "$f" && ! -L "$f" && "$(stat -c %a -- "$f")" == 0 ]]; then
+      file_modes["$f"]=0
+      file_inodes["$f"]="$(stat -c %i -- "$f")"
+      chmod 600 -- "$f"
+    fi
+  done
+fi
+"$@"
+rc=$?
+for f in "${!file_modes[@]}"; do
+  if [[ -f "$f" && ! -L "$f" &&
+    "$(stat -c %i -- "$f")" == "${file_inodes[$f]}" &&
+    "$(stat -c %a -- "$f")" == 600 ]]; then
+    chmod 000 -- "$f"
+  fi
+done
+for d in "${!dir_modes[@]}"; do
+  if [[ -d "$d" && ! -L "$d" && "$(stat -c %a -- "$d")" == 700 ]]; then
+    chmod 600 -- "$d"
+  fi
+done
+exit "$rc"
+EOF
+  chmod +x "$upd_priv/bin/sudo"
+
+  upd_priv_login="$upd_priv/root/pam.d/login"
+  upd_priv_kr="$upd_priv/root/state/pam-keyring"
+  upd_priv_base="$upd_priv/root/state/pam-login-base"
+  upd_priv_gnome="$upd_priv/root/state/gnome-session-type.conf"
+  upd_priv_dm="$upd_priv/root/state/disabled-display-managers"
+  upd_priv_sudo_log="$upd_priv/sudo.log"
+
+  upd_priv_run() {
+    : >"$STUB_LOG"
+    : >"$upd_priv_sudo_log"
+    env -u SHELLOPTS -u SUDO_USER HOME="$1" USER=tester PATH="$upd_priv/bin:$STUB_BIN:$PATH" \
+      UPD_PRIV_ROOT="$upd_priv/root" UPD_PRIV_SUDO_LOG="$upd_priv_sudo_log" \
+      LOGIN_FILE="$upd_priv_login" PAM_KEYRING_STATE="$upd_priv_kr" PAM_LOGIN_BASE_STATE="$upd_priv_base" \
+      GNOME_SESSION_TYPE_DEST="$upd_priv_gnome" DM_STATE_FILE="$upd_priv_dm" \
+      DISPLAY_MANAGER_LINK="$upd_priv/display-manager.service" AUTOLOGIN_DROPIN_DIR="$upd_priv/getty.d" \
+      STUB_PACMAN_OWNER="${STUB_PACMAN_OWNER:-}" STUB_PACMAN_STOCK="${STUB_PACMAN_STOCK:-}" \
+      bash "$REPO_ROOT/install.sh" "${@:2}" 2>&1
+  }
+
+  # 1. Missing install-choices fails before prompting for sudo even when LOGIN_FILE is 000.
+  printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$upd_priv_login"
+  chmod 000 "$upd_priv_login"
+  mkdir -p "$upd_priv/empty_home"
+  set +e
+  up_out="$(upd_priv_run "$upd_priv/empty_home" --update)"
+  up_rc=$?
+  set -e
+  if [[ $up_rc -ne 1 || "$up_out" != *"No saved install choices"* || -s "$upd_priv_sudo_log" ]]; then
+    upd_priv_report+=" [empty home used sudo: rc=$up_rc, sudo=$(cat "$upd_priv_sudo_log"), out=$up_out]"
+  fi
+
+  # 2. --no-keyring XFCE install with 000 LOGIN_FILE preserves --no-keyring on both --dry-run and real --update --non-interactive.
+  xfce_nk_pkgs="$(list_packages xfce --no-keyring | tr '\n' ' ')"
+  xfce_nk_pkgs="${xfce_nk_pkgs% }"
+  printf 'de=xfce\nno_packages=0\npackages=%s\n' "$xfce_nk_pkgs" >"$upd_priv/home/.local/state/lightxdm/install-choices"
+  rm -f -- "$upd_priv_kr" "$upd_priv_base" "$upd_priv_gnome"
+  set +e
+  up_dry="$(upd_priv_run "$upd_priv/home" --update --dry-run)"
+  up_dry_rc=$?
+  set -e
+  if [[ $up_dry_rc -ne 0 || "$up_dry" != *"Updating with the saved choices: --de xfce --no-keyring --dry-run"* ||
+    "$up_dry" != *"PAM keyring: skipped (--no-keyring)"* || "$up_dry" == *"gnome-keyring"* || -s "$upd_priv_sudo_log" ]]; then
+    upd_priv_report+=" [--no-keyring dry-run: rc=$up_dry_rc, sudo=$(cat "$upd_priv_sudo_log"), out=$up_dry]"
+  fi
+  set +e
+  up_real="$(upd_priv_run "$upd_priv/home" --update --non-interactive)"
+  up_real_rc=$?
+  set -e
+  if [[ $up_real_rc -ne 0 || "$up_real" != *"Updating with the saved choices: --de xfce --no-keyring --non-interactive"* ||
+    "$up_real" != *"- Keyring setup skipped"* || "$up_real" == *"Auto-unlock is set"* ]] ||
+    grep -q -- 'gnome-keyring' "$STUB_LOG" ||
+    grep -q -- 'gnome-keyring' "$upd_priv/home/.local/state/lightxdm/install-choices" ||
+    grep -Evq -- '^-n( |$)' "$upd_priv_sudo_log" ||
+    [[ "$(grep -c -- '^-n -v$' "$upd_priv_sudo_log")" != 1 ]]; then
+    upd_priv_report+=" [--no-keyring real: rc=$up_real_rc, stub=$(cat "$STUB_LOG"), sudo=$(cat "$upd_priv_sudo_log"), out=$up_real]"
+  fi
+
+  # 3. Custom desktop with 000 pam-keyring inside a 0600 state directory and 000 LOGIN_FILE keeps --keyring kwallet.
+  printf 'de=custom\nno_packages=1\n' >"$upd_priv/home/.local/state/lightxdm/install-choices"
+  chmod 644 "$upd_priv_login" 2>/dev/null || true
+  printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' "$PAM_GNOME_KEYRING_AUTH" "$PAM_KWALLET_AUTH" 'session    include      system-local-login' "$PAM_GNOME_KEYRING_SESSION" "$PAM_KWALLET_SESSION" >"$upd_priv_login"
+  printf 'kwallet\n' >"$upd_priv_kr"
+  chmod 000 "$upd_priv_login" "$upd_priv_kr"
+  chmod 600 "$upd_priv/root/state"
+  set +e
+  up_custom="$(upd_priv_run "$upd_priv/home" --update)"
+  up_custom_rc=$?
+  set -e
+  chmod 755 "$upd_priv/root/state" 2>/dev/null || true
+  chmod 644 "$upd_priv_login" "$upd_priv_login.lightxdm.bak" 2>/dev/null || true
+  if [[ $up_custom_rc -ne 0 || "$up_custom" != *"Updating with the saved choices: --de custom --no-packages --keyring kwallet"* ]] ||
+    ! grep -Fxq "$PAM_KWALLET_AUTH" "$upd_priv_login" ||
+    [[ "$(stat -c %a -- "$upd_priv_kr" 2>/dev/null)" != 644 ]]; then
+    upd_priv_report+=" [custom kwallet 000 state: rc=$up_custom_rc, out=$up_custom]"
+  fi
+  chmod 644 "$upd_priv_kr" 2>/dev/null || true
+
+  # 4. .pacnew merge with 000 LOGIN_FILE and 000 backup restores keyring + GNOME block once and records pam-login-base.
+  printf 'de=gnome\nno_packages=1\n' >"$upd_priv/home/.local/state/lightxdm/install-choices"
+  printf 'gnome\n' >"$upd_priv_kr"
+  rm -f -- "$upd_priv_base" "$upd_priv_gnome"
+  printf '%s\n' '#%PAM-1.0' '# older packaged login' 'auth       include      system-local-login' 'session    include      system-local-login' >"$upd_priv_login.lightxdm.bak"
+  printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$upd_priv/stock_login"
+  cp -- "$upd_priv/stock_login" "$upd_priv_login"
+  chmod 000 "$upd_priv_login" "$upd_priv_login.lightxdm.bak"
+  set +e
+  up_merge="$(STUB_PACMAN_OWNER=util-linux STUB_PACMAN_STOCK="$upd_priv/stock_login" upd_priv_run "$upd_priv/home" --update)"
+  up_merge_rc=$?
+  set -e
+  chmod 644 "$upd_priv_login" "$upd_priv_login.lightxdm.bak" 2>/dev/null || true
+  stock_sum="$(sha256sum <"$upd_priv/stock_login")"
+  if [[ $up_merge_rc -ne 0 || "$up_merge" != *"which a .pacnew merge replaced"* ||
+    "$(cat "$upd_priv_base" 2>/dev/null)" != "${stock_sum%% *}" ]] ||
+    ! grep -Fxq "$PAM_GNOME_KEYRING_AUTH" "$upd_priv_login" ||
+    ! grep -Fxq '# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)' "$upd_priv_login"; then
+    upd_priv_report+=" [000 pacnew merge restore: rc=$up_merge_rc, base=$(cat "$upd_priv_base" 2>&1), out=$up_merge]"
+  fi
+  cp -- "$upd_priv/stock_login" "$upd_priv_login"
+  chmod 000 "$upd_priv_login" "$upd_priv_login.lightxdm.bak" "$upd_priv_base"
+  set +e
+  up_again="$(STUB_PACMAN_OWNER=util-linux STUB_PACMAN_STOCK="$upd_priv/stock_login" upd_priv_run "$upd_priv/home" --update)"
+  up_again_rc=$?
+  set -e
+  chmod 644 "$upd_priv_login" "$upd_priv_login.lightxdm.bak" "$upd_priv_base" 2>/dev/null || true
+  if [[ $up_again_rc -ne 0 || "$up_again" != *"which has your own edits, so --update leaves it alone"* ]] ||
+    grep -Fxq "$PAM_GNOME_KEYRING_AUTH" "$upd_priv_login" ||
+    grep -Fxq '# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)' "$upd_priv_login"; then
+    upd_priv_report+=" [000 pacnew second removal not kept: rc=$up_again_rc, out=$up_again]"
+  fi
+fi
+
+if [[ -z "$upd_priv_report" ]]; then
+  pass "install.sh --update handles unreadable PAM, backup, and state files across real and --dry-run runs"
+else
+  fail "install.sh --update unreadable PAM/state:$upd_priv_report"
+fi
+
 finish_harness

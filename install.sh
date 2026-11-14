@@ -893,12 +893,44 @@ copy_dotfiles() {
   fi
 }
 
+# True when inspecting $1 ($2 == 1 for regular non-symlink backup/state files) cannot be settled without sudo.
+pam_path_needs_sudo() {
+  local file="$1" no_symlink="${2:-0}" dir
+  dir="$(dirname -- "$file")"
+  if [[ $no_symlink -eq 1 && ( -L "$dir" || -L "$file" ) ]]; then
+    return 1
+  fi
+  if [[ -f "$file" && -r "$file" ]] ||
+    [[ -d "$dir" && -x "$dir" && ! -e "$file" ]] ||
+    [[ ! -e "$dir" && ! -L "$dir" && -x "$(dirname -- "$dir")" ]]; then
+    return 1
+  fi
+  return 0
+}
+
 # Print PAM file $1; use sudo only during a real run ($2 == 0) when $1 is not user-readable.
 read_pam_file() {
   local file="$1" preview="${2:-0}"
-  if [[ -r "$file" ]]; then
+  if [[ -f "$file" && -r "$file" ]]; then
     cat -- "$file"
-  elif [[ $preview -eq 0 ]]; then
+  elif [[ $preview -eq 0 ]] && pam_path_needs_sudo "$file" 0 && sudo test -f "$file"; then
+    sudo cat -- "$file"
+  else
+    return 1
+  fi
+}
+
+# Print regular non-symlink PAM backup or state file $1; use sudo only during a real run ($2 == 0).
+read_pam_state_file() {
+  local file="$1" preview="${2:-0}" dir
+  dir="$(dirname -- "$file")"
+  if [[ -L "$dir" || -L "$file" ]]; then
+    return 1
+  fi
+  if [[ -f "$file" && -r "$file" ]]; then
+    cat -- "$file"
+  elif [[ $preview -eq 0 ]] && pam_path_needs_sudo "$file" 1 &&
+    ! sudo test -L "$dir" && ! sudo test -L "$file" && sudo test -f "$file"; then
     sudo cat -- "$file"
   else
     return 1
@@ -1046,9 +1078,7 @@ configure_pam() {
   fi
   if [[ "${UPDATE_RUN:-0}" == 1 && "${UPDATE_RESTORE_PAM:-0}" != 1 && ! -r "$LOGIN_FILE" ]]; then
     local deferred_missing deferred_record="" deferred_login
-    if [[ -f "$PAM_KEYRING_STATE" && ! -L "$PAM_KEYRING_STATE" && -r "$PAM_KEYRING_STATE" ]]; then
-      deferred_record="$(<"$PAM_KEYRING_STATE")"
-    fi
+    deferred_record="$(read_pam_state_file "$PAM_KEYRING_STATE" 0 2>/dev/null)" || deferred_record=""
     deferred_missing="$(pam_lines_to_add "$module" "$auth_line" "$session_line" "" 0)" || return 1
     if [[ -n "$deferred_missing" ]]; then
       deferred_login="$(read_pam_file "$LOGIN_FILE" 0)" || return 1
@@ -1559,25 +1589,32 @@ save_install_choices() {
 # lightXDM's lines by hand brings back one of those two, so the user's removal stays. Without a
 # backup there is no proof either way, so the answer is no.
 login_file_replaced_by_package() {
-  local backup="${LOGIN_FILE}.lightxdm.bak" sum base="" owner
-  [[ -f "$backup" && ! -L "$backup" && -r "$backup" && -r "$LOGIN_FILE" ]] || return 1
-  sum="$(sha256sum < "$LOGIN_FILE")"
-  [[ -f "$PAM_LOGIN_BASE_STATE" && ! -L "$PAM_LOGIN_BASE_STATE" && -r "$PAM_LOGIN_BASE_STATE" ]] && base="$(<"$PAM_LOGIN_BASE_STATE")"
-  [[ "$sum" != "$(sha256sum < "$backup")" && "${sum%% *}" != "$base" ]] || return 1
+  local preview="${1:-0}" backup="${LOGIN_FILE}.lightxdm.bak" sum backup_sum base="" owner
+  sum="$(set -o pipefail; read_pam_file "$LOGIN_FILE" "$preview" 2>/dev/null | sha256sum)" || return 1
+  backup_sum="$(set -o pipefail; read_pam_state_file "$backup" "$preview" 2>/dev/null | sha256sum)" || return 1
+  base="$(read_pam_state_file "$PAM_LOGIN_BASE_STATE" "$preview" 2>/dev/null)" || base=""
+  [[ "$sum" != "$backup_sum" && "${sum%% *}" != "$base" ]] || return 1
   owner="$(pacman -Qqo -- "$LOGIN_FILE" 2>/dev/null)" && [[ -n "$owner" ]] || return 1
-  LC_ALL=C pacman -Qii -- "$owner" 2>/dev/null | grep -Fq -- "$LOGIN_FILE [unmodified]"
+  if [[ -r "$LOGIN_FILE" ]]; then
+    LC_ALL=C pacman -Qii -- "$owner" 2>/dev/null | grep -Fq -- "$LOGIN_FILE [unmodified]"
+  elif [[ $preview -eq 0 ]]; then
+    sudo env LC_ALL=C pacman -Qii -- "$owner" 2>/dev/null | grep -Fq -- "$LOGIN_FILE [unmodified]"
+  else
+    return 1
+  fi
 }
 
 # --update decides once, before any step changes $LOGIN_FILE, whether a .pacnew merge replaced it;
 # only then do lightXDM's missing PAM lines go back in (saved_install_args, configure_gnome_session_type).
 start_update_run() {
+  local preview="${1:-0}" sum
   UPDATE_RUN=1
   UPDATE_RESTORE_PAM=0
   UPDATE_LOGIN_SUM=""
-  if login_file_replaced_by_package; then
+  if login_file_replaced_by_package "$preview"; then
+    sum="$(set -o pipefail; read_pam_file "$LOGIN_FILE" "$preview" 2>/dev/null | sha256sum)" || return 1
     UPDATE_RESTORE_PAM=1
-    UPDATE_LOGIN_SUM="$(sha256sum < "$LOGIN_FILE")"
-    UPDATE_LOGIN_SUM="${UPDATE_LOGIN_SUM%% *}"
+    UPDATE_LOGIN_SUM="${sum%% *}"
   fi
 }
 
@@ -1596,11 +1633,50 @@ record_login_base() {
     printf '%s\n' "$UPDATE_LOGIN_SUM" | sudo install -TDm644 /dev/stdin "$PAM_LOGIN_BASE_STATE" || return 1
   fi
 }
+# Print the desktop id saved in install-choices, or fail with the --update guidance.
+saved_install_de() {
+  local file line de=""
+  file="$(install_choices_file)"
+  if install_choices_readable "$file"; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      case "$line" in
+        de=*) de="${line#de=}" ;;
+      esac
+    done <"$file"
+  fi
+  if [[ -z "$de" ]]; then
+    log "No saved install choices in $file; run $(script_cmd install.sh) with your options first."
+    return 1
+  fi
+  printf '%s\n' "$de"
+}
+
+# Check wheel membership and request sudo credentials upfront.
+authenticate_sudo() {
+  local non_interactive="$1" real_user="${2:-${USER:-$(id -un)}}"
+  # Defined after check_root, whose `command -v sudo` must still find the real binary.
+  if [[ $non_interactive -eq 1 ]]; then
+    sudo() { command sudo -n "$@"; }
+  fi
+  if ! grep -qx wheel < <(id -nG "$real_user" | tr ' ' '\n'); then
+    log "ERROR: User '$real_user' is not in the 'wheel' group. Sudo and polkit rules will not work."
+    log "Add the user to the wheel group as root, then log out and back in: su -c 'usermod -aG wheel $real_user'"
+    exit 1
+  fi
+  log "Requesting sudo credentials upfront (sudo -v)..."
+  if ! sudo -v; then
+    log "ERROR: Failed to authenticate with sudo. Exiting."
+    log "On Arch the wheel rule in /etc/sudoers ships commented out: run visudo as root (for example su -c 'EDITOR=nano visudo') and uncomment %wheel ALL=(ALL:ALL) ALL"
+    exit 1
+  fi
+}
+
 # Print the options --update re-runs, one per line: the saved desktop and package choice, and the
 # keyring backend recorded in $PAM_KEYRING_STATE, else the one the active keyring lines in
 # $LOGIN_FILE use. Autologin is never passed.
 saved_install_args() {
-  local file line de="" no_packages=0 has_gnome=0 has_kwallet=0
+  local preview="${1:-0}" file line de="" no_packages=0 recorded_packages="" has_gnome=0 has_kwallet=0
+  local login_content="" login_readable=0 login_absent=0 login_dir
   file="$(install_choices_file)"
   if install_choices_readable "$file"; then
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -1608,6 +1684,7 @@ saved_install_args() {
         de=*) de="${line#de=}" ;;
         no_packages=1) no_packages=1 ;;
         no_packages=0) no_packages=0 ;;
+        packages=*) recorded_packages="${line#packages=}" ;;
       esac
     done <"$file"
   fi
@@ -1619,20 +1696,24 @@ saved_install_args() {
   if [[ $no_packages -eq 1 ]]; then
     printf '%s\n' --no-packages
   fi
-  if [[ -r "$LOGIN_FILE" ]]; then
-    if grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_gnome_keyring\.so' "$LOGIN_FILE" 2>/dev/null; then
+  login_dir="$(dirname -- "$LOGIN_FILE")"
+  if login_content="$(read_pam_file "$LOGIN_FILE" "$preview" 2>/dev/null)"; then
+    login_readable=1
+    if grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_gnome_keyring\.so' <<<"$login_content"; then
       has_gnome=1
     fi
-    if grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_kwallet5\.so' "$LOGIN_FILE" 2>/dev/null; then
+    if grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_kwallet5\.so' <<<"$login_content"; then
       has_kwallet=1
     fi
+  elif [[ -d "$login_dir" && -x "$login_dir" && ! -e "$LOGIN_FILE" ]] ||
+    [[ ! -e "$login_dir" && ! -L "$login_dir" && -x "$(dirname -- "$login_dir")" ]] ||
+    { [[ $preview -eq 0 ]] && ! sudo test -e "$LOGIN_FILE"; }; then
+    login_absent=1
   fi
   # The record tells keyring lines a .pacnew merge dropped from lines removed with uninstall.sh
   # --keyring-only; installs from before the record fall back to the lines themselves.
   local record="" backend="" module auth_line session_line
-  if [[ -f "$PAM_KEYRING_STATE" && ! -L "$PAM_KEYRING_STATE" && -r "$PAM_KEYRING_STATE" ]]; then
-    record="$(<"$PAM_KEYRING_STATE")"
-  fi
+  record="$(read_pam_state_file "$PAM_KEYRING_STATE" "$preview" 2>/dev/null)" || record=""
   case "$record" in
     gnome | kwallet) backend="$record" ;;
     *)
@@ -1655,7 +1736,9 @@ saved_install_args() {
       ;;
   esac
   if [[ -z "$backend" ]]; then
-    if [[ -r "$LOGIN_FILE" || ! -e "$LOGIN_FILE" ]]; then
+    if [[ $login_readable -eq 1 || $login_absent -eq 1 ]] ||
+      { [[ -n "$recorded_packages" && " $recorded_packages " != *" gnome-keyring "* && " $recorded_packages " != *" kwallet-pam "* ]] &&
+        ! pam_path_needs_sudo "$PAM_KEYRING_STATE" 1 && [[ ! -f "$PAM_KEYRING_STATE" || -L "$PAM_KEYRING_STATE" ]]; }; then
       printf '%s\n' --no-keyring
     fi
     return 0
@@ -1667,7 +1750,7 @@ saved_install_args() {
   fi
   # A keyring line the user removed or commented out stays that way, even when the other one is still
   # there: only a login file a .pacnew merge replaced lost lightXDM's lines without the user.
-  if [[ -r "$LOGIN_FILE" && -n "$(pam_lines_to_add "$module" "$auth_line" "$session_line" "" 1)" ]]; then
+  if [[ $login_readable -eq 1 && -n "$(pam_lines_to_add "$module" "$auth_line" "$session_line" "" "$preview")" ]]; then
     if [[ -z "$record" || "${UPDATE_RESTORE_PAM:-0}" != 1 ]]; then
       local hint="--pam-only --de $de"
       case "$de" in
@@ -1689,6 +1772,7 @@ saved_install_args() {
 # --- Main ---
 
 main() {
+  local UPDATE_SUDO_READY="${UPDATE_SUDO_READY:-0}"
   local display_manager_disabled=0
   local de=""
   local de_specified=0
@@ -1866,9 +1950,19 @@ EOF
     if [[ $dry_run -eq 0 ]]; then
       check_root || exit $?
     fi
-    start_update_run
+    saved_install_de >/dev/null || exit 1
+    if [[ $dry_run -eq 0 ]] && {
+      pam_path_needs_sudo "$LOGIN_FILE" 0 ||
+        pam_path_needs_sudo "${LOGIN_FILE}.lightxdm.bak" 1 ||
+        pam_path_needs_sudo "$PAM_KEYRING_STATE" 1 ||
+        pam_path_needs_sudo "$PAM_LOGIN_BASE_STATE" 1
+    }; then
+      authenticate_sudo "$non_interactive"
+      UPDATE_SUDO_READY=1
+    fi
+    start_update_run "$dry_run"
     local saved_output saved_args=()
-    saved_output="$(saved_install_args)" || exit 1
+    saved_output="$(saved_install_args "$dry_run")" || exit 1
     mapfile -t saved_args <<<"$saved_output"
     if [[ $dry_run -eq 1 ]]; then
       saved_args+=(--dry-run)
@@ -2049,28 +2143,11 @@ EOF
     return $?
   fi
 
-  check_root
-  # Defined after check_root, whose `command -v sudo` must still find the real binary.
-  if [[ $non_interactive -eq 1 ]]; then
-    sudo() { command sudo -n "$@"; }
-  fi
-
-  # --- Wheel group and sudoers check ---
   local real_user
   real_user="${USER:-$(id -un)}"
-
-  if ! grep -qx wheel < <(id -nG "$real_user" | tr ' ' '\n'); then
-    log "ERROR: User '$real_user' is not in the 'wheel' group. Sudo and polkit rules will not work."
-    log "Add the user to the wheel group as root, then log out and back in: su -c 'usermod -aG wheel $real_user'"
-    exit 1
-  fi
-
-  # Request sudo credentials upfront
-  log "Requesting sudo credentials upfront (sudo -v)..."
-  if ! sudo -v; then
-    log "ERROR: Failed to authenticate with sudo. Exiting."
-    log "On Arch the wheel rule in /etc/sudoers ships commented out: run visudo as root (for example su -c 'EDITOR=nano visudo') and uncomment %wheel ALL=(ALL:ALL) ALL"
-    exit 1
+  if [[ $UPDATE_SUDO_READY -ne 1 ]]; then
+    check_root
+    authenticate_sudo "$non_interactive" "$real_user"
   fi
 
   if [[ -z "$de" ]]; then
