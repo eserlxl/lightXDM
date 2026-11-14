@@ -337,7 +337,7 @@ preserve_dotfile() {
     return 0
   fi
 
-  local tmpl target_sum=""
+  local tmpl target_sum="" recorded_sum=""
   if [[ -f "$target" && ! -L "$target" ]]; then
     target_sum="$(sha256sum < "$target")"
     for tmpl in "$@"; do
@@ -346,6 +346,12 @@ preserve_dotfile() {
         return 0
       fi
     done
+    if [[ -e "$backup" || -L "$backup" || -e "$absent" || -L "$absent" ]]; then
+      recorded_sum="$(recorded_dotfile_sum "$target")"
+      if [[ -n "$recorded_sum" && "${target_sum%% *}" == "$recorded_sum" ]]; then
+        return 0
+      fi
+    fi
     if is_past_lightxdm_template "$target" "${target#"$HOME"/}"; then
       return 0
     fi
@@ -685,27 +691,35 @@ dotfile_record_file() {
 
 # Print the recorded hash of what lightXDM last wrote into home dotfile $1, if there is one.
 recorded_dotfile_sum() {
-  local rel="${1#"$HOME"/}" file line sum=""
+  local rel="${1#"$HOME"/}" file dir line sum="" LC_ALL=C
   file="$(dotfile_record_file)"
-  [[ -f "$file" ]] || return 0
+  dir="${file%/*}"
+  [[ ! -L "$dir" && -f "$file" && ! -L "$file" && -r "$file" ]] || return 0
   while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ "${line:66}" != "$rel" ]] || sum="${line:0:64}"
+    if [[ "${line:66}" == "$rel" && "${line:64:2}" == "  " && "${line:0:64}" =~ ^[0-9a-f]{64}$ ]]; then
+      sum="${line:0:64}"
+    fi
   done <"$file"
   [[ -z "$sum" ]] || printf '%s\n' "$sum"
 }
 
 # Record what lightXDM just wrote into home dotfile $1 ("<sha256>  <path under HOME>" per line).
 record_dotfile() {
-  local target="$1" file rel sum line kept=()
+  local target="$1" file dir rel sum line kept=() LC_ALL=C
   file="$(dotfile_record_file)"
+  dir="${file%/*}"
+  [[ ! -L "$dir" ]] || return 1
   rel="${target#"$HOME"/}"
   sum="$(sha256sum <"$target")" || return 1
-  if [[ -f "$file" ]]; then
+  if [[ -f "$file" && ! -L "$file" && -r "$file" ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
       [[ "${line:66}" == "$rel" ]] || kept+=("$line")
     done <"$file"
   fi
-  mkdir -p -- "${file%/*}" && printf '%s\n' "${kept[@]}" "${sum%% *}  $rel" >"$file"
+  mkdir -p -- "$dir" || return 1
+  [[ ! -L "$dir" ]] || return 1
+  rm -f -- "$file" || return 1
+  printf '%s\n' "${kept[@]}" "${sum%% *}  $rel" >"$file"
 }
 
 # True when lightXDM put home dotfile $1 there before: it recorded what it wrote, or it backed up the
@@ -828,7 +842,11 @@ copy_dotfiles() {
       # An executable ~/.wayland-session would start instead of startx, so move it aside like
       # ~/.xinitrc; skip absent files so X11-only homes get no .lightxdm.absent marker.
       if [[ -e "$wl_session" || -L "$wl_session" ]]; then
-        local wl_templates=("$SCRIPT_DIR"/dotfiles/.wayland-session-* "$user_home"/.config/lightxdm/.wayland-session-*)
+        local wl_templates=("$SCRIPT_DIR"/dotfiles/.wayland-session-*)
+        if [[ -e "${wl_session}.lightxdm.bak" || -L "${wl_session}.lightxdm.bak" ||
+          -e "${wl_session}.lightxdm.absent" || -L "${wl_session}.lightxdm.absent" ]]; then
+          wl_templates=("$user_home"/.config/lightxdm/.wayland-session-* "${wl_templates[@]}")
+        fi
         if [[ "${UPDATE_RUN:-0}" == 1 ]]; then
           # Only an explicit install moves the user's file away; --update says what it changes.
           if [[ -x "$wl_session" && $preview -eq 1 ]]; then

@@ -10684,4 +10684,149 @@ else
   rm -rf "$past_dir"
 fi
 
+# Recorded installed-dotfiles hashes: editing or deleting ~/.config/lightxdm templates does not
+# archive lightXDM's unedited dotfiles, while pre-existing ~/.wayland-session is still backed up.
+rec_dir="$TMP_DIR/recorded_dotfiles_case"
+mkdir -p "$rec_dir"
+
+rec_home1="$rec_dir/home_reinstall"
+mkdir -p "$rec_home1/.config/lightxdm"
+printf '#!/bin/sh\nexec dwm # v1\n' >"$rec_home1/.config/lightxdm/.xinitrc-dwm"
+(
+  export HOME="$rec_home1"
+  export USER="testuser"
+  unset XDG_STATE_HOME
+  copy_dotfiles dwm >/dev/null
+)
+printf '#!/bin/sh\nexec dwm # v2\n' >"$rec_home1/.config/lightxdm/.xinitrc-dwm"
+rec_v2_hash="$(sha256sum < "$rec_home1/.config/lightxdm/.xinitrc-dwm")"
+(
+  export HOME="$rec_home1"
+  export USER="testuser"
+  unset XDG_STATE_HOME
+  copy_dotfiles dwm >/dev/null
+)
+rm -f "$rec_home1/.config/lightxdm/.xinitrc-dwm"
+(
+  export HOME="$rec_home1"
+  export USER="testuser"
+  unset XDG_STATE_HOME
+  copy_dotfiles xfce >/dev/null
+)
+if [[ -f "$rec_home1/.xinitrc" && ! -e "$rec_home1/.xinitrc.lightxdm-edited" ]] &&
+  ! compgen -G "$rec_home1/.xinitrc.lightxdm-edited*" >/dev/null &&
+  [[ "$rec_v2_hash" != "$(sha256sum < "$REPO_ROOT/dotfiles/.xinitrc-xfce")" ]] &&
+  cmp -s "$rec_home1/.xinitrc" "$REPO_ROOT/dotfiles/.xinitrc-xfce"; then
+  pass "copy_dotfiles replaces unedited custom-template ~/.xinitrc after template edit or deletion without .lightxdm-edited"
+else
+  fail "copy_dotfiles recorded custom-template reinstall ($(ls -A "$rec_home1"))"
+fi
+
+rec_home2="$rec_dir/home_wl_backup"
+mkdir -p "$rec_home2/.config/lightxdm"
+printf '#!/bin/sh\nexec sway\n' >"$rec_home2/.wayland-session"
+chmod +x "$rec_home2/.wayland-session"
+rec_wl_hash="$(sha256sum < "$rec_home2/.wayland-session")"
+cp "$rec_home2/.wayland-session" "$rec_home2/.config/lightxdm/.wayland-session-sway"
+(
+  export HOME="$rec_home2"
+  export USER="testuser"
+  unset XDG_STATE_HOME
+  copy_dotfiles xfce >/dev/null
+)
+if [[ ! -e "$rec_home2/.wayland-session" && -f "$rec_home2/.wayland-session.lightxdm.bak" ]] &&
+  [[ "$(sha256sum < "$rec_home2/.wayland-session.lightxdm.bak")" == "$rec_wl_hash" ]] &&
+  ! compgen -G "$rec_home2/.wayland-session.lightxdm-edited*" >/dev/null; then
+  pass "copy_dotfiles X11 install backs up pre-existing ~/.wayland-session even when copied into ~/.config/lightxdm"
+else
+  fail "copy_dotfiles X11 pre-existing ~/.wayland-session backup ($(ls -A "$rec_home2"))"
+fi
+
+rec_home3="$rec_dir/home_wl_switch"
+mkdir -p "$rec_home3/.config/lightxdm"
+printf '#!/bin/sh\nexec sway # v1\n' >"$rec_home3/.config/lightxdm/.wayland-session-sway"
+(
+  export HOME="$rec_home3"
+  export USER="testuser"
+  unset XDG_STATE_HOME
+  copy_dotfiles sway >/dev/null
+)
+rm -f "$rec_home3/.config/lightxdm/.wayland-session-sway"
+(
+  export HOME="$rec_home3"
+  export USER="testuser"
+  unset XDG_STATE_HOME
+  copy_dotfiles xfce >/dev/null
+)
+if [[ ! -e "$rec_home3/.wayland-session" && -f "$rec_home3/.wayland-session.lightxdm.absent" ]] &&
+  ! compgen -G "$rec_home3/.wayland-session.lightxdm-edited*" >/dev/null; then
+  pass "copy_dotfiles X11 switch removes lightXDM-installed ~/.wayland-session after user template deletion without .lightxdm-edited"
+else
+  fail "copy_dotfiles Wayland-to-X11 switch after template deletion ($(ls -A "$rec_home3"))"
+fi
+
+rec_sym_home="$rec_dir/home_symlink"
+mkdir -p "$rec_sym_home/.local/state/lightxdm"
+printf 'untouched\n' >"$rec_dir/symlink_target"
+ln -s "$rec_dir/symlink_target" "$rec_sym_home/.local/state/lightxdm/installed-dotfiles"
+printf '#!/bin/sh\nexec startxfce4\n' >"$rec_sym_home/.xinitrc"
+(
+  export HOME="$rec_sym_home"
+  unset XDG_STATE_HOME
+  record_dotfile "$rec_sym_home/.xinitrc"
+)
+if [[ ! -L "$rec_sym_home/.local/state/lightxdm/installed-dotfiles" &&
+  "$(cat "$rec_dir/symlink_target")" == "untouched" ]]; then
+  pass "record_dotfile replaces a symlink at installed-dotfiles without writing through it"
+else
+  fail "record_dotfile symlink guard (target=$(cat "$rec_dir/symlink_target"))"
+fi
+
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh honors recorded installed-dotfiles hashes only when markers exist (unshare -r unavailable)"
+else
+  rec_u_home="$rec_dir/home_uninstall_marked"
+  mkdir -p "$rec_u_home/.config/lightxdm"
+  printf '#!/bin/sh\nexec dwm # v1\n' >"$rec_u_home/.config/lightxdm/.xinitrc-dwm"
+  (
+    export HOME="$rec_u_home"
+    export USER="testuser"
+    unset XDG_STATE_HOME
+    copy_dotfiles dwm >/dev/null
+  )
+  printf '#!/bin/sh\nexec dwm # v2\n' >"$rec_u_home/.config/lightxdm/.xinitrc-dwm"
+  set +e
+  rec_u_out="$(
+    env TARGET_HOME="$rec_u_home" LOGIN_FILE="$rec_dir/u_login" DM_STATE_FILE="$rec_dir/u_dm" \
+      GNOME_SESSION_TYPE_DEST="$rec_dir/u_gnome" OVERRIDE_DIR="$rec_dir/getty.d" \
+      POLKIT_RULE="$rec_dir/u_polkit" \
+      unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
+  )"
+  rec_u_status=$?
+  set -e
+
+  rec_nm_home="$rec_dir/home_uninstall_nomarker"
+  mkdir -p "$rec_nm_home/.local/state/lightxdm"
+  printf '#!/bin/sh\nexec dwm # user\n' >"$rec_nm_home/.xinitrc"
+  rec_nm_hash="$(sha256sum < "$rec_nm_home/.xinitrc")"
+  printf '%s  .xinitrc\n' "${rec_nm_hash%% *}" >"$rec_nm_home/.local/state/lightxdm/installed-dotfiles"
+  set +e
+  rec_nm_out="$(
+    env TARGET_HOME="$rec_nm_home" LOGIN_FILE="$rec_dir/u_nm_login" DM_STATE_FILE="$rec_dir/u_nm_dm" \
+      GNOME_SESSION_TYPE_DEST="$rec_dir/u_nm_gnome" OVERRIDE_DIR="$rec_dir/getty.d" \
+      POLKIT_RULE="$rec_dir/u_nm_polkit" \
+      unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
+  )"
+  rec_nm_status=$?
+  set -e
+
+  if [[ $rec_u_status -eq 0 && ! -e "$rec_u_home/.xinitrc" && ! -e "$rec_u_home/.xinitrc.lightxdm.absent" ]] &&
+    ! compgen -G "$rec_u_home/.xinitrc.lightxdm-edited*" >/dev/null &&
+    [[ $rec_nm_status -eq 0 && -f "$rec_nm_home/.xinitrc" && "$rec_nm_out" == *"Keeping $rec_nm_home/.xinitrc"* ]]; then
+    pass "uninstall.sh honors recorded installed-dotfiles hashes with markers and keeps markerless dotfiles"
+  else
+    fail "uninstall.sh recorded installed-dotfiles hashes (marked=$rec_u_status:$rec_u_out | nomarker=$rec_nm_status:$rec_nm_out)"
+  fi
+fi
+
 finish_harness

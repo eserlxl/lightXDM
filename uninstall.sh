@@ -242,6 +242,19 @@ is_past_lightxdm_template() {
   grep -Fqx -- "${hash%% *}  $pathspec" "$SCRIPT_DIR/dotfiles/template-history.sha256" 2>/dev/null
 }
 
+# Print the recorded hash of what lightXDM last wrote into home dotfile $1, if there is one.
+recorded_dotfile_sum() {
+  local rel="$1" state_dir="$TARGET_HOME/.local/state/lightxdm" file line sum="" LC_ALL=C
+  file="$state_dir/installed-dotfiles"
+  [[ ! -L "$state_dir" && -f "$file" && ! -L "$file" && -r "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "${line:66}" == "$rel" && "${line:64:2}" == "  " && "${line:0:64}" =~ ^[0-9a-f]{64}$ ]]; then
+      sum="${line:0:64}"
+    fi
+  done <"$file"
+  [[ -z "$sum" ]] || printf '%s\n' "$sum"
+}
+
 # Restore or remove user dotfiles
 matches_lightxdm_template() {
   local dotfile="$1"
@@ -274,13 +287,22 @@ matches_lightxdm_template() {
       fi
       ;;
   esac
-  local tmpl
+  local tmpl path_sum="" recorded_sum=""
   for tmpl in "${templates[@]}"; do
     [[ "$tmpl" -ef "$path" ]] && continue
     if [[ -f "$tmpl" ]] && files_match "$path" "$tmpl"; then
       return 0
     fi
   done
+  if [[ "$mode" != "--bundled-only" ]]; then
+    recorded_sum="$(recorded_dotfile_sum "$dotfile")"
+    if [[ -n "$recorded_sum" ]]; then
+      path_sum="$(sha256sum < "$path")"
+      if [[ "${path_sum%% *}" == "$recorded_sum" ]]; then
+        return 0
+      fi
+    fi
+  fi
   is_past_lightxdm_template "$path" "$dotfile"
 }
 
