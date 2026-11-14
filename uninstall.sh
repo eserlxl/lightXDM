@@ -499,8 +499,17 @@ main() {
       rm -f -- "$DM_STATE_FILE"
     else
       echo "Failed to re-enable display manager(s): ${failed[*]}" >&2
-      rm -f -- "$DM_STATE_FILE"
-      (umask 022 && printf '%s\n' "${failed[@]}" > "$DM_STATE_FILE")
+      local dm_dir dm_tmp=""
+      dm_dir="$(dirname -- "$DM_STATE_FILE")"
+      if dm_tmp="$(mktemp "$dm_dir/.disabled-display-managers.XXXXXX")" &&
+        printf '%s\n' "${failed[@]}" >"$dm_tmp" &&
+        chmod 644 -- "$dm_tmp" &&
+        mv -Tf -- "$dm_tmp" "$DM_STATE_FILE"; then
+        :
+      else
+        [[ -z "$dm_tmp" ]] || rm -f -- "$dm_tmp" 2>/dev/null || true
+        echo "Warning: Could not update $DM_STATE_FILE." >&2
+      fi
       exit 1
     fi
   fi

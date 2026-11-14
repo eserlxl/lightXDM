@@ -226,11 +226,15 @@ main() {
     echo "Removing legacy autologin override..."
     rm -f "$LEGACY_OVERRIDE_FILE"
   fi
-  # Replace a symlink at the drop-in path instead of writing through it.
-  rm -f "$OVERRIDE_FILE"
-  echo "[Service]
-ExecStart=
-ExecStart=-/usr/bin/agetty --autologin $target_user --noclear %I \$TERM" > "$OVERRIDE_FILE"
+  # Atomically write a temp unit and replace any symlink at the drop-in path instead of writing through it.
+  tmp_override=""
+  if ! { tmp_override="$(mktemp "$OVERRIDE_DIR/.lightxdm-autologin.conf.XXXXXX")" &&
+    printf "[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin %s --noclear %%I \$TERM\n" "$target_user" >"$tmp_override" &&
+    chmod 644 -- "$tmp_override" &&
+    mv -Tf -- "$tmp_override" "$OVERRIDE_FILE"; }; then
+    [[ -z "$tmp_override" ]] || rm -f -- "$tmp_override" 2>/dev/null || true
+    exit 1
+  fi
   local drop_in LC_ALL=C
   for drop_in in "$OVERRIDE_DIR"/*.conf; do
     if [[ -f "$drop_in" && "$drop_in" > "$OVERRIDE_FILE" ]] &&

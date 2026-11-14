@@ -725,7 +725,7 @@ recorded_dotfile_sum() {
 
 # Record what lightXDM just wrote into home dotfile $1 ("<sha256>  <path under HOME>" per line).
 record_dotfile() {
-  local target="$1" file dir rel sum line kept=() LC_ALL=C
+  local target="$1" file dir rel sum line kept=() tmp="" LC_ALL=C
   file="$(dotfile_record_file)"
   dir="${file%/*}"
   [[ ! -L "$dir" ]] || return 1
@@ -738,8 +738,13 @@ record_dotfile() {
   fi
   mkdir -p -- "$dir" || return 1
   [[ ! -L "$dir" ]] || return 1
-  rm -f -- "$file" || return 1
-  printf '%s\n' "${kept[@]}" "${sum%% *}  $rel" >"$file"
+  if ! { tmp="$(mktemp "$dir/.installed-dotfiles.XXXXXX")" &&
+    printf '%s\n' "${kept[@]}" "${sum%% *}  $rel" >"$tmp" &&
+    chmod 644 -- "$tmp" &&
+    mv -Tf -- "$tmp" "$file"; }; then
+    [[ -z "$tmp" ]] || rm -f -- "$tmp" 2>/dev/null || true
+    return 1
+  fi
 }
 
 # True when lightXDM put home dotfile $1 there before: it recorded what it wrote, or it backed up the
@@ -1571,7 +1576,7 @@ install_choices_readable() {
 # Save the desktop id ($1), the --no-packages choice ($2) and the packages the run asked for (the
 # rest; --update installs only ones missing from this list) of a finished install for --update
 save_install_choices() {
-  local file dir content
+  local file dir content tmp=""
   file="$(install_choices_file)"
   dir="${file%/*}"
   printf -v content 'de=%s\nno_packages=%s\n' "$1" "$2"
@@ -1579,7 +1584,9 @@ save_install_choices() {
     content+="packages=${*:3}"$'\n'
   fi
   if ! { [[ ! -L "$dir" ]] && mkdir -p -- "$dir" && [[ ! -L "$dir" ]] &&
-    rm -f -- "$file" && printf '%s' "$content" >"$file"; } 2>/dev/null; then
+    tmp="$(mktemp "$dir/.install-choices.XXXXXX")" &&
+    printf '%s' "$content" >"$tmp" && chmod 644 -- "$tmp" && mv -Tf -- "$tmp" "$file"; } 2>/dev/null; then
+    [[ -z "$tmp" ]] || rm -f -- "$tmp" 2>/dev/null || true
     log "WARNING: Could not save the install choices for --update in $file."
   fi
 }
