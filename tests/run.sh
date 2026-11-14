@@ -10416,6 +10416,69 @@ if [[ "$record_out" == *"  record: $record_dir/lightxdm/pam-keyring (gnome)"* &&
 else
   fail "configure_pam keyring record (output=$record_out)"
 fi
+# Strict root umask, pre-planted symlinks, and unreadable state files keep /etc/lightxdm searchable and
+# PAM records mode 0644 regular files without crashing unprivileged --update.
+strict_dir="$TMP_DIR/strict_umask_state"
+mkdir -p "$strict_dir/home/.local/state/lightxdm"
+printf 'de=gnome\nno_packages=1\n' >"$strict_dir/home/.local/state/lightxdm/install-choices"
+printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$strict_dir/login"
+strict_report=""
+# shellcheck disable=SC2016  # expand inside the child shell
+strict_out="$(env HOME="$strict_dir/home" LOGIN_FILE="$strict_dir/login" \
+  PAM_KEYRING_STATE="$strict_dir/etc-a/pam-keyring" \
+  PAM_LOGIN_BASE_STATE="$strict_dir/etc-a/pam-login-base" \
+  GNOME_SESSION_TYPE_DEST="$strict_dir/etc-a/gnome-session-type.conf" \
+  DM_STATE_FILE="$strict_dir/etc-dm/disabled-display-managers" \
+  DISPLAY_MANAGER_LINK="$strict_dir/display-manager.service" \
+  bash -c 'umask 077 && source "$1/install.sh" && UPDATE_RESTORE_PAM=1 && UPDATE_LOGIN_SUM=deadbeef &&
+    disable_display_managers && configure_pam gnome && configure_gnome_session_type gnome tester' _ "$REPO_ROOT" 2>&1)" ||
+  strict_report+=" [umask 077 run failed: $strict_out]"
+for strict_sub in "$strict_dir/etc-a" "$strict_dir/etc-dm"; do
+  [[ "$(stat -c %a "$strict_sub" 2>/dev/null)" == 755 ]] ||
+    strict_report+=" [dir $strict_sub mode=$(stat -c %a "$strict_sub" 2>&1)]"
+done
+for strict_file in "$strict_dir/etc-a/pam-keyring" "$strict_dir/etc-a/pam-login-base" "$strict_dir/etc-a/gnome-session-type.conf"; do
+  [[ -f "$strict_file" && ! -L "$strict_file" && "$(stat -c %a "$strict_file" 2>/dev/null)" == 644 ]] ||
+    strict_report+=" [file $strict_file mode=$(stat -c '%a %F' "$strict_file" 2>&1)]"
+done
+printf 'victim\n' >"$strict_dir/victim"
+ln -sf -- "$strict_dir/victim" "$strict_dir/etc-a/pam-keyring"
+ln -sf -- "$strict_dir/victim" "$strict_dir/etc-a/pam-login-base"
+ln -sf -- "$strict_dir/victim" "$strict_dir/etc-a/gnome-session-type.conf"
+chmod 600 "$strict_dir/etc-a"
+# shellcheck disable=SC2016
+strict_link_out="$(env HOME="$strict_dir/home" LOGIN_FILE="$strict_dir/login" \
+  PAM_KEYRING_STATE="$strict_dir/etc-a/pam-keyring" \
+  PAM_LOGIN_BASE_STATE="$strict_dir/etc-a/pam-login-base" \
+  GNOME_SESSION_TYPE_DEST="$strict_dir/etc-a/gnome-session-type.conf" \
+  bash -c 'umask 077 && source "$1/install.sh" && UPDATE_RESTORE_PAM=1 && UPDATE_LOGIN_SUM=cafebabe &&
+    configure_pam plasma && record_login_base && configure_gnome_session_type gnome tester' _ "$REPO_ROOT" 2>&1)" ||
+  strict_report+=" [symlink/0600 dir repair failed: $strict_link_out]"
+chmod 755 "$strict_dir/etc-a" 2>/dev/null || true
+[[ "$(cat "$strict_dir/victim")" == "victim" ]] || strict_report+=" [symlink target modified: $(cat "$strict_dir/victim")]"
+for strict_file in "$strict_dir/etc-a/pam-keyring" "$strict_dir/etc-a/pam-login-base" "$strict_dir/etc-a/gnome-session-type.conf"; do
+  [[ -f "$strict_file" && ! -L "$strict_file" && "$(stat -c %a "$strict_file" 2>/dev/null)" == 644 ]] ||
+    strict_report+=" [repaired $strict_file mode=$(stat -c '%a %F' "$strict_file" 2>&1)]"
+done
+chmod 000 "$strict_dir/etc-a/pam-keyring"
+if [[ ! -r "$strict_dir/etc-a/pam-keyring" ]]; then
+  set +e
+  strict_unreadable="$(env -u SHELLOPTS -u SUDO_USER HOME="$strict_dir/home" LOGIN_FILE="$strict_dir/login" \
+    PAM_KEYRING_STATE="$strict_dir/etc-a/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$strict_dir/etc-a/pam-login-base" \
+    GNOME_SESSION_TYPE_DEST="$strict_dir/etc-a/gnome-session-type.conf" \
+    bash "$REPO_ROOT/install.sh" --update --dry-run 2>&1)"
+  status=$?
+  set -e
+  [[ $status -eq 0 && "$strict_unreadable" == *"Updating with the saved choices:"* ]] ||
+    strict_report+=" [unreadable pam-keyring crashed --update: status=$status, out=$strict_unreadable]"
+fi
+chmod 644 "$strict_dir/etc-a/pam-keyring"
+if [[ -z "$strict_report" ]]; then
+  pass "install.sh keeps PAM state files mode 0644 regular files under umask 077, replaces symlinks, and tolerates unreadable pam-keyring"
+else
+  fail "strict umask PAM state:$strict_report"
+fi
 # Dotfiles equal to older lightXDM templates (pinned in a temporary copy's list, no git) count as lightXDM's own
 if [[ ! -f "$REPO_ROOT/dotfiles/template-history.sha256" ]]; then
   fail "dotfiles/template-history.sha256 is missing"

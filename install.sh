@@ -1015,9 +1015,15 @@ configure_pam() {
     log "PAM configuration for $module already exists. Skipping."
   fi
   # --update reads this record to tell keyring lines a .pacnew merge dropped from lines removed on purpose.
-  if [[ "$(cat -- "$PAM_KEYRING_STATE" 2>/dev/null)" != "$backend" ]]; then
-    sudo mkdir -p -- "$(dirname -- "$PAM_KEYRING_STATE")" || return 1
-    printf '%s\n' "$backend" | sudo tee -- "$PAM_KEYRING_STATE" > /dev/null || return 1
+  local keyring_state_dir
+  keyring_state_dir="$(dirname -- "$PAM_KEYRING_STATE")"
+  if [[ -d "$keyring_state_dir" && ! -x "$keyring_state_dir" ]]; then
+    sudo chmod 755 -- "$keyring_state_dir" || return 1
+  fi
+  if [[ ! -f "$PAM_KEYRING_STATE" || -L "$PAM_KEYRING_STATE" || ! -r "$PAM_KEYRING_STATE" ||
+    "$(stat -c %a -- "$PAM_KEYRING_STATE" 2>/dev/null)" != 644 ||
+    "$(cat -- "$PAM_KEYRING_STATE" 2>/dev/null)" != "$backend" ]]; then
+    printf '%s\n' "$backend" | sudo install -Dm644 /dev/stdin "$PAM_KEYRING_STATE" || return 1
   fi
 
   # Autologin passes no password, so keyring unlock cannot work alongside it.
@@ -1192,8 +1198,12 @@ configure_gnome_session_type() (
     fi
   fi
   if [[ "$de" == gnome ]]; then
-    local src="$SCRIPT_DIR/pam/gnome-session-type.conf"
-    if [[ ! -f "$GNOME_SESSION_TYPE_DEST" ]] ||
+    local src="$SCRIPT_DIR/pam/gnome-session-type.conf" gnome_state_dir
+    gnome_state_dir="$(dirname -- "$GNOME_SESSION_TYPE_DEST")"
+    if [[ -d "$gnome_state_dir" && ! -x "$gnome_state_dir" ]]; then
+      sudo chmod 755 -- "$gnome_state_dir" || return 1
+    fi
+    if [[ ! -f "$GNOME_SESSION_TYPE_DEST" || -L "$GNOME_SESSION_TYPE_DEST" || ! -r "$GNOME_SESSION_TYPE_DEST" ]] ||
       [[ "$(sha256sum < "$src")" != "$(sha256sum < "$GNOME_SESSION_TYPE_DEST")" || "$(stat -c %a "$GNOME_SESSION_TYPE_DEST")" != 644 ]]; then
       sudo install -Dm644 "$src" "$GNOME_SESSION_TYPE_DEST" || return 1
     fi
@@ -1255,7 +1265,13 @@ disable_display_managers() {
   local preview="${1:-0}"
   if [[ $preview -eq 0 && "${UPDATE_RUN:-0}" != 1 ]]; then
     log "Disabling any installed display managers..."
-    sudo mkdir -p "$(dirname -- "$DM_STATE_FILE")"
+    local dm_dir
+    dm_dir="$(dirname -- "$DM_STATE_FILE")"
+    if [[ ! -d "$dm_dir" ]]; then
+      sudo install -d -m755 -- "$dm_dir" || return
+    elif [[ ! -x "$dm_dir" ]]; then
+      sudo chmod 755 -- "$dm_dir" || return
+    fi
   fi
   local dm dm_unit recorded_units
   local disabled_dms=()
@@ -1392,7 +1408,7 @@ login_file_replaced_by_package() {
   local backup="${LOGIN_FILE}.lightxdm.bak" sum base="" owner
   [[ -f "$backup" && -r "$backup" && -r "$LOGIN_FILE" ]] || return 1
   sum="$(sha256sum < "$LOGIN_FILE")"
-  [[ -r "$PAM_LOGIN_BASE_STATE" ]] && base="$(<"$PAM_LOGIN_BASE_STATE")"
+  [[ -f "$PAM_LOGIN_BASE_STATE" && ! -L "$PAM_LOGIN_BASE_STATE" && -r "$PAM_LOGIN_BASE_STATE" ]] && base="$(<"$PAM_LOGIN_BASE_STATE")"
   [[ "$sum" != "$(sha256sum < "$backup")" && "${sum%% *}" != "$base" ]] || return 1
   owner="$(pacman -Qqo -- "$LOGIN_FILE" 2>/dev/null)" && [[ -n "$owner" ]] || return 1
   LC_ALL=C pacman -Qii -- "$owner" 2>/dev/null | grep -Fq -- "$LOGIN_FILE [unmodified]"
@@ -1415,9 +1431,16 @@ start_update_run() {
 # version, so a later removal of the lines by hand is not taken for another merge.
 record_login_base() {
   [[ "${UPDATE_RESTORE_PAM:-0}" == 1 && -n "${UPDATE_LOGIN_SUM:-}" ]] || return 0
-  [[ "$(cat -- "$PAM_LOGIN_BASE_STATE" 2>/dev/null)" != "$UPDATE_LOGIN_SUM" ]] || return 0
-  sudo mkdir -p -- "$(dirname -- "$PAM_LOGIN_BASE_STATE")" || return 1
-  printf '%s\n' "$UPDATE_LOGIN_SUM" | sudo tee -- "$PAM_LOGIN_BASE_STATE" > /dev/null
+  local base_state_dir
+  base_state_dir="$(dirname -- "$PAM_LOGIN_BASE_STATE")"
+  if [[ -d "$base_state_dir" && ! -x "$base_state_dir" ]]; then
+    sudo chmod 755 -- "$base_state_dir" || return 1
+  fi
+  if [[ ! -f "$PAM_LOGIN_BASE_STATE" || -L "$PAM_LOGIN_BASE_STATE" || ! -r "$PAM_LOGIN_BASE_STATE" ||
+    "$(stat -c %a -- "$PAM_LOGIN_BASE_STATE" 2>/dev/null)" != 644 ||
+    "$(cat -- "$PAM_LOGIN_BASE_STATE" 2>/dev/null)" != "$UPDATE_LOGIN_SUM" ]]; then
+    printf '%s\n' "$UPDATE_LOGIN_SUM" | sudo install -Dm644 /dev/stdin "$PAM_LOGIN_BASE_STATE" || return 1
+  fi
 }
 # Print the options --update re-runs, one per line: the saved desktop and package choice, and the
 # keyring backend recorded in $PAM_KEYRING_STATE, else the one the active auth lines in $LOGIN_FILE
@@ -1450,7 +1473,7 @@ saved_install_args() {
   # The record tells keyring lines a .pacnew merge dropped from lines removed with uninstall.sh
   # --keyring-only; installs from before the record fall back to the lines themselves.
   local record="" backend module auth_line session_line
-  if [[ -f "$PAM_KEYRING_STATE" ]]; then
+  if [[ -f "$PAM_KEYRING_STATE" && ! -L "$PAM_KEYRING_STATE" && -r "$PAM_KEYRING_STATE" ]]; then
     record="$(<"$PAM_KEYRING_STATE")"
   fi
   case "$record" in
