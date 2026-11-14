@@ -11987,12 +11987,16 @@ case "${1:-}" in
       '  lightdm.service          enabled'
     ;;
   is-enabled)
-    if [[ "${2:-}" == "lightdm.service" ]]; then
-      echo "enabled"
-      exit 0
-    fi
-    echo "enabled"
-    exit 0
+    case "${2:-}" in
+      sddm.service | lightdm.service | gdm.service | lxdm.service)
+        echo "enabled"
+        exit 0
+        ;;
+      *)
+        echo "disabled"
+        exit 1
+        ;;
+    esac
     ;;
   disable)
     exit 0
@@ -12040,8 +12044,9 @@ dm_fail_list_out="$(
 dm_fail_list_rc=$?
 set -e
 fail_list_calls="$(grep -cx -- 'list-unit-files' "$dm_exact_log" || true)"
-if [[ $dm_fail_list_rc -ne 0 || "$fail_list_calls" != "1" ]] ||
-  grep -q -- 'is-enabled' "$dm_exact_log"; then
+if [[ $dm_fail_list_rc -ne 0 || "$fail_list_calls" != "1" ||
+  "$dm_fail_list_out" != *"No enabled display managers found."* ]] ||
+  grep -Eq -- '(is-enabled|disable) (sddm|lightdm|gdm|lxdm)\.service' "$dm_exact_log"; then
   dm_exact_report+=" [failed list-unit-files: rc=$dm_fail_list_rc, calls=$fail_list_calls, out=$dm_fail_list_out]"
 fi
 
