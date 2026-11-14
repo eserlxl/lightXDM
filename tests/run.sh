@@ -9049,6 +9049,52 @@ else
   fail "main self-guard for ~/.wayland-session (status=$wl_self_st, log=$wl_self_log, output=$wl_self_out)"
 fi
 
+wl_self_dry_dir="$wl_self_dir/dry_run"
+mkdir -p "$wl_self_dry_dir"
+printf '#%%PAM-1.0\n' >"$wl_self_dry_dir/login"
+mkdir -p "$wl_self_home/.local/state/lightxdm"
+printf 'de=plasma\nno_packages=1\n' >"$wl_self_home/.local/state/lightxdm/install-choices"
+set +e
+wl_dry_out="$(
+  env -u SUDO_USER HOME="$wl_self_home" USER="testuser" PATH="$STUB_BIN:$PATH" \
+    LOGIN_FILE="$wl_self_dry_dir/login" bash "$REPO_ROOT/install.sh" --dry-run --no-packages --de plasma 2>&1
+)"
+wl_dry_st=$?
+wl_upd_dry_out="$(
+  env -u SUDO_USER HOME="$wl_self_home" USER="testuser" PATH="$STUB_BIN:$PATH" \
+    LOGIN_FILE="$wl_self_dry_dir/login" bash "$REPO_ROOT/install.sh" --update --dry-run 2>&1
+)"
+wl_upd_dry_st=$?
+set -e
+
+x11_self_home="$wl_self_dir/home_x11_self"
+mkdir -p "$x11_self_home/.config/lightxdm" "$x11_self_home/.local/state/lightxdm"
+cp "$REPO_ROOT/dotfiles/.xinitrc-xfce" "$x11_self_home/.xinitrc"
+ln -s ../../.xinitrc "$x11_self_home/.config/lightxdm/.xinitrc-xfce"
+printf 'de=xfce\nno_packages=1\n' >"$x11_self_home/.local/state/lightxdm/install-choices"
+set +e
+x11_dry_out="$(
+  env -u SUDO_USER HOME="$x11_self_home" USER="testuser" PATH="$STUB_BIN:$PATH" \
+    LOGIN_FILE="$wl_self_dry_dir/login" bash "$REPO_ROOT/install.sh" --dry-run --no-packages --de xfce 2>&1
+)"
+x11_dry_st=$?
+x11_upd_dry_out="$(
+  env -u SUDO_USER HOME="$x11_self_home" USER="testuser" PATH="$STUB_BIN:$PATH" \
+    LOGIN_FILE="$wl_self_dry_dir/login" bash "$REPO_ROOT/install.sh" --update --dry-run 2>&1
+)"
+x11_upd_dry_st=$?
+set -e
+rm -rf "$wl_self_home/.local"
+
+if [[ $wl_dry_st -eq 1 && "$wl_dry_out" == *"template for plasma is ~/.wayland-session itself"* &&
+  $wl_upd_dry_st -eq 1 && "$wl_upd_dry_out" == *"template for plasma is ~/.wayland-session itself"* &&
+  $x11_dry_st -eq 1 && "$x11_dry_out" == *"template for xfce is ~/.xinitrc itself"* &&
+  $x11_upd_dry_st -eq 1 && "$x11_upd_dry_out" == *"template for xfce is ~/.xinitrc itself"* ]]; then
+  pass "install.sh --dry-run and --update --dry-run reject self-referencing Wayland and X11 session templates"
+else
+  fail "install.sh --dry-run self-referencing template guard (wl=$wl_dry_st:$wl_dry_out | wl_upd=$wl_upd_dry_st:$wl_upd_dry_out | x11=$x11_dry_st:$x11_dry_out | x11_upd=$x11_upd_dry_st:$x11_upd_dry_out)"
+fi
+
 wl_link_home="$wl_self_dir/home_link_to_tmpl"
 mkdir -p "$wl_link_home"
 ln -s "$REPO_ROOT/dotfiles/.wayland-session-plasma" "$wl_link_home/.wayland-session"

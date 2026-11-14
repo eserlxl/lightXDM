@@ -601,6 +601,20 @@ check_template_syntax() {
   fi
 }
 
+# Refuse a user session template that resolves to the target dotfile itself.
+check_template_not_self() {
+  local de="$1" template="$2"
+  if [[ "${template##*/}" == .wayland-session-* ]]; then
+    if [[ ! -L "$HOME/.wayland-session" && "$template" -ef "$HOME/.wayland-session" ]]; then
+      log "The template for $de is ~/.wayland-session itself: $template. Installation aborted."
+      return 1
+    fi
+  elif [[ ! -L "$HOME/.xinitrc" && "$template" -ef "$HOME/.xinitrc" ]]; then
+    log "The template for $de is ~/.xinitrc itself: $template. Installation aborted."
+    return 1
+  fi
+}
+
 # Check startup commands before changing the user's session configuration
 check_session_commands() {
   local template="$1" base="${1##*/}" line session_line="" session_command package
@@ -1380,6 +1394,7 @@ preview_install() {
   template="$(xinitrc_template "$de")" || return 1
   check_template_syntax "$template" || return 1
   check_tty1_getty || return 1
+  check_template_not_self "$de" "$template" || return 1
   real_user="${USER:-$(id -un)}"
   printf 'Desktop: %s\nTemplate: %s\n' "$de" "$template"
   if [[ ! -r "$template" ]]; then
@@ -2014,15 +2029,7 @@ EOF
     fi
     exit 1
   fi
-  if [[ $is_wayland -eq 1 ]]; then
-    if [[ ! -L "$HOME/.wayland-session" && "$template" -ef "$HOME/.wayland-session" ]]; then
-      log "The template for $de is ~/.wayland-session itself: $template. Installation aborted."
-      exit 1
-    fi
-  elif [[ ! -L "$HOME/.xinitrc" && "$template" -ef "$HOME/.xinitrc" ]]; then
-    log "The template for $de is ~/.xinitrc itself: $template. Installation aborted."
-    exit 1
-  fi
+  check_template_not_self "$de" "$template" || exit 1
 
   # Globals, not locals: the EXIT trap runs after main's locals are gone.
   install_step=""
