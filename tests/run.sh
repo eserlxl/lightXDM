@@ -11893,4 +11893,73 @@ EOF
   fi
 fi
 
+# Non-GNOME configure_gnome_session_type handles dangling symlinks at GNOME_SESSION_TYPE_DEST in preview and apply paths.
+gnome_sym_dir="$TMP_DIR/gnome_dangling_symlink"
+rm -rf "$gnome_sym_dir"
+mkdir -p "$gnome_sym_dir"
+gnome_sym_login="$gnome_sym_dir/login"
+gnome_sym_dest="$gnome_sym_dir/gnome-session-type.conf"
+gnome_sym_report=""
+
+printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$gnome_sym_login"
+ln -s "$gnome_sym_dir/missing-target" "$gnome_sym_dest"
+
+set +e
+gnome_sym_dry_out="$(
+  # shellcheck disable=SC2016  # expand inside the child shell
+  env LOGIN_FILE="$gnome_sym_login" GNOME_SESSION_TYPE_DEST="$gnome_sym_dest" PATH="$STUB_BIN:$PATH" \
+    bash -c 'source "$1/install.sh" && configure_gnome_session_type xfce testuser 1' _ "$REPO_ROOT" 2>&1
+)"
+gnome_sym_dry_rc=$?
+set -e
+if [[ $gnome_sym_dry_rc -ne 0 ||
+  "$gnome_sym_dry_out" != *"  remove $gnome_sym_dest"* ||
+  "$gnome_sym_dry_out" == *"no GNOME configuration to remove"* ||
+  ! -L "$gnome_sym_dest" ]]; then
+  gnome_sym_report+=" [preview no-block dangling symlink: rc=$gnome_sym_dry_rc, link=$(test -L "$gnome_sym_dest" && echo yes || echo no), out=$gnome_sym_dry_out]"
+fi
+
+# Apply path without PAM block (has_block == 0) removes the dangling symlink.
+set +e
+gnome_sym_noblock_out="$(
+  # shellcheck disable=SC2016  # expand inside the child shell
+  env LOGIN_FILE="$gnome_sym_login" GNOME_SESSION_TYPE_DEST="$gnome_sym_dest" PATH="$STUB_BIN:$PATH" \
+    bash -c 'source "$1/install.sh" && configure_gnome_session_type xfce testuser' _ "$REPO_ROOT" 2>&1
+)"
+gnome_sym_noblock_rc=$?
+set -e
+if [[ $gnome_sym_noblock_rc -ne 0 || -L "$gnome_sym_dest" || -e "$gnome_sym_dest" ]]; then
+  gnome_sym_report+=" [apply no-block dangling symlink: rc=$gnome_sym_noblock_rc, out=$gnome_sym_noblock_out]"
+fi
+
+# Apply path with GNOME PAM block (has_block == 1) removes both the PAM block and a dangling symlink.
+set +e
+gnome_sym_setup_out="$(
+  # shellcheck disable=SC2016  # expand inside the child shell
+  env LOGIN_FILE="$gnome_sym_login" GNOME_SESSION_TYPE_DEST="$gnome_sym_dest" PATH="$STUB_BIN:$PATH" \
+    bash -c 'source "$1/install.sh" && configure_gnome_session_type gnome testuser' _ "$REPO_ROOT" 2>&1
+)"
+gnome_sym_setup_rc=$?
+set -e
+rm -f -- "$gnome_sym_dest"
+ln -s "$gnome_sym_dir/missing-target" "$gnome_sym_dest"
+set +e
+gnome_sym_block_out="$(
+  # shellcheck disable=SC2016  # expand inside the child shell
+  env LOGIN_FILE="$gnome_sym_login" GNOME_SESSION_TYPE_DEST="$gnome_sym_dest" PATH="$STUB_BIN:$PATH" \
+    bash -c 'source "$1/install.sh" && configure_gnome_session_type xfce testuser' _ "$REPO_ROOT" 2>&1
+)"
+gnome_sym_block_rc=$?
+set -e
+if [[ $gnome_sym_setup_rc -ne 0 || $gnome_sym_block_rc -ne 0 || -L "$gnome_sym_dest" || -e "$gnome_sym_dest" ]] ||
+  grep -Fq '# lightXDM: GNOME on TTY1 needs a wayland session type' "$gnome_sym_login"; then
+  gnome_sym_report+=" [apply with-block dangling symlink: setup_rc=$gnome_sym_setup_rc, setup_out=$gnome_sym_setup_out, rc=$gnome_sym_block_rc, out=$gnome_sym_block_out]"
+fi
+
+if [[ -z "$gnome_sym_report" ]]; then
+  pass "configure_gnome_session_type non-GNOME paths preview and remove dangling gnome-session-type.conf symlinks"
+else
+  fail "configure_gnome_session_type dangling symlink:$gnome_sym_report"
+fi
+
 finish_harness

@@ -1281,17 +1281,17 @@ configure_gnome_session_type() (
       if [[ $has_block -eq 1 ]]; then
         printf '  remove the lightXDM GNOME block\n'
       fi
-      if [[ -e "$GNOME_SESSION_TYPE_DEST" ]]; then
+      if [[ -e "$GNOME_SESSION_TYPE_DEST" || -L "$GNOME_SESSION_TYPE_DEST" ]]; then
         printf '  remove %s\n' "$GNOME_SESSION_TYPE_DEST"
       fi
-      if [[ $has_block -eq 0 && $login_readable -eq 1 && ! -e "$GNOME_SESSION_TYPE_DEST" ]]; then
+      if [[ $has_block -eq 0 && $login_readable -eq 1 && ! -e "$GNOME_SESSION_TYPE_DEST" && ! -L "$GNOME_SESSION_TYPE_DEST" ]]; then
         printf '  no GNOME configuration to remove\n'
       fi
     fi
     return 0
   fi
   if [[ "$de" != gnome && $has_block -eq 0 ]]; then
-    if [[ -e "$GNOME_SESSION_TYPE_DEST" ]]; then
+    if [[ -e "$GNOME_SESSION_TYPE_DEST" || -L "$GNOME_SESSION_TYPE_DEST" ]]; then
       sudo rm -f -- "$GNOME_SESSION_TYPE_DEST" || return 1
     fi
     return 0
@@ -1379,7 +1379,7 @@ configure_gnome_session_type() (
       record_login_base || return 1
     fi
   fi
-  if [[ "$de" != gnome && -e "$GNOME_SESSION_TYPE_DEST" ]]; then
+  if [[ "$de" != gnome && ( -e "$GNOME_SESSION_TYPE_DEST" || -L "$GNOME_SESSION_TYPE_DEST" ) ]]; then
     sudo rm -f -- "$GNOME_SESSION_TYPE_DEST" || return 1
   fi
 )
