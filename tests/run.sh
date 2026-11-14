@@ -11517,4 +11517,182 @@ else
   fail "install.sh --update unreadable PAM/state:$upd_priv_report"
 fi
 
+# Uninstall symlink traversal guards for $TARGET_HOME and intermediate home directories.
+uninst_sym="$TMP_DIR/uninstall_symlink_homes"
+rm -rf "$uninst_sym"
+mkdir -p "$uninst_sym/real_home" "$uninst_sym/outside_local" "$uninst_sym/outside_state" \
+  "$uninst_sym/outside_lxdm_state" "$uninst_sym/outside_cfg" "$uninst_sym/outside_autostart" \
+  "$uninst_sym/outside_lxdm_cfg"
+ln -s "$uninst_sym/real_home" "$uninst_sym/link_home"
+
+uninst_sym_report=""
+uninst_helper_out=""
+set +e
+uninst_helper_out="$(
+  REPO_ROOT="$REPO_ROOT" UNINST_SYM="$uninst_sym" bash -c '
+    set -e
+    # shellcheck disable=SC1091
+    source "$REPO_ROOT/uninstall.sh"
+
+    expect_rc() {
+      local want="$1" label="$2" got=0
+      shift 2
+      "$@" || got=$?
+      if [[ "$got" -ne "$want" ]]; then
+        printf "HELPER_ERR:%s:want=%s:got=%s\n" "$label" "$want" "$got"
+      fi
+    }
+
+    TARGET_HOME="$UNINST_SYM/link_home"
+    expect_rc 2 "link_home" target_home_is_safe
+    TARGET_HOME="$UNINST_SYM/link_home/"
+    expect_rc 2 "link_home_slash" target_home_is_safe
+    expect_rc 2 "link_home_dir" home_dir_is_safe ".config/autostart"
+    TARGET_HOME="$UNINST_SYM/real_home/"
+    expect_rc 0 "real_home_slash" target_home_is_safe
+
+    # Symlinked .local
+    ln -s "$UNINST_SYM/outside_local" "$UNINST_SYM/real_home/.local"
+    expect_rc 2 "sym_.local" home_dir_is_safe ".local/state/lightxdm"
+    rm -f "$UNINST_SYM/real_home/.local"
+
+    # Symlinked .local/state
+    mkdir -p "$UNINST_SYM/real_home/.local"
+    ln -s "$UNINST_SYM/outside_state" "$UNINST_SYM/real_home/.local/state"
+    expect_rc 2 "sym_.local_state" home_dir_is_safe ".local/state/lightxdm"
+    rm -f "$UNINST_SYM/real_home/.local/state"
+
+    # Symlinked .local/state/lightxdm
+    mkdir -p "$UNINST_SYM/real_home/.local/state"
+    ln -s "$UNINST_SYM/outside_lxdm_state" "$UNINST_SYM/real_home/.local/state/lightxdm"
+    expect_rc 2 "sym_.local_state_lightxdm" home_dir_is_safe ".local/state/lightxdm"
+
+    # recorded_dotfile_sum and cleanup_home_state_dir refuse symlinked .local/state/lightxdm
+    printf "# user xinitrc\n" >"$UNINST_SYM/real_home/.xinitrc"
+    xinit_sum="$(sha256sum <"$UNINST_SYM/real_home/.xinitrc")"
+    printf "%s  .xinitrc\n" "${xinit_sum%% *}" >"$UNINST_SYM/outside_lxdm_state/installed-dotfiles"
+    printf "100\n" >"$UNINST_SYM/outside_lxdm_state/startx-attempts"
+    printf "de=xfce\nno_packages=1\n" >"$UNINST_SYM/outside_lxdm_state/install-choices"
+    got_sum="$(recorded_dotfile_sum ".xinitrc")"
+    [[ -z "$got_sum" ]] || printf "HELPER_ERR:recorded_sum_leaked:%s\n" "$got_sum"
+    cleanup_home_state_dir
+    for keep in installed-dotfiles startx-attempts install-choices; do
+      [[ -f "$UNINST_SYM/outside_lxdm_state/$keep" ]] || printf "HELPER_ERR:state_deleted:%s\n" "$keep"
+    done
+    rm -rf "$UNINST_SYM/real_home/.local"
+
+    # Symlinked .config and .config/autostart refuse dotfile matching/removal
+    ln -s "$UNINST_SYM/outside_cfg" "$UNINST_SYM/real_home/.config"
+    expect_rc 2 "sym_.config_parent" home_parent_is_safe ".config/autostart/lightxdm-gpg-agent-tty.desktop"
+    expect_rc 2 "sym_.config_lxdm" home_dir_is_safe ".config/lightxdm"
+    rm -f "$UNINST_SYM/real_home/.config"
+
+    mkdir -p "$UNINST_SYM/real_home/.config"
+    ln -s "$UNINST_SYM/outside_autostart" "$UNINST_SYM/real_home/.config/autostart"
+    ln -s "$UNINST_SYM/outside_lxdm_cfg" "$UNINST_SYM/real_home/.config/lightxdm"
+    expect_rc 2 "sym_.config_autostart" home_parent_is_safe ".config/autostart/lightxdm-gpg-agent-tty.desktop"
+    expect_rc 2 "sym_.config_lightxdm" home_dir_is_safe ".config/lightxdm"
+
+    cp "$REPO_ROOT/dotfiles/lightxdm-gpg-agent-tty.desktop" "$UNINST_SYM/outside_autostart/lightxdm-gpg-agent-tty.desktop"
+    printf "new\n" >"$UNINST_SYM/outside_autostart/lightxdm-gpg-agent-tty.desktop.lightxdm-new"
+    printf "bak\n" >"$UNINST_SYM/outside_autostart/lightxdm-gpg-agent-tty.desktop.lightxdm.bak"
+    : >"$UNINST_SYM/outside_autostart/lightxdm-gpg-agent-tty.desktop.lightxdm.absent"
+    printf "# evil custom match\n" >"$UNINST_SYM/real_home/.xinitrc"
+    cp "$UNINST_SYM/real_home/.xinitrc" "$UNINST_SYM/outside_lxdm_cfg/.xinitrc-evil"
+    : >"$UNINST_SYM/real_home/.xinitrc.lightxdm.absent"
+
+    expect_rc 1 "matches_via_sym_autostart" matches_lightxdm_template ".config/autostart/lightxdm-gpg-agent-tty.desktop"
+    expect_rc 1 "matches_via_sym_lxdm_cfg" matches_lightxdm_template ".xinitrc"
+
+    cleanup_home_dotfiles
+    for keep in \
+      lightxdm-gpg-agent-tty.desktop \
+      lightxdm-gpg-agent-tty.desktop.lightxdm-new \
+      lightxdm-gpg-agent-tty.desktop.lightxdm.bak \
+      lightxdm-gpg-agent-tty.desktop.lightxdm.absent; do
+      [[ -f "$UNINST_SYM/outside_autostart/$keep" ]] || printf "HELPER_ERR:autostart_deleted:%s\n" "$keep"
+    done
+    [[ -f "$UNINST_SYM/real_home/.xinitrc.lightxdm-edited" ]] || printf "HELPER_ERR:xinitrc_not_preserved\n"
+  ' 2>&1
+)"
+uninst_helper_rc=$?
+set -e
+if [[ $uninst_helper_rc -ne 0 || "$uninst_helper_out" == *"HELPER_ERR:"* ||
+  "$uninst_helper_out" != *"Warning: Refusing symlinked directory along $uninst_sym/real_home/.local/state/lightxdm."* ||
+  "$uninst_helper_out" != *"Warning: Refusing symlinked directory along $uninst_sym/real_home/.config/autostart/lightxdm-gpg-agent-tty.desktop."* ]]; then
+  uninst_sym_report+=" [helper: rc=$uninst_helper_rc, out=$uninst_helper_out]"
+fi
+
+if [[ -z "$uninst_sym_report" ]]; then
+  pass "uninstall.sh home symlink traversal helpers refuse symlinked \$TARGET_HOME and intermediate dirs"
+else
+  fail "uninstall.sh symlink helper guards:$uninst_sym_report"
+fi
+
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh refuses symlinked TARGET_HOME and intermediate home dirs end-to-end (unshare -r unavailable)"
+else
+  uninst_e2e_report=""
+  uninst_root="$uninst_sym/e2e_root"
+  mkdir -p "$uninst_root/pam.d" "$uninst_root/state" "$uninst_root/getty.d" "$uninst_root/polkit" \
+    "$uninst_root/home" "$uninst_root/outside_cfg" "$uninst_root/outside_state"
+  ln -s "$uninst_root/home" "$uninst_root/home_link"
+  printf '%s\n' '#%PAM-1.0' >"$uninst_root/pam.d/login"
+  printf 'custom\n' >"$uninst_root/pam.d/login.lightxdm.bak"
+  printf 'hello\n' >"$uninst_root/home/keep"
+  set +e
+  e2e_out="$(
+    PATH="$STUB_BIN:$PATH" \
+      TARGET_HOME="$uninst_root/home_link/" \
+      LOGIN_FILE="$uninst_root/pam.d/login" \
+      GNOME_SESSION_TYPE_DEST="$uninst_root/state/gnome-session-type.conf" \
+      DM_STATE_FILE="$uninst_root/state/disabled-display-managers" \
+      PAM_KEYRING_STATE="$uninst_root/state/pam-keyring" \
+      PAM_LOGIN_BASE_STATE="$uninst_root/state/pam-login-base" \
+      POLKIT_RULE="$uninst_root/polkit/49-nopasswd.rules" \
+      OVERRIDE_DIR="$uninst_root/getty.d" \
+      unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
+  )"
+  e2e_rc=$?
+  set -e
+  if [[ $e2e_rc -ne 1 || "$e2e_out" != *"Error: Refusing symlinked target home directory: $uninst_root/home_link"* ||
+    ! -f "$uninst_root/pam.d/login.lightxdm.bak" ]]; then
+    uninst_e2e_report+=" [symlink TARGET_HOME: rc=$e2e_rc, out=$e2e_out]"
+  fi
+
+  mkdir -p "$uninst_root/home/.config" "$uninst_root/home/.local"
+  ln -s "$uninst_root/outside_cfg" "$uninst_root/home/.config/autostart"
+  ln -s "$uninst_root/outside_state" "$uninst_root/home/.local/state"
+  cp "$REPO_ROOT/dotfiles/lightxdm-gpg-agent-tty.desktop" "$uninst_root/outside_cfg/lightxdm-gpg-agent-tty.desktop"
+  printf 'keep\n' >"$uninst_root/outside_state/startx-attempts"
+  cp "$REPO_ROOT/dotfiles/.bash_profile" "$uninst_root/home/.bash_profile"
+  : >"$uninst_root/home/.bash_profile.lightxdm.absent"
+  set +e
+  e2e_out2="$(
+    PATH="$STUB_BIN:$PATH" \
+      TARGET_HOME="$uninst_root/home" \
+      LOGIN_FILE="$uninst_root/pam.d/login" \
+      GNOME_SESSION_TYPE_DEST="$uninst_root/state/gnome-session-type.conf" \
+      DM_STATE_FILE="$uninst_root/state/disabled-display-managers" \
+      PAM_KEYRING_STATE="$uninst_root/state/pam-keyring" \
+      PAM_LOGIN_BASE_STATE="$uninst_root/state/pam-login-base" \
+      POLKIT_RULE="$uninst_root/polkit/49-nopasswd.rules" \
+      OVERRIDE_DIR="$uninst_root/getty.d" \
+      unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1
+  )"
+  e2e_rc2=$?
+  set -e
+  if [[ $e2e_rc2 -ne 0 || -e "$uninst_root/home/.bash_profile" ||
+    ! -f "$uninst_root/outside_cfg/lightxdm-gpg-agent-tty.desktop" ||
+    ! -f "$uninst_root/outside_state/startx-attempts" ]]; then
+    uninst_e2e_report+=" [symlink intermediate dirs: rc=$e2e_rc2, out=$e2e_out2]"
+  fi
+
+  if [[ -z "$uninst_e2e_report" ]]; then
+    pass "uninstall.sh refuses symlinked TARGET_HOME and intermediate home dirs end-to-end"
+  else
+    fail "uninstall.sh symlink traversal end-to-end:$uninst_e2e_report"
+  fi
+fi
+
 finish_harness
