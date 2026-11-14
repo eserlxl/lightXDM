@@ -9972,6 +9972,7 @@ if [[ $status -ne 1 || "$output" != *"--update reuses the saved choices and take
   update_report+=" [extra option: status=$status, output=$output]"
 fi
 printf 'de=i3\nno_packages=1\n' >"$update_choices"
+printf '%s\n' "$PAM_GNOME_KEYRING_AUTH" "$PAM_GNOME_KEYRING_SESSION" >"$update_login"
 set +e
 output="$(update_run "$update_home" --update --update --dry-run --dry-run --non-interactive --non-interactive)"
 status=$?
@@ -11270,6 +11271,77 @@ if [[ -z "$pam_perm_report" ]]; then
   pass "PAM helpers preserve backup permissions under strict umask and handle unreadable PAM or backup files cleanly"
 else
   fail "PAM backup permissions and unreadable file handling:$pam_perm_report"
+fi
+
+# saved_install_args without pam-keyring detects removed/commented auth lines and ignores foreign backends on built-in desktops.
+norec_case="$TMP_DIR/saved_args_norec"
+mkdir -p "$norec_case/home/.local/state/lightxdm" "$norec_case/home/.config/lightxdm"
+printf '#!/bin/sh\nexec dwm\n' >"$norec_case/home/.config/lightxdm/.xinitrc-custom"
+norec_login="$norec_case/login"
+norec_missing_rec="$norec_case/no-pam-keyring"
+norec_base="$norec_case/no-pam-base"
+norec_report=""
+
+norec_run() {
+  env -u SHELLOPTS -u SUDO_USER HOME="$norec_case/home" LOGIN_FILE="$norec_login" \
+    PAM_KEYRING_STATE="$norec_missing_rec" PAM_LOGIN_BASE_STATE="$norec_base" \
+    bash "$REPO_ROOT/install.sh" --update --dry-run 2>&1
+}
+
+# 1. Auth removed or commented out while session remains (without pam-keyring) warns and passes --no-keyring.
+printf 'de=i3\nno_packages=1\n' >"$norec_case/home/.local/state/lightxdm/install-choices"
+for auth_edit in removed commented; do
+  printf '%s\n' '#%PAM-1.0' >"$norec_login"
+  [[ "$auth_edit" != commented ]] || printf '#%s\n' "$PAM_GNOME_KEYRING_AUTH" >>"$norec_login"
+  printf '%s\n' "$PAM_GNOME_KEYRING_SESSION" >>"$norec_login"
+  set +e
+  norec_out="$(norec_run)"
+  norec_rc=$?
+  set -e
+  if [[ $norec_rc -ne 0 || "$norec_out" != *"Updating with the saved choices: --de i3 --no-packages --no-keyring --dry-run"* ||
+    "$norec_out" != *"of lightXDM's gnome keyring lines are not in $norec_login (removed or commented out), which has your own edits"* ]]; then
+    norec_report+=" [i3 auth $auth_edit no record: rc=$norec_rc, out=$norec_out]"
+  fi
+done
+
+# 2. Plasma without pam-keyring is not shadowed by foreign pam_gnome_keyring.so lines when kwallet was edited or omitted.
+printf 'de=plasma\nno_packages=1\n' >"$norec_case/home/.local/state/lightxdm/install-choices"
+printf '%s\n' '#%PAM-1.0' "$PAM_GNOME_KEYRING_AUTH" "$PAM_GNOME_KEYRING_SESSION" "$PAM_KWALLET_AUTH" >"$norec_login"
+set +e
+norec_out="$(norec_run)"
+norec_rc=$?
+set -e
+if [[ $norec_rc -ne 0 || "$norec_out" != *"Updating with the saved choices: --de plasma --no-packages --no-keyring --dry-run"* ||
+  "$norec_out" != *"of lightXDM's kwallet keyring lines are not in $norec_login (removed or commented out), which has your own edits"* ]]; then
+  norec_report+=" [plasma partial kwallet with foreign gnome: rc=$norec_rc, out=$norec_out]"
+fi
+
+printf '%s\n' '#%PAM-1.0' "$PAM_GNOME_KEYRING_AUTH" "$PAM_GNOME_KEYRING_SESSION" >"$norec_login"
+set +e
+norec_out="$(norec_run)"
+norec_rc=$?
+set -e
+if [[ $norec_rc -ne 0 || "$norec_out" != *"Updating with the saved choices: --de plasma --no-packages --no-keyring --dry-run"* ||
+  "$norec_out" == *"has your own edits"* ]]; then
+  norec_report+=" [plasma no kwallet with foreign gnome: rc=$norec_rc, out=$norec_out]"
+fi
+
+# 3. xfce without pam-keyring ignores foreign pam_kwallet5.so lines instead of enabling gnome keyring.
+printf 'de=xfce\nno_packages=1\n' >"$norec_case/home/.local/state/lightxdm/install-choices"
+printf '%s\n' '#%PAM-1.0' "$PAM_KWALLET_AUTH" "$PAM_KWALLET_SESSION" >"$norec_login"
+set +e
+norec_out="$(norec_run)"
+norec_rc=$?
+set -e
+if [[ $norec_rc -ne 0 || "$norec_out" != *"Updating with the saved choices: --de xfce --no-packages --no-keyring --dry-run"* ||
+  "$norec_out" == *"has your own edits"* ]]; then
+  norec_report+=" [xfce no gnome with foreign kwallet: rc=$norec_rc, out=$norec_out]"
+fi
+
+if [[ -z "$norec_report" ]]; then
+  pass "saved_install_args without pam-keyring detects auth-line edits and scopes built-in desktops to their own backend"
+else
+  fail "saved_install_args without pam-keyring:$norec_report"
 fi
 
 finish_harness

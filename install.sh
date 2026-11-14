@@ -1597,10 +1597,10 @@ record_login_base() {
   fi
 }
 # Print the options --update re-runs, one per line: the saved desktop and package choice, and the
-# keyring backend recorded in $PAM_KEYRING_STATE, else the one the active auth lines in $LOGIN_FILE
-# use. Autologin is never passed.
+# keyring backend recorded in $PAM_KEYRING_STATE, else the one the active keyring lines in
+# $LOGIN_FILE use. Autologin is never passed.
 saved_install_args() {
-  local file line de="" no_packages=0 backends=()
+  local file line de="" no_packages=0 has_gnome=0 has_kwallet=0
   file="$(install_choices_file)"
   if install_choices_readable "$file"; then
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -1619,15 +1619,17 @@ saved_install_args() {
   if [[ $no_packages -eq 1 ]]; then
     printf '%s\n' --no-packages
   fi
-  if grep -Eq '^[[:space:]]*-?auth[[:space:]][^#]*pam_gnome_keyring\.so' "$LOGIN_FILE" 2>/dev/null; then
-    backends+=(gnome)
-  fi
-  if grep -Eq '^[[:space:]]*-?auth[[:space:]][^#]*pam_kwallet5\.so' "$LOGIN_FILE" 2>/dev/null; then
-    backends+=(kwallet)
+  if [[ -r "$LOGIN_FILE" ]]; then
+    if grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_gnome_keyring\.so' "$LOGIN_FILE" 2>/dev/null; then
+      has_gnome=1
+    fi
+    if grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_kwallet5\.so' "$LOGIN_FILE" 2>/dev/null; then
+      has_kwallet=1
+    fi
   fi
   # The record tells keyring lines a .pacnew merge dropped from lines removed with uninstall.sh
   # --keyring-only; installs from before the record fall back to the lines themselves.
-  local record="" backend module auth_line session_line
+  local record="" backend="" module auth_line session_line
   if [[ -f "$PAM_KEYRING_STATE" && ! -L "$PAM_KEYRING_STATE" && -r "$PAM_KEYRING_STATE" ]]; then
     record="$(<"$PAM_KEYRING_STATE")"
   fi
@@ -1635,7 +1637,21 @@ saved_install_args() {
     gnome | kwallet) backend="$record" ;;
     *)
       record=""
-      backend="${backends[0]:-}"
+      case "$de" in
+        plasma)
+          [[ $has_kwallet -eq 1 ]] && backend=kwallet
+          ;;
+        gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3)
+          [[ $has_gnome -eq 1 ]] && backend=gnome
+          ;;
+        *)
+          if [[ $has_gnome -eq 1 ]]; then
+            backend=gnome
+          elif [[ $has_kwallet -eq 1 ]]; then
+            backend=kwallet
+          fi
+          ;;
+      esac
       ;;
   esac
   if [[ -z "$backend" ]]; then
