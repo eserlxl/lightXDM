@@ -114,7 +114,7 @@ if [[ -f "$BACKUP_FILE" && ! -L "$BACKUP_FILE" ]]; then
   if [[ ! -e "$LOGIN_FILE" ]]; then
     echo "Restoring $LOGIN_FILE from backup..."
     rm -f -- "$LOGIN_FILE"
-    cp -- "$BACKUP_FILE" "$LOGIN_FILE"
+    cp -p -- "$BACKUP_FILE" "$LOGIN_FILE"
     rm -f -- "$BACKUP_FILE"
   else
     # A line already present before install (it is in the backup) is the user's, not ours.
@@ -132,8 +132,8 @@ if [[ -f "$BACKUP_FILE" && ! -L "$BACKUP_FILE" ]]; then
       { [[ -s "$BACKUP_FILE" && -n "$(tail -c 1 "$BACKUP_FILE")" ]] &&
         files_match "$LOGIN_FILE" <(cat "$BACKUP_FILE"; printf '\n'); }; then
       echo "Restoring $LOGIN_FILE from backup..."
-      cp "$BACKUP_FILE" "$LOGIN_FILE"
-      rm -f "$BACKUP_FILE"
+      cp -p -- "$BACKUP_FILE" "$LOGIN_FILE"
+      rm -f -- "$BACKUP_FILE"
     else
       echo "Removed lightXDM PAM lines from $LOGIN_FILE; backup kept for review: $BACKUP_FILE"
     fi

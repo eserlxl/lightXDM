@@ -41,8 +41,14 @@ is_legacy_autologin_override() {
 }
 
 warn_keyring_unlock() {
-  if [[ -f "$LOGIN_FILE" ]] && grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*(pam_kwallet5\.so|pam_gnome_keyring\.so)([[:space:]]|$)' "$LOGIN_FILE"; then
-    echo "Warning: PAM keyring unlock is configured in $LOGIN_FILE; the keyring will not unlock automatically with autologin and will ask for its password in the desktop, unless its password is empty. To remove the keyring lines lightXDM added, run 'sudo $(printf 'bash %q' "$SCRIPT_DIR/uninstall.sh") --keyring-only'."
+  if [[ -f "$LOGIN_FILE" ]]; then
+    if [[ ! -r "$LOGIN_FILE" ]]; then
+      echo "Note: cannot read $LOGIN_FILE; run --status with sudo for an exact result." >&2
+      return 0
+    fi
+    if grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*(pam_kwallet5\.so|pam_gnome_keyring\.so)([[:space:]]|$)' "$LOGIN_FILE"; then
+      echo "Warning: PAM keyring unlock is configured in $LOGIN_FILE; the keyring will not unlock automatically with autologin and will ask for its password in the desktop, unless its password is empty. To remove the keyring lines lightXDM added, run 'sudo $(printf 'bash %q' "$SCRIPT_DIR/uninstall.sh") --keyring-only'."
+    fi
   fi
 }
 

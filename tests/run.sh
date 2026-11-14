@@ -11123,4 +11123,153 @@ SHIM
   fi
 fi
 
+# PAM backup permission preservation under strict root umask and unreadable PAM/backup handling.
+pam_perm_case="$TMP_DIR/pam_perm_case"
+mkdir -p "$pam_perm_case/bin" "$pam_perm_case/etc" "$pam_perm_case/home/.local/state/lightxdm" "$pam_perm_case/getty.d"
+cat >"$pam_perm_case/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+umask 077
+declare -A saved_modes=()
+if [[ -n "${PAM_PRIV_DIR:-}" && -d "$PAM_PRIV_DIR" ]]; then
+  for f in "$PAM_PRIV_DIR"/*; do
+    if [[ -f "$f" && ! -L "$f" ]]; then
+      saved_modes["$f"]="$(stat -c %a -- "$f")"
+      chmod u+rw -- "$f"
+    fi
+  done
+fi
+"$@"
+rc=$?
+for f in "${!saved_modes[@]}"; do
+  if [[ -f "$f" && ! -L "$f" && "${saved_modes[$f]}" == 0 ]]; then
+    chmod 000 -- "$f"
+  fi
+done
+exit "$rc"
+EOF
+chmod +x "$pam_perm_case/bin/sudo"
+pam_perm_report=""
+
+# 1. cp -p preserves 0644 on PAM backups under root umask 077 (both configure_pam and configure_gnome_session_type).
+printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$pam_perm_case/etc/login_pam"
+chmod 644 "$pam_perm_case/etc/login_pam"
+# shellcheck disable=SC2016
+env PATH="$pam_perm_case/bin:$STUB_BIN:$PATH" LOGIN_FILE="$pam_perm_case/etc/login_pam" \
+  PAM_KEYRING_STATE="$pam_perm_case/etc/pam-keyring" PAM_LOGIN_BASE_STATE="$pam_perm_case/etc/pam-base" \
+  AUTOLOGIN_DROPIN_DIR="$pam_perm_case/getty.d" \
+  bash -c 'source "$1/install.sh" && configure_pam xfce' _ "$REPO_ROOT" >/dev/null 2>&1 ||
+  pam_perm_report+=" [configure_pam under umask 077 failed]"
+[[ "$(stat -c %a -- "$pam_perm_case/etc/login_pam.lightxdm.bak" 2>/dev/null)" == 644 ]] ||
+  pam_perm_report+=" [configure_pam backup mode=$(stat -c %a -- "$pam_perm_case/etc/login_pam.lightxdm.bak" 2>/dev/null)]"
+
+printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$pam_perm_case/etc/login_gnome"
+chmod 644 "$pam_perm_case/etc/login_gnome"
+# shellcheck disable=SC2016
+env PATH="$pam_perm_case/bin:$STUB_BIN:$PATH" LOGIN_FILE="$pam_perm_case/etc/login_gnome" \
+  GNOME_SESSION_TYPE_DEST="$pam_perm_case/etc/gnome-session-type.conf" PAM_LOGIN_BASE_STATE="$pam_perm_case/etc/pam-base" \
+  bash -c 'source "$1/install.sh" && configure_gnome_session_type gnome tester' _ "$REPO_ROOT" >/dev/null 2>&1 ||
+  pam_perm_report+=" [configure_gnome_session_type under umask 077 failed]"
+[[ "$(stat -c %a -- "$pam_perm_case/etc/login_gnome.lightxdm.bak" 2>/dev/null)" == 644 ]] ||
+  pam_perm_report+=" [configure_gnome_session_type backup mode=$(stat -c %a -- "$pam_perm_case/etc/login_gnome.lightxdm.bak" 2>/dev/null)]"
+
+if [[ $can_unshare -eq 1 ]]; then
+  rm -f -- "$pam_perm_case/etc/login_pam"
+  # shellcheck disable=SC2016
+  unshare -r bash -c 'umask 077 && TARGET_HOME="$1/home" LOGIN_FILE="$1/etc/login_pam" DM_STATE_FILE="$1/etc/dm" GNOME_SESSION_TYPE_DEST="$1/etc/gnome.conf" OVERRIDE_DIR="$1/getty.d" POLKIT_RULE="$1/etc/polkit.rules" bash "$2/uninstall.sh" --keyring-only' _ "$pam_perm_case" "$REPO_ROOT" >/dev/null 2>&1 ||
+    pam_perm_report+=" [uninstall.sh restore under umask 077 failed]"
+  [[ "$(stat -c %a -- "$pam_perm_case/etc/login_pam" 2>/dev/null)" == 644 ]] ||
+    pam_perm_report+=" [uninstall.sh restored login mode=$(stat -c %a -- "$pam_perm_case/etc/login_pam" 2>/dev/null)]"
+fi
+
+if [[ $EUID -ne 0 ]]; then
+  # 2. Unreadable backup does not delete pre-install keyring lines on desktop switch, and unreadable legacy backup previews unknown.
+  mkdir -p "$pam_perm_case/priv"
+  printf '%s\n' '#%PAM-1.0' 'auth       optional   pam_gnome_keyring.so' 'session    include      system-local-login' >"$pam_perm_case/priv/login.lightxdm.bak"
+  printf '%s\n' '#%PAM-1.0' 'auth       optional   pam_gnome_keyring.so' 'session    include      system-local-login' 'session    optional   pam_gnome_keyring.so auto_start' >"$pam_perm_case/priv/login"
+  chmod 000 "$pam_perm_case/priv/login.lightxdm.bak"
+  # shellcheck disable=SC2016
+  env PAM_PRIV_DIR="$pam_perm_case/priv" PATH="$pam_perm_case/bin:$STUB_BIN:$PATH" LOGIN_FILE="$pam_perm_case/priv/login" \
+    PAM_KEYRING_STATE="$pam_perm_case/etc/pam-keyring" PAM_LOGIN_BASE_STATE="$pam_perm_case/etc/pam-base" \
+    AUTOLOGIN_DROPIN_DIR="$pam_perm_case/getty.d" \
+    bash -c 'source "$1/install.sh" && configure_pam plasma' _ "$REPO_ROOT" >/dev/null 2>&1 ||
+    pam_perm_report+=" [configure_pam switch with 000 backup failed]"
+  if ! grep -Fxq 'auth       optional   pam_gnome_keyring.so' "$pam_perm_case/priv/login" ||
+    grep -Fxq 'session    optional   pam_gnome_keyring.so auto_start' "$pam_perm_case/priv/login"; then
+    pam_perm_report+=" [unreadable backup lost pre-install line or kept lightXDM line: $(cat "$pam_perm_case/priv/login")]"
+  fi
+  chmod 644 "$pam_perm_case/priv/login.lightxdm.bak"
+
+  mkdir -p "$pam_perm_case/leg"
+  printf '%s\n' '#%PAM-1.0' >"$pam_perm_case/leg/login.lightxde.bak.1751000000"
+  printf '%s\n' '#%PAM-1.0' 'auth       optional   pam_gnome_keyring.so' >"$pam_perm_case/leg/login"
+  chmod 000 "$pam_perm_case/leg/login.lightxde.bak.1751000000"
+  # shellcheck disable=SC2016
+  leg_prev_out="$(env LOGIN_FILE="$pam_perm_case/leg/login" PAM_KEYRING_STATE="$pam_perm_case/etc/pam-keyring" \
+    bash -c 'source "$1/install.sh" && configure_pam plasma 1' _ "$REPO_ROOT" 2>&1)"
+  chmod 644 "$pam_perm_case/leg/login.lightxde.bak.1751000000"
+  if [[ "$leg_prev_out" != *'  removals: unknown (needs root)'* || "$leg_prev_out" == *'Permission denied'* ]]; then
+    pam_perm_report+=" [unreadable legacy backup preview: $leg_prev_out]"
+  fi
+
+  # 3. Real configure_pam and configure_gnome_session_type work on an unreadable (000) LOGIN_FILE via sudo.
+  mkdir -p "$pam_perm_case/priv_login"
+  printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$pam_perm_case/priv_login/login"
+  chmod 000 "$pam_perm_case/priv_login/login"
+  # shellcheck disable=SC2016
+  priv_real_out="$(env PAM_PRIV_DIR="$pam_perm_case/priv_login" PATH="$pam_perm_case/bin:$STUB_BIN:$PATH" \
+    LOGIN_FILE="$pam_perm_case/priv_login/login" GNOME_SESSION_TYPE_DEST="$pam_perm_case/etc/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$pam_perm_case/etc/pam-keyring" PAM_LOGIN_BASE_STATE="$pam_perm_case/etc/pam-base" \
+    AUTOLOGIN_DROPIN_DIR="$pam_perm_case/getty.d" \
+    bash -c 'source "$1/install.sh" && configure_pam gnome && configure_gnome_session_type gnome tester' _ "$REPO_ROOT" 2>&1)" ||
+    pam_perm_report+=" [real PAM helpers on 000 login failed: $priv_real_out]"
+  chmod 644 "$pam_perm_case/priv_login/login" "$pam_perm_case/priv_login/login.lightxdm.bak" 2>/dev/null || true
+  if [[ "$priv_real_out" == *'Permission denied'* ]] ||
+    ! grep -Fxq 'auth       optional   pam_gnome_keyring.so' "$pam_perm_case/priv_login/login" ||
+    ! grep -Fxq '# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)' "$pam_perm_case/priv_login/login"; then
+    pam_perm_report+=" [real PAM helpers on 000 login content/stderr: $priv_real_out]"
+  fi
+
+  # 4. --update --dry-run with unreadable LOGIN_FILE reports unknown without Permission denied or false hand-edit notices.
+  printf 'de=gnome\nno_packages=1\n' >"$pam_perm_case/home/.local/state/lightxdm/install-choices"
+  printf 'gnome\n' >"$pam_perm_case/etc/pam-keyring"
+  chmod 000 "$pam_perm_case/priv_login/login"
+  : >"$STUB_LOG"
+  set +e
+  upd_unread_out="$(env HOME="$pam_perm_case/home" USER=tester PATH="$dr_bin:$PATH" \
+    LOGIN_FILE="$pam_perm_case/priv_login/login" PAM_KEYRING_STATE="$pam_perm_case/etc/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$pam_perm_case/etc/pam-base" DM_STATE_FILE="$pam_perm_case/etc/dm" \
+    DISPLAY_MANAGER_LINK="$pam_perm_case/etc/display-manager.service" \
+    GNOME_SESSION_TYPE_DEST="$pam_perm_case/etc/gnome-session-type.conf" \
+    bash "$REPO_ROOT/install.sh" --update --dry-run 2>&1)"
+  upd_unread_rc=$?
+  set -e
+  if [[ $upd_unread_rc -ne 0 || "$upd_unread_out" != *$'PAM keyring: '"$pam_perm_case/priv_login/login"$'\n  unknown (needs root)'* ||
+    "$upd_unread_out" != *$'GNOME session type: '"$pam_perm_case/priv_login/login"$'\n  existing block: unknown (needs root)'* ||
+    "$upd_unread_out" == *'Permission denied'* || "$upd_unread_out" == *'has your own edits'* ]] ||
+    grep -q '^sudo ' "$STUB_LOG"; then
+    pam_perm_report+=" [--update --dry-run unreadable login: rc=$upd_unread_rc, out=$upd_unread_out]"
+  fi
+
+  # 5. enable-autologin.sh --status with unreadable LOGIN_FILE prints Note: cannot read without Permission denied.
+  # shellcheck disable=SC2016
+  printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin tester --noclear %%I $TERM\n' >"$pam_perm_case/getty.d/lightxdm-autologin.conf"
+  set +e
+  al_unread_out="$(env OVERRIDE_DIR="$pam_perm_case/getty.d" LOGIN_FILE="$pam_perm_case/priv_login/login" \
+    bash "$REPO_ROOT/enable-autologin.sh" --status 2>&1)"
+  al_unread_rc=$?
+  set -e
+  chmod 644 "$pam_perm_case/priv_login/login"
+  if [[ $al_unread_rc -ne 0 || "$al_unread_out" != *"enabled for tester"* ||
+    "$al_unread_out" != *"Note: cannot read $pam_perm_case/priv_login/login; run --status with sudo for an exact result."* ||
+    "$al_unread_out" == *'Permission denied'* ]]; then
+    pam_perm_report+=" [enable-autologin --status unreadable login: rc=$al_unread_rc, out=$al_unread_out]"
+  fi
+fi
+
+if [[ -z "$pam_perm_report" ]]; then
+  pass "PAM helpers preserve backup permissions under strict umask and handle unreadable PAM or backup files cleanly"
+else
+  fail "PAM backup permissions and unreadable file handling:$pam_perm_report"
+fi
+
 finish_harness

@@ -893,16 +893,29 @@ copy_dotfiles() {
   fi
 }
 
+# Print PAM file $1; use sudo only during a real run ($2 == 0) when $1 is not user-readable.
+read_pam_file() {
+  local file="$1" preview="${2:-0}"
+  if [[ -r "$file" ]]; then
+    cat -- "$file"
+  elif [[ $preview -eq 0 ]]; then
+    sudo cat -- "$file"
+  else
+    return 1
+  fi
+}
+
 # Installs before 2026-11-03 backed up to .lightxde.bak.<epoch>; adopt the oldest one as the
 # original so a re-install does not back up a login file that already holds old keyring lines.
 legacy_pam_backup_candidate() {
-  local backup_file="${LOGIN_FILE}.lightxdm.bak" old_backup epoch oldest_epoch=""
+  local preview="${1:-0}" backup_file="${LOGIN_FILE}.lightxdm.bak" old_backup epoch oldest_epoch="" login_content
   if [[ -e "$backup_file" || -L "$backup_file" ]]; then
     return 0
   fi
   # Without old keyring lines in the login file, an uninstall already restored the original;
   # a newer leftover backup may hold keyring lines and must not become the original.
-  grep -Fxq -f <(printf '%s\n' "${LIGHTXDM_KEYRING_LINES[@]}") -- "$LOGIN_FILE" 2>/dev/null || return 0
+  login_content="$(read_pam_file "$LOGIN_FILE" "$preview" 2>/dev/null)" || return 0
+  grep -Fxq -f <(printf '%s\n' "${LIGHTXDM_KEYRING_LINES[@]}") <<<"$login_content" || return 0
   for old_backup in "${LOGIN_FILE}".lightxde.bak.*; do
     epoch="${old_backup##*.lightxde.bak.}"
     if [[ -f "$old_backup" && ! -L "$old_backup" && "$epoch" =~ ^[0-9]+$ ]] && { [[ -z "$oldest_epoch" ]] || ((10#$epoch < 10#$oldest_epoch)); }; then
@@ -916,18 +929,22 @@ legacy_pam_backup_candidate() {
 
 adopt_legacy_pam_backup() {
   local old_backup
-  old_backup="$(legacy_pam_backup_candidate)"
+  old_backup="$(legacy_pam_backup_candidate 0)"
   if [[ -n "$old_backup" ]]; then
     log "Using $old_backup as the original $LOGIN_FILE backup."
     sudo mv -- "$old_backup" "${LOGIN_FILE}.lightxdm.bak" || return 1
+    if [[ -r "$LOGIN_FILE" && ! -r "${LOGIN_FILE}.lightxdm.bak" ]]; then
+      sudo chmod --reference="$LOGIN_FILE" -- "${LOGIN_FILE}.lightxdm.bak" || return 1
+    fi
   fi
 }
 
 # Print only the keyring rules missing from the current login stack; the lines in $4 (one per line)
 # do not count, because configure_pam removes them first.
 pam_lines_to_add() {
-  local module_re="${1//./\\.}" auth_line="$2" session_line="$3" removed="${4:-}" stack
-  stack="$(grep -Fvx -f <(grep -v '^$' <<<"$removed") -- "$LOGIN_FILE" || true)"
+  local module_re="${1//./\\.}" auth_line="$2" session_line="$3" removed="${4:-}" preview="${5:-0}" login_content stack
+  login_content="$(read_pam_file "$LOGIN_FILE" "$preview")" || return 1
+  stack="$(grep -Fvx -f <(grep -v '^$' <<<"$removed") <<<"$login_content" || true)"
   if ! grep -Eq "^[[:space:]]*-?auth[[:space:]][^#]*${module_re}" <<<"$stack"; then
     printf '%s\n' "$auth_line"
   fi
@@ -939,11 +956,13 @@ pam_lines_to_add() {
 # Print the lightXDM keyring lines to remove: each line lightXDM ever appended that the login file
 # has, the original backup lacks, and the chosen backend ($1 auth, $2 session line) no longer uses.
 pam_lines_to_remove() {
-  local keep_auth="$1" keep_session="$2" backup_file="${LOGIN_FILE}.lightxdm.bak" line module=""
+  local keep_auth="$1" keep_session="$2" preview="${3:-0}" backup_file="${LOGIN_FILE}.lightxdm.bak" line module="" login_content backup_content
   if [[ ! -e "$backup_file" && ! -L "$backup_file" ]]; then
-    backup_file="$(legacy_pam_backup_candidate)"
+    backup_file="$(legacy_pam_backup_candidate "$preview")"
   fi
   [[ -f "$backup_file" && ! -L "$backup_file" ]] || return 0
+  login_content="$(read_pam_file "$LOGIN_FILE" "$preview")" || return 1
+  backup_content="$(read_pam_file "$backup_file" "$preview")" || return 1
   [[ ! "$keep_auth" =~ (pam_[[:alnum:]_]+\.so) ]] || module="${BASH_REMATCH[1]}"
   for line in "${LIGHTXDM_KEYRING_LINES[@]}"; do
     # --update refreshes only an older form of the backend's own lines: the other backend's lines are
@@ -952,7 +971,7 @@ pam_lines_to_remove() {
       continue
     fi
     if [[ "$line" != "$keep_auth" && "$line" != "$keep_session" ]] &&
-      grep -Fxq -- "$line" "$LOGIN_FILE" && ! grep -Fxq -- "$line" "$backup_file"; then
+      grep -Fxq -- "$line" <<<"$login_content" && ! grep -Fxq -- "$line" <<<"$backup_content"; then
       printf '%s\n' "$line"
     fi
   done
@@ -1005,22 +1024,45 @@ configure_pam() {
   esac
 
   if [[ $preview -eq 1 ]]; then
-    local additions removals="" removal
-    if [[ -f "${LOGIN_FILE}.lightxdm.bak" && ! -L "${LOGIN_FILE}.lightxdm.bak" && ! -r "${LOGIN_FILE}.lightxdm.bak" ]]; then
+    local additions removals="" removal preview_backup="${LOGIN_FILE}.lightxdm.bak"
+    if [[ ! -e "$preview_backup" && ! -L "$preview_backup" ]]; then
+      preview_backup="$(legacy_pam_backup_candidate 1)"
+    fi
+    if [[ -f "$preview_backup" && ! -L "$preview_backup" && ! -r "$preview_backup" ]]; then
       printf '  removals: unknown (needs root)\n'
     else
-      removals="$(pam_lines_to_remove "$auth_line" "$session_line")"
+      removals="$(pam_lines_to_remove "$auth_line" "$session_line" 1)"
       while IFS= read -r removal; do
         [[ -n "$removal" ]] && printf '  remove: %s\n' "$removal"
       done <<<"$removals"
     fi
-    additions="$(pam_lines_to_add "$module" "$auth_line" "$session_line" "$removals")"
+    additions="$(pam_lines_to_add "$module" "$auth_line" "$session_line" "$removals" 1)"
     printf '%s\n' "${additions:-  no lines to add (already configured)}"
     printf '  record: %s (%s)\n' "$PAM_KEYRING_STATE" "$backend"
     if [[ -n "$additions" && "${UPDATE_RESTORE_PAM:-0}" == 1 ]]; then
       printf '  record: %s (the version the .pacnew merge brought)\n' "$PAM_LOGIN_BASE_STATE"
     fi
     return 0
+  fi
+  if [[ "${UPDATE_RUN:-0}" == 1 && "${UPDATE_RESTORE_PAM:-0}" != 1 && ! -r "$LOGIN_FILE" ]]; then
+    local deferred_missing deferred_record="" deferred_login
+    if [[ -f "$PAM_KEYRING_STATE" && ! -L "$PAM_KEYRING_STATE" && -r "$PAM_KEYRING_STATE" ]]; then
+      deferred_record="$(<"$PAM_KEYRING_STATE")"
+    fi
+    deferred_missing="$(pam_lines_to_add "$module" "$auth_line" "$session_line" "" 0)" || return 1
+    if [[ -n "$deferred_missing" ]]; then
+      deferred_login="$(read_pam_file "$LOGIN_FILE" 0)" || return 1
+      if [[ "$deferred_record" == gnome || "$deferred_record" == kwallet ]] ||
+        grep -Eq "^[[:space:]]*-?(auth|session)[[:space:]][^#]*${module//./\\.}" <<<"$deferred_login"; then
+        local deferred_hint="--pam-only --de $de"
+        case "$de" in
+          plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
+          *) deferred_hint+=" --keyring $backend" ;;
+        esac
+        log "Some or all of lightXDM's $backend keyring lines are not in $LOGIN_FILE (removed or commented out), which has your own edits, so --update leaves it alone. Add them back with $(script_cmd install.sh) $deferred_hint, or turn keyring unlock off with sudo $(script_cmd uninstall.sh) --keyring-only."
+      fi
+      return 0
+    fi
   fi
   adopt_legacy_pam_backup || return 1
 
@@ -1042,7 +1084,7 @@ configure_pam() {
         stale_lines+=("$stale_line")
         pam_sed+=(-e "/^${stale_line//./\\.}\$/d")
       fi
-    done < <(pam_lines_to_remove "$auth_line" "$session_line")
+    done < <(pam_lines_to_remove "$auth_line" "$session_line" 0)
     if [[ ${#pam_sed[@]} -gt 0 ]]; then
       sudo sed -i --follow-symlinks "${pam_sed[@]}" "$LOGIN_FILE"
       for stale_line in "${stale_lines[@]}"; do
@@ -1052,7 +1094,7 @@ configure_pam() {
   fi
 
   local lines_to_add=()
-  mapfile -t lines_to_add < <(pam_lines_to_add "$module" "$auth_line" "$session_line")
+  mapfile -t lines_to_add < <(pam_lines_to_add "$module" "$auth_line" "$session_line" "" 0)
 
   if [[ ${#lines_to_add[@]} -gt 0 ]]; then
     if [[ -L "$backup_file" ]]; then
@@ -1060,9 +1102,9 @@ configure_pam() {
     fi
     if [[ ! -e "$backup_file" ]]; then
       log "Backing up $LOGIN_FILE to $backup_file"
-      sudo cp -- "$LOGIN_FILE" "$backup_file" || return 1
+      sudo cp -p -- "$LOGIN_FILE" "$backup_file" || return 1
     fi
-    if [[ -s "$LOGIN_FILE" && -n "$(tail -c 1 "$LOGIN_FILE")" ]]; then
+    if [[ -n "$(read_pam_file "$LOGIN_FILE" 0 | tail -c 1)" ]]; then
       printf '\n' | sudo tee -a "$LOGIN_FILE" > /dev/null
     fi
     printf '%s\n' "${lines_to_add[@]}" | sudo tee -a "$LOGIN_FILE" > /dev/null
@@ -1135,14 +1177,26 @@ configure_gnome_session_type() (
   local tty_gate="${block[1]}"
   local user_gate_re="^session    \\[success=1 default=ignore\\] pam_succeed_if\\.so quiet user != ${user_re}$"
   local env_line="${block[3]}"
-  local has_block=0
-  if [[ -f "$LOGIN_FILE" && ( $preview -eq 0 || -r "$LOGIN_FILE" ) ]] && grep -Fxq -- "$marker" "$LOGIN_FILE"; then
+  local tmp="" login_copy="" login_src="$LOGIN_FILE" login_readable=0 has_block=0
+  trap 'rm -f -- ${tmp:+"$tmp"} ${login_copy:+"$login_copy"}' EXIT
+  if [[ -f "$LOGIN_FILE" ]]; then
+    if [[ -r "$LOGIN_FILE" ]]; then
+      login_readable=1
+    elif [[ $preview -eq 0 ]]; then
+      login_copy="$(mktemp)" || return 1
+      # shellcheck disable=SC2024  # the temporary output file belongs to the calling user
+      sudo cat -- "$LOGIN_FILE" > "$login_copy" || return 1
+      login_src="$login_copy"
+      login_readable=1
+    fi
+  fi
+  if [[ $login_readable -eq 1 ]] && grep -Fxq -- "$marker" "$login_src"; then
     has_block=1
   fi
   # An update must not undo a hand edit: it puts a missing block back only into a login file a
   # .pacnew merge replaced (start_update_run decided that before configure_pam ran).
   block_removed_by_user() {
-    [[ "$de" == gnome && $has_block -eq 0 && "${UPDATE_RUN:-0}" == 1 && "${UPDATE_RESTORE_PAM:-0}" != 1 ]]
+    [[ $login_readable -eq 1 && "$de" == gnome && $has_block -eq 0 && "${UPDATE_RUN:-0}" == 1 && "${UPDATE_RESTORE_PAM:-0}" != 1 ]]
   }
   # An update leaves a block the user edited (a line removed or commented out) as it is; an explicit
   # install refuses to touch it (validate_gnome_block).
@@ -1162,7 +1216,7 @@ configure_gnome_session_type() (
           log "ERROR: Edited lightXDM GNOME block in $LOGIN_FILE; remove lightXDM's GNOME lines by hand or restore ${LOGIN_FILE}.lightxdm.bak."
           return 1
         fi
-      done < "$LOGIN_FILE"
+      done < "$login_src"
     fi
   }
   if [[ $preview -eq 1 ]]; then
@@ -1171,31 +1225,31 @@ configure_gnome_session_type() (
       return 0
     fi
     validate_gnome_block || return 1
-    if [[ "$de" == gnome && $no_keyring -eq 1 && -r "$LOGIN_FILE" ]] &&
-      ! grep -Eq '^[[:space:]]*-?session[[:space:]]' "$LOGIN_FILE"; then
+    if [[ "$de" == gnome && $no_keyring -eq 1 && $login_readable -eq 1 ]] &&
+      ! grep -Eq '^[[:space:]]*-?session[[:space:]]' "$login_src"; then
       log "ERROR: No session line in $LOGIN_FILE; lightXDM will not change it."
       return 1
     fi
     printf 'GNOME session type: %s\n' "$LOGIN_FILE"
-    if [[ ! -r "$LOGIN_FILE" ]]; then
+    if [[ $login_readable -eq 0 ]]; then
       printf '  existing block: unknown (needs root)\n'
     fi
     if block_removed_by_user; then
       printf '  left alone: the block is not in %s, which has your own edits (--update); add only the block back with: %s --pam-only --de gnome --no-keyring\n' "$LOGIN_FILE" "$(script_cmd install.sh)"
-    elif [[ "$de" == gnome ]]; then
+    elif [[ "$de" == gnome && ( "${UPDATE_RUN:-0}" != 1 || $login_readable -eq 1 ) ]]; then
       printf '%s\n' "${block[@]}"
       printf 'Session-type file: %s (from %s)\n' "$GNOME_SESSION_TYPE_DEST" "$SCRIPT_DIR/pam/gnome-session-type.conf"
       if [[ $has_block -eq 0 && "${UPDATE_RESTORE_PAM:-0}" == 1 ]]; then
         printf '  record: %s (the version the .pacnew merge brought)\n' "$PAM_LOGIN_BASE_STATE"
       fi
-    else
+    elif [[ "$de" != gnome ]]; then
       if [[ $has_block -eq 1 ]]; then
         printf '  remove the lightXDM GNOME block\n'
       fi
       if [[ -e "$GNOME_SESSION_TYPE_DEST" ]]; then
         printf '  remove %s\n' "$GNOME_SESSION_TYPE_DEST"
       fi
-      if [[ $has_block -eq 0 && -r "$LOGIN_FILE" && ! -e "$GNOME_SESSION_TYPE_DEST" ]]; then
+      if [[ $has_block -eq 0 && $login_readable -eq 1 && ! -e "$GNOME_SESSION_TYPE_DEST" ]]; then
         printf '  no GNOME configuration to remove\n'
       fi
     fi
@@ -1222,9 +1276,8 @@ configure_gnome_session_type() (
   fi
   adopt_legacy_pam_backup || return 1
 
-  local tmp line newline inserted=0 block_line=0
+  local line newline inserted=0 block_line=0
   tmp="$(mktemp)" || return 1
-  trap 'rm -f -- "$tmp"' EXIT
   # Preserve each original line, including whether the last line has a newline.
   while :; do
     if IFS= read -r line; then
@@ -1255,21 +1308,21 @@ configure_gnome_session_type() (
       inserted=1
     fi
     printf '%s%s' "$line" "$newline"
-  done < "$LOGIN_FILE" > "$tmp"
+  done < "$login_src" > "$tmp"
 
   if [[ "$de" == gnome && $inserted -eq 0 ]]; then
     log "ERROR: No session line in $LOGIN_FILE; lightXDM will not change it."
     return 1
   fi
   local changed=0 backup="${LOGIN_FILE}.lightxdm.bak"
-  if [[ "$(sha256sum < "$tmp")" != "$(sha256sum < "$LOGIN_FILE")" ]]; then
+  if [[ "$(sha256sum < "$tmp")" != "$(sha256sum < "$login_src")" ]]; then
     changed=1
     if [[ -L "$backup" ]]; then
       sudo rm -f -- "$backup" || return 1
     fi
     if [[ ! -e "$backup" ]]; then
       log "Backing up $LOGIN_FILE to $backup"
-      sudo cp -- "$LOGIN_FILE" "$backup" || return 1
+      sudo cp -p -- "$LOGIN_FILE" "$backup" || return 1
     fi
   fi
   if [[ "$de" == gnome ]]; then
@@ -1586,7 +1639,9 @@ saved_install_args() {
       ;;
   esac
   if [[ -z "$backend" ]]; then
-    printf '%s\n' --no-keyring
+    if [[ -r "$LOGIN_FILE" || ! -e "$LOGIN_FILE" ]]; then
+      printf '%s\n' --no-keyring
+    fi
     return 0
   fi
   if [[ "$backend" == kwallet ]]; then
@@ -1596,7 +1651,7 @@ saved_install_args() {
   fi
   # A keyring line the user removed or commented out stays that way, even when the other one is still
   # there: only a login file a .pacnew merge replaced lost lightXDM's lines without the user.
-  if [[ -n "$(pam_lines_to_add "$module" "$auth_line" "$session_line")" ]]; then
+  if [[ -r "$LOGIN_FILE" && -n "$(pam_lines_to_add "$module" "$auth_line" "$session_line" "" 1)" ]]; then
     if [[ -z "$record" || "${UPDATE_RESTORE_PAM:-0}" != 1 ]]; then
       local hint="--pam-only --de $de"
       case "$de" in
