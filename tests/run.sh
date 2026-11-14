@@ -971,7 +971,7 @@ fi
 
 # Status runs directly, without unshare -r, so normal users exercise the read-only path.
 status_dir="$TMP_DIR/autologin_status"
-for status_case in disabled missing enabled legacy both foreign later kwallet gnome commented reset keyring-disabled foreign-keyring reset-legacy; do
+for status_case in disabled missing enabled enabled-equals enabled-short legacy both foreign foreign-equals foreign-short bare-flag later kwallet gnome commented reset keyring-disabled foreign-keyring reset-legacy; do
   rm -rf "$status_dir"
   mkdir -p "$status_dir/getty.d"
   printf '# PAM login\n' >"$status_dir/login"
@@ -981,6 +981,16 @@ for status_case in disabled missing enabled legacy both foreign later kwallet gn
       # shellcheck disable=SC2016  # $TERM is literal systemd syntax
       printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin testuser --noclear %%I $TERM\n' >"$status_dir/getty.d/lightxdm-autologin.conf"
       expected_status="enabled for testuser ($status_dir/getty.d/lightxdm-autologin.conf)"
+      ;;
+    enabled-equals)
+      # shellcheck disable=SC2016
+      printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin=eq_user --noclear %%I $TERM\n' >"$status_dir/getty.d/lightxdm-autologin.conf"
+      expected_status="enabled for eq_user ($status_dir/getty.d/lightxdm-autologin.conf)"
+      ;;
+    enabled-short)
+      # shellcheck disable=SC2016
+      printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty -a short_user --noclear %%I $TERM\n' >"$status_dir/getty.d/lightxdm-autologin.conf"
+      expected_status="enabled for short_user ($status_dir/getty.d/lightxdm-autologin.conf)"
       ;;
   esac
   case "$status_case" in
@@ -995,6 +1005,16 @@ for status_case in disabled missing enabled legacy both foreign later kwallet gn
     foreign)
       printf '[Service]\n  ExecStart = /usr/bin/agetty --autologin foreignuser tty1\n' >"$status_dir/getty.d/00-foreign.conf"
       cp "$status_dir/getty.d/00-foreign.conf" "$status_dir/getty.d/override.conf"
+      ;;
+    foreign-equals)
+      printf '[Service]\nExecStart=/usr/bin/agetty --autologin=foreignuser tty1\n' >"$status_dir/getty.d/00-foreign.conf"
+      ;;
+    foreign-short)
+      printf '[Service]\nExecStart=/usr/bin/agetty -a foreignuser tty1\n' >"$status_dir/getty.d/00-foreign.conf"
+      ;;
+    bare-flag)
+      printf '[Service]\nExecStart=/usr/bin/agetty --autologin --noclear tty1\nExecStart=/usr/bin/agetty --autologin= --noclear tty1\n' >"$status_dir/getty.d/lightxdm-autologin.conf"
+      printf '[Service]\nExecStart=/usr/bin/agetty -a --noclear tty1\nExecStart=/usr/bin/agetty --autologin\n' >"$status_dir/getty.d/00-foreign.conf"
       ;;
     later)
       printf '[Service]\nExecStart=/usr/bin/agetty tty1\n' >"$status_dir/getty.d/zz-later.conf"
@@ -1049,6 +1069,11 @@ for status_case in disabled missing enabled legacy both foreign later kwallet gn
       if [[ "$output" == *"Warning: $status_dir/getty.d/00-foreign.conf still enables autologin."* &&
         "$output" == *"Warning: $status_dir/getty.d/override.conf still enables autologin."* &&
         "$output" != *"overrides autologin with a later ExecStart="* ]]; then
+        status_warnings_ok=1
+      fi
+      ;;
+    foreign-equals|foreign-short)
+      if [[ "$output" == *"Warning: $status_dir/getty.d/00-foreign.conf still enables autologin."* ]]; then
         status_warnings_ok=1
       fi
       ;;
@@ -6237,11 +6262,23 @@ fi
 autologin_pam_dir="$TMP_DIR/autologin_pam"
 mkdir -p "$autologin_pam_dir/getty.d"
 printf '#%%PAM-1.0\nauth       include      system-local-login\n' >"$autologin_pam_dir/login"
-for autologin_pam_case in without with; do
-  if [[ "$autologin_pam_case" == with ]]; then
-    # shellcheck disable=SC2016  # $TERM is literal systemd syntax
-    printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin someone --noclear %%I $TERM\n' >"$autologin_pam_dir/getty.d/lightxdm-autologin.conf"
-  fi
+for autologin_pam_case in without bare with with-equals with-short; do
+  rm -f "$autologin_pam_dir/getty.d"/*.conf
+  case "$autologin_pam_case" in
+    bare)
+      printf '[Service]\nExecStart=/usr/bin/agetty --autologin --noclear tty1\nExecStart=/usr/bin/agetty -a --noclear tty1\n' >"$autologin_pam_dir/getty.d/00-bare.conf"
+      ;;
+    with)
+      # shellcheck disable=SC2016  # $TERM is literal systemd syntax
+      printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin someone --noclear %%I $TERM\n' >"$autologin_pam_dir/getty.d/lightxdm-autologin.conf"
+      ;;
+    with-equals)
+      printf '[Service]\nExecStart=/usr/bin/agetty --autologin=someone tty1\n' >"$autologin_pam_dir/getty.d/00-equals.conf"
+      ;;
+    with-short)
+      printf '[Service]\nExecStart=/usr/bin/agetty -a someone tty1\n' >"$autologin_pam_dir/getty.d/00-short.conf"
+      ;;
+  esac
   set +e
   # shellcheck disable=SC2016  # expand inside the child shell so install.sh owns errexit
   output="$(
@@ -6257,9 +6294,11 @@ for autologin_pam_case in without with; do
   status=$?
   set -e
   if [[ $status -eq 0 ]] && {
-    [[ "$autologin_pam_case" == with && "$output" == *"TTY1 autologin is enabled"* && "$output" == *"sudo $CMD_AUTOLOGIN --disable"* &&
+    [[ ( "$autologin_pam_case" == with || "$autologin_pam_case" == with-* ) &&
+      "$output" == *"TTY1 autologin is enabled"* && "$output" == *"sudo $CMD_AUTOLOGIN --disable"* &&
       "$output" == *"sudo $CMD_UNINSTALL --keyring-only"* ]] ||
-    [[ "$autologin_pam_case" == without && "$output" != *"TTY1 autologin is enabled"* ]];
+    [[ ( "$autologin_pam_case" == without || "$autologin_pam_case" == bare ) &&
+      "$output" != *"TTY1 autologin is enabled"* ]];
   }; then
     pass "configure_pam autologin warning ($autologin_pam_case autologin drop-in)"
   else

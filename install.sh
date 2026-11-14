@@ -1043,9 +1043,9 @@ configure_pam() {
   fi
 
   # Autologin passes no password, so keyring unlock cannot work alongside it.
-  local drop_in
+  local drop_in autologin_re='^[[:space:]]*ExecStart[[:space:]]*=.*([[:space:]]--autologin([[:space:]]+|=)|[[:space:]]-a[[:space:]]+)([^-[:space:]][^[:space:]]*)'
   for drop_in in "$AUTOLOGIN_DROPIN_DIR"/*.conf; do
-    if [[ -f "$drop_in" ]] && grep -Eqs '^[[:space:]]*ExecStart[[:space:]]*=.*--autologin' "$drop_in"; then
+    if [[ -f "$drop_in" ]] && LC_ALL=C grep -Eqs "$autologin_re" "$drop_in"; then
       log "WARNING: TTY1 autologin is enabled ($drop_in); it cannot unlock the keyring. Disable it with 'sudo $(script_cmd enable-autologin.sh) --disable', or keep autologin and remove the keyring lines with 'sudo $(script_cmd uninstall.sh) --keyring-only'."
       break
     fi
