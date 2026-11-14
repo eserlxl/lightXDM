@@ -64,11 +64,11 @@ PAM_KEYRING_STATE="${PAM_KEYRING_STATE:-/etc/lightxdm/pam-keyring}"
 PAM_LOGIN_BASE_STATE="${PAM_LOGIN_BASE_STATE:-/etc/lightxdm/pam-login-base}"
 BACKUP_FILE="${LOGIN_FILE}.lightxdm.bak"
 # Installs before 2026-11-03 backed up to .lightxde.bak.<epoch>; the oldest one is the original.
-if [[ ! -f "$BACKUP_FILE" ]]; then
+if [[ ! -f "$BACKUP_FILE" || -L "$BACKUP_FILE" ]]; then
   oldest_epoch=""
   for old_backup in "${LOGIN_FILE}".lightxde.bak.*; do
     epoch="${old_backup##*.lightxde.bak.}"
-    if [[ -f "$old_backup" && "$epoch" =~ ^[0-9]+$ ]] && { [[ -z "$oldest_epoch" ]] || ((10#$epoch < 10#$oldest_epoch)); }; then
+    if [[ -f "$old_backup" && ! -L "$old_backup" && "$epoch" =~ ^[0-9]+$ ]] && { [[ -z "$oldest_epoch" ]] || ((10#$epoch < 10#$oldest_epoch)); }; then
       oldest_epoch="$epoch"
     fi
   done
@@ -94,7 +94,7 @@ if [[ $keyring_only -eq 0 ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
       line_number=$((line_number + 1))
       if [[ "$line" == "$gnome_marker" || "$line" == "$gnome_tty_gate" || "$line" =~ $gnome_user_gate_re || "$line" == "$gnome_env_line" ]]; then
-        if [[ ! -f "$BACKUP_FILE" ]] || ! grep -Fxq -- "$line" "$BACKUP_FILE"; then
+        if [[ ! -f "$BACKUP_FILE" || -L "$BACKUP_FILE" ]] || ! grep -Fxq -- "$line" "$BACKUP_FILE"; then
           gnome_pam_sed+=(-e "${line_number}d")
         fi
       fi
@@ -110,7 +110,7 @@ if [[ $keyring_only -eq 0 ]]; then
 fi
 
 # Remove only the exact PAM lines configure_pam appends.
-if [ -f "$BACKUP_FILE" ]; then
+if [[ -f "$BACKUP_FILE" && ! -L "$BACKUP_FILE" ]]; then
   if [[ ! -e "$LOGIN_FILE" ]]; then
     echo "Restoring $LOGIN_FILE from backup..."
     rm -f -- "$LOGIN_FILE"
@@ -205,7 +205,7 @@ if [[ -e "${POLKIT_RULE}.lightxdm.bak" || -L "${POLKIT_RULE}.lightxdm.bak" ]]; t
     save_edited_dotfile "$POLKIT_RULE"
   fi
   echo "Restoring $POLKIT_RULE from backup..."
-  mv -- "${POLKIT_RULE}.lightxdm.bak" "$POLKIT_RULE"
+  mv -T -- "${POLKIT_RULE}.lightxdm.bak" "$POLKIT_RULE"
 elif [[ -e "${POLKIT_RULE}.lightxdm.absent" || -L "${POLKIT_RULE}.lightxdm.absent" ]]; then
   if [[ -e "$POLKIT_RULE" || -L "$POLKIT_RULE" ]]; then
     if is_lightxdm_polkit_rule "$POLKIT_RULE"; then

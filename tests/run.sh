@@ -11032,4 +11032,95 @@ else
   fi
 fi
 
+# Directory symlinks and PAM/Polkit backup symlinks never redirect file writes or overwrite /etc/pam.d/login.
+dir_sym_case="$TMP_DIR/dir_and_pam_bak_symlinks"
+mkdir -p "$dir_sym_case/vdir_pam" "$dir_sym_case/vdir_home" "$dir_sym_case/etc" "$dir_sym_case/home"
+printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$dir_sym_case/login1"
+cp -- "$dir_sym_case/login1" "$dir_sym_case/login2"
+ln -s "$dir_sym_case/missing_pam_victim" "$dir_sym_case/login1.lightxdm.bak"
+ln -s "$dir_sym_case/missing_gnome_victim" "$dir_sym_case/login2.lightxdm.bak"
+ln -s "$dir_sym_case/vdir_pam" "$dir_sym_case/etc/pam-keyring"
+ln -s "$dir_sym_case/vdir_pam" "$dir_sym_case/etc/pam-login-base"
+ln -s "$dir_sym_case/vdir_pam" "$dir_sym_case/etc/gnome-session-type.conf"
+ln -s "$dir_sym_case/vdir_home" "$dir_sym_case/home/.bash_profile"
+dir_sym_report=""
+# shellcheck disable=SC2016
+env HOME="$dir_sym_case/home" LOGIN_FILE="$dir_sym_case/login1" \
+  PAM_KEYRING_STATE="$dir_sym_case/etc/pam-keyring" \
+  PAM_LOGIN_BASE_STATE="$dir_sym_case/etc/pam-login-base" \
+  bash -c 'source "$1/install.sh" && UPDATE_RESTORE_PAM=1 && UPDATE_LOGIN_SUM=deadbeef &&
+    configure_pam xfce && copy_dotfiles i3' _ "$REPO_ROOT" >/dev/null 2>&1 ||
+  dir_sym_report+=" [configure_pam/copy_dotfiles dir-symlink run failed]"
+# shellcheck disable=SC2016
+env HOME="$dir_sym_case/home" LOGIN_FILE="$dir_sym_case/login2" \
+  GNOME_SESSION_TYPE_DEST="$dir_sym_case/etc/gnome-session-type.conf" \
+  bash -c 'source "$1/install.sh" && configure_gnome_session_type gnome tester' _ "$REPO_ROOT" >/dev/null 2>&1 ||
+  dir_sym_report+=" [configure_gnome_session_type dangling-bak/dir-symlink run failed]"
+printf '# user custom profile\n' >"$dir_sym_case/home/.bash_profile"
+ln -s "$dir_sym_case/vdir_home" "$dir_sym_case/home/.bash_profile.lightxdm-new"
+# shellcheck disable=SC2016
+env HOME="$dir_sym_case/home" bash -c 'source "$1/install.sh" && UPDATE_RUN=1 && copy_dotfiles i3' \
+  _ "$REPO_ROOT" >/dev/null 2>&1 || dir_sym_report+=" [update_dotfile .lightxdm-new dir-symlink run failed]"
+[[ ! -e "$dir_sym_case/missing_pam_victim" && ! -e "$dir_sym_case/missing_gnome_victim" ]] ||
+  dir_sym_report+=" [dangling .lightxdm.bak target created]"
+[[ -f "$dir_sym_case/login1.lightxdm.bak" && ! -L "$dir_sym_case/login1.lightxdm.bak" &&
+  -f "$dir_sym_case/login2.lightxdm.bak" && ! -L "$dir_sym_case/login2.lightxdm.bak" ]] ||
+  dir_sym_report+=" [.lightxdm.bak not replaced with regular file]"
+[[ -z "$(ls -A "$dir_sym_case/vdir_pam")" && -z "$(ls -A "$dir_sym_case/vdir_home")" ]] ||
+  dir_sym_report+=" [directory symlink target received files]"
+for dir_sym_replaced in "$dir_sym_case/etc/pam-keyring" "$dir_sym_case/etc/pam-login-base" \
+  "$dir_sym_case/etc/gnome-session-type.conf" "$dir_sym_case/home/.bash_profile.lightxdm-new"; do
+  [[ -f "$dir_sym_replaced" && ! -L "$dir_sym_replaced" ]] ||
+    dir_sym_report+=" [$dir_sym_replaced not regular file]"
+done
+printf '%s\n' '#%PAM-1.0' 'auth       optional   pam_kwallet5.so' >"$dir_sym_case/login3"
+printf 'foreign\n' >"$dir_sym_case/foreign_bak"
+ln -s "$dir_sym_case/foreign_bak" "$dir_sym_case/login3.lightxde.bak.1751000000"
+# shellcheck disable=SC2016
+legacy_sym_cand="$(env LOGIN_FILE="$dir_sym_case/login3" bash -c 'source "$1/install.sh" && legacy_pam_backup_candidate' _ "$REPO_ROOT")"
+[[ -z "$legacy_sym_cand" ]] || dir_sym_report+=" [legacy_pam_backup_candidate accepted symlink: $legacy_sym_cand]"
+if [[ -z "$dir_sym_report" ]]; then
+  pass "install.sh replaces directory symlinks via install -T and refuses symlinked PAM backups"
+else
+  fail "directory and PAM-backup symlink safety:$dir_sym_report"
+fi
+
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh ignores symlinked PAM backups and restores Polkit backup with mv -T (unshare -r unavailable)"
+else
+  u_sym_bak="$TMP_DIR/uninstall_pam_polkit_sym"
+  u_sym_real_mv="$(command -v mv)"
+  mkdir -p "$u_sym_bak/home" "$u_sym_bak/vdir" "$u_sym_bak/shim"
+  printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' >"$u_sym_bak/login"
+  printf 'poison\n' >"$u_sym_bak/poison"
+  ln -s "$u_sym_bak/poison" "$u_sym_bak/login.lightxdm.bak"
+  ln -s "$u_sym_bak/poison" "$u_sym_bak/login.lightxde.bak.1751000000"
+  printf '// original polkit\n' >"$u_sym_bak/polkit.rules.lightxdm.bak"
+  cp -- "$REPO_ROOT/polkit/49-nopasswd.rules" "$u_sym_bak/polkit.rules"
+  cat >"$u_sym_bak/shim/mv" <<SHIM
+#!/bin/bash
+last="\${!#}"
+if [[ "\$last" == "$u_sym_bak/polkit.rules" ]]; then
+  rm -f -- "\$last"
+  ln -s "$u_sym_bak/vdir" "\$last"
+fi
+exec "$u_sym_real_mv" "\$@"
+SHIM
+  chmod +x "$u_sym_bak/shim/mv"
+  set +e
+  u_sym_out="$(PATH="$u_sym_bak/shim:$PATH" TARGET_HOME="$u_sym_bak/home" LOGIN_FILE="$u_sym_bak/login" \
+    DM_STATE_FILE="$u_sym_bak/dm" GNOME_SESSION_TYPE_DEST="$u_sym_bak/gnome.conf" \
+    OVERRIDE_DIR="$u_sym_bak/getty.d" POLKIT_RULE="$u_sym_bak/polkit.rules" \
+    unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
+  u_sym_rc=$?
+  set -e
+  if [[ $u_sym_rc -eq 0 && "$(cat "$u_sym_bak/login")" != "poison" &&
+    -z "$(ls -A "$u_sym_bak/vdir")" && -f "$u_sym_bak/polkit.rules" && ! -L "$u_sym_bak/polkit.rules" &&
+    "$(cat "$u_sym_bak/polkit.rules")" == "// original polkit" ]]; then
+    pass "uninstall.sh ignores symlinked PAM backups and restores Polkit backup with mv -T"
+  else
+    fail "uninstall.sh PAM/Polkit symlink safety (rc=$u_sym_rc, login=$(cat "$u_sym_bak/login"), out=$u_sym_out)"
+  fi
+fi
+
 finish_harness

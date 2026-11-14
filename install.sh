@@ -782,7 +782,7 @@ update_dotfile() {
     if [[ ! -e "$target" ]]; then
       preserve_dotfile "$target" "$source"
     fi
-    install -Dm"$mode" "$source" "$target" || return
+    install -TDm"$mode" "$source" "$target" || return
     record_dotfile "$target" || log "WARNING: Could not record $target in $(dotfile_record_file)."
     rm -f -- "$new"
     return 0
@@ -791,7 +791,7 @@ update_dotfile() {
     printf 'Dotfile: %s (stays: your own edits; current template to %s)\n' "$target" "$new"
     return 0
   fi
-  install -Dm"$mode" "$source" "$new" || return
+  install -TDm"$mode" "$source" "$new" || return
   log "$target has your own edits, so --update leaves it alone; the current template is in $new (compare: $(printf 'diff -u %q %q' "$target" "$new"))."
 }
 
@@ -812,7 +812,7 @@ copy_dotfile() {
   else
     preserve_dotfile "$target" "$@"
   fi
-  install -Dm"$mode" "$source" "$target" || return
+  install -TDm"$mode" "$source" "$target" || return
   record_dotfile "$target" || log "WARNING: Could not record $target in $(dotfile_record_file); --update will treat it as edited."
 }
 
@@ -905,7 +905,7 @@ legacy_pam_backup_candidate() {
   grep -Fxq -f <(printf '%s\n' "${LIGHTXDM_KEYRING_LINES[@]}") -- "$LOGIN_FILE" 2>/dev/null || return 0
   for old_backup in "${LOGIN_FILE}".lightxde.bak.*; do
     epoch="${old_backup##*.lightxde.bak.}"
-    if [[ -f "$old_backup" && "$epoch" =~ ^[0-9]+$ ]] && { [[ -z "$oldest_epoch" ]] || ((10#$epoch < 10#$oldest_epoch)); }; then
+    if [[ -f "$old_backup" && ! -L "$old_backup" && "$epoch" =~ ^[0-9]+$ ]] && { [[ -z "$oldest_epoch" ]] || ((10#$epoch < 10#$oldest_epoch)); }; then
       oldest_epoch="$epoch"
     fi
   done
@@ -943,7 +943,7 @@ pam_lines_to_remove() {
   if [[ ! -e "$backup_file" && ! -L "$backup_file" ]]; then
     backup_file="$(legacy_pam_backup_candidate)"
   fi
-  [[ -f "$backup_file" ]] || return 0
+  [[ -f "$backup_file" && ! -L "$backup_file" ]] || return 0
   [[ ! "$keep_auth" =~ (pam_[[:alnum:]_]+\.so) ]] || module="${BASH_REMATCH[1]}"
   for line in "${LIGHTXDM_KEYRING_LINES[@]}"; do
     # --update refreshes only an older form of the backend's own lines: the other backend's lines are
@@ -1006,7 +1006,7 @@ configure_pam() {
 
   if [[ $preview -eq 1 ]]; then
     local additions removals="" removal
-    if [[ -e "${LOGIN_FILE}.lightxdm.bak" && ! -r "${LOGIN_FILE}.lightxdm.bak" ]]; then
+    if [[ -f "${LOGIN_FILE}.lightxdm.bak" && ! -L "${LOGIN_FILE}.lightxdm.bak" && ! -r "${LOGIN_FILE}.lightxdm.bak" ]]; then
       printf '  removals: unknown (needs root)\n'
     else
       removals="$(pam_lines_to_remove "$auth_line" "$session_line")"
@@ -1035,7 +1035,7 @@ configure_pam() {
   fi
 
   local backup_file="${LOGIN_FILE}.lightxdm.bak"
-  if [[ -f "$backup_file" ]]; then
+  if [[ -f "$backup_file" && ! -L "$backup_file" ]]; then
     local pam_sed=() stale_lines=() stale_line
     while IFS= read -r stale_line; do
       if [[ -n "$stale_line" ]]; then
@@ -1055,9 +1055,12 @@ configure_pam() {
   mapfile -t lines_to_add < <(pam_lines_to_add "$module" "$auth_line" "$session_line")
 
   if [[ ${#lines_to_add[@]} -gt 0 ]]; then
+    if [[ -L "$backup_file" ]]; then
+      sudo rm -f -- "$backup_file" || return 1
+    fi
     if [[ ! -e "$backup_file" ]]; then
       log "Backing up $LOGIN_FILE to $backup_file"
-      sudo cp "$LOGIN_FILE" "$backup_file"
+      sudo cp -- "$LOGIN_FILE" "$backup_file" || return 1
     fi
     if [[ -s "$LOGIN_FILE" && -n "$(tail -c 1 "$LOGIN_FILE")" ]]; then
       printf '\n' | sudo tee -a "$LOGIN_FILE" > /dev/null
@@ -1077,7 +1080,7 @@ configure_pam() {
   if [[ ! -f "$PAM_KEYRING_STATE" || -L "$PAM_KEYRING_STATE" || ! -r "$PAM_KEYRING_STATE" ||
     "$(stat -c %a -- "$PAM_KEYRING_STATE" 2>/dev/null)" != 644 ||
     "$(cat -- "$PAM_KEYRING_STATE" 2>/dev/null)" != "$backend" ]]; then
-    printf '%s\n' "$backend" | sudo install -Dm644 /dev/stdin "$PAM_KEYRING_STATE" || return 1
+    printf '%s\n' "$backend" | sudo install -TDm644 /dev/stdin "$PAM_KEYRING_STATE" || return 1
   fi
 
   # Autologin passes no password, so keyring unlock cannot work alongside it.
@@ -1261,9 +1264,12 @@ configure_gnome_session_type() (
   local changed=0 backup="${LOGIN_FILE}.lightxdm.bak"
   if [[ "$(sha256sum < "$tmp")" != "$(sha256sum < "$LOGIN_FILE")" ]]; then
     changed=1
+    if [[ -L "$backup" ]]; then
+      sudo rm -f -- "$backup" || return 1
+    fi
     if [[ ! -e "$backup" ]]; then
       log "Backing up $LOGIN_FILE to $backup"
-      sudo cp "$LOGIN_FILE" "$backup" || return 1
+      sudo cp -- "$LOGIN_FILE" "$backup" || return 1
     fi
   fi
   if [[ "$de" == gnome ]]; then
@@ -1274,7 +1280,7 @@ configure_gnome_session_type() (
     fi
     if [[ ! -f "$GNOME_SESSION_TYPE_DEST" || -L "$GNOME_SESSION_TYPE_DEST" || ! -r "$GNOME_SESSION_TYPE_DEST" ]] ||
       [[ "$(sha256sum < "$src")" != "$(sha256sum < "$GNOME_SESSION_TYPE_DEST")" || "$(stat -c %a "$GNOME_SESSION_TYPE_DEST")" != 644 ]]; then
-      sudo install -Dm644 "$src" "$GNOME_SESSION_TYPE_DEST" || return 1
+      sudo install -TDm644 "$src" "$GNOME_SESSION_TYPE_DEST" || return 1
     fi
   fi
   if [[ $changed -eq 1 ]]; then
@@ -1501,7 +1507,7 @@ save_install_choices() {
 # backup there is no proof either way, so the answer is no.
 login_file_replaced_by_package() {
   local backup="${LOGIN_FILE}.lightxdm.bak" sum base="" owner
-  [[ -f "$backup" && -r "$backup" && -r "$LOGIN_FILE" ]] || return 1
+  [[ -f "$backup" && ! -L "$backup" && -r "$backup" && -r "$LOGIN_FILE" ]] || return 1
   sum="$(sha256sum < "$LOGIN_FILE")"
   [[ -f "$PAM_LOGIN_BASE_STATE" && ! -L "$PAM_LOGIN_BASE_STATE" && -r "$PAM_LOGIN_BASE_STATE" ]] && base="$(<"$PAM_LOGIN_BASE_STATE")"
   [[ "$sum" != "$(sha256sum < "$backup")" && "${sum%% *}" != "$base" ]] || return 1
@@ -1534,7 +1540,7 @@ record_login_base() {
   if [[ ! -f "$PAM_LOGIN_BASE_STATE" || -L "$PAM_LOGIN_BASE_STATE" || ! -r "$PAM_LOGIN_BASE_STATE" ||
     "$(stat -c %a -- "$PAM_LOGIN_BASE_STATE" 2>/dev/null)" != 644 ||
     "$(cat -- "$PAM_LOGIN_BASE_STATE" 2>/dev/null)" != "$UPDATE_LOGIN_SUM" ]]; then
-    printf '%s\n' "$UPDATE_LOGIN_SUM" | sudo install -Dm644 /dev/stdin "$PAM_LOGIN_BASE_STATE" || return 1
+    printf '%s\n' "$UPDATE_LOGIN_SUM" | sudo install -TDm644 /dev/stdin "$PAM_LOGIN_BASE_STATE" || return 1
   fi
 }
 # Print the options --update re-runs, one per line: the saved desktop and package choice, and the
