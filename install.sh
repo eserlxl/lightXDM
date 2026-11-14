@@ -1661,9 +1661,14 @@ EOF
   done
 
   if [[ $update -eq 1 ]]; then
-    if [[ $argument_count -ne $((1 + dry_run + non_interactive)) ]]; then
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
+      -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
+      $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
       log "--update reuses the saved choices and takes only --dry-run and --non-interactive; to change a choice, run $(script_cmd install.sh) with its options."
       exit 1
+    fi
+    if [[ $dry_run -eq 0 ]]; then
+      check_root || exit $?
     fi
     start_update_run
     local saved_output saved_args=()

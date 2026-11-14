@@ -9863,8 +9863,75 @@ if [[ $status -ne 1 || "$output" != *"--update reuses the saved choices and take
   update_ok=0
   update_report+=" [extra option: status=$status, output=$output]"
 fi
+printf 'de=i3\nno_packages=1\n' >"$update_choices"
+set +e
+output="$(update_run "$update_home" --update --update --dry-run --dry-run --non-interactive --non-interactive)"
+status=$?
+set -e
+if [[ $status -ne 0 || "$output" != *"Updating with the saved choices: --de i3 --no-packages --dry-run --non-interactive"* ]]; then
+  update_ok=0
+  update_report+=" [repeated allowed flags: status=$status, output=$output]"
+fi
+set +e
+output="$(cd / && env HOME="$update_home" LIGHTXDM_DIR="$REPO_ROOT" LOGIN_FILE="$update_login" \
+  PAM_KEYRING_STATE="$update_record" PAM_LOGIN_BASE_STATE="$update_base" \
+  "$REPO_ROOT/bin/lightxdm-update" --update --dry-run 2>&1)"
+status=$?
+set -e
+if [[ $status -ne 0 || "$output" != *"Updating with the saved choices: --de i3 --no-packages --dry-run"* ]]; then
+  update_ok=0
+  update_report+=" [lightxdm-update --update: status=$status, output=$output]"
+fi
+: >"$STUB_LOG"
+set +e
+# shellcheck disable=SC2016  # override check_root inside the isolated child
+output="$(env -u SHELLOPTS -u SUDO_USER HOME="$TMP_DIR/update_root_empty_home" LOGIN_FILE="$update_login" \
+  PAM_KEYRING_STATE="$update_record" PAM_LOGIN_BASE_STATE="$update_base" STUB_LOG="$STUB_LOG" \
+  bash -c 'source "$1/install.sh"; shift; check_root() { echo check_root >>"$STUB_LOG"; return 91; }; main "$@"' \
+  _ "$REPO_ROOT" --update 2>&1)"
+status=$?
+set -e
+if [[ $status -ne 91 || "$(cat "$STUB_LOG")" != "check_root" || "$output" == *"No saved install choices"* ]]; then
+  update_ok=0
+  update_report+=" [--update check_root order: status=$status, log=$(cat "$STUB_LOG"), output=$output]"
+fi
+: >"$STUB_LOG"
+set +e
+# shellcheck disable=SC2016
+output="$(env -u SHELLOPTS -u SUDO_USER HOME="$TMP_DIR/update_root_empty_home" LOGIN_FILE="$update_login" \
+  PAM_KEYRING_STATE="$update_record" PAM_LOGIN_BASE_STATE="$update_base" STUB_LOG="$STUB_LOG" \
+  bash -c 'source "$1/install.sh"; shift; check_root() { echo check_root >>"$STUB_LOG"; return 91; }; main "$@"' \
+  _ "$REPO_ROOT" --update --de xfce 2>&1)"
+status=$?
+set -e
+if [[ $status -ne 1 || -s "$STUB_LOG" || "$output" != *"--update reuses the saved choices and takes only --dry-run and --non-interactive"* ]]; then
+  update_ok=0
+  update_report+=" [--update incompatible option before check_root: status=$status, log=$(cat "$STUB_LOG"), output=$output]"
+fi
+ln -sf "$(command -v dirname)" "$no_sudo_path/dirname"
+set +e
+output="$(env -u SHELLOPTS -u SUDO_USER PATH="$no_sudo_path" HOME="$TMP_DIR/update_root_empty_home" \
+  LOGIN_FILE="$update_login" PAM_KEYRING_STATE="$update_record" PAM_LOGIN_BASE_STATE="$update_base" \
+  bash "$REPO_ROOT/install.sh" --update 2>&1)"
+status=$?
+set -e
+if [[ $status -ne 1 || "$output" != *"sudo is required but not installed"* || "$output" == *"No saved install choices"* ]]; then
+  update_ok=0
+  update_report+=" [--update without sudo: status=$status, output=$output]"
+fi
+if [[ $can_unshare -eq 1 ]]; then
+  set +e
+  output="$(HOME="$TMP_DIR/update_root_empty_home" unshare -r bash "$REPO_ROOT/install.sh" --update 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -ne 1 || "$output" != *"Do not run this script as root. Please run as a regular user."* ||
+    "$output" == *"No saved install choices"* ]]; then
+    update_ok=0
+    update_report+=" [--update as root: status=$status, output=$output]"
+  fi
+fi
 if [[ $update_ok -eq 1 ]]; then
-  pass "install.sh --update reuses the saved choices, reads the keyring from PAM, and refuses a missing file or other options"
+  pass "install.sh --update reuses the saved choices, reads the keyring from PAM, checks non-root first, and accepts repeated allowed flags"
 else
   fail "install.sh --update:$update_report"
 fi
