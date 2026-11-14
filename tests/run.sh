@@ -3831,13 +3831,14 @@ EOF
     fi
     snippet_status=0
     if [[ "$snippet_shell" == zsh ]]; then
+      # +m keeps job control off so timeout's background process group never stops on SIGTTOU when a tty is attached.
       # shellcheck disable=SC2016  # expand inside the child shell
       timeout 20 env -i HOME="$case_home" PATH="$snippet_dir/bin:/usr/bin:/bin" TERM=dumb \
-        "$snippet_shell_path" -f -o interactive -c 'source "$1"; : > "$HOME/after-source"' zsh "$snippet_dir/snippet" || snippet_status=$?
+        "$snippet_shell_path" -f -o interactive +m -c 'source "$1"; : > "$HOME/after-source"' zsh "$snippet_dir/snippet" </dev/null || snippet_status=$?
     else
       # shellcheck disable=SC2016  # expand inside the child shell
       timeout 20 env -i HOME="$case_home" PATH="$snippet_dir/bin:/usr/bin:/bin" TERM=dumb \
-        "$snippet_shell_path" --no-config -l -i -c 'source $argv[1]; touch $HOME/after-source' "$snippet_dir/snippet" || snippet_status=$?
+        "$snippet_shell_path" --no-config -l -i -c 'source $argv[1]; touch $HOME/after-source' "$snippet_dir/snippet" </dev/null || snippet_status=$?
     fi
     case "$snippet_case" in
       wayland)
