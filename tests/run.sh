@@ -10429,6 +10429,12 @@ status=$?
 set -e
 [[ $status -eq 1 && "$po_out" == *"--pam-only changes only $po_dir/login and cannot be combined with --autologin"* ]] ||
   po_report+=" [with --autologin: status=$status, output=$po_out]"
+set +e
+po_out="$(po_run --pam-only)"
+status=$?
+set -e
+[[ $status -eq 1 && ! -s "$po_dir/stub.log" && "$po_out" == *"--pam-only requires --de <id>"* && "$po_out" == *"Usage:"* ]] ||
+  po_report+=" [without --de: status=$status, log=$(cat "$po_dir/stub.log"), output=$po_out]"
 if [[ -z "$po_report" ]]; then
   pass "install.sh --pam-only adds only lightXDM's PAM lines and GNOME block, and previews only that"
 else

@@ -1926,6 +1926,11 @@ EOF
       echo "$usage" >&2
       exit 1
     fi
+    if [[ $de_specified -eq 0 ]]; then
+      log "--pam-only requires --de <id>"
+      echo "$usage" >&2
+      exit 1
+    fi
     # A PAM-only run installs no packages (custom ids need --no-packages anyway).
     no_packages=1
   fi
