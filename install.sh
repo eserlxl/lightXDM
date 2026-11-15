@@ -2688,8 +2688,10 @@ inspect_gnome_pam_status() {
 # True when an enable-autologin.sh --status Note reports an unreadable drop-in dir or *.conf file.
 autologin_note_needs_root() {
   local autologin_dir="${AUTOLOGIN_DROPIN_DIR%/}"
+  [[ -n "$autologin_dir" ]] || autologin_dir="/"
   case "$1" in
     "Note: cannot read $AUTOLOGIN_DROPIN_DIR;"* | \
+      "Note: cannot read $autologin_dir;"* | \
       "Note: cannot read $AUTOLOGIN_DROPIN_DIR/"*.conf";"* | \
       "Note: cannot read $autologin_dir/"*.conf";"* )
       return 0
@@ -3908,7 +3910,8 @@ run_doctor() {
     warnings=$((warnings + 1))
   fi
 
-  local autologin_out auto_line auto_state="disabled" auto_user="" auto_warnings=() auto_notes=() auto_needs_root=0
+  local autologin_out auto_line auto_state="disabled" auto_user="" auto_warnings=() auto_notes=()
+  local auto_needs_root=0 auto_login_needs_root=0 auto_other_notes=() auto_warn
   autologin_out="$(env OVERRIDE_DIR="$AUTOLOGIN_DROPIN_DIR" LOGIN_FILE="$LOGIN_FILE" bash "$SCRIPT_DIR/enable-autologin.sh" --status 2>&1 || true)"
   while IFS= read -r auto_line || [[ -n "$auto_line" ]]; do
     [[ -n "$auto_line" ]] || continue
@@ -3923,38 +3926,67 @@ run_doctor() {
       auto_notes+=("$auto_line")
     fi
   done <<<"$autologin_out"
-  if [[ "$auto_state" == disabled ]]; then
-    local note_item
-    for note_item in "${auto_notes[@]}"; do
-      if autologin_note_needs_root "$note_item"; then
-        auto_needs_root=1
-        break
+  local note_item
+  for note_item in "${auto_notes[@]}"; do
+    if autologin_note_needs_root "$note_item"; then
+      auto_needs_root=1
+    elif [[ "$note_item" == "Note: cannot read $LOGIN_FILE;"* ]]; then
+      auto_login_needs_root=1
+    else
+      auto_other_notes+=("${note_item#Note: }")
+    fi
+  done
+  local has_keyring_auto_warn=0
+  for auto_warn in "${auto_warnings[@]}"; do
+    if [[ "$auto_warn" == *"PAM keyring"* ]]; then
+      has_keyring_auto_warn=1
+      break
+    fi
+  done
+  local auto_details=("${auto_warnings[@]}")
+  if [[ "$auto_state" == enabled ]]; then
+    if [[ $has_keyring_auto_warn -eq 0 && ( -n "$pam_expected" || $keyring_configured -eq 1 ) ]]; then
+      if [[ ${#auto_details[@]} -eq 0 && $auto_needs_root -eq 0 && ${#auto_other_notes[@]} -eq 0 ]]; then
+        printf -v diag_msg 'enabled for %s while PAM keyring is configured; autologin leaves keyring locked — disable with: sudo %s --disable' "$auto_user" "$(script_cmd enable-autologin.sh)"
+        diag_record_check "$json_mode" "Autologin" "warn" "$diag_msg"
+        warnings=$((warnings + 1))
+        auto_state="handled"
+      else
+        auto_details+=("PAM keyring is configured; autologin leaves keyring locked — disable with: sudo $(script_cmd enable-autologin.sh) --disable")
       fi
-    done
-  fi
-  if [[ $auto_needs_root -eq 1 ]]; then
+    fi
+    if [[ "$auto_state" == enabled ]]; then
+      [[ $auto_needs_root -eq 1 ]] && auto_details+=("$AUTOLOGIN_DROPIN_DIR: unknown (needs root)")
+      [[ $auto_login_needs_root -eq 1 && -z "$pam_expected" && $keyring_configured -eq 0 ]] && auto_details+=("$LOGIN_FILE: unknown (needs root)")
+      [[ ${#auto_other_notes[@]} -gt 0 ]] && auto_details+=("${auto_other_notes[@]}")
+      if [[ ${#auto_details[@]} -gt 0 ]]; then
+        local auto_joined=""
+        printf -v auto_joined '%s; ' "${auto_details[@]}"
+        printf -v diag_msg 'enabled for %s — %s' "$auto_user" "${auto_joined%; }"
+        diag_record_check "$json_mode" "Autologin" "warn" "$diag_msg"
+        warnings=$((warnings + 1))
+      else
+        printf -v diag_msg 'enabled for %s' "$auto_user"
+        diag_record_check "$json_mode" "Autologin" "ok" "$diag_msg"
+      fi
+    fi
+  elif [[ ${#auto_details[@]} -eq 0 && $auto_needs_root -eq 1 && $auto_login_needs_root -eq 0 && ${#auto_other_notes[@]} -eq 0 ]]; then
     printf -v diag_msg '%s: unknown (needs root)' "$AUTOLOGIN_DROPIN_DIR"
     diag_record_check "$json_mode" "Autologin" "warn" "$diag_msg"
     warnings=$((warnings + 1))
-  elif [[ "$auto_state" == enabled ]]; then
-    if [[ ${#auto_warnings[@]} -gt 0 ]]; then
-      printf -v diag_msg 'enabled for %s — %s' "$auto_user" "${auto_warnings[*]}"
-      diag_record_check "$json_mode" "Autologin" "warn" "$diag_msg"
-      warnings=$((warnings + 1))
-    elif [[ -n "$pam_expected" || $keyring_configured -eq 1 ]]; then
-      printf -v diag_msg 'enabled for %s while PAM keyring is configured; autologin leaves keyring locked — disable with: sudo %s --disable' "$auto_user" "$(script_cmd enable-autologin.sh)"
+  else
+    [[ $auto_needs_root -eq 1 ]] && auto_details+=("$AUTOLOGIN_DROPIN_DIR: unknown (needs root)")
+    [[ $auto_login_needs_root -eq 1 ]] && auto_details+=("$LOGIN_FILE: unknown (needs root)")
+    [[ ${#auto_other_notes[@]} -gt 0 ]] && auto_details+=("${auto_other_notes[@]}")
+    if [[ ${#auto_details[@]} -gt 0 ]]; then
+      local auto_joined=""
+      printf -v auto_joined '%s; ' "${auto_details[@]}"
+      printf -v diag_msg 'disabled — %s' "${auto_joined%; }"
       diag_record_check "$json_mode" "Autologin" "warn" "$diag_msg"
       warnings=$((warnings + 1))
     else
-      printf -v diag_msg 'enabled for %s' "$auto_user"
-      diag_record_check "$json_mode" "Autologin" "ok" "$diag_msg"
+      diag_record_check "$json_mode" "Autologin" "ok" "disabled"
     fi
-  elif [[ ${#auto_warnings[@]} -gt 0 ]]; then
-    printf -v diag_msg 'disabled — %s' "${auto_warnings[*]}"
-    diag_record_check "$json_mode" "Autologin" "warn" "$diag_msg"
-    warnings=$((warnings + 1))
-  else
-    diag_record_check "$json_mode" "Autologin" "ok" "disabled"
   fi
 
   local summary_msg=""

@@ -14449,6 +14449,80 @@ EOF
     doctor_report+=" unreadable-foreign-autologin rc=$doc_rc out=[$doc_out];"
   fi
 
+  # Enabled autologin without PAM keyring still warns when a foreign drop-in or LOGIN_FILE is unreadable
+  reset_doctor_gnome_fixture
+  rm -f "$doctor_home/.wayland-session" "$doctor_etc/lightxdm/pam-keyring" "$doctor_etc/lightxdm/gnome-session-type.conf"
+  printf 'de=xfce\nno_packages=1\n' >"$doctor_state/lightxdm/install-choices"
+  cp "$REPO_ROOT/dotfiles/.xinitrc-xfce" "$doctor_home/.xinitrc"
+  chmod 755 "$doctor_home/.xinitrc"
+  cat >"$doctor_etc/pam.d/login" <<'EOF'
+#%PAM-1.0
+auth       include      system-local-login
+session    include      system-local-login
+EOF
+  cat >"$doctor_etc/getty@tty1.service.d/lightxdm-autologin.conf" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --noclear --autologin testuser %I $TERM
+EOF
+  printf '[Service]\nExecStart=\n' >"$doctor_etc/getty@tty1.service.d/99-custom.conf"
+  chmod 000 "$doctor_etc/getty@tty1.service.d/99-custom.conf"
+  doc_rc=0
+  doc_js_auto="$(run_doctor_cmd --doctor --json 2>"$doctor_dir/doc_js_auto1.err")" || doc_rc=$?
+  chmod 644 "$doctor_etc/getty@tty1.service.d/99-custom.conf"
+  if [[ $doc_rc -ne 0 || -s "$doctor_dir/doc_js_auto1.err" ]] ||
+    ! JSON_OUT="$doc_js_auto" PYTHONDONTWRITEBYTECODE=1 python3 -B - "$doctor_etc" <<'PY'
+import json, os, sys
+etc = sys.argv[1]
+d = json.loads(os.environ["JSON_OUT"])
+checks = {c["name"]: c for c in d["checks"]}
+auto = checks["Autologin"]
+assert auto["status"] == "warn", auto
+assert "enabled for testuser" in auto["detail"], auto
+assert f"{etc}/getty@tty1.service.d: unknown (needs root)" in auto["detail"], auto
+PY
+  then
+    doctor_ok=0
+    doctor_report+=" enabled-unreadable-dropin rc=$doc_rc err=$(cat "$doctor_dir/doc_js_auto1.err") out=[$doc_js_auto];"
+  fi
+
+  rm -f "$doctor_etc/getty@tty1.service.d/99-custom.conf"
+  chmod 000 "$doctor_etc/pam.d/login"
+  doc_rc=0
+  doc_js_auto="$(run_doctor_cmd --doctor --json 2>"$doctor_dir/doc_js_auto2.err")" || doc_rc=$?
+  chmod 644 "$doctor_etc/pam.d/login"
+  if [[ $doc_rc -ne 0 || -s "$doctor_dir/doc_js_auto2.err" ]] ||
+    ! JSON_OUT="$doc_js_auto" PYTHONDONTWRITEBYTECODE=1 python3 -B - "$doctor_etc" <<'PY'
+import json, os, sys
+etc = sys.argv[1]
+d = json.loads(os.environ["JSON_OUT"])
+checks = {c["name"]: c for c in d["checks"]}
+auto = checks["Autologin"]
+assert auto["status"] == "warn", auto
+assert "enabled for testuser" in auto["detail"], auto
+assert f"{etc}/pam.d/login: unknown (needs root)" in auto["detail"], auto
+PY
+  then
+    doctor_ok=0
+    doctor_report+=" enabled-unreadable-login rc=$doc_rc err=$(cat "$doctor_dir/doc_js_auto2.err") out=[$doc_js_auto];"
+  fi
+
+  # Disabled lightXDM autologin preserves foreign drop-in warnings alongside unreadable drop-ins
+  reset_doctor_gnome_fixture
+  printf '[Service]\nExecStart=-/usr/bin/agetty --autologin alice --noclear %%I %s\n' "\$TERM" >"$doctor_etc/getty@tty1.service.d/01-foreign.conf"
+  printf '[Service]\nExecStart=\n' >"$doctor_etc/getty@tty1.service.d/98-other.conf"
+  chmod 000 "$doctor_etc/getty@tty1.service.d/98-other.conf"
+  doc_rc=0
+  doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+  chmod 644 "$doctor_etc/getty@tty1.service.d/98-other.conf"
+  if [[ $doc_rc -ne 0 ||
+    "$doc_out" != *"still enables autologin."* ||
+    "$doc_out" != *"$doctor_etc/getty@tty1.service.d: unknown (needs root)"* ||
+    "$doc_out" == *"Permission denied"* ]]; then
+    doctor_ok=0
+    doctor_report+=" disabled-foreign-and-unreadable rc=$doc_rc out=[$doc_out];"
+  fi
+
   # Isolated unsearchable DM_STATE_FILE parent directory warns instead of reporting ok (none enabled)
   reset_doctor_gnome_fixture
   mkdir -p "$doctor_etc/dm_priv"
