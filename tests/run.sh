@@ -9876,6 +9876,36 @@ for launcher_case in "lightxdm-install|--help|0|Usage: bash $REPO_ROOT/install.s
     launcher_report+=" [$launcher: status=$status, output=$launcher_out]"
   fi
 done
+set +e
+upd_help_out="$(cd / && HOME="$TMP_DIR/launcher_home" LIGHTXDM_DIR="$REPO_ROOT" "$REPO_ROOT/bin/lightxdm-update" --help 2>&1)"
+upd_help_rc=$?
+set -e
+if [[ $upd_help_rc -ne 0 ||
+  "$upd_help_out" != *"Usage: lightxdm-update [-h|--help] [--dry-run] [--non-interactive]"* ||
+  "$upd_help_out" == *"--init-template"* || "$upd_help_out" == *"Usage: bash"* ]]; then
+  launcher_report+=" [lightxdm-update --help: status=$upd_help_rc, output=$upd_help_out]"
+fi
+for upd_help_case in "-h" "--dry-run --help" "--non-interactive --help" "--update --help"; do
+  read -r -a upd_help_args <<<"$upd_help_case"
+  set +e
+  upd_variant_out="$(cd / && HOME="$TMP_DIR/launcher_home" LIGHTXDM_DIR="$REPO_ROOT" "$REPO_ROOT/bin/lightxdm-update" "${upd_help_args[@]}" 2>&1)"
+  upd_variant_rc=$?
+  set -e
+  if [[ $upd_variant_rc -ne 0 || "$upd_variant_out" != "$upd_help_out" ]]; then
+    launcher_report+=" [lightxdm-update $upd_help_case: status=$upd_variant_rc, output=$upd_variant_out]"
+  fi
+done
+for upd_bad_case in "--bogus --help|Unknown option: --bogus" "--de xfce|--update reuses the saved choices and takes only --dry-run and --non-interactive"; do
+  IFS='|' read -r upd_bad_cmdline upd_bad_text <<<"$upd_bad_case"
+  read -r -a upd_bad_args <<<"$upd_bad_cmdline"
+  set +e
+  upd_bad_out="$(cd / && HOME="$TMP_DIR/launcher_home" LIGHTXDM_DIR="$REPO_ROOT" "$REPO_ROOT/bin/lightxdm-update" "${upd_bad_args[@]}" 2>&1)"
+  upd_bad_rc=$?
+  set -e
+  if [[ $upd_bad_rc -ne 1 || "$upd_bad_out" != *"$upd_bad_text"* ]]; then
+    launcher_report+=" [lightxdm-update $upd_bad_cmdline: status=$upd_bad_rc, output=$upd_bad_out]"
+  fi
+done
 if [[ -z "$launcher_report" ]]; then
   pass "the bin/ launchers run install.sh, install.sh --update, uninstall.sh and enable-autologin.sh"
 else
