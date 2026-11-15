@@ -13503,7 +13503,7 @@ assert any("config.fish" in w for w in d["warnings"]), d["warnings"]
 fi
 
 # 4) Special characters in TARGET_HOME and LOGIN_FILE stay valid JSON and reject bad --json combos cleanly
-special_un_home="$un_js_dir/special \"quote\" \\slash home"
+special_un_home="$un_js_dir/special \"quote\" \\slash "$'\x07\x1b'"ctl home"
 mkdir -p "$special_un_home"
 cp "$REPO_ROOT/dotfiles/.bash_profile" "$special_un_home/.bash_profile"
 set +e

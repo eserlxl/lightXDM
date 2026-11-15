@@ -46,7 +46,7 @@ DRY_STATE_DIR_REMOVE=false
 DRY_LAST_EDITED_DEST=""
 
 json_escape() {
-  local s="$1"
+  local s="$1" out="" i ch code LC_ALL=C
   s="${s//\\/\\\\}"
   s="${s//\"/\\\"}"
   s="${s//$'\b'/\\b}"
@@ -54,6 +54,18 @@ json_escape() {
   s="${s//$'\n'/\\n}"
   s="${s//$'\r'/\\r}"
   s="${s//$'\t'/\\t}"
+  if [[ "$s" == *[$'\001'-$'\037']* ]]; then
+    for ((i = 0; i < ${#s}; i++)); do
+      ch="${s:i:1}"
+      if [[ "$ch" == [$'\001'-$'\037'] ]]; then
+        printf -v code '%d' "'$ch"
+        printf -v ch '\\u%04x' "$code"
+      fi
+      out+="$ch"
+    done
+    printf '%s' "$out"
+    return 0
+  fi
   printf '%s' "$s"
 }
 
