@@ -2315,6 +2315,60 @@ json_str_or_null() {
   fi
 }
 
+# Print JSON string array property named $1 with remaining arguments as elements (no trailing newline).
+print_json_string_array() {
+  local key="$1" i comma=""
+  shift
+  printf '  %s: [' "$(json_str "$key")"
+  for i in "$@"; do
+    printf '%s%s' "$comma" "$(json_str "$i")"
+    comma=", "
+  done
+  printf ']'
+}
+
+_DIAG_CHECKS=()
+
+# Emit a diagnostic check as prose immediately when $1==0, or buffer (name, status, detail) when $1==1.
+diag_record_check() {
+  local json_mode="$1" name="$2" status="$3" detail="$4" prose_override="${5-}"
+  if [[ $json_mode -eq 1 ]]; then
+    _DIAG_CHECKS+=("$name" "$status" "$detail")
+    return 0
+  fi
+  if [[ -n "$prose_override" ]]; then
+    printf '%s: %s\n' "$name" "$prose_override"
+    return 0
+  fi
+  local label="$status"
+  case "$status" in
+    warn) label="WARN" ;;
+    fail) label="FAIL" ;;
+  esac
+  if [[ -n "$detail" ]]; then
+    printf '%s: %s (%s)\n' "$name" "$label" "$detail"
+  else
+    printf '%s: %s\n' "$name" "$label"
+  fi
+}
+
+# Print "checks" JSON array property from flat (name, status, detail) triples in $@.
+print_diag_checks_json() {
+  local count=0 comma=""
+  printf '  "checks": [\n'
+  while [[ $# -ge 3 ]]; do
+    printf '%s    {"name": %s, "status": %s, "detail": %s}' \
+      "$comma" "$(json_str "$1")" "$(json_str "$2")" "$(json_str "$3")"
+    comma=$',\n'
+    shift 3
+    count=$((count + 1))
+  done
+  if [[ $count -gt 0 ]]; then
+    printf '\n'
+  fi
+  printf '  ]\n'
+}
+
 # Inspect managed home dotfile $1 compared against resolved template $2 into DOTFILE_STATUS_* globals.
 inspect_dotfile_status() {
   local target="$1" source="${2:-}" sum="" recorded_sum=""
@@ -2884,17 +2938,22 @@ shell_has_tty1_hook() {
 
 # Run pre-install onboarding readiness checks cleanly without sudo or side effects
 run_preflight() {
-  local blockers=0
+  local json_mode=0
+  [[ "${1:-}" == "--json" ]] && json_mode=1
+  _DIAG_CHECKS=()
+
+  local blockers=0 warnings=0 diag_msg="" install_cmd=""
+  install_cmd="$(script_cmd install.sh)"
   local current_user="${SUDO_USER:-${USER:-}}"
   if [[ -z "$current_user" ]]; then
     current_user="$(id -un 2>/dev/null || true)"
   fi
 
   if [[ $EUID -eq 0 ]]; then
-    printf 'User/sudo: FAIL (running as root; run as a regular user, not root or sudo)\n'
+    diag_record_check "$json_mode" "User/sudo" "fail" "running as root; run as a regular user, not root or sudo"
     blockers=$((blockers + 1))
   elif ! command -v sudo >/dev/null 2>&1; then
-    printf "User/sudo: FAIL (sudo not found; install as root: su -c 'pacman -S sudo')\n"
+    diag_record_check "$json_mode" "User/sudo" "fail" "sudo not found; install as root: su -c 'pacman -S sudo'"
     blockers=$((blockers + 1))
   else
     local groups_out="" group_note=""
@@ -2902,7 +2961,8 @@ run_preflight() {
     if [[ -n "$groups_out" && " $groups_out " != *" wheel "* ]]; then
       group_note="; not in wheel group (ensure sudo privileges)"
     fi
-    printf 'User/sudo: ok (%s, sudo available%s)\n' "${current_user:-regular user}" "$group_note"
+    printf -v diag_msg '%s, sudo available%s' "${current_user:-regular user}" "$group_note"
+    diag_record_check "$json_mode" "User/sudo" "ok" "$diag_msg"
   fi
 
   local have_pacman=0 have_systemctl=0 missing_tools=()
@@ -2917,9 +2977,10 @@ run_preflight() {
     missing_tools+=("systemctl")
   fi
   if [[ ${#missing_tools[@]} -eq 0 ]]; then
-    printf 'System tools: ok (pacman, systemctl)\n'
+    diag_record_check "$json_mode" "System tools" "ok" "pacman, systemctl"
   else
-    printf 'System tools: FAIL (missing: %s)\n' "${missing_tools[*]}"
+    printf -v diag_msg 'missing: %s' "${missing_tools[*]}"
+    diag_record_check "$json_mode" "System tools" "fail" "$diag_msg"
     blockers=$((blockers + 1))
   fi
 
@@ -2928,26 +2989,28 @@ run_preflight() {
     local getty_state=""
     getty_state="$(systemctl is-enabled getty@tty1.service 2>/dev/null || true)"
     if [[ "$getty_state" == masked ]]; then
-      printf 'getty@tty1.service: FAIL (masked — unmask with: sudo systemctl unmask getty@tty1.service)\n'
+      diag_record_check "$json_mode" "getty@tty1.service" "fail" "masked — unmask with: sudo systemctl unmask getty@tty1.service"
       blockers=$((blockers + 1))
     else
-      printf 'getty@tty1.service: ok (%s)\n' "${getty_state:-unknown}"
+      diag_record_check "$json_mode" "getty@tty1.service" "ok" "${getty_state:-unknown}"
     fi
 
     mapfile -t enabled_dms < <(detect_enabled_dms)
     if [[ ${#enabled_dms[@]} -gt 0 ]]; then
-      printf 'Display managers: %s enabled (install will disable cleanly; uninstall restores)\n' "${enabled_dms[*]}"
+      printf -v diag_msg '%s enabled (install will disable cleanly; uninstall restores)' "${enabled_dms[*]}"
+      diag_record_check "$json_mode" "Display managers" "info" "$diag_msg" "$diag_msg"
     else
-      printf 'Display managers: ok (none enabled)\n'
+      diag_record_check "$json_mode" "Display managers" "ok" "none enabled"
     fi
   else
-    printf 'getty@tty1.service: skipped (systemctl unavailable)\n'
+    diag_record_check "$json_mode" "getty@tty1.service" "skipped" "systemctl unavailable"
   fi
 
   if [[ -n "${WAYLAND_DISPLAY:-}" || -n "${DISPLAY:-}" ]]; then
-    printf 'Current session: graphical (%s — safe to install; current session will stay running)\n' "${WAYLAND_DISPLAY:-$DISPLAY}"
+    printf -v diag_msg 'graphical (%s — safe to install; current session will stay running)' "${WAYLAND_DISPLAY:-$DISPLAY}"
+    diag_record_check "$json_mode" "Current session" "info" "$diag_msg" "$diag_msg"
   else
-    printf 'Current session: TTY/non-graphical\n'
+    diag_record_check "$json_mode" "Current session" "info" "TTY/non-graphical" "TTY/non-graphical"
   fi
 
   local login_shell=""
@@ -2956,57 +3019,115 @@ run_preflight() {
   fi
   case "$login_shell" in
     "")
-      printf 'Login shell: unknown (non-bash users see: %s --shell-snippet <zsh|fish>)\n' "$(script_cmd install.sh)"
+      printf -v diag_msg 'non-bash users see: %s --shell-snippet <zsh|fish>' "$install_cmd"
+      diag_record_check "$json_mode" "Login shell" "unknown" "$diag_msg"
       ;;
     *bash)
-      printf 'Login shell: ok (%s — reads ~/.bash_profile)\n' "$login_shell"
+      printf -v diag_msg '%s — reads ~/.bash_profile' "$login_shell"
+      diag_record_check "$json_mode" "Login shell" "ok" "$diag_msg"
       ;;
     *zsh)
       if shell_has_tty1_hook zsh; then
-        printf 'Login shell: ok (%s — TTY1 hook present in ~/.zprofile)\n' "$login_shell"
+        printf -v diag_msg '%s — TTY1 hook present in ~/.zprofile' "$login_shell"
+        diag_record_check "$json_mode" "Login shell" "ok" "$diag_msg"
       else
-        printf 'Login shell: WARN (%s does not read ~/.bash_profile — run: %s --shell-snippet zsh >> ~/.zprofile)\n' "$login_shell" "$(script_cmd install.sh)"
+        printf -v diag_msg '%s does not read ~/.bash_profile — run: %s --shell-snippet zsh >> ~/.zprofile' "$login_shell" "$install_cmd"
+        diag_record_check "$json_mode" "Login shell" "warn" "$diag_msg"
+        warnings=$((warnings + 1))
       fi
       ;;
     *fish)
       if shell_has_tty1_hook fish; then
-        printf 'Login shell: ok (%s — TTY1 hook present in ~/.config/fish/config.fish)\n' "$login_shell"
+        printf -v diag_msg '%s — TTY1 hook present in ~/.config/fish/config.fish' "$login_shell"
+        diag_record_check "$json_mode" "Login shell" "ok" "$diag_msg"
       else
-        printf 'Login shell: WARN (%s does not read ~/.bash_profile — run: %s --shell-snippet fish >> ~/.config/fish/config.fish)\n' "$login_shell" "$(script_cmd install.sh)"
+        printf -v diag_msg '%s does not read ~/.bash_profile — run: %s --shell-snippet fish >> ~/.config/fish/config.fish' "$login_shell" "$install_cmd"
+        diag_record_check "$json_mode" "Login shell" "warn" "$diag_msg"
+        warnings=$((warnings + 1))
       fi
       ;;
     *)
-      printf 'Login shell: WARN (%s does not read ~/.bash_profile — add TTY1 auto-start block per docs/startx-autologin.md)\n' "$login_shell"
+      printf -v diag_msg '%s does not read ~/.bash_profile — add TTY1 auto-start block per docs/startx-autologin.md' "$login_shell"
+      diag_record_check "$json_mode" "Login shell" "warn" "$diag_msg"
+      warnings=$((warnings + 1))
       ;;
   esac
 
-  local detected_raw="" detected_des=() first_de=""
+  local detected_raw="" detected_des=() first_de="" next_step=""
   if [[ $have_pacman -eq 1 ]]; then
     detected_raw="$(detect_de 2>/dev/null || true)"
     if [[ -n "$detected_raw" && "$detected_raw" != "unknown" ]]; then
       mapfile -t detected_des <<<"$detected_raw"
       first_de="${detected_des[0]}"
-      printf 'Detected desktop(s): %s\n' "${detected_des[*]}"
-      printf 'Next step: %s --dry-run --de %s   (or %s)\n' "$(script_cmd install.sh)" "$first_de" "$(script_cmd install.sh)"
+      diag_record_check "$json_mode" "Detected desktop(s)" "info" "${detected_des[*]}" "${detected_des[*]}"
+      printf -v next_step '%s --dry-run --de %s   (or %s)' "$install_cmd" "$first_de" "$install_cmd"
     else
-      printf 'Detected desktop(s): none installed\n'
-      printf 'Next step: %s --list-sessions   (or %s to pick a desktop)\n' "$(script_cmd install.sh)" "$(script_cmd install.sh)"
+      diag_record_check "$json_mode" "Detected desktop(s)" "info" "none installed" "none installed"
+      printf -v next_step '%s --list-sessions   (or %s to pick a desktop)' "$install_cmd" "$install_cmd"
+    fi
+    if [[ $json_mode -eq 0 ]]; then
+      printf 'Next step: %s\n' "$next_step"
     fi
   else
-    printf 'Detected desktop(s): skipped (pacman unavailable)\n'
+    diag_record_check "$json_mode" "Detected desktop(s)" "skipped" "pacman unavailable"
   fi
 
+  local summary_msg=""
   if [[ $blockers -eq 0 ]]; then
-    printf 'Preflight: PASS (ready to run lightXDM installer)\n'
-    return 0
+    summary_msg="Preflight: PASS (ready to run lightXDM installer)"
+  else
+    printf -v summary_msg 'Preflight: FAIL (%d blocker(s) found above)' "$blockers"
   fi
-  printf 'Preflight: FAIL (%d blocker(s) found above)\n' "$blockers"
-  return 1
+
+  if [[ $json_mode -eq 1 ]]; then
+    local ready_bool="false" pf_status="fail"
+    if [[ $blockers -eq 0 ]]; then
+      ready_bool="true"
+      if [[ $warnings -gt 0 ]]; then
+        pf_status="warn"
+      else
+        pf_status="pass"
+      fi
+    fi
+    printf '{\n'
+    printf '  "mode": "preflight",\n'
+    printf '  "ready": %s,\n' "$ready_bool"
+    printf '  "status": %s,\n' "$(json_str "$pf_status")"
+    printf '  "blockers": %d,\n' "$blockers"
+    printf '  "warnings": %d,\n' "$warnings"
+    if [[ ${#detected_des[@]} -gt 0 ]]; then
+      print_json_string_array "detected_desktops" "${detected_des[@]}"
+    else
+      print_json_string_array "detected_desktops"
+    fi
+    printf ',\n'
+    if [[ ${#enabled_dms[@]} -gt 0 ]]; then
+      print_json_string_array "enabled_display_managers" "${enabled_dms[@]}"
+    else
+      print_json_string_array "enabled_display_managers"
+    fi
+    printf ',\n'
+    printf '  "next_step": %s,\n' "$(json_str_or_null "$next_step")"
+    printf '  "summary": %s,\n' "$(json_str "$summary_msg")"
+    if [[ ${#_DIAG_CHECKS[@]} -gt 0 ]]; then
+      print_diag_checks_json "${_DIAG_CHECKS[@]}"
+    else
+      print_diag_checks_json
+    fi
+    printf '}\n'
+  else
+    printf '%s\n' "$summary_msg"
+  fi
+  [[ $blockers -eq 0 ]]
 }
 
 # Verify post-install session, shell trigger, PAM, and systemd boot-recovery health without sudo or changes.
 run_doctor() {
-  local LC_ALL=C issues=0 warnings=0
+  local json_mode=0
+  [[ "${1:-}" == "--json" ]] && json_mode=1
+  _DIAG_CHECKS=()
+
+  local LC_ALL=C issues=0 warnings=0 diag_msg=""
   local install_cmd update_cmd recover_cmd
   install_cmd="$(script_cmd install.sh)"
   if command -v lightxdm-update >/dev/null 2>&1; then
@@ -3034,11 +3155,13 @@ run_doctor() {
     done <"$choices_file"
   elif [[ -L "${choices_file%/*}" || -L "$choices_file" ]]; then
     choices_kind="symlink-ignored"
-    printf 'Install choices: FAIL (%s or its directory is a symlink; re-run %s --de <id>)\n' "$choices_file" "$install_cmd"
+    printf -v diag_msg '%s or its directory is a symlink; re-run %s --de <id>' "$choices_file" "$install_cmd"
+    diag_record_check "$json_mode" "Install choices" "fail" "$diag_msg"
     issues=$((issues + 1))
   elif [[ -e "$choices_file" ]]; then
     choices_kind="unreadable"
-    printf 'Install choices: FAIL (%s is unreadable; fix permissions on %s)\n' "$choices_file" "$choices_file"
+    printf -v diag_msg '%s is unreadable; fix permissions on %s' "$choices_file" "$choices_file"
+    diag_record_check "$json_mode" "Install choices" "fail" "$diag_msg"
     issues=$((issues + 1))
   fi
 
@@ -3048,16 +3171,19 @@ run_doctor() {
     installed_any=1
   fi
   if [[ $installed_any -eq 0 ]]; then
-    printf 'Install state: FAIL (lightXDM is not installed for %s — run: %s --preflight)\n' "$HOME" "$install_cmd"
+    printf -v diag_msg 'lightXDM is not installed for %s — run: %s --preflight' "$HOME" "$install_cmd"
+    diag_record_check "$json_mode" "Install state" "fail" "$diag_msg"
     issues=$((issues + 1))
   elif [[ "$choices_kind" == "readable" && -n "$de" ]]; then
     if [[ "$no_packages" == 1 ]]; then
-      printf 'Install choices: ok (de=%s, --no-packages)\n' "$de"
+      printf -v diag_msg 'de=%s, --no-packages' "$de"
     else
-      printf 'Install choices: ok (de=%s)\n' "$de"
+      printf -v diag_msg 'de=%s' "$de"
     fi
+    diag_record_check "$json_mode" "Install choices" "ok" "$diag_msg"
   elif [[ "$choices_kind" == "readable" ]]; then
-    printf 'Install choices: WARN (%s has no desktop recorded)\n' "$choices_file"
+    printf -v diag_msg '%s has no desktop recorded' "$choices_file"
+    diag_record_check "$json_mode" "Install choices" "warn" "$diag_msg"
     warnings=$((warnings + 1))
   fi
 
@@ -3070,11 +3196,13 @@ run_doctor() {
         expected_mode="x11"
       fi
       if [[ ! -f "$template" ]]; then
-        printf 'Session template: FAIL (missing %s for de=%s — run: %s --init-template --de %s)\n' "$template" "$de" "$install_cmd" "$de"
+        printf -v diag_msg 'missing %s for de=%s — run: %s --init-template --de %s' "$template" "$de" "$install_cmd" "$de"
+        diag_record_check "$json_mode" "Session template" "fail" "$diag_msg"
         issues=$((issues + 1))
       fi
     else
-      printf 'Session template: FAIL (cannot resolve template for de=%s — check ~/.config/lightxdm/ for conflicting .wayland-session-%s and .xinitrc-%s)\n' "$de" "$de" "$de"
+      printf -v diag_msg 'cannot resolve template for de=%s — check ~/.config/lightxdm/ for conflicting .wayland-session-%s and .xinitrc-%s' "$de" "$de" "$de"
+      diag_record_check "$json_mode" "Session template" "fail" "$diag_msg"
       issues=$((issues + 1))
     fi
   fi
@@ -3083,125 +3211,152 @@ run_doctor() {
   if [[ "$expected_mode" == wayland ]]; then
     if [[ -L "$wl" ]]; then
       if [[ ! -e "$wl" ]]; then
-        printf 'Session launcher: FAIL (broken symlink %s — restore with: %s)\n' "$wl" "$recover_cmd"
+        printf -v diag_msg 'broken symlink %s — restore with: %s' "$wl" "$recover_cmd"
+        diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
         issues=$((issues + 1))
       elif [[ ! -f "$wl" ]]; then
-        printf 'Session launcher: FAIL (%s is a symlink to a non-regular file — restore with: %s)\n' "$wl" "$recover_cmd"
+        printf -v diag_msg '%s is a symlink to a non-regular file — restore with: %s' "$wl" "$recover_cmd"
+        diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
         issues=$((issues + 1))
       elif [[ ! -x "$wl" ]]; then
-        printf 'Session launcher: FAIL (%s is not executable — fix with: chmod +x ~/.wayland-session)\n' "$wl"
+        printf -v diag_msg '%s is not executable — fix with: chmod +x ~/.wayland-session' "$wl"
+        diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
         issues=$((issues + 1))
       else
-        printf 'Session launcher: WARN (%s is a symlink; --update ignores symlinks)\n' "$wl"
+        printf -v diag_msg '%s is a symlink; --update ignores symlinks' "$wl"
+        diag_record_check "$json_mode" "Session launcher" "warn" "$diag_msg"
         warnings=$((warnings + 1))
         active_launcher="$wl"
       fi
     elif [[ ! -f "$wl" ]]; then
-      printf 'Session launcher: FAIL (missing %s for de=%s — restore with: %s)\n' "$wl" "$de" "$recover_cmd"
+      printf -v diag_msg 'missing %s for de=%s — restore with: %s' "$wl" "$de" "$recover_cmd"
+      diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
       issues=$((issues + 1))
     elif [[ ! -x "$wl" ]]; then
-      printf 'Session launcher: FAIL (%s exists but is not executable — fix with: chmod +x ~/.wayland-session)\n' "$wl"
+      printf -v diag_msg '%s exists but is not executable — fix with: chmod +x ~/.wayland-session' "$wl"
+      diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
       issues=$((issues + 1))
     else
-      printf 'Session launcher: ok (%s, Wayland for de=%s)\n' "$wl" "$de"
+      printf -v diag_msg '%s, Wayland for de=%s' "$wl" "$de"
+      diag_record_check "$json_mode" "Session launcher" "ok" "$diag_msg"
       active_launcher="$wl"
     fi
   elif [[ "$expected_mode" == x11 ]]; then
     if [[ ( -e "$wl" || -L "$wl" ) && -x "$wl" ]]; then
-      printf 'Session launcher: FAIL (%s is executable and shadows X11 %s for de=%s — remove %s or run: chmod -x ~/.wayland-session)\n' "$wl" "$xi" "$de" "$wl"
+      printf -v diag_msg '%s is executable and shadows X11 %s for de=%s — remove %s or run: chmod -x ~/.wayland-session' "$wl" "$xi" "$de" "$wl"
+      diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
       issues=$((issues + 1))
     fi
     if [[ -L "$xi" ]]; then
       if [[ ! -e "$xi" ]]; then
-        printf 'Session launcher: FAIL (broken symlink %s — restore with: %s)\n' "$xi" "$recover_cmd"
+        printf -v diag_msg 'broken symlink %s — restore with: %s' "$xi" "$recover_cmd"
+        diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
         issues=$((issues + 1))
       elif [[ ! -f "$xi" ]]; then
-        printf 'Session launcher: FAIL (%s is a symlink to a non-regular file — restore with: %s)\n' "$xi" "$recover_cmd"
+        printf -v diag_msg '%s is a symlink to a non-regular file — restore with: %s' "$xi" "$recover_cmd"
+        diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
         issues=$((issues + 1))
       else
-        printf 'Session launcher: WARN (%s is a symlink; --update ignores symlinks)\n' "$xi"
+        printf -v diag_msg '%s is a symlink; --update ignores symlinks' "$xi"
+        diag_record_check "$json_mode" "Session launcher" "warn" "$diag_msg"
         warnings=$((warnings + 1))
         active_launcher="$xi"
       fi
     elif [[ ! -f "$xi" ]]; then
-      printf 'Session launcher: FAIL (missing %s for de=%s — restore with: %s)\n' "$xi" "$de" "$recover_cmd"
+      printf -v diag_msg 'missing %s for de=%s — restore with: %s' "$xi" "$de" "$recover_cmd"
+      diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
       issues=$((issues + 1))
     else
       active_launcher="$xi"
     fi
     if ! command -v startx >/dev/null 2>&1; then
-      printf 'X11 starter: FAIL (startx not found on PATH — install xorg-xinit)\n'
+      diag_record_check "$json_mode" "X11 starter" "fail" "startx not found on PATH — install xorg-xinit"
       issues=$((issues + 1))
     elif [[ -n "$active_launcher" && ! -L "$xi" ]]; then
-      printf 'Session launcher: ok (%s via startx for de=%s)\n' "$xi" "$de"
+      printf -v diag_msg '%s via startx for de=%s' "$xi" "$de"
+      diag_record_check "$json_mode" "Session launcher" "ok" "$diag_msg"
     fi
   elif [[ $installed_any -eq 1 ]]; then
     if [[ -L "$wl" && ! -e "$wl" ]]; then
-      printf 'Session launcher: FAIL (broken symlink %s — remove or run: %s --de <id>)\n' "$wl" "$install_cmd"
+      printf -v diag_msg 'broken symlink %s — remove or run: %s --de <id>' "$wl" "$install_cmd"
+      diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
       issues=$((issues + 1))
     elif [[ -L "$wl" && ! -f "$wl" ]]; then
-      printf 'Session launcher: FAIL (%s is a symlink to a non-regular file — remove or run: %s --de <id>)\n' "$wl" "$install_cmd"
+      printf -v diag_msg '%s is a symlink to a non-regular file — remove or run: %s --de <id>' "$wl" "$install_cmd"
+      diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
       issues=$((issues + 1))
     elif [[ -e "$wl" && ! -f "$wl" ]]; then
-      printf 'Session launcher: FAIL (%s is not a regular file — remove or run: %s --de <id>)\n' "$wl" "$install_cmd"
+      printf -v diag_msg '%s is not a regular file — remove or run: %s --de <id>' "$wl" "$install_cmd"
+      diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
       issues=$((issues + 1))
     elif [[ -f "$wl" && -x "$wl" ]]; then
       if [[ -L "$wl" ]]; then
-        printf 'Session launcher: WARN (%s is a symlink; --update ignores symlinks)\n' "$wl"
+        printf -v diag_msg '%s is a symlink; --update ignores symlinks' "$wl"
+        diag_record_check "$json_mode" "Session launcher" "warn" "$diag_msg"
         warnings=$((warnings + 1))
       else
-        printf 'Session launcher: ok (%s, Wayland)\n' "$wl"
+        printf -v diag_msg '%s, Wayland' "$wl"
+        diag_record_check "$json_mode" "Session launcher" "ok" "$diag_msg"
       fi
       active_launcher="$wl"
     elif [[ -f "$wl" ]]; then
-      printf 'Session launcher: FAIL (%s exists but is not executable — fix with: chmod +x ~/.wayland-session)\n' "$wl"
+      printf -v diag_msg '%s exists but is not executable — fix with: chmod +x ~/.wayland-session' "$wl"
+      diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
       issues=$((issues + 1))
     elif [[ -L "$xi" && ! -e "$xi" ]]; then
-      printf 'Session launcher: FAIL (broken symlink %s — restore with: %s --de <id>)\n' "$xi" "$install_cmd"
+      printf -v diag_msg 'broken symlink %s — restore with: %s --de <id>' "$xi" "$install_cmd"
+      diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
       issues=$((issues + 1))
     elif [[ -L "$xi" && ! -f "$xi" ]]; then
-      printf 'Session launcher: FAIL (%s is a symlink to a non-regular file — restore with: %s --de <id>)\n' "$xi" "$install_cmd"
+      printf -v diag_msg '%s is a symlink to a non-regular file — restore with: %s --de <id>' "$xi" "$install_cmd"
+      diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
       issues=$((issues + 1))
     elif [[ -e "$xi" && ! -f "$xi" ]]; then
-      printf 'Session launcher: FAIL (%s is not a regular file — restore with: %s --de <id>)\n' "$xi" "$install_cmd"
+      printf -v diag_msg '%s is not a regular file — restore with: %s --de <id>' "$xi" "$install_cmd"
+      diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
       issues=$((issues + 1))
     elif [[ -f "$xi" ]]; then
       if ! command -v startx >/dev/null 2>&1; then
-        printf 'X11 starter: FAIL (startx not found on PATH — install xorg-xinit)\n'
+        diag_record_check "$json_mode" "X11 starter" "fail" "startx not found on PATH — install xorg-xinit"
         issues=$((issues + 1))
       else
         if [[ -L "$xi" ]]; then
-          printf 'Session launcher: WARN (%s is a symlink; --update ignores symlinks)\n' "$xi"
+          printf -v diag_msg '%s is a symlink; --update ignores symlinks' "$xi"
+          diag_record_check "$json_mode" "Session launcher" "warn" "$diag_msg"
           warnings=$((warnings + 1))
         else
-          printf 'Session launcher: ok (%s via startx)\n' "$xi"
+          printf -v diag_msg '%s via startx' "$xi"
+          diag_record_check "$json_mode" "Session launcher" "ok" "$diag_msg"
         fi
         active_launcher="$xi"
       fi
     else
-      printf 'Session launcher: FAIL (missing %s or %s — re-run %s --de <id>)\n' "$wl" "$xi" "$install_cmd"
+      printf -v diag_msg 'missing %s or %s — re-run %s --de <id>' "$wl" "$xi" "$install_cmd"
+      diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
       issues=$((issues + 1))
     fi
   fi
 
   if [[ -n "$active_launcher" ]]; then
     if [[ ! -r "$active_launcher" ]]; then
-      printf 'Session checks: FAIL (%s is not readable — fix with: chmod u+r %s)\n' "$active_launcher" "$active_launcher"
+      printf -v diag_msg '%s is not readable — fix with: chmod u+r %s' "$active_launcher" "$active_launcher"
+      diag_record_check "$json_mode" "Session checks" "fail" "$diag_msg"
       issues=$((issues + 1))
     else
       local diag_err="" cmd_ok=1
       if ! diag_err="$(check_template_syntax "$active_launcher" 2>&1)"; then
-        printf 'Session syntax: FAIL (%s)\n' "${diag_err#=> }"
+        diag_record_check "$json_mode" "Session syntax" "fail" "${diag_err#=> }"
         issues=$((issues + 1))
         cmd_ok=0
       fi
       if ! diag_err="$(check_session_commands "$active_launcher" 2>&1)"; then
-        printf 'Session command: FAIL (%s)\n' "${diag_err#=> }"
+        diag_record_check "$json_mode" "Session command" "fail" "${diag_err#=> }"
         issues=$((issues + 1))
         cmd_ok=0
       fi
       if [[ $cmd_ok -eq 1 ]]; then
-        printf 'Session checks: ok (syntax and command verified for %s)\n' "$active_launcher"
+        printf -v diag_msg 'syntax and command verified for %s' "$active_launcher"
+        diag_record_check "$json_mode" "Session checks" "ok" "$diag_msg"
       fi
     fi
   fi
@@ -3214,45 +3369,55 @@ run_doctor() {
     case "$login_shell" in
       *bash)
         if shell_has_tty1_hook bash; then
-          printf 'Login shell auto-start: ok (%s via ~/.bash_profile)\n' "$login_shell"
+          printf -v diag_msg '%s via ~/.bash_profile' "$login_shell"
+          diag_record_check "$json_mode" "Login shell auto-start" "ok" "$diag_msg"
         else
-          printf 'Login shell auto-start: FAIL (~/.bash_profile is missing or lacks TTY1 auto-start trigger — restore with: %s)\n' "$recover_cmd"
+          # shellcheck disable=SC2088 # literal home-relative display path for user instructions
+          printf -v diag_msg '~/.bash_profile is missing or lacks TTY1 auto-start trigger — restore with: %s' "$recover_cmd"
+          diag_record_check "$json_mode" "Login shell auto-start" "fail" "$diag_msg"
           issues=$((issues + 1))
         fi
         ;;
       *zsh)
         if shell_has_tty1_hook zsh; then
-          printf 'Login shell auto-start: ok (%s via ~/.zprofile)\n' "$login_shell"
+          printf -v diag_msg '%s via ~/.zprofile' "$login_shell"
+          diag_record_check "$json_mode" "Login shell auto-start" "ok" "$diag_msg"
         else
-          printf 'Login shell auto-start: FAIL (zsh login shell lacks TTY1 auto-start block in ~/.zprofile — run: %s --shell-snippet zsh >> ~/.zprofile)\n' "$install_cmd"
+          printf -v diag_msg 'zsh login shell lacks TTY1 auto-start block in ~/.zprofile — run: %s --shell-snippet zsh >> ~/.zprofile' "$install_cmd"
+          diag_record_check "$json_mode" "Login shell auto-start" "fail" "$diag_msg"
           issues=$((issues + 1))
         fi
         ;;
       *fish)
         if shell_has_tty1_hook fish; then
-          printf 'Login shell auto-start: ok (%s via ~/.config/fish/config.fish)\n' "$login_shell"
+          printf -v diag_msg '%s via ~/.config/fish/config.fish' "$login_shell"
+          diag_record_check "$json_mode" "Login shell auto-start" "ok" "$diag_msg"
         else
-          printf 'Login shell auto-start: FAIL (fish login shell lacks TTY1 auto-start block in ~/.config/fish/config.fish — run: %s --shell-snippet fish >> ~/.config/fish/config.fish)\n' "$install_cmd"
+          printf -v diag_msg 'fish login shell lacks TTY1 auto-start block in ~/.config/fish/config.fish — run: %s --shell-snippet fish >> ~/.config/fish/config.fish' "$install_cmd"
+          diag_record_check "$json_mode" "Login shell auto-start" "fail" "$diag_msg"
           issues=$((issues + 1))
         fi
         ;;
       "")
         if shell_has_tty1_hook bash; then
-          printf 'Login shell auto-start: ok (~/.bash_profile present)\n'
+          # shellcheck disable=SC2088 # literal home-relative display path for user instructions
+          diag_record_check "$json_mode" "Login shell auto-start" "ok" "~/.bash_profile present"
         else
-          printf 'Login shell auto-start: WARN (login shell unknown; could not verify TTY1 shell auto-start hook)\n'
+          diag_record_check "$json_mode" "Login shell auto-start" "warn" "login shell unknown; could not verify TTY1 shell auto-start hook"
           warnings=$((warnings + 1))
         fi
         ;;
       *)
-        printf 'Login shell auto-start: WARN (%s does not read ~/.bash_profile — verify TTY1 auto-start block per docs/startx-autologin.md)\n' "$login_shell"
+        printf -v diag_msg '%s does not read ~/.bash_profile — verify TTY1 auto-start block per docs/startx-autologin.md' "$login_shell"
+        diag_record_check "$json_mode" "Login shell auto-start" "warn" "$diag_msg"
         warnings=$((warnings + 1))
         ;;
     esac
   fi
 
   if [[ -e "$HOME/.config/lightxdm/no-autostart" || -L "$HOME/.config/lightxdm/no-autostart" ]]; then
-    printf 'Auto-start pause: FAIL (~/.config/lightxdm/no-autostart disables TTY1 auto-start — check logs: journalctl -b -t lightxdm, then resume: rm ~/.config/lightxdm/no-autostart)\n'
+    # shellcheck disable=SC2088 # literal home-relative display path for user instructions
+    diag_record_check "$json_mode" "Auto-start pause" "fail" "~/.config/lightxdm/no-autostart disables TTY1 auto-start — check logs: journalctl -b -t lightxdm, then resume: rm ~/.config/lightxdm/no-autostart"
     issues=$((issues + 1))
   else
     local attempts_file="${XDG_STATE_HOME:-$HOME/.local/state}/lightxdm/startx-attempts"
@@ -3269,10 +3434,11 @@ run_doctor() {
       done
     fi
     if [[ $recent_count -gt 0 ]]; then
-      printf 'Auto-start status: WARN (%d launch attempt(s) in last 30s — check journalctl -b -t lightxdm or touch ~/.config/lightxdm/session-journal)\n' "$recent_count"
+      printf -v diag_msg '%d launch attempt(s) in last 30s — check journalctl -b -t lightxdm or touch ~/.config/lightxdm/session-journal' "$recent_count"
+      diag_record_check "$json_mode" "Auto-start status" "warn" "$diag_msg"
       warnings=$((warnings + 1))
     else
-      printf 'Auto-start status: ok (active on TTY1)\n'
+      diag_record_check "$json_mode" "Auto-start status" "ok" "active on TTY1"
     fi
   fi
 
@@ -3286,7 +3452,8 @@ run_doctor() {
     fi
   done
   if [[ ${#pending_files[@]} -gt 0 ]]; then
-    printf 'Pending dotfile updates: WARN (%s — review diff and merge)\n' "${pending_files[*]}"
+    printf -v diag_msg '%s — review diff and merge' "${pending_files[*]}"
+    diag_record_check "$json_mode" "Pending dotfile updates" "warn" "$diag_msg"
     warnings=$((warnings + 1))
   fi
 
@@ -3296,8 +3463,9 @@ run_doctor() {
     case "$pam_record" in
       gnome | kwallet)
         if [[ -n "$builtin_backend" && "$pam_record" != "$builtin_backend" ]]; then
-          printf 'PAM keyring state: WARN (%s records %s, expected %s for de=%s — repair with: %s %s)\n' \
+          printf -v diag_msg '%s records %s, expected %s for de=%s — repair with: %s %s' \
             "$PAM_KEYRING_STATE" "$pam_record" "$builtin_backend" "$de" "$install_cmd" "$(pam_restore_hint "$de" "$builtin_backend")"
+          diag_record_check "$json_mode" "PAM keyring state" "warn" "$diag_msg"
           warnings=$((warnings + 1))
           pam_mismatch=1
           pam_expected="$builtin_backend"
@@ -3306,15 +3474,18 @@ run_doctor() {
         fi
         ;;
       *)
-        printf 'PAM keyring state: WARN (%s has unexpected value %s)\n' "$PAM_KEYRING_STATE" "${pam_record:-empty}"
+        printf -v diag_msg '%s has unexpected value %s' "$PAM_KEYRING_STATE" "${pam_record:-empty}"
+        diag_record_check "$json_mode" "PAM keyring state" "warn" "$diag_msg"
         warnings=$((warnings + 1))
         ;;
     esac
   elif [[ -L "$(dirname -- "$PAM_KEYRING_STATE")" || -L "$PAM_KEYRING_STATE" ]]; then
-    printf 'PAM keyring state: FAIL (%s or its directory is a symlink; lightXDM ignores symlinks)\n' "$PAM_KEYRING_STATE"
+    printf -v diag_msg '%s or its directory is a symlink; lightXDM ignores symlinks' "$PAM_KEYRING_STATE"
+    diag_record_check "$json_mode" "PAM keyring state" "fail" "$diag_msg"
     issues=$((issues + 1))
   elif pam_path_needs_sudo "$PAM_KEYRING_STATE" 1; then
-    printf 'PAM keyring state: WARN (%s: unknown (needs root))\n' "$PAM_KEYRING_STATE"
+    printf -v diag_msg '%s: unknown (needs root)' "$PAM_KEYRING_STATE"
+    diag_record_check "$json_mode" "PAM keyring state" "warn" "$diag_msg"
     warnings=$((warnings + 1))
   fi
 
@@ -3329,11 +3500,13 @@ run_doctor() {
 
     if [[ -e "${LOGIN_FILE}.pacnew" || -L "${LOGIN_FILE}.pacnew" ]]; then
       if login_file_replaced_by_package 1; then
-        printf 'PAM .pacnew: FAIL (%s appears replaced by package upgrade while %s.pacnew exists — restore with: %s or %s %s)\n' \
+        printf -v diag_msg '%s appears replaced by package upgrade while %s.pacnew exists — restore with: %s or %s %s' \
           "$LOGIN_FILE" "$LOGIN_FILE" "$update_cmd" "$install_cmd" "$(pam_restore_hint "$de" "$pam_expected")"
+        diag_record_check "$json_mode" "PAM .pacnew" "fail" "$diag_msg"
         issues=$((issues + 1))
       else
-        printf 'PAM .pacnew: WARN (%s.pacnew waiting — merge carefully without dropping lightXDM PAM lines)\n' "$LOGIN_FILE"
+        printf -v diag_msg '%s.pacnew waiting — merge carefully without dropping lightXDM PAM lines' "$LOGIN_FILE"
+        diag_record_check "$json_mode" "PAM .pacnew" "warn" "$diag_msg"
         warnings=$((warnings + 1))
       fi
     fi
@@ -3341,24 +3514,27 @@ run_doctor() {
     local keyring_issue=0
     if [[ "$pam_expected" == gnome && -n "$missing_gnome" ]]; then
       if [[ $pam_mismatch -eq 1 ]]; then
-        printf 'PAM keyring: FAIL (expected gnome keyring lines for de=%s missing from %s — restore with: %s %s)\n' "$de" "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" gnome)"
+        printf -v diag_msg 'expected gnome keyring lines for de=%s missing from %s — restore with: %s %s' "$de" "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" gnome)"
       else
-        printf 'PAM keyring: FAIL (recorded gnome keyring lines missing from %s — restore with: %s %s)\n' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" gnome)"
+        printf -v diag_msg 'recorded gnome keyring lines missing from %s — restore with: %s %s' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" gnome)"
       fi
+      diag_record_check "$json_mode" "PAM keyring" "fail" "$diag_msg"
       issues=$((issues + 1))
       keyring_issue=1
     elif [[ "$pam_expected" == kwallet && -n "$missing_kwallet" ]]; then
       if [[ $pam_mismatch -eq 1 ]]; then
-        printf 'PAM keyring: FAIL (expected kwallet5 lines for de=%s missing from %s — restore with: %s %s)\n' "$de" "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" kwallet)"
+        printf -v diag_msg 'expected kwallet5 lines for de=%s missing from %s — restore with: %s %s' "$de" "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" kwallet)"
       else
-        printf 'PAM keyring: FAIL (recorded kwallet5 lines missing from %s — restore with: %s %s)\n' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" kwallet)"
+        printf -v diag_msg 'recorded kwallet5 lines missing from %s — restore with: %s %s' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" kwallet)"
       fi
+      diag_record_check "$json_mode" "PAM keyring" "fail" "$diag_msg"
       issues=$((issues + 1))
       keyring_issue=1
     elif [[ -n "$builtin_backend" ]]; then
       if { [[ "$builtin_backend" == gnome && $has_gnome_line -eq 1 && -n "$missing_gnome" ]]; } ||
         { [[ "$builtin_backend" == kwallet && $has_kwallet_line -eq 1 && -n "$missing_kwallet" ]]; }; then
-        printf 'PAM keyring: FAIL (partial keyring PAM lines in %s — missing auth or session line; restore with: %s %s)\n' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" "$builtin_backend")"
+        printf -v diag_msg 'partial keyring PAM lines in %s — missing auth or session line; restore with: %s %s' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" "$builtin_backend")"
+        diag_record_check "$json_mode" "PAM keyring" "fail" "$diag_msg"
         issues=$((issues + 1))
         keyring_issue=1
       fi
@@ -3371,20 +3547,23 @@ run_doctor() {
           partial_backend="gnome"
         fi
       fi
-      printf 'PAM keyring: FAIL (partial keyring PAM lines in %s — missing auth or session line; restore with: %s %s)\n' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" "$partial_backend")"
+      printf -v diag_msg 'partial keyring PAM lines in %s — missing auth or session line; restore with: %s %s' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" "$partial_backend")"
+      diag_record_check "$json_mode" "PAM keyring" "fail" "$diag_msg"
       issues=$((issues + 1))
       keyring_issue=1
     fi
 
     if [[ -n "$builtin_backend" ]]; then
       if [[ "$builtin_backend" != gnome && $has_gnome_line -eq 1 && -n "$missing_gnome" ]]; then
-        printf 'PAM foreign keyring: WARN (partial gnome PAM lines in %s do not belong to de=%s (%s) — remove or complete them manually if unneeded)\n' \
+        printf -v diag_msg 'partial gnome PAM lines in %s do not belong to de=%s (%s) — remove or complete them manually if unneeded' \
           "$LOGIN_FILE" "$de" "$builtin_backend"
+        diag_record_check "$json_mode" "PAM foreign keyring" "warn" "$diag_msg"
         warnings=$((warnings + 1))
       fi
       if [[ "$builtin_backend" != kwallet && $has_kwallet_line -eq 1 && -n "$missing_kwallet" ]]; then
-        printf 'PAM foreign keyring: WARN (partial kwallet PAM lines in %s do not belong to de=%s (%s) — remove or complete them manually if unneeded)\n' \
+        printf -v diag_msg 'partial kwallet PAM lines in %s do not belong to de=%s (%s) — remove or complete them manually if unneeded' \
           "$LOGIN_FILE" "$de" "$builtin_backend"
+        diag_record_check "$json_mode" "PAM foreign keyring" "warn" "$diag_msg"
         warnings=$((warnings + 1))
       fi
     fi
@@ -3392,7 +3571,8 @@ run_doctor() {
     if [[ -z "$missing_gnome" ]]; then
       keyring_configured=1
       if [[ ! -e "${SESSION_ROOT:-}/usr/lib/security/pam_gnome_keyring.so" ]]; then
-        printf 'PAM keyring module: FAIL (%s/usr/lib/security/pam_gnome_keyring.so missing — install gnome-keyring)\n' "${SESSION_ROOT:-}"
+        printf -v diag_msg '%s/usr/lib/security/pam_gnome_keyring.so missing — install gnome-keyring' "${SESSION_ROOT:-}"
+        diag_record_check "$json_mode" "PAM keyring module" "fail" "$diag_msg"
         issues=$((issues + 1))
         keyring_issue=1
       fi
@@ -3400,67 +3580,78 @@ run_doctor() {
     if [[ -z "$missing_kwallet" ]]; then
       keyring_configured=1
       if [[ ! -e "${SESSION_ROOT:-}/usr/lib/security/pam_kwallet5.so" ]]; then
-        printf 'PAM keyring module: FAIL (%s/usr/lib/security/pam_kwallet5.so missing — install kwallet-pam)\n' "${SESSION_ROOT:-}"
+        printf -v diag_msg '%s/usr/lib/security/pam_kwallet5.so missing — install kwallet-pam' "${SESSION_ROOT:-}"
+        diag_record_check "$json_mode" "PAM keyring module" "fail" "$diag_msg"
         issues=$((issues + 1))
         keyring_issue=1
       fi
     fi
     if [[ $keyring_issue -eq 0 && $keyring_configured -eq 1 ]]; then
-      printf 'PAM keyring: ok (%s)\n' "$LOGIN_FILE"
+      diag_record_check "$json_mode" "PAM keyring" "ok" "$LOGIN_FILE"
     fi
 
     local GNOME_PAM_STATUS_ID="" GNOME_PAM_STATUS_MSG=""
     inspect_gnome_pam_status "$login_content" "$real_user"
     case "$GNOME_PAM_STATUS_ID" in
       configured)
-        printf 'PAM GNOME session type: ok (%s)\n' "$GNOME_SESSION_TYPE_DEST"
+        diag_record_check "$json_mode" "PAM GNOME session type" "ok" "$GNOME_SESSION_TYPE_DEST"
         ;;
       block-present-needs-root)
-        printf 'PAM GNOME session type: WARN (%s)\n' "$GNOME_PAM_STATUS_MSG"
+        diag_record_check "$json_mode" "PAM GNOME session type" "warn" "$GNOME_PAM_STATUS_MSG"
         warnings=$((warnings + 1))
         ;;
       block-present-missing-file)
-        printf 'PAM GNOME session type: FAIL (missing %s referenced by %s — restore with: %s --pam-only --de gnome)\n' "$GNOME_SESSION_TYPE_DEST" "$LOGIN_FILE" "$install_cmd"
+        printf -v diag_msg 'missing %s referenced by %s — restore with: %s --pam-only --de gnome' "$GNOME_SESSION_TYPE_DEST" "$LOGIN_FILE" "$install_cmd"
+        diag_record_check "$json_mode" "PAM GNOME session type" "fail" "$diag_msg"
         issues=$((issues + 1))
         ;;
       edited-block)
-        printf 'PAM GNOME session type: FAIL (incomplete GNOME session-type block in %s — restore with: %s --pam-only --de gnome)\n' "$LOGIN_FILE" "$install_cmd"
+        printf -v diag_msg 'incomplete GNOME session-type block in %s — restore with: %s --pam-only --de gnome' "$LOGIN_FILE" "$install_cmd"
+        diag_record_check "$json_mode" "PAM GNOME session type" "fail" "$diag_msg"
         issues=$((issues + 1))
         ;;
       file-without-block)
         if [[ "$de" == gnome ]]; then
-          printf 'PAM GNOME session type: FAIL (%s — restore PAM block with: %s --pam-only --de gnome)\n' "$GNOME_PAM_STATUS_MSG" "$install_cmd"
+          printf -v diag_msg '%s — restore PAM block with: %s --pam-only --de gnome' "$GNOME_PAM_STATUS_MSG" "$install_cmd"
+          diag_record_check "$json_mode" "PAM GNOME session type" "fail" "$diag_msg"
           issues=$((issues + 1))
         else
-          printf 'PAM GNOME session type: WARN (%s — restore PAM block with: %s --pam-only --de gnome)\n' "$GNOME_PAM_STATUS_MSG" "$install_cmd"
+          printf -v diag_msg '%s — restore PAM block with: %s --pam-only --de gnome' "$GNOME_PAM_STATUS_MSG" "$install_cmd"
+          diag_record_check "$json_mode" "PAM GNOME session type" "warn" "$diag_msg"
           warnings=$((warnings + 1))
         fi
         ;;
       unknown-needs-root)
         if [[ "$de" == gnome ]]; then
-          printf 'PAM GNOME session type: FAIL (GNOME Wayland session-type PAM block missing from %s; %s: %s — fix with: %s --pam-only --de gnome)\n' \
+          printf -v diag_msg 'GNOME Wayland session-type PAM block missing from %s; %s: %s — fix with: %s --pam-only --de gnome' \
             "$LOGIN_FILE" "$GNOME_SESSION_TYPE_DEST" "$GNOME_PAM_STATUS_MSG" "$install_cmd"
+          diag_record_check "$json_mode" "PAM GNOME session type" "fail" "$diag_msg"
           issues=$((issues + 1))
         else
-          printf 'PAM GNOME session type: WARN (%s: %s)\n' "$GNOME_SESSION_TYPE_DEST" "$GNOME_PAM_STATUS_MSG"
+          printf -v diag_msg '%s: %s' "$GNOME_SESSION_TYPE_DEST" "$GNOME_PAM_STATUS_MSG"
+          diag_record_check "$json_mode" "PAM GNOME session type" "warn" "$diag_msg"
           warnings=$((warnings + 1))
         fi
         ;;
       not-configured)
         if [[ "$de" == gnome ]]; then
-          printf 'PAM GNOME session type: FAIL (GNOME Wayland session-type PAM block missing from %s — fix with: %s --pam-only --de gnome)\n' "$LOGIN_FILE" "$install_cmd"
+          printf -v diag_msg 'GNOME Wayland session-type PAM block missing from %s — fix with: %s --pam-only --de gnome' "$LOGIN_FILE" "$install_cmd"
+          diag_record_check "$json_mode" "PAM GNOME session type" "fail" "$diag_msg"
           issues=$((issues + 1))
         fi
         ;;
     esac
   elif [[ "$LOGIN_PATH_STATE" == "invalid" ]]; then
-    printf 'PAM login: FAIL (%s — restore pambase or re-run %s %s)\n' "$LOGIN_PATH_REASON" "$install_cmd" "$(pam_restore_hint "$de" "$pam_expected")"
+    printf -v diag_msg '%s — restore pambase or re-run %s %s' "$LOGIN_PATH_REASON" "$install_cmd" "$(pam_restore_hint "$de" "$pam_expected")"
+    diag_record_check "$json_mode" "PAM login" "fail" "$diag_msg"
     issues=$((issues + 1))
   elif [[ "$LOGIN_PATH_STATE" == "missing" ]]; then
-    printf 'PAM login: FAIL (%s is missing — restore pambase or re-run %s %s)\n' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" "$pam_expected")"
+    printf -v diag_msg '%s is missing — restore pambase or re-run %s %s' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" "$pam_expected")"
+    diag_record_check "$json_mode" "PAM login" "fail" "$diag_msg"
     issues=$((issues + 1))
   else
-    printf 'PAM login: WARN (%s: unknown (needs root) — inspect PAM lines separately with sudo)\n' "$LOGIN_FILE"
+    printf -v diag_msg '%s: unknown (needs root) — inspect PAM lines separately with sudo' "$LOGIN_FILE"
+    diag_record_check "$json_mode" "PAM login" "warn" "$diag_msg"
     warnings=$((warnings + 1))
   fi
 
@@ -3469,19 +3660,19 @@ run_doctor() {
     getty_state="$(systemctl is-enabled getty@tty1.service 2>/dev/null || true)"
     case "$getty_state" in
       masked)
-        printf 'getty@tty1.service: FAIL (masked — unmask with: sudo systemctl unmask getty@tty1.service)\n'
+        diag_record_check "$json_mode" "getty@tty1.service" "fail" "masked — unmask with: sudo systemctl unmask getty@tty1.service"
         issues=$((issues + 1))
         ;;
       disabled)
-        printf 'getty@tty1.service: FAIL (disabled — enable with: sudo systemctl enable getty@tty1.service)\n'
+        diag_record_check "$json_mode" "getty@tty1.service" "fail" "disabled — enable with: sudo systemctl enable getty@tty1.service"
         issues=$((issues + 1))
         ;;
       "")
-        printf 'getty@tty1.service: WARN (unknown systemd state)\n'
+        diag_record_check "$json_mode" "getty@tty1.service" "warn" "unknown systemd state"
         warnings=$((warnings + 1))
         ;;
       *)
-        printf 'getty@tty1.service: ok (%s)\n' "$getty_state"
+        diag_record_check "$json_mode" "getty@tty1.service" "ok" "$getty_state"
         ;;
     esac
 
@@ -3503,16 +3694,18 @@ run_doctor() {
       fi
     fi
     if [[ ${#enabled_dms[@]} -gt 0 ]]; then
-      printf 'Display managers: FAIL (%s enabled — disable with: sudo systemctl disable %s.service)\n' "${enabled_dms[*]}" "${enabled_dms[0]}"
+      printf -v diag_msg '%s enabled — disable with: sudo systemctl disable %s.service' "${enabled_dms[*]}" "${enabled_dms[0]}"
+      diag_record_check "$json_mode" "Display managers" "fail" "$diag_msg"
       issues=$((issues + 1))
     elif [[ $dm_state_unreadable -eq 1 ]]; then
-      printf 'Display managers: WARN (%s: unknown (needs root))\n' "$DM_STATE_FILE"
+      printf -v diag_msg '%s: unknown (needs root)' "$DM_STATE_FILE"
+      diag_record_check "$json_mode" "Display managers" "warn" "$diag_msg"
       warnings=$((warnings + 1))
     else
-      printf 'Display managers: ok (none enabled)\n'
+      diag_record_check "$json_mode" "Display managers" "ok" "none enabled"
     fi
   else
-    printf 'systemd checks: WARN (systemctl not available)\n'
+    diag_record_check "$json_mode" "systemd checks" "warn" "systemctl not available"
     warnings=$((warnings + 1))
   fi
 
@@ -3541,37 +3734,69 @@ run_doctor() {
     done
   fi
   if [[ $auto_needs_root -eq 1 ]]; then
-    printf 'Autologin: WARN (%s: unknown (needs root))\n' "$AUTOLOGIN_DROPIN_DIR"
+    printf -v diag_msg '%s: unknown (needs root)' "$AUTOLOGIN_DROPIN_DIR"
+    diag_record_check "$json_mode" "Autologin" "warn" "$diag_msg"
     warnings=$((warnings + 1))
   elif [[ "$auto_state" == enabled ]]; then
     if [[ ${#auto_warnings[@]} -gt 0 ]]; then
-      printf 'Autologin: WARN (enabled for %s — %s)\n' "$auto_user" "${auto_warnings[*]}"
+      printf -v diag_msg 'enabled for %s — %s' "$auto_user" "${auto_warnings[*]}"
+      diag_record_check "$json_mode" "Autologin" "warn" "$diag_msg"
       warnings=$((warnings + 1))
     elif [[ -n "$pam_expected" || $keyring_configured -eq 1 ]]; then
-      printf 'Autologin: WARN (enabled for %s while PAM keyring is configured; autologin leaves keyring locked — disable with: sudo %s --disable)\n' "$auto_user" "$(script_cmd enable-autologin.sh)"
+      printf -v diag_msg 'enabled for %s while PAM keyring is configured; autologin leaves keyring locked — disable with: sudo %s --disable' "$auto_user" "$(script_cmd enable-autologin.sh)"
+      diag_record_check "$json_mode" "Autologin" "warn" "$diag_msg"
       warnings=$((warnings + 1))
     else
-      printf 'Autologin: ok (enabled for %s)\n' "$auto_user"
+      printf -v diag_msg 'enabled for %s' "$auto_user"
+      diag_record_check "$json_mode" "Autologin" "ok" "$diag_msg"
     fi
   elif [[ ${#auto_warnings[@]} -gt 0 ]]; then
-    printf 'Autologin: WARN (disabled — %s)\n' "${auto_warnings[*]}"
+    printf -v diag_msg 'disabled — %s' "${auto_warnings[*]}"
+    diag_record_check "$json_mode" "Autologin" "warn" "$diag_msg"
     warnings=$((warnings + 1))
   else
-    printf 'Autologin: ok (disabled)\n'
+    diag_record_check "$json_mode" "Autologin" "ok" "disabled"
   fi
 
+  local summary_msg=""
   if [[ $issues -eq 0 && $warnings -eq 0 ]]; then
-    printf 'Doctor: PASS\n'
-    return 0
+    summary_msg="Doctor: PASS"
   elif [[ $issues -eq 0 ]]; then
-    printf 'Doctor: PASS (0 issue(s), %d warning(s))\n' "$warnings"
-    return 0
+    printf -v summary_msg 'Doctor: PASS (0 issue(s), %d warning(s))' "$warnings"
   elif [[ $warnings -gt 0 ]]; then
-    printf 'Doctor: FAIL (%d issue(s), %d warning(s) found above)\n' "$issues" "$warnings"
-    return 1
+    printf -v summary_msg 'Doctor: FAIL (%d issue(s), %d warning(s) found above)' "$issues" "$warnings"
+  else
+    printf -v summary_msg 'Doctor: FAIL (%d issue(s) found above)' "$issues"
   fi
-  printf 'Doctor: FAIL (%d issue(s) found above)\n' "$issues"
-  return 1
+
+  if [[ $json_mode -eq 1 ]]; then
+    local healthy_bool="false" doc_status="fail"
+    if [[ $issues -eq 0 ]]; then
+      healthy_bool="true"
+      if [[ $warnings -gt 0 ]]; then
+        doc_status="warn"
+      else
+        doc_status="pass"
+      fi
+    fi
+    printf '{\n'
+    printf '  "mode": "doctor",\n'
+    printf '  "healthy": %s,\n' "$healthy_bool"
+    printf '  "status": %s,\n' "$(json_str "$doc_status")"
+    printf '  "issues": %d,\n' "$issues"
+    printf '  "warnings": %d,\n' "$warnings"
+    printf '  "de": %s,\n' "$(json_str_or_null "$de")"
+    printf '  "summary": %s,\n' "$(json_str "$summary_msg")"
+    if [[ ${#_DIAG_CHECKS[@]} -gt 0 ]]; then
+      print_diag_checks_json "${_DIAG_CHECKS[@]}"
+    else
+      print_diag_checks_json
+    fi
+    printf '}\n'
+  else
+    printf '%s\n' "$summary_msg"
+  fi
+  [[ $issues -eq 0 ]]
 }
 
 # Resolve and validate the target desktop and session template for --recover and --fix.
@@ -4390,7 +4615,7 @@ main() {
   local install_session_dest=""
   local install_session_template_exists=0
   local pam_only=0
-  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--preflight] [--doctor] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--fix [--dry-run] [--non-interactive] [--de <id>]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
+  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--preflight [--json]] [--doctor [--json]] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--fix [--dry-run] [--non-interactive] [--de <id>]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -4438,7 +4663,7 @@ Options:
                     (with --no-keyring, only GNOME's block)
   --status          show the current lightXDM configuration, dotfile state, PAM state, disabled display
                     managers and TTY1 autologin status without sudo or changes (use alone, or with --json)
-  --json            with --status, print the read-only status summary as structured JSON on stdout
+  --json            with --status, --preflight, or --doctor, print the read-only result as structured JSON on stdout
   --list-sessions   scan installed X11 and Wayland session entries, check executables, and suggest
                     --init-template --from-session commands without sudo or changes (use alone)
   --shell-snippet <zsh|fish> print the non-bash TTY1 auto-start block for ~/.zprofile or ~/.config/fish/config.fish
@@ -4446,9 +4671,9 @@ Options:
   --setup-shell <zsh|fish|auto> install or update the managed TTY1 auto-start hook in ~/.zprofile or
                     ~/.config/fish/config.fish (standalone with optional --dry-run, or combined with install / --recover)
   --preflight       check user/sudo, pacman/systemctl, getty@tty1.service, display managers, login shell,
-                    and installed desktops without sudo or changes, then suggest the next command (use alone)
+                    and installed desktops without sudo or changes, then suggest the next command (use alone, or with --json)
   --doctor          verify post-install session launcher, shell hooks, PAM keyring/GNOME rules, .pacnew drift,
-                    and systemd boot health without sudo or changes, with fix commands (use alone)
+                    and systemd boot health without sudo or changes, with fix commands (use alone, or with --json)
   --recover         restore broken or paused home session dotfiles from validated templates without sudo or
                     package/PAM/systemd changes, saving any edits as *.lightxdm-edited* and clearing
                     ~/.config/lightxdm/no-autostart (optional --dry-run, --de <id>, and --setup-shell <zsh|fish|auto>)
@@ -4630,8 +4855,8 @@ EOF
     esac
   done
 
-  if [[ $json_output -eq 1 && $status_only -eq 0 ]]; then
-    log "--json requires --status."
+  if [[ $json_output -eq 1 && $status_only -eq 0 && $preflight_only -eq 0 && $doctor_only -eq 0 ]]; then
+    log "--json requires --status, --preflight, or --doctor."
     echo "$usage" >&2
     exit 1
   fi
@@ -4680,24 +4905,40 @@ EOF
   fi
 
   if [[ $preflight_only -eq 1 ]]; then
-    if [[ $argument_count -ne 1 ]]; then
-      log "--preflight cannot be combined with any other option."
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
+      -n "$install_session" || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || $dry_run -eq 1 ||
+      $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
+      $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $status_only -eq 1 || $init_template -eq 1 ||
+      $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
+      log "--preflight cannot be combined with any other option (except --json)."
       echo "$usage" >&2
       exit 1
     fi
     local preflight_status=0
-    run_preflight || preflight_status=$?
+    if [[ $json_output -eq 1 ]]; then
+      run_preflight --json || preflight_status=$?
+    else
+      run_preflight || preflight_status=$?
+    fi
     return "$preflight_status"
   fi
 
   if [[ $doctor_only -eq 1 ]]; then
-    if [[ $argument_count -ne 1 ]]; then
-      log "--doctor cannot be combined with any other option."
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
+      -n "$install_session" || $preflight_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || $dry_run -eq 1 ||
+      $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
+      $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $status_only -eq 1 || $init_template -eq 1 ||
+      $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
+      log "--doctor cannot be combined with any other option (except --json)."
       echo "$usage" >&2
       exit 1
     fi
     local doctor_status=0
-    run_doctor || doctor_status=$?
+    if [[ $json_output -eq 1 ]]; then
+      run_doctor --json || doctor_status=$?
+    else
+      run_doctor || doctor_status=$?
+    fi
     return "$doctor_status"
   fi
 

@@ -13456,7 +13456,7 @@ for bad_js_args in "--json" "--json --de i3" "--list-sessions --json" "--status 
   bad_js_rc=$?
   set -e
   if [[ $bad_js_rc -ne 1 || -s "$STUB_LOG" ]] ||
-    [[ "$bad_js_out" != *"--json requires --status."* && "$bad_js_out" != *"--status cannot be combined with any other option."* ]]; then
+    [[ "$bad_js_out" != *"--json requires --status, --preflight, or --doctor."* && "$bad_js_out" != *"--status cannot be combined with any other option."* ]]; then
     js_report+=" [bad combo '$bad_js_args': rc=$bad_js_rc out=$bad_js_out]"
   fi
 done
@@ -13709,6 +13709,89 @@ if [[ $pf_zsh_hook_rc -ne 0 || "$pf_zsh_hook" != *"Login shell: ok (/usr/bin/zsh
   "$pf_fish_nohook" != *"--shell-snippet fish >> ~/.config/fish/config.fish"* ]]; then
   preflight_ok=0
   preflight_report+=" [hook zsh/fish rc=$pf_zsh_hook_rc/$pf_fish_hook_rc/$pf_fish_nohook_rc out=$pf_zsh_hook | $pf_fish_hook | $pf_fish_nohook]"
+fi
+
+# --preflight --json and --json --preflight emit valid structured JSON and matching exit codes
+for pf_js_args in "--preflight --json" "--json --preflight"; do
+  read -r -a pf_js_argv <<<"$pf_js_args"
+  set +e
+  pf_js_warn="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+    PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM=lightdm.service \
+    DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+    "$preflight_bash" "$REPO_ROOT/install.sh" "${pf_js_argv[@]}" 2>"$preflight_dir/js.err")"
+  pf_js_rc=$?
+  set -e
+  if [[ $pf_js_rc -ne 0 || -s "$preflight_dir/js.err" ]] ||
+    ! JSON_OUT="$pf_js_warn" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["mode"] == "preflight"
+assert d["ready"] is True
+assert d["status"] == "warn"
+assert d["blockers"] == 0
+assert d["warnings"] == 1
+assert d["detected_desktops"] == ["xfce"]
+assert d["enabled_display_managers"] == ["lightdm"]
+assert "--dry-run --de xfce" in (d["next_step"] or "")
+assert d["summary"].startswith("Preflight: PASS")
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["User/sudo"]["status"] == "ok"
+assert checks["Display managers"]["status"] == "info"
+assert checks["Login shell"]["status"] == "warn"
+PY
+  then
+    preflight_ok=0
+    preflight_report+=" [json '$pf_js_args' warn rc=$pf_js_rc err=$(<"$preflight_dir/js.err") out=$pf_js_warn]"
+  fi
+done
+
+set +e
+pf_js_pass="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_pass.err")"
+pf_js_pass_rc=$?
+pf_js_fail="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_no_pacman" \
+  PREFLIGHT_GETTY=masked DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_fail.err")"
+pf_js_fail_rc=$?
+set -e
+if [[ $pf_js_pass_rc -ne 0 || -s "$preflight_dir/js_pass.err" ]] ||
+  ! JSON_OUT="$pf_js_pass" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["ready"] is True and d["status"] == "pass" and d["blockers"] == 0 and d["warnings"] == 0
+assert d["enabled_display_managers"] == []
+PY
+then
+  preflight_ok=0
+  preflight_report+=" [json pass rc=$pf_js_pass_rc err=$(<"$preflight_dir/js_pass.err") out=$pf_js_pass]"
+fi
+if [[ $pf_js_fail_rc -ne 1 || -s "$preflight_dir/js_fail.err" ]] ||
+  ! JSON_OUT="$pf_js_fail" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["ready"] is False and d["status"] == "fail" and d["blockers"] == 2
+assert d["detected_desktops"] == [] and d["next_step"] is None
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["getty@tty1.service"]["status"] == "fail"
+assert checks["Detected desktop(s)"]["status"] == "skipped"
+PY
+then
+  preflight_ok=0
+  preflight_report+=" [json fail rc=$pf_js_fail_rc err=$(<"$preflight_dir/js_fail.err") out=$pf_js_fail]"
+fi
+
+for bad_pf_js in "--preflight --json --dry-run" "--preflight --doctor --json" "--status --preflight --json"; do
+  # shellcheck disable=SC2086 # intentional word splitting over literal flag combinations
+  if env -i HOME="$preflight_home" PATH="$preflight_bin" "$preflight_bash" "$REPO_ROOT/install.sh" $bad_pf_js >/dev/null 2>&1; then
+    preflight_ok=0
+    preflight_report+=" [combined $bad_pf_js unexpectedly passed]"
+  fi
+done
+if [[ -s "$preflight_log" || -n "$(ls -A "$preflight_home")" ]]; then
+  preflight_ok=0
+  preflight_report+=" [preflight json modified state]"
 fi
 
 if [[ $preflight_ok -eq 1 ]]; then
@@ -14167,8 +14250,8 @@ if [[ $doc_rc -ne 1 || "$doc_out" != *"PAM login: FAIL"* || "$doc_out" != *"brok
   doctor_report+=" sym-pamd-broken rc=$doc_rc out=[$doc_out];"
 fi
 
-# Combining --doctor with other options exits 1
-for combo in "--doctor --dry-run" "--status --doctor" "--doctor --preflight"; do
+# Combining --doctor with other options exits 1 (except --json)
+for combo in "--doctor --dry-run" "--status --doctor" "--doctor --preflight" "--doctor --json --dry-run" "--doctor --json --de i3" "--doctor --preflight --json"; do
   doc_rc=0
   read -r -a combo_args <<<"$combo"
   run_doctor_cmd "${combo_args[@]}" >/dev/null 2>&1 || doc_rc=$?
@@ -14177,6 +14260,94 @@ for combo in "--doctor --dry-run" "--status --doctor" "--doctor --preflight"; do
     doctor_report+=" combo($combo) rc=$doc_rc;"
   fi
 done
+
+# --doctor --json and --json --doctor emit valid structured JSON across pass, warn, fail, and special HOME paths
+reset_doctor_gnome_fixture
+for doc_js_args in "--doctor --json" "--json --doctor"; do
+  read -r -a doc_js_argv <<<"$doc_js_args"
+  doc_rc=0
+  doc_js_pass="$(run_doctor_cmd "${doc_js_argv[@]}" 2>"$doctor_dir/doc_js_pass.err")" || doc_rc=$?
+  if [[ $doc_rc -ne 0 || -s "$doctor_dir/doc_js_pass.err" ]] ||
+    ! JSON_OUT="$doc_js_pass" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["mode"] == "doctor"
+assert d["healthy"] is True and d["status"] == "pass"
+assert d["issues"] == 0 and d["warnings"] == 0
+assert d["de"] == "gnome"
+assert d["summary"] == "Doctor: PASS"
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["Install choices"]["status"] == "ok" and checks["Install choices"]["detail"] == "de=gnome, --no-packages"
+assert checks["PAM keyring"]["status"] == "ok"
+assert checks["Autologin"]["status"] == "ok" and checks["Autologin"]["detail"] == "disabled"
+PY
+  then
+    doctor_ok=0
+    doctor_report+=" doc-json-pass($doc_js_args) rc=$doc_rc err=$(cat "$doctor_dir/doc_js_pass.err") out=[$doc_js_pass];"
+  fi
+done
+
+# Warning-only state (status=warn, healthy=true, rc=0)
+: >"$doctor_home/.bash_profile.lightxdm-new"
+doc_rc=0
+doc_js_warn="$(run_doctor_cmd --doctor --json 2>"$doctor_dir/doc_js_warn.err")" || doc_rc=$?
+if [[ $doc_rc -ne 0 || -s "$doctor_dir/doc_js_warn.err" ]] ||
+  ! JSON_OUT="$doc_js_warn" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["healthy"] is True and d["status"] == "warn"
+assert d["issues"] == 0 and d["warnings"] == 1
+assert any(c["name"] == "Pending dotfile updates" and c["status"] == "warn" for c in d["checks"])
+PY
+then
+  doctor_ok=0
+  doctor_report+=" doc-json-warn rc=$doc_rc err=$(cat "$doctor_dir/doc_js_warn.err") out=[$doc_js_warn];"
+fi
+rm -f "$doctor_home/.bash_profile.lightxdm-new"
+
+# Failing state with tricky quotes/backslash/UTF-8 HOME path, pause marker, and masked getty
+tricky_doc_home="$doctor_dir/home_\"q\"\\türü"
+mkdir -p "$tricky_doc_home/.config/lightxdm" "$tricky_doc_home/.local/state/lightxdm"
+printf 'de=gnome\nno_packages=1\n' >"$tricky_doc_home/.local/state/lightxdm/install-choices"
+cp "$REPO_ROOT/dotfiles/.bash_profile" "$tricky_doc_home/.bash_profile"
+cp "$REPO_ROOT/dotfiles/.wayland-session-gnome" "$tricky_doc_home/.wayland-session"
+chmod 755 "$tricky_doc_home/.wayland-session"
+: >"$tricky_doc_home/.config/lightxdm/no-autostart"
+doc_rc=0
+doc_js_fail="$(
+  env -u SUDO_USER -u DISPLAY -u WAYLAND_DISPLAY \
+    HOME="$tricky_doc_home" \
+    USER="testuser" \
+    XDG_STATE_HOME="$tricky_doc_home/.local/state" \
+    SESSION_ROOT="$doctor_root" \
+    LOGIN_FILE="$doctor_etc/pam.d/login" \
+    GNOME_SESSION_TYPE_DEST="$doctor_etc/lightxdm/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$doctor_etc/lightxdm/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$doctor_etc/lightxdm/pam-login-base" \
+    DM_STATE_FILE="$doctor_etc/lightxdm/disabled-display-managers" \
+    DISPLAY_MANAGER_LINK="$doctor_etc/systemd/system/display-manager.service" \
+    AUTOLOGIN_DROPIN_DIR="$doctor_etc/getty@tty1.service.d" \
+    DOCTOR_SUDO_LOG="$doctor_dir/sudo.log" \
+    FAKE_GETTY_STATE=masked \
+    PATH="$doctor_bin:/usr/bin:/bin" \
+    bash "$REPO_ROOT/install.sh" --doctor --json 2>"$doctor_dir/doc_js_fail.err"
+)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || -s "$doctor_dir/doc_js_fail.err" ]] ||
+  ! JSON_OUT="$doc_js_fail" PYTHONDONTWRITEBYTECODE=1 python3 -B - "$tricky_doc_home" <<'PY'
+import json, os, sys
+tricky_home = sys.argv[1]
+d = json.loads(os.environ["JSON_OUT"])
+assert d["healthy"] is False and d["status"] == "fail"
+assert d["issues"] >= 2
+checks = {c["name"]: c for c in d["checks"]}
+assert tricky_home in checks["Session launcher"]["detail"]
+assert checks["Auto-start pause"]["status"] == "fail"
+assert checks["getty@tty1.service"]["status"] == "fail"
+PY
+then
+  doctor_ok=0
+  doctor_report+=" doc-json-fail rc=$doc_rc err=$(cat "$doctor_dir/doc_js_fail.err") out=[$doc_js_fail];"
+fi
 
 if [[ -e "$doctor_dir/sudo.log" ]]; then
   doctor_ok=0

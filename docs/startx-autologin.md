@@ -123,11 +123,12 @@ To keep the session's output, create `~/.config/lightxdm/session-journal` with `
 
 Instead of editing files by hand, run these workflows as your regular user (previewing changes with `--dry-run` on `--recover` or `--fix`):
 
-- **Diagnose without changing anything (`--doctor`)**:
+- **Diagnose without changing anything (`--doctor` / `--doctor --json`)**:
   ```sh
   bash install.sh --doctor
+  bash install.sh --doctor --json
   ```
-  Runs read-only without `sudo` and exits `0` when healthy or `1` when issues remain. Checks the active TTY1 launcher (`~/.wayland-session` vs `startx`/`~/.xinitrc`), template syntax and commands, `bash`/`zsh`/`fish` login-shell hooks, `~/.config/lightxdm/no-autostart`, `startx-attempts`, `*.lightxdm-new` update files, PAM keyring/GNOME session-type rules and `.so` modules (including `.pacnew` state), `getty@tty1.service`, re-enabled display managers, and TTY1 autologin conflicts.
+  Runs read-only without `sudo` and exits `0` when healthy or `1` when issues remain (`--json` emits structured JSON checks and counts on stdout). Checks the active TTY1 launcher (`~/.wayland-session` vs `startx`/`~/.xinitrc`), template syntax and commands, `bash`/`zsh`/`fish` login-shell hooks, `~/.config/lightxdm/no-autostart`, `startx-attempts`, `*.lightxdm-new` update files, PAM keyring/GNOME session-type rules and `.so` modules (including `.pacnew` state), `getty@tty1.service`, re-enabled display managers, and TTY1 autologin conflicts.
 
 - **Restore home session dotfiles (`--recover`)**:
   ```sh
