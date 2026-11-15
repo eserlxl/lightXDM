@@ -18332,6 +18332,60 @@ if [[ $fx_rc -eq 0 || -s "$fix_sudo_log" || "$fx_out" != *"outside HOME"* ]]; th
   fix_report+=" zsh-outside-home-fix rc=$fx_rc out=[$fx_out];"
 fi
 
+# 9. Broken helper/.bash_profile symlinks trigger home recovery cleanly and pass --doctor;
+# unsafe ~/.config*, installed-dotfiles, and unreadable/non-regular dotfile targets fail before sudo
+reset_fix_fixture i3
+rm -f "$fix_home/.gpg-agent-gnome" "$fix_home/.bash_profile"
+ln -s "$fix_dir/nonexistent_helper" "$fix_home/.gpg-agent-gnome"
+ln -s "$fix_dir/nonexistent_prof" "$fix_home/.bash_profile"
+: >"$fix_sudo_log"
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || -s "$fix_sudo_log" || "$fx_out" != *"Fix plan for de=i3"* || "$fx_out" != *"Dotfile: $fix_home/.gpg-agent-gnome"* ]]; then
+  fix_ok=0
+  fix_report+=" helper-broken-sym-dry rc=$fx_rc out=[$fx_out];"
+fi
+fx_rc=0
+fx_out="$(run_fix_cmd --fix 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || -s "$fix_sudo_log" || ! -f "$fix_home/.gpg-agent-gnome" || -L "$fix_home/.gpg-agent-gnome" ||
+  ! -f "$fix_home/.bash_profile" || -L "$fix_home/.bash_profile" || "$fx_out" != *"Doctor: PASS"* ]]; then
+  fix_ok=0
+  fix_report+=" helper-broken-sym-live rc=$fx_rc out=[$fx_out];"
+fi
+
+if [[ $EUID -ne 0 ]]; then
+  reset_fix_fixture i3
+  chmod 000 "$fix_home/.gpg-agent-gnome"
+  : >"$fix_sudo_log"
+  fx_rc=0
+  fx_out="$(run_fix_cmd --fix 2>&1)" || fx_rc=$?
+  chmod 744 "$fix_home/.gpg-agent-gnome" 2>/dev/null || true
+  if [[ $fx_rc -eq 0 || -s "$fix_sudo_log" || "$fx_out" != *"is unreadable"* ]]; then
+    fix_ok=0
+    fix_report+=" helper-unreadable rc=$fx_rc out=[$fx_out];"
+  fi
+fi
+
+reset_fix_fixture i3
+rm -f "$fix_state/lightxdm/installed-dotfiles"
+ln -s "$fix_dir/sym_dots_rec" "$fix_state/lightxdm/installed-dotfiles"
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+if [[ $fx_rc -eq 0 || -s "$fix_sudo_log" || "$fx_out" != *"is a symlink"* ]]; then
+  fix_ok=0
+  fix_report+=" sym-dotfile-record rc=$fx_rc out=[$fx_out];"
+fi
+
+reset_fix_fixture i3
+rm -rf "$fix_home/.config/autostart"
+ln -s "$fix_dir/sym_autostart_dir" "$fix_home/.config/autostart"
+fx_rc=0
+fx_out="$(run_fix_cmd --fix 2>&1)" || fx_rc=$?
+if [[ $fx_rc -eq 0 || -s "$fix_sudo_log" || "$fx_out" != *"is not a real directory"* ]]; then
+  fix_ok=0
+  fix_report+=" sym-autostart-dir rc=$fx_rc out=[$fx_out];"
+fi
+
 if [[ $fix_ok -eq 1 ]]; then
   pass "install.sh --fix diagnoses and repairs home, shell hooks, PAM, and systemd/DM health cleanly and preserves valid user edits"
 else

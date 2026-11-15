@@ -1411,6 +1411,9 @@ copy_dotfile() {
   else
     preserve_dotfile "$target" "$@" || return
   fi
+  if [[ -L "$target" ]]; then
+    rm -f -- "$target" || return
+  fi
   install -TDm"$mode" "$source" "$target" || return
   record_dotfile "$target" || log "WARNING: Could not record $target in $(dotfile_record_file); --update will treat it as edited."
 }
@@ -5324,6 +5327,7 @@ run_fix() {
 
   local need_home_recover=0 need_shell_hook=""
   local wl="$HOME/.wayland-session" xi="$HOME/.xinitrc"
+
   if [[ "$expected_mode" == wayland ]]; then
     if [[ ( -L "$wl" && ( ! -e "$wl" || ! -f "$wl" ) ) || ! -f "$wl" || ! -x "$wl" || ! -r "$wl" ]] ||
       ! check_template_syntax "$wl" >/dev/null 2>&1 ||
@@ -5376,6 +5380,69 @@ run_fix() {
   if [[ -n "$need_shell_hook" ]]; then
     validate_setup_shell "$need_shell_hook" "$preview" || return 1
   fi
+
+  local fix_dir=""
+  for fix_dir in "$HOME/.config" "$HOME/.config/lightxdm" "$HOME/.config/autostart"; do
+    if [[ -L "$fix_dir" || ( -e "$fix_dir" && ! -d "$fix_dir" ) ]]; then
+      log "ERROR: $fix_dir is not a real directory; lightXDM skips symlinks there."
+      return 1
+    elif [[ -d "$fix_dir" && ! -x "$fix_dir" ]]; then
+      log "ERROR: $fix_dir is unsearchable; fix permissions before running --fix."
+      return 1
+    fi
+  done
+
+  local fix_record="" fix_record_dir=""
+  fix_record="$(dotfile_record_file)"
+  fix_record_dir="${fix_record%/*}"
+  if [[ -L "$fix_record_dir" || -L "$fix_record" ]] ||
+    { [[ "$fix_record" == "$HOME/.local/state/"* ]] && [[ -L "$HOME/.local" || -L "$HOME/.local/state" ]]; }; then
+    log "ERROR: $fix_record or its directory is a symlink; lightXDM ignores symlinks."
+    return 1
+  elif [[ -e "$fix_record_dir" && ! -d "$fix_record_dir" ]]; then
+    log "ERROR: $fix_record_dir is not a directory."
+    return 1
+  elif [[ -d "$fix_record_dir" && ! -x "$fix_record_dir" ]]; then
+    log "ERROR: $fix_record_dir is unsearchable; fix permissions before running --fix."
+    return 1
+  elif [[ -e "$fix_record" && ! -f "$fix_record" ]]; then
+    log "ERROR: $fix_record is not a regular file."
+    return 1
+  elif [[ -f "$fix_record" && ! -r "$fix_record" ]]; then
+    log "ERROR: $fix_record is unreadable; fix permissions before running --fix."
+    return 1
+  fi
+
+  local active_gpg_helper="$HOME/.gpg-agent-gnome" inactive_gpg_helper="$HOME/.gpg-agent-kwallet"
+  if [[ "$target_de" == plasma ]]; then
+    active_gpg_helper="$HOME/.gpg-agent-kwallet"
+    inactive_gpg_helper="$HOME/.gpg-agent-gnome"
+  fi
+  local fix_dot=""
+  for fix_dot in \
+    "$wl" "$xi" "$HOME/.bash_profile" \
+    "$active_gpg_helper" "$inactive_gpg_helper" \
+    "$HOME/.config/autostart/lightxdm-gpg-agent-tty.desktop"; do
+    if [[ -f "$fix_dot" && ! -L "$fix_dot" && ! -r "$fix_dot" ]]; then
+      log "ERROR: $fix_dot is unreadable; fix permissions with chmod u+r before running --fix."
+      return 1
+    elif [[ -e "$fix_dot" && ! -L "$fix_dot" && ! -f "$fix_dot" ]]; then
+      log "ERROR: $fix_dot is not a regular file; inspect or remove it before running --fix."
+      return 1
+    fi
+  done
+  if [[ -L "$inactive_gpg_helper" && ( ! -e "$inactive_gpg_helper" || ! -f "$inactive_gpg_helper" ) ]]; then
+    log "ERROR: $inactive_gpg_helper is a broken or non-regular symlink; inspect or remove it before running --fix."
+    return 1
+  fi
+  for fix_dot in \
+    "$HOME/.bash_profile" \
+    "$active_gpg_helper" \
+    "$HOME/.config/autostart/lightxdm-gpg-agent-tty.desktop"; do
+    if [[ -L "$fix_dot" && ( ! -e "$fix_dot" || ! -f "$fix_dot" ) ]]; then
+      need_home_recover=1
+    fi
+  done
 
   local FIX_NEED_PAM_KEYRING=0 FIX_PAM_BACKEND="" FIX_NEED_GNOME_PAM=0
   local FIX_GNOME_DE="$target_de" FIX_NEED_PAM_PROBE=0
