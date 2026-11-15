@@ -13348,6 +13348,48 @@ PY
     ls_json_report+=" [home .local/share fallback: rc=$default_xdg_js_rc err=$(cat "$ls_json_dir/default_xdg.err") out=$default_xdg_js_out]"
   fi
 
+  # Trailing slashes are stripped before dedup/formatting and relative XDG_DATA_HOME is ignored per XDG spec
+  set +e
+  slash_dedup_out="$(HOME="$ls_json_home" PATH="$ls_json_dir/bin:$STUB_BIN:$PATH" XSESSIONS_DIR="$ls_json_dir/sys_x///" WAYLAND_SESSIONS_DIR="$ls_json_dir/sys_w/" USER_XSESSIONS_DIR="$ls_json_dir/sys_x/" USER_WAYLAND_SESSIONS_DIR="$ls_json_dir/user_w///" bash "$REPO_ROOT/install.sh" --list-sessions --json 2>"$ls_json_dir/slash.err")"
+  slash_dedup_rc=$?
+  rel_xdg_out="$(env -u SESSION_ROOT -u XSESSIONS_DIR -u WAYLAND_SESSIONS_DIR -u USER_XSESSIONS_DIR -u USER_WAYLAND_SESSIONS_DIR HOME="$ls_json_home/" XDG_DATA_HOME="relative/xdg" PATH="$ls_json_dir/bin:$STUB_BIN:$PATH" bash "$REPO_ROOT/install.sh" --list-sessions --json 2>"$ls_json_dir/rel_xdg.err")"
+  rel_xdg_rc=$?
+  set -e
+  if [[ $slash_dedup_rc -ne 0 || -s "$ls_json_dir/slash.err" ]] ||
+    ! JSON_OUT="$slash_dedup_out" PYTHONDONTWRITEBYTECODE=1 python3 -B - "$ls_json_dir" <<'PY'
+import json, os, sys
+ls_dir = sys.argv[1]
+d = json.loads(os.environ["JSON_OUT"])
+expected = [
+    ("x11", "system", os.path.join(ls_dir, "sys_x")),
+    ("wayland", "system", os.path.join(ls_dir, "sys_w")),
+    ("wayland", "user", os.path.join(ls_dir, "user_w")),
+]
+got = [(x["session_type"], x["scope"], x["path"]) for x in d["directories"]]
+assert got == expected, got
+assert all("//" not in s["file"] for s in d["sessions"]), d["sessions"]
+assert len([s for s in d["sessions"] if s["file"].endswith("/openbox.desktop")]) == 1, d["sessions"]
+PY
+  then
+    ls_json_ok=0
+    ls_json_report+=" [slash dedup: rc=$slash_dedup_rc err=$(cat "$ls_json_dir/slash.err") out=$slash_dedup_out]"
+  fi
+  if [[ $rel_xdg_rc -ne 0 || -s "$ls_json_dir/rel_xdg.err" ]] ||
+    ! JSON_OUT="$rel_xdg_out" PYTHONDONTWRITEBYTECODE=1 python3 -B - "$ls_json_home" <<'PY'
+import json, os, sys
+ls_home = sys.argv[1]
+d = json.loads(os.environ["JSON_OUT"])
+dirs = {(x["scope"], x["path"]) for x in d["directories"]}
+assert ("user", os.path.join(ls_home, ".local/share/wayland-sessions")) in dirs, dirs
+assert not any("relative/xdg" in x["path"] for x in d["directories"]), dirs
+target = os.path.join(ls_home, ".local/share/wayland-sessions/home-sway.desktop")
+assert any(s["file"] == target for s in d["sessions"]), d["sessions"]
+PY
+  then
+    ls_json_ok=0
+    ls_json_report+=" [relative xdg fallback: rc=$rel_xdg_rc err=$(cat "$ls_json_dir/rel_xdg.err") out=$rel_xdg_out]"
+  fi
+
   # Unreadable user directory emits structured JSON warning with empty stderr
   if [[ $EUID -ne 0 ]]; then
     mkdir -p "$ls_json_dir/priv_user_x"
@@ -15933,6 +15975,14 @@ if [[ $is_rc -ne 0 || -s "$isess_sudo_log" || -e "$isess_home/.config" ||
   "$is_out" != *"de=waybox, mode=wayland, template=create $isess_home/.config/lightxdm/.wayland-session-waybox"* ]]; then
   is_ok=0
   is_report+=" wayland-override-dry rc=$is_rc out=[$is_out];"
+fi
+
+is_rc=0
+is_out="$(USER_WAYLAND_SESSIONS_DIR="$isess_custom///" run_isess_cmd --install-session "$isess_custom/waybox.desktop" --dry-run 2>&1)" || is_rc=$?
+if [[ $is_rc -ne 0 || -s "$isess_sudo_log" || -e "$isess_home/.config" ||
+  "$is_out" != *"de=waybox, mode=wayland, template=create $isess_home/.config/lightxdm/.wayland-session-waybox"* ]]; then
+  is_ok=0
+  is_report+=" user-wayland-dir-dry rc=$is_rc out=[$is_out];"
 fi
 
 # 3. Fail-fast validation before sudo / $HOME writes and disallowed flag combinations

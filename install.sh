@@ -563,20 +563,40 @@ suggest_custom_session_id() {
 }
 
 # List installed freedesktop X11 and Wayland session entries and their --from-session compatibility.
+normalize_dir_path() {
+  local path="${1:-}"
+  [[ -n "$path" ]] || return 0
+  while [[ "$path" == */ && "$path" != "/" ]]; do
+    path="${path%/}"
+  done
+  printf '%s\n' "$path"
+}
+
+resolve_user_xdg_data_dir() {
+  local xdg_data_dir=""
+  if [[ -n "${XDG_DATA_HOME:-}" && "${XDG_DATA_HOME}" == /* ]]; then
+    xdg_data_dir="$(normalize_dir_path "$XDG_DATA_HOME")"
+  elif [[ -n "${HOME:-}" ]]; then
+    xdg_data_dir="$(normalize_dir_path "$HOME")"
+    xdg_data_dir="${xdg_data_dir%/}/.local/share"
+  fi
+  printf '%s\n' "$xdg_data_dir"
+}
+
 list_desktop_sessions() {
   local LC_ALL=C json_mode=0
   [[ "${1:-}" == "--json" ]] && json_mode=1
 
-  local xsessions_dir="${XSESSIONS_DIR:-${SESSION_ROOT:-}/usr/share/xsessions}"
-  local wayland_dir="${WAYLAND_SESSIONS_DIR:-${SESSION_ROOT:-}/usr/share/wayland-sessions}"
-  local xdg_data_dir="" user_xsessions_dir="${USER_XSESSIONS_DIR:-}" user_wayland_dir="${USER_WAYLAND_SESSIONS_DIR:-}"
+  local session_root
+  session_root="$(normalize_dir_path "${SESSION_ROOT:-}")"
+  [[ "$session_root" == "/" ]] && session_root=""
+  local xsessions_dir wayland_dir xdg_data_dir="" user_xsessions_dir user_wayland_dir
+  xsessions_dir="$(normalize_dir_path "${XSESSIONS_DIR:-${session_root}/usr/share/xsessions}")"
+  wayland_dir="$(normalize_dir_path "${WAYLAND_SESSIONS_DIR:-${session_root}/usr/share/wayland-sessions}")"
+  user_xsessions_dir="$(normalize_dir_path "${USER_XSESSIONS_DIR:-}")"
+  user_wayland_dir="$(normalize_dir_path "${USER_WAYLAND_SESSIONS_DIR:-}")"
   if [[ -z "${SESSION_ROOT:-}" && -z "${XSESSIONS_DIR:-}" && -z "${WAYLAND_SESSIONS_DIR:-}" ]]; then
-    if [[ -n "${XDG_DATA_HOME:-}" ]]; then
-      xdg_data_dir="${XDG_DATA_HOME%/}"
-      [[ -n "$xdg_data_dir" ]] || xdg_data_dir="/"
-    elif [[ -n "${HOME:-}" ]]; then
-      xdg_data_dir="${HOME%/}/.local/share"
-    fi
+    xdg_data_dir="$(resolve_user_xdg_data_dir)"
     if [[ -n "$xdg_data_dir" ]]; then
       [[ -n "$user_xsessions_dir" ]] || user_xsessions_dir="${xdg_data_dir%/}/xsessions"
       [[ -n "$user_wayland_dir" ]] || user_wayland_dir="${xdg_data_dir%/}/wayland-sessions"
@@ -646,7 +666,7 @@ list_desktop_sessions() {
     fi
     [[ "$dir_readable_json" == true ]] || continue
 
-    for entry in "$dir"/*.desktop; do
+    for entry in "${dir%/}"/*.desktop; do
       [[ -e "$entry" || -L "$entry" ]] || continue
       SESSION_ENTRY_NAME=""
       SESSION_ENTRY_EXEC_LINE=""
@@ -959,18 +979,25 @@ EOF
 }
 
 session_entry_is_wayland() {
-  local entry="$1" explicit_wayland="${2:-0}" wayland_dir resolved_entry
+  local entry="$1" explicit_wayland="${2:-0}" session_root wayland_dir user_wayland_dir="" xdg_data_dir="" resolved_entry candidate
   [[ $explicit_wayland -eq 1 ]] && return 0
-  wayland_dir="${WAYLAND_SESSIONS_DIR:-${SESSION_ROOT:-}/usr/share/wayland-sessions}"
-  wayland_dir="${wayland_dir%/}"
-  if [[ "$entry" == "${wayland_dir}/"* || "$entry" == */wayland-sessions/* ]]; then
-    return 0
+  session_root="$(normalize_dir_path "${SESSION_ROOT:-}")"
+  [[ "$session_root" == "/" ]] && session_root=""
+  wayland_dir="$(normalize_dir_path "${WAYLAND_SESSIONS_DIR:-${session_root}/usr/share/wayland-sessions}")"
+  user_wayland_dir="$(normalize_dir_path "${USER_WAYLAND_SESSIONS_DIR:-}")"
+  if [[ -z "$user_wayland_dir" && -z "${SESSION_ROOT:-}" && -z "${XSESSIONS_DIR:-}" && -z "${WAYLAND_SESSIONS_DIR:-}" ]]; then
+    xdg_data_dir="$(resolve_user_xdg_data_dir)"
+    [[ -n "$xdg_data_dir" ]] && user_wayland_dir="${xdg_data_dir%/}/wayland-sessions"
   fi
   resolved_entry="$(readlink -f -- "$entry" 2>/dev/null || true)"
-  if [[ -n "$resolved_entry" ]] &&
-    [[ "$resolved_entry" == "${wayland_dir}/"* || "$resolved_entry" == */wayland-sessions/* ]]; then
-    return 0
-  fi
+  for candidate in "$entry" "$resolved_entry"; do
+    [[ -n "$candidate" ]] || continue
+    if [[ ( -n "$wayland_dir" && "$candidate" == "${wayland_dir%/}/"* ) ||
+      ( -n "$user_wayland_dir" && "$candidate" == "${user_wayland_dir%/}/"* ) ||
+      "$candidate" == */wayland-sessions/* ]]; then
+      return 0
+    fi
+  done
   return 1
 }
 
