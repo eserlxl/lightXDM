@@ -12261,4 +12261,246 @@ else
   fail "install.sh --status:$status_cmd_report"
 fi
 
+# uninstall.sh --dry-run and --keyring-only --dry-run preview rollback without root or edits
+dry_un_dir="$TMP_DIR/uninstall_dry_run"
+rm -rf "$dry_un_dir"
+mkdir -p "$dry_un_dir/bin" "$dry_un_dir/home/.config/autostart" "$dry_un_dir/home/.local/state/lightxdm" \
+  "$dry_un_dir/getty.d" "$dry_un_dir/state"
+dry_un_sys_log="$dry_un_dir/systemctl-mut.log"
+: >"$dry_un_sys_log"
+cat >"$dry_un_dir/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  is-enabled)
+    case "${2:-}" in
+      lightdm.service) echo "disabled"; exit 1 ;;
+      missing.service) echo "not-found"; exit 1 ;;
+      *) echo "disabled"; exit 1 ;;
+    esac
+    ;;
+  *)
+    printf 'systemctl %s\n' "$*" >>"$DRY_UN_SYS_LOG"
+    exit 0
+    ;;
+esac
+EOF
+chmod +x "$dry_un_dir/bin/systemctl"
+
+dry_un_report=""
+
+# 1) Full rollback preview via lightxdm-uninstall --dry-run (uses HOME when TARGET_HOME is unset).
+printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$dry_un_dir/login.lightxdm.bak"
+printf '%s\n' \
+  '#%PAM-1.0' \
+  'auth       include      system-local-login' \
+  'auth       optional   pam_gnome_keyring.so' \
+  '# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)' \
+  'session    [success=2 default=ignore] pam_succeed_if.so quiet tty notin tty1:/dev/tty1' \
+  'session    [success=1 default=ignore] pam_succeed_if.so quiet user != dryuser' \
+  "session    optional   pam_env.so readenv=0 user_readenv=0 conffile=$dry_un_dir/state/gnome-session-type.conf" \
+  'session    include      system-local-login' \
+  'session    optional   pam_gnome_keyring.so auto_start' >"$dry_un_dir/login"
+cp "$dry_un_dir/login" "$dry_un_dir/login.snapshot"
+printf 'XDG_SESSION_TYPE DEFAULT=wayland\n' >"$dry_un_dir/state/gnome-session-type.conf"
+printf 'gnome\n' >"$dry_un_dir/state/pam-keyring"
+printf 'base-ok\n' >"$dry_un_dir/state/pam-login-base"
+printf 'lightdm.service\nmissing.service\n' >"$dry_un_dir/state/disabled-display-managers"
+printf '%s\n' '[Service]' 'ExecStart=' "ExecStart=-/usr/bin/agetty --autologin dryuser --noclear %I \$TERM" >"$dry_un_dir/getty.d/lightxdm-autologin.conf"
+printf '// original polkit\n' >"$dry_un_dir/state/49-nopasswd.rules.lightxdm.bak"
+printf '// custom user polkit\n' >"$dry_un_dir/state/49-nopasswd.rules"
+printf '# orig bash_profile\n' >"$dry_un_dir/home/.bash_profile.lightxdm.bak"
+cp "$REPO_ROOT/dotfiles/.bash_profile" "$dry_un_dir/home/.bash_profile"
+printf '# user custom xinitrc\nexec awesome\n' >"$dry_un_dir/home/.xinitrc"
+: >"$dry_un_dir/home/.xinitrc.lightxdm.absent"
+cp "$REPO_ROOT/dotfiles/.xinitrc-i3" "$dry_un_dir/home/.xinitrc.lightxdm-new"
+cp "$REPO_ROOT/dotfiles/.gpg-agent-gnome" "$dry_un_dir/home/.gpg-agent-gnome"
+printf '# foreign wayland launcher\n' >"$dry_un_dir/home/.wayland-session"
+printf 'de=gnome\nno_packages=1\n' >"$dry_un_dir/home/.local/state/lightxdm/install-choices"
+
+set +e
+dry_full_out="$(
+  env -u TARGET_HOME -u SUDO_USER \
+    HOME="$dry_un_dir/home" \
+    PATH="$dry_un_dir/bin:$STUB_BIN:$PATH" \
+    DRY_UN_SYS_LOG="$dry_un_sys_log" \
+    LOGIN_FILE="$dry_un_dir/login" \
+    GNOME_SESSION_TYPE_DEST="$dry_un_dir/state/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$dry_un_dir/state/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$dry_un_dir/state/pam-login-base" \
+    DM_STATE_FILE="$dry_un_dir/state/disabled-display-managers" \
+    OVERRIDE_DIR="$dry_un_dir/getty.d" \
+    POLKIT_RULE="$dry_un_dir/state/49-nopasswd.rules" \
+    LIGHTXDM_DIR="$REPO_ROOT" \
+    bash "$REPO_ROOT/bin/lightxdm-uninstall" --dry-run 2>&1
+)"
+dry_full_rc=$?
+set -e
+if [[ $dry_full_rc -ne 0 || -s "$dry_un_sys_log" ]] ||
+  ! cmp -s "$dry_un_dir/login" "$dry_un_dir/login.snapshot" ||
+  [[ ! -f "$dry_un_dir/login.lightxdm.bak" ]] ||
+  [[ ! -f "$dry_un_dir/state/gnome-session-type.conf" ]] ||
+  [[ ! -f "$dry_un_dir/state/pam-keyring" ]] ||
+  [[ ! -f "$dry_un_dir/state/pam-login-base" ]] ||
+  [[ ! -f "$dry_un_dir/state/disabled-display-managers" ]] ||
+  [[ ! -f "$dry_un_dir/getty.d/lightxdm-autologin.conf" ]] ||
+  [[ ! -f "$dry_un_dir/state/49-nopasswd.rules" ]] ||
+  [[ ! -f "$dry_un_dir/state/49-nopasswd.rules.lightxdm.bak" ]] ||
+  [[ -e "$dry_un_dir/state/49-nopasswd.rules.lightxdm-edited" ]] ||
+  [[ ! -f "$dry_un_dir/home/.bash_profile.lightxdm.bak" ]] ||
+  [[ ! -f "$dry_un_dir/home/.xinitrc" ]] ||
+  [[ -e "$dry_un_dir/home/.xinitrc.lightxdm-edited" ]] ||
+  [[ ! -f "$dry_un_dir/home/.xinitrc.lightxdm-new" ]] ||
+  [[ ! -f "$dry_un_dir/home/.gpg-agent-gnome" ]] ||
+  [[ ! -f "$dry_un_dir/home/.local/state/lightxdm/install-choices" ]] ||
+  [[ "$dry_full_out" != *"Dry run: no files or systemd units will be modified."* ||
+    "$dry_full_out" != *"Would remove 4 GNOME session-type PAM line(s) from $dry_un_dir/login."* ||
+    "$dry_full_out" != *"Would remove $dry_un_dir/state/gnome-session-type.conf."* ||
+    "$dry_full_out" != *"Would restore $dry_un_dir/login from backup ($dry_un_dir/login.lightxdm.bak) and remove backup."* ||
+    "$dry_full_out" != *"Would disable TTY1 autologin (remove $dry_un_dir/getty.d/lightxdm-autologin.conf)."* ||
+    "$dry_full_out" != *"Would save edited $dry_un_dir/state/49-nopasswd.rules to $dry_un_dir/state/49-nopasswd.rules.lightxdm-edited."* ||
+    "$dry_full_out" != *"Would restore $dry_un_dir/state/49-nopasswd.rules from backup ($dry_un_dir/state/49-nopasswd.rules.lightxdm.bak)."* ||
+    "$dry_full_out" != *"Would restore $dry_un_dir/home/.bash_profile from backup."* ||
+    "$dry_full_out" != *"Would save edited $dry_un_dir/home/.xinitrc to $dry_un_dir/home/.xinitrc.lightxdm-edited."* ||
+    "$dry_full_out" != *"Would remove $dry_un_dir/home/.xinitrc.lightxdm-new."* ||
+    "$dry_full_out" != *"Would remove $dry_un_dir/home/.gpg-agent-gnome."* ||
+    "$dry_full_out" != *"Would keep $dry_un_dir/home/.wayland-session (not an unmodified lightXDM template)."* ||
+    "$dry_full_out" != *"Would remove $dry_un_dir/home/.local/state/lightxdm/install-choices."* ||
+    "$dry_full_out" != *"Would re-enable display manager: lightdm.service"* ||
+    "$dry_full_out" != *"Warning: missing.service is not installed any more; would skip it."* ||
+    "$dry_full_out" != *"Dry run complete: no files or systemd units were modified."* ]]; then
+  dry_un_report+=" [full: rc=$dry_full_rc, sys=$(cat "$dry_un_sys_log"), out=$dry_full_out]"
+fi
+# Repeat check with a past-template dotfile backup so past_backup=1 does not misreport restore.
+mkdir -p "$dry_un_dir/past_home"
+cp "$REPO_ROOT/dotfiles/.bash_profile" "$dry_un_dir/past_home/.bash_profile.lightxdm.bak"
+cp "$REPO_ROOT/dotfiles/.bash_profile" "$dry_un_dir/past_home/.bash_profile"
+set +e
+dry_past_out="$(
+  env -u SUDO_USER \
+    TARGET_HOME="$dry_un_dir/past_home" \
+    PATH="$dry_un_dir/bin:$STUB_BIN:$PATH" \
+    DRY_UN_SYS_LOG="$dry_un_sys_log" \
+    LOGIN_FILE="$dry_un_dir/login" \
+    GNOME_SESSION_TYPE_DEST="$dry_un_dir/state/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$dry_un_dir/state/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$dry_un_dir/state/pam-login-base" \
+    DM_STATE_FILE="$dry_un_dir/missing-dm" \
+    OVERRIDE_DIR="$dry_un_dir/missing-getty" \
+    POLKIT_RULE="$dry_un_dir/missing-polkit" \
+    bash "$REPO_ROOT/uninstall.sh" --dry-run 2>&1
+)"
+dry_past_rc=$?
+set -e
+if [[ $dry_past_rc -ne 0 ||
+  "$dry_past_out" != *"Would restore $dry_un_dir/login from backup ($dry_un_dir/login.lightxdm.bak) and remove backup."* ||
+  "$dry_past_out" != *"Would remove $dry_un_dir/past_home/.bash_profile.lightxdm.bak (a file from an earlier lightXDM version)."* ||
+  "$dry_past_out" != *"Would remove $dry_un_dir/past_home/.bash_profile."* ||
+  "$dry_past_out" == *"Would restore $dry_un_dir/past_home/.bash_profile from backup."* ]]; then
+  dry_un_report+=" [past-bak: rc=$dry_past_rc, out=$dry_past_out]"
+fi
+
+# 2) --keyring-only --dry-run (both orders) keeps backup when later PAM edits exist and warns on residual keyring lines.
+mkdir -p "$dry_un_dir/ko"
+printf '%s\n' '#%PAM-1.0' 'auth include system-local-login' >"$dry_un_dir/ko/login.lightxdm.bak"
+printf '%s\n' \
+  '#%PAM-1.0' \
+  'auth include system-local-login' \
+  'auth optional pam_kwallet5.so custom=1' \
+  '# user later comment' \
+  'auth       optional   pam_gnome_keyring.so' \
+  'session    optional   pam_gnome_keyring.so auto_start' >"$dry_un_dir/ko/login"
+cp "$dry_un_dir/ko/login" "$dry_un_dir/ko/login.snapshot"
+printf 'gnome\n' >"$dry_un_dir/ko/pam-keyring"
+for ko_flags in "--keyring-only --dry-run" "--dry-run --keyring-only"; do
+  set +e
+  read -r -a ko_argv <<<"$ko_flags"
+  dry_ko_out="$(
+    env -u SUDO_USER \
+      HOME="$dry_un_dir/missing_home_should_not_be_required" \
+      TARGET_HOME="" \
+      PATH="$dry_un_dir/bin:$STUB_BIN:$PATH" \
+      LOGIN_FILE="$dry_un_dir/ko/login" \
+      PAM_KEYRING_STATE="$dry_un_dir/ko/pam-keyring" \
+      OVERRIDE_DIR="$dry_un_dir/missing-getty" \
+      bash "$REPO_ROOT/uninstall.sh" "${ko_argv[@]}" 2>&1
+  )"
+  dry_ko_rc=$?
+  set -e
+  if [[ $dry_ko_rc -ne 0 ]] || ! cmp -s "$dry_un_dir/ko/login" "$dry_un_dir/ko/login.snapshot" ||
+    [[ ! -f "$dry_un_dir/ko/pam-keyring" ]] ||
+    [[ "$dry_ko_out" != *"Would remove 2 lightXDM PAM line(s) from $dry_un_dir/ko/login; backup would be kept for review ($dry_un_dir/ko/login.lightxdm.bak)."* ||
+      "$dry_ko_out" != *"Warning: $dry_un_dir/ko/login would still configure PAM keyring unlock"* ||
+      "$dry_ko_out" != *"Would remove $dry_un_dir/ko/pam-keyring."* ||
+      "$dry_ko_out" != *"Dry run (--keyring-only): dotfiles, autologin, the Polkit rule and display managers would stay unchanged."* ]]; then
+    dry_un_report+=" [keyring-only '$ko_flags': rc=$dry_ko_rc, out=$dry_ko_out]"
+  fi
+done
+
+# 3) Unreadable root-owned files/dirs stay clean under --dry-run without Permission denied.
+if [[ $EUID -ne 0 ]]; then
+  mkdir -p "$dry_un_dir/priv_files" "$dry_un_dir/priv_dir"
+  cp "$dry_un_dir/login" "$dry_un_dir/priv_files/login"
+  printf 'gnome\n' >"$dry_un_dir/priv_files/pam-keyring"
+  printf 'lightdm.service\n' >"$dry_un_dir/priv_files/disabled-display-managers"
+  printf '// root polkit\n' >"$dry_un_dir/priv_dir/49-nopasswd.rules"
+  chmod 000 "$dry_un_dir/priv_files/login" "$dry_un_dir/priv_files/pam-keyring" "$dry_un_dir/priv_files/disabled-display-managers" "$dry_un_dir/priv_dir"
+  set +e
+  dry_priv_out="$(
+    env -u SUDO_USER \
+      HOME="$dry_un_dir/past_home" \
+      TARGET_HOME="$dry_un_dir/past_home" \
+      PATH="$dry_un_dir/bin:$STUB_BIN:$PATH" \
+      LOGIN_FILE="$dry_un_dir/priv_files/login" \
+      GNOME_SESSION_TYPE_DEST="$dry_un_dir/priv_dir/gnome-session-type.conf" \
+      PAM_KEYRING_STATE="$dry_un_dir/priv_files/pam-keyring" \
+      PAM_LOGIN_BASE_STATE="$dry_un_dir/priv_dir/pam-login-base" \
+      DM_STATE_FILE="$dry_un_dir/priv_files/disabled-display-managers" \
+      OVERRIDE_DIR="$dry_un_dir/priv_dir" \
+      POLKIT_RULE="$dry_un_dir/priv_dir/49-nopasswd.rules" \
+      bash "$REPO_ROOT/uninstall.sh" --dry-run 2>&1
+  )"
+  dry_priv_rc=$?
+  set -e
+  chmod 755 "$dry_un_dir/priv_dir"
+  chmod 600 "$dry_un_dir/priv_files/login" "$dry_un_dir/priv_files/pam-keyring" "$dry_un_dir/priv_files/disabled-display-managers"
+  if [[ $dry_priv_rc -ne 0 || "$dry_priv_out" == *"Permission denied"* ||
+    "$dry_priv_out" != *"PAM ($dry_un_dir/priv_files/login): unknown (needs root"* ||
+    "$dry_priv_out" != *"GNOME session-type config ($dry_un_dir/priv_dir/gnome-session-type.conf): unknown (needs root)."* ||
+    "$dry_priv_out" != *"PAM keyring state ($dry_un_dir/priv_files/pam-keyring): unknown (needs root)."* ||
+    "$dry_priv_out" != *"Polkit rule ($dry_un_dir/priv_dir/49-nopasswd.rules): unknown (needs root)."* ||
+    "$dry_priv_out" != *"Disabled display managers ($dry_un_dir/priv_files/disabled-display-managers): unknown (needs root)."* ]]; then
+    dry_un_report+=" [priv: rc=$dry_priv_rc, out=$dry_priv_out]"
+  fi
+fi
+
+# 4) Reject duplicate/invalid flag combinations, symlinked TARGET_HOME, and document --dry-run in --help.
+for bad_un_args in "--dry-run --dry-run" "--keyring-only --keyring-only" "--help --dry-run" "--dry-run --help"; do
+  set +e
+  read -r -a bad_un_argv <<<"$bad_un_args"
+  bad_un_out="$(HOME="$dry_un_dir/home" bash "$REPO_ROOT/uninstall.sh" "${bad_un_argv[@]}" 2>&1)"
+  bad_un_rc=$?
+  set -e
+  if [[ $bad_un_rc -ne 1 ]]; then
+    dry_un_report+=" [bad combo '$bad_un_args': rc=$bad_un_rc, out=$bad_un_out]"
+  fi
+done
+ln -s "$dry_un_dir/home" "$dry_un_dir/sym_home"
+set +e
+sym_un_out="$(TARGET_HOME="$dry_un_dir/sym_home" bash "$REPO_ROOT/uninstall.sh" --dry-run 2>&1)"
+sym_un_rc=$?
+set -e
+if [[ $sym_un_rc -ne 1 || "$sym_un_out" != *"Refusing symlinked target home directory"* ]]; then
+  dry_un_report+=" [symlink home: rc=$sym_un_rc, out=$sym_un_out]"
+fi
+help_un_out="$(bash "$REPO_ROOT/uninstall.sh" --help 2>&1)"
+if [[ "$help_un_out" != *"--dry-run"* ]]; then
+  dry_un_report+=" [help missing --dry-run]"
+fi
+
+if [[ -z "$dry_un_report" ]]; then
+  pass "uninstall.sh --dry-run and --keyring-only --dry-run preview full rollback without root or edits"
+else
+  fail "uninstall.sh --dry-run:$dry_un_report"
+fi
+
 finish_harness

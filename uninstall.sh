@@ -36,6 +36,36 @@ files_match() {
   [[ "$(sha256sum < "$1")" == "$(sha256sum < "$2")" ]]
 }
 
+# True when $1 needs root access to inspect (unreadable entry or unsearchable parent directory).
+path_needs_sudo() {
+  local path="$1" dir
+  [[ $EUID -ne 0 ]] || return 1
+  if [[ -L "$path" ]]; then
+    return 1
+  fi
+  if [[ -e "$path" ]]; then
+    if [[ ! -r "$path" ]]; then
+      return 0
+    fi
+    return 1
+  fi
+  dir="$path"
+  while [[ "$dir" == */* ]]; do
+    dir="${dir%/*}"
+    [[ -n "$dir" ]] || dir="/"
+    if [[ -d "$dir" ]]; then
+      if [[ ! -x "$dir" ]]; then
+        return 0
+      fi
+      return 1
+    elif [[ -e "$dir" || -L "$dir" ]]; then
+      return 1
+    fi
+    [[ "$dir" == "/" ]] && break
+  done
+  return 1
+}
+
 normalize_home_path() {
   local path="$1"
   while [[ "$path" == */ && "$path" != "/" ]]; do
@@ -99,20 +129,30 @@ home_parent_is_safe() {
   home_dir_is_safe "$parent" "$allow_absent"
 }
 
+next_edited_dotfile_dest() {
+  local src="$1" edited_dest="${1}.lightxdm-edited" n=1
+  if [[ -e "$edited_dest" || -L "$edited_dest" ]]; then
+    while [[ -e "${edited_dest}.${n}" || -L "${edited_dest}.${n}" ]]; do
+      n=$((n + 1))
+    done
+    edited_dest="${edited_dest}.${n}"
+  fi
+  printf '%s\n' "$edited_dest"
+}
+
 save_edited_dotfile() {
-  local src="$1" home
+  local src="$1" dry_run="${2:-0}" home
   if [[ -n "${TARGET_HOME:-}" ]]; then
     home="$(normalize_home_path "$TARGET_HOME")"
     if [[ "$home" != "/" && "$src" == "$home/"* ]]; then
       home_parent_is_safe "${src#"$home"/}" || return 1
     fi
   fi
-  local edited_dest="${src}.lightxdm-edited" n=1
-  if [[ -e "$edited_dest" || -L "$edited_dest" ]]; then
-    while [[ -e "${edited_dest}.${n}" || -L "${edited_dest}.${n}" ]]; do
-      n=$((n + 1))
-    done
-    edited_dest="${edited_dest}.${n}"
+  local edited_dest
+  edited_dest="$(next_edited_dotfile_dest "$src")"
+  if [[ $dry_run -eq 1 ]]; then
+    echo "Would save edited $src to $edited_dest."
+    return 0
   fi
   echo "Saving edited $src to $edited_dest..."
   mv -T -- "$src" "$edited_dest"
@@ -121,7 +161,7 @@ save_edited_dotfile() {
 # True for a regular file equal to any rule an older lightXDM version installed.
 is_lightxdm_polkit_rule() {
   local path="$1" hash old
-  [[ -f "$path" && ! -L "$path" ]] || return 1
+  [[ -f "$path" && ! -L "$path" && -r "$path" ]] || return 1
   hash="$(sha256sum < "$path")"
   hash="${hash%% *}"
   for old in "${LIGHTXDM_OLD_POLKIT_HASHES[@]}"; do
@@ -171,7 +211,7 @@ matches_lightxdm_template() {
   home_parent_is_safe "$dotfile" || return 1
   home="$(normalize_home_path "${TARGET_HOME:-}")"
   path="$home/$dotfile"
-  if [[ ! -f "$path" || -L "$path" ]]; then
+  if [[ ! -f "$path" || -L "$path" || ! -r "$path" ]]; then
     return 1
   fi
   local templates=()
@@ -201,7 +241,7 @@ matches_lightxdm_template() {
   local tmpl path_sum="" recorded_sum=""
   for tmpl in "${templates[@]}"; do
     [[ "$tmpl" -ef "$path" ]] && continue
-    if [[ -f "$tmpl" ]] && files_match "$path" "$tmpl"; then
+    if [[ -f "$tmpl" && -r "$tmpl" ]] && files_match "$path" "$tmpl"; then
       return 0
     fi
   done
@@ -218,7 +258,7 @@ matches_lightxdm_template() {
 }
 
 cleanup_home_dotfiles() {
-  local home dotfile past_backup rc
+  local dry_run="${1:-0}" home dotfile past_backup rc
   home="$(normalize_home_path "${TARGET_HOME:-}")"
   target_home_is_safe "$home" || return $?
   for dotfile in .bash_profile .xinitrc .wayland-session .gpg-agent-kwallet .gpg-agent-gnome .config/autostart/lightxdm-gpg-agent-tty.desktop; do
@@ -232,44 +272,86 @@ cleanup_home_dotfiles() {
     fi
     # The current template install.sh --update put beside a dotfile the user edited.
     if [[ -f "$home/${dotfile}.lightxdm-new" && ! -L "$home/${dotfile}.lightxdm-new" ]]; then
-      echo "Removing $home/${dotfile}.lightxdm-new..."
-      rm -f -- "$home/${dotfile}.lightxdm-new"
+      if [[ $dry_run -eq 1 ]]; then
+        echo "Would remove $home/${dotfile}.lightxdm-new."
+      else
+        echo "Removing $home/${dotfile}.lightxdm-new..."
+        rm -f -- "$home/${dotfile}.lightxdm-new"
+      fi
     fi
     past_backup=0
     # A backup equal to an older bundled template is a lightXDM file an earlier install backed up
     # as the user's original: drop it and treat the dotfile as one lightXDM created.
-    if is_past_lightxdm_template "$home/${dotfile}.lightxdm.bak" "$dotfile"; then
-      echo "Removing $home/${dotfile}.lightxdm.bak (a file from an earlier lightXDM version)..."
-      rm -f -- "$home/${dotfile}.lightxdm.bak"
+    if [[ -r "$home/${dotfile}.lightxdm.bak" ]] && is_past_lightxdm_template "$home/${dotfile}.lightxdm.bak" "$dotfile"; then
+      if [[ $dry_run -eq 1 ]]; then
+        echo "Would remove $home/${dotfile}.lightxdm.bak (a file from an earlier lightXDM version)."
+      else
+        echo "Removing $home/${dotfile}.lightxdm.bak (a file from an earlier lightXDM version)..."
+        rm -f -- "$home/${dotfile}.lightxdm.bak"
+      fi
       past_backup=1
     fi
-    if [[ -e "$home/${dotfile}.lightxdm.bak" || -L "$home/${dotfile}.lightxdm.bak" ]]; then
+    if [[ $past_backup -eq 0 ]] && [[ -e "$home/${dotfile}.lightxdm.bak" || -L "$home/${dotfile}.lightxdm.bak" ]]; then
+      local backup_msg="Would restore $home/$dotfile from backup."
       if [[ -e "$home/$dotfile" || -L "$home/$dotfile" ]]; then
-        if matches_lightxdm_template "$dotfile"; then
-          rm -f -- "$home/$dotfile"
+        if [[ $dry_run -eq 1 && ! -L "$home/$dotfile" && ! -r "$home/$dotfile" ]]; then
+          backup_msg="Would restore $home/$dotfile from backup (existing file unreadable without root to check edits)."
+        elif matches_lightxdm_template "$dotfile"; then
+          if [[ $dry_run -eq 0 ]]; then
+            rm -f -- "$home/$dotfile"
+          fi
         else
-          save_edited_dotfile "$home/$dotfile"
+          save_edited_dotfile "$home/$dotfile" "$dry_run"
         fi
       fi
-      echo "Restoring $home/$dotfile from backup..."
-      mv -T -- "$home/${dotfile}.lightxdm.bak" "$home/$dotfile"
-      rm -f -- "$home/${dotfile}.lightxdm.absent"
+      if [[ $dry_run -eq 1 ]]; then
+        echo "$backup_msg"
+        if [[ -e "$home/${dotfile}.lightxdm.absent" || -L "$home/${dotfile}.lightxdm.absent" ]]; then
+          echo "Would remove $home/${dotfile}.lightxdm.absent."
+        fi
+      else
+        echo "Restoring $home/$dotfile from backup..."
+        mv -T -- "$home/${dotfile}.lightxdm.bak" "$home/$dotfile"
+        rm -f -- "$home/${dotfile}.lightxdm.absent"
+      fi
     elif [[ $past_backup -eq 1 || -e "$home/${dotfile}.lightxdm.absent" || -L "$home/${dotfile}.lightxdm.absent" ]]; then
       if [[ -e "$home/$dotfile" || -L "$home/$dotfile" ]]; then
-        if matches_lightxdm_template "$dotfile"; then
-          echo "Removing $home/$dotfile..."
-          rm -f -- "$home/$dotfile"
+        if [[ $dry_run -eq 1 && ! -L "$home/$dotfile" && ! -r "$home/$dotfile" ]]; then
+          echo "Skipped check on $home/$dotfile (unreadable without root)."
+        elif matches_lightxdm_template "$dotfile"; then
+          if [[ $dry_run -eq 1 ]]; then
+            echo "Would remove $home/$dotfile."
+          else
+            echo "Removing $home/$dotfile..."
+            rm -f -- "$home/$dotfile"
+          fi
         else
-          save_edited_dotfile "$home/$dotfile"
+          save_edited_dotfile "$home/$dotfile" "$dry_run"
         fi
       fi
-      rm -f -- "$home/${dotfile}.lightxdm.absent"
-    elif [[ -e "$home/$dotfile" || -L "$home/$dotfile" ]]; then
-      if matches_lightxdm_template "$dotfile" --bundled-only; then
-        echo "Removing $home/$dotfile..."
-        rm -f -- "$home/$dotfile"
+      if [[ $dry_run -eq 1 ]]; then
+        if [[ -e "$home/${dotfile}.lightxdm.absent" || -L "$home/${dotfile}.lightxdm.absent" ]]; then
+          echo "Would remove $home/${dotfile}.lightxdm.absent."
+        fi
       else
-        echo "Keeping $home/$dotfile (not an unmodified lightXDM template)."
+        rm -f -- "$home/${dotfile}.lightxdm.absent"
+      fi
+    elif [[ -e "$home/$dotfile" || -L "$home/$dotfile" ]]; then
+      if [[ $dry_run -eq 1 && ! -L "$home/$dotfile" && ! -r "$home/$dotfile" ]]; then
+        echo "Skipped check on $home/$dotfile (unreadable without root)."
+      elif matches_lightxdm_template "$dotfile" --bundled-only; then
+        if [[ $dry_run -eq 1 ]]; then
+          echo "Would remove $home/$dotfile."
+        else
+          echo "Removing $home/$dotfile..."
+          rm -f -- "$home/$dotfile"
+        fi
+      else
+        if [[ $dry_run -eq 1 ]]; then
+          echo "Would keep $home/$dotfile (not an unmodified lightXDM template)."
+        else
+          echo "Keeping $home/$dotfile (not an unmodified lightXDM template)."
+        fi
       fi
     fi
   done
@@ -278,7 +360,7 @@ cleanup_home_dotfiles() {
 # The .bash_profile respawn guard keeps launch timestamps here, and install.sh the choices --update
 # reuses and what it wrote into each dotfile; copies under a custom XDG_STATE_HOME are not removed.
 cleanup_home_state_dir() {
-  local home state_dir state_file state_removed=0 rc=0
+  local dry_run="${1:-0}" home state_dir state_file state_removed=0 rc=0
   home_dir_is_safe ".local/state/lightxdm" || rc=$?
   if [[ $rc -ne 0 ]]; then
     if [[ $rc -eq 2 ]]; then
@@ -291,33 +373,265 @@ cleanup_home_state_dir() {
   state_dir="$home/.local/state/lightxdm"
   for state_file in startx-attempts install-choices installed-dotfiles; do
     if [[ -f "$state_dir/$state_file" && ! -L "$state_dir/$state_file" ]]; then
-      rm -f -- "$state_dir/$state_file"
+      if [[ $dry_run -eq 1 ]]; then
+        echo "Would remove $state_dir/$state_file."
+      else
+        rm -f -- "$state_dir/$state_file"
+      fi
       state_removed=1
     fi
   done
   if [[ $state_removed -eq 1 ]]; then
-    rmdir --ignore-fail-on-non-empty -- "$state_dir" 2>/dev/null || true
+    if [[ $dry_run -eq 1 ]]; then
+      echo "Would remove $state_dir if empty."
+    else
+      rmdir --ignore-fail-on-non-empty -- "$state_dir" 2>/dev/null || true
+    fi
   fi
 }
 
-main() {
-  local keyring_only=0
-  if [[ $# -gt 0 ]]; then
-    if [[ $# -eq 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
-      echo "Usage: sudo bash $0 [-h|--help] [--keyring-only]"
-      echo "  --keyring-only  remove only the keyring lines lightXDM added to /etc/pam.d/login (for switching to autologin)"
-      echo "Run it with sudo from your user account; as root without sudo, set TARGET_HOME=/home/<user>."
-      exit 0
-    elif [[ $# -eq 1 && "$1" == "--keyring-only" ]]; then
-      keyring_only=1
-    else
-      echo "Unknown option: $*" >&2
-      echo "Usage: sudo bash $0 [-h|--help] [--keyring-only]" >&2
-      exit 1
+# Return 0 when stdin matches backup $1 (including backups missing a trailing newline).
+pam_matches_backup_stream() {
+  local backup="$1" stream_sum backup_sum
+  stream_sum="$(sha256sum)"
+  backup_sum="$(sha256sum <"$backup")"
+  if [[ "$stream_sum" == "$backup_sum" ]]; then
+    return 0
+  fi
+  if [[ -s "$backup" && -n "$(tail -c 1 "$backup")" ]]; then
+    backup_sum="$( (cat -- "$backup"; printf '\n') | sha256sum )"
+    [[ "$stream_sum" == "$backup_sum" ]] && return 0
+  fi
+  return 1
+}
+
+# Print the full rollback plan without modifying PAM, systemd units, Polkit rules, or dotfiles.
+preview_uninstall() {
+  local keyring_only="$1" backup_file="$2"
+  echo "Dry run: no files or systemd units will be modified."
+
+  local pam_unknown=0
+  if path_needs_sudo "$LOGIN_FILE" || path_needs_sudo "$backup_file"; then
+    pam_unknown=1
+    echo "PAM ($LOGIN_FILE): unknown (needs root — rerun with sudo --dry-run to inspect)."
+  fi
+
+  local gnome_marker='# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)'
+  local gnome_tty_gate='session    [success=2 default=ignore] pam_succeed_if.so quiet tty notin tty1:/dev/tty1'
+  local gnome_user_gate_re='^session    \[success=1 default=ignore\] pam_succeed_if\.so quiet user != [abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*$'
+  local gnome_env_line="session    optional   pam_env.so readenv=0 user_readenv=0 conffile=$GNOME_SESSION_TYPE_DEST"
+  local gnome_pam_sed=() gnome_hits=0
+  if [[ $pam_unknown -eq 0 && $keyring_only -eq 0 && -f "$LOGIN_FILE" && -r "$LOGIN_FILE" ]]; then
+    local line_number=0 line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line_number=$((line_number + 1))
+      if [[ "$line" == "$gnome_marker" || "$line" == "$gnome_tty_gate" || "$line" =~ $gnome_user_gate_re || "$line" == "$gnome_env_line" ]]; then
+        if [[ ! -f "$backup_file" || -L "$backup_file" || ! -r "$backup_file" ]] || ! grep -Fxq -- "$line" "$backup_file"; then
+          gnome_pam_sed+=(-e "${line_number}d")
+        fi
+      fi
+    done < "$LOGIN_FILE"
+    gnome_hits=$(( ${#gnome_pam_sed[@]} / 2 ))
+    if [[ $gnome_hits -gt 0 ]]; then
+      echo "Would remove $gnome_hits GNOME session-type PAM line(s) from $LOGIN_FILE."
     fi
   fi
 
-  if [[ $EUID -ne 0 ]]; then
+  if [[ $keyring_only -eq 0 ]]; then
+    if path_needs_sudo "$GNOME_SESSION_TYPE_DEST"; then
+      echo "GNOME session-type config ($GNOME_SESSION_TYPE_DEST): unknown (needs root)."
+    elif [[ -e "$GNOME_SESSION_TYPE_DEST" || -L "$GNOME_SESSION_TYPE_DEST" ]]; then
+      echo "Would remove $GNOME_SESSION_TYPE_DEST."
+    fi
+    if path_needs_sudo "$PAM_LOGIN_BASE_STATE"; then
+      echo "PAM login base state ($PAM_LOGIN_BASE_STATE): unknown (needs root)."
+    elif [[ -e "$PAM_LOGIN_BASE_STATE" || -L "$PAM_LOGIN_BASE_STATE" ]]; then
+      echo "Would remove $PAM_LOGIN_BASE_STATE."
+    fi
+  fi
+
+  if [[ $pam_unknown -eq 0 ]]; then
+    if [[ -f "$backup_file" && ! -L "$backup_file" && -r "$backup_file" ]]; then
+      if [[ ! -e "$LOGIN_FILE" ]]; then
+        echo "Would restore $LOGIN_FILE from backup ($backup_file) and remove backup."
+      else
+        local pam_sed=() pam_line pam_re hits keyring_hits=0
+        for pam_line in "${LIGHTXDM_KEYRING_LINES[@]}"; do
+          pam_re="^${pam_line//./\\.}\$"
+          if [[ -z "$(sed -n "/${pam_re}/p" "$backup_file")" ]]; then
+            pam_sed+=(-e "/${pam_re}/d")
+            hits="$(grep -Ec -- "${pam_re}" "$LOGIN_FILE" || true)"
+            keyring_hits=$((keyring_hits + hits))
+          fi
+        done
+        local all_sed=("${gnome_pam_sed[@]}" "${pam_sed[@]}")
+        if (if [[ ${#all_sed[@]} -gt 0 ]]; then sed "${all_sed[@]}" "$LOGIN_FILE"; else cat -- "$LOGIN_FILE"; fi) | pam_matches_backup_stream "$backup_file"; then
+          echo "Would restore $LOGIN_FILE from backup ($backup_file) and remove backup."
+        else
+          echo "Would remove $((gnome_hits + keyring_hits)) lightXDM PAM line(s) from $LOGIN_FILE; backup would be kept for review ($backup_file)."
+        fi
+        if [[ $keyring_only -eq 1 ]] &&
+          (if [[ ${#all_sed[@]} -gt 0 ]]; then sed "${all_sed[@]}" "$LOGIN_FILE"; else cat -- "$LOGIN_FILE"; fi) |
+          grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*(pam_kwallet5\.so|pam_gnome_keyring\.so)([[:space:]]|$)'; then
+          echo "Warning: $LOGIN_FILE would still configure PAM keyring unlock (lines lightXDM did not add); remove them by hand if you use autologin." >&2
+        fi
+      fi
+    else
+      echo "No $backup_file found; would skip PAM restore."
+      if [[ $keyring_only -eq 1 && -f "$LOGIN_FILE" && -r "$LOGIN_FILE" ]] &&
+        grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*(pam_kwallet5\.so|pam_gnome_keyring\.so)([[:space:]]|$)' "$LOGIN_FILE"; then
+        echo "Warning: $LOGIN_FILE would still configure PAM keyring unlock (lines lightXDM did not add); remove them by hand if you use autologin." >&2
+      fi
+    fi
+  fi
+
+  if path_needs_sudo "$PAM_KEYRING_STATE"; then
+    echo "PAM keyring state ($PAM_KEYRING_STATE): unknown (needs root)."
+  elif [[ -e "$PAM_KEYRING_STATE" || -L "$PAM_KEYRING_STATE" ]]; then
+    echo "Would remove $PAM_KEYRING_STATE."
+  fi
+
+  if [[ $keyring_only -eq 1 ]]; then
+    echo "Dry run (--keyring-only): dotfiles, autologin, the Polkit rule and display managers would stay unchanged."
+    local autologin_status
+    autologin_status="$(bash "$SCRIPT_DIR/enable-autologin.sh" --status 2>/dev/null || true)"
+    if [[ "$autologin_status" != "enabled for"* && "$autologin_status" != *"still enables autologin."* ]]; then
+      echo "To log in on TTY1 without a password, run: sudo $(printf 'bash %q' "$SCRIPT_DIR/enable-autologin.sh") ${SUDO_USER:-${USER:-<user>}}"
+    fi
+    return 0
+  fi
+
+  local override_dir="${OVERRIDE_DIR:-/etc/systemd/system/getty@tty1.service.d}"
+  local override_file="$override_dir/lightxdm-autologin.conf"
+  local legacy_override="$override_dir/override.conf"
+  local autologin_seen=0
+  if path_needs_sudo "$override_file" || path_needs_sudo "$legacy_override"; then
+    echo "TTY1 autologin ($override_dir): unknown (needs root)."
+  else
+    if [[ -f "$override_file" || -L "$override_file" ]]; then
+      echo "Would disable TTY1 autologin (remove $override_file)."
+      autologin_seen=1
+    fi
+    if [[ -f "$legacy_override" && ! -L "$legacy_override" && -r "$legacy_override" ]]; then
+      local legacy_lines=() exec_re='^ExecStart=-/usr/bin/agetty --autologin [^-[:space:]:][^[:space:]:]* --noclear %I [$]TERM$'
+      mapfile -t legacy_lines < "$legacy_override"
+      if [[ ${#legacy_lines[@]} -eq 3 && "${legacy_lines[0]}" == "[Service]" && "${legacy_lines[1]}" == "ExecStart=" && "${legacy_lines[2]}" =~ $exec_re ]]; then
+        echo "Would remove legacy autologin override: $legacy_override."
+        autologin_seen=1
+      else
+        echo "Would keep $legacy_override (not written by lightXDM)."
+      fi
+    elif [[ -L "$legacy_override" ]]; then
+      echo "Would keep $legacy_override (not written by lightXDM)."
+    fi
+    local autologin_status status_line
+    autologin_status="$(LOGIN_FILE=/dev/null bash "$SCRIPT_DIR/enable-autologin.sh" --status 2>&1 || true)"
+    while IFS= read -r status_line || [[ -n "$status_line" ]]; do
+      [[ "$status_line" == Warning:* || "$status_line" == Note:* ]] || continue
+      echo "$status_line"
+    done <<<"$autologin_status"
+    if [[ $autologin_seen -eq 0 ]]; then
+      echo "No lightXDM autologin drop-in found; would skip."
+    fi
+  fi
+
+  if path_needs_sudo "$POLKIT_RULE" || path_needs_sudo "${POLKIT_RULE}.lightxdm.bak" || path_needs_sudo "${POLKIT_RULE}.lightxdm.absent"; then
+    echo "Polkit rule ($POLKIT_RULE): unknown (needs root)."
+  elif [[ -e "${POLKIT_RULE}.lightxdm.bak" || -L "${POLKIT_RULE}.lightxdm.bak" ]]; then
+    if [[ -L "$POLKIT_RULE" ]] || { [[ -e "$POLKIT_RULE" && -r "$POLKIT_RULE" ]] && ! is_lightxdm_polkit_rule "$POLKIT_RULE"; }; then
+      save_edited_dotfile "$POLKIT_RULE" 1
+    elif [[ -e "$POLKIT_RULE" && ! -r "$POLKIT_RULE" ]]; then
+      echo "Would restore $POLKIT_RULE from backup (existing rule unreadable without root to check edits)."
+    fi
+    echo "Would restore $POLKIT_RULE from backup (${POLKIT_RULE}.lightxdm.bak)."
+  elif [[ -e "${POLKIT_RULE}.lightxdm.absent" || -L "${POLKIT_RULE}.lightxdm.absent" ]]; then
+    if [[ -e "$POLKIT_RULE" || -L "$POLKIT_RULE" ]]; then
+      if [[ -r "$POLKIT_RULE" ]] && is_lightxdm_polkit_rule "$POLKIT_RULE"; then
+        echo "Would remove Polkit rule: $POLKIT_RULE."
+      else
+        save_edited_dotfile "$POLKIT_RULE" 1
+      fi
+    fi
+    echo "Would remove ${POLKIT_RULE}.lightxdm.absent."
+  elif is_lightxdm_polkit_rule "$POLKIT_RULE"; then
+    echo "Would remove Polkit rule: $POLKIT_RULE."
+  elif [[ -e "$POLKIT_RULE" || -L "$POLKIT_RULE" ]]; then
+    echo "Would keep $POLKIT_RULE (not an unmodified lightXDM rule)."
+  else
+    echo "No Polkit rule found; would skip."
+  fi
+
+  cleanup_home_dotfiles 1
+  cleanup_home_state_dir 1
+
+  if path_needs_sudo "$DM_STATE_FILE"; then
+    echo "Disabled display managers ($DM_STATE_FILE): unknown (needs root)."
+  elif [[ -L "$DM_STATE_FILE" ]]; then
+    echo "Would unlink symlinked $DM_STATE_FILE without re-enabling display managers."
+  elif [[ -f "$DM_STATE_FILE" ]]; then
+    local dm_unit dm_state dm_recorded=0
+    while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
+      [[ -n "$dm_unit" ]] || continue
+      dm_recorded=1
+      dm_state="$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)"
+      case "$dm_state" in
+        not-found) echo "Warning: $dm_unit is not installed any more; would skip it." ;;
+        masked | masked-runtime) echo "Warning: $dm_unit is masked; would warn and skip re-enabling." ;;
+        *) echo "Would re-enable display manager: $dm_unit (current state: ${dm_state:-unknown})." ;;
+      esac
+    done < "$DM_STATE_FILE"
+    if [[ $dm_recorded -eq 0 ]]; then
+      echo "No disabled display managers listed in $DM_STATE_FILE."
+    fi
+    echo "Would remove $DM_STATE_FILE."
+  else
+    echo "No disabled display managers recorded ($DM_STATE_FILE)."
+  fi
+  echo "Dry run complete: no files or systemd units were modified."
+}
+
+main() {
+  local keyring_only=0 dry_run=0 arg
+  local usage="Usage: sudo bash $0 [-h|--help] [--keyring-only] [--dry-run]"
+  for arg in "$@"; do
+    case "$arg" in
+      -h | --help)
+        if [[ $# -ne 1 ]]; then
+          echo "Unknown option: $*" >&2
+          echo "$usage" >&2
+          exit 1
+        fi
+        echo "$usage"
+        echo "  --keyring-only  remove only the keyring lines lightXDM added to /etc/pam.d/login (for switching to autologin)"
+        echo "  --dry-run       preview the changes uninstall would make without modifying files or systemd units (no sudo needed for readable files)"
+        echo "Run it with sudo from your user account; as root without sudo, set TARGET_HOME=/home/<user>."
+        exit 0
+        ;;
+      --keyring-only)
+        if [[ $keyring_only -eq 1 ]]; then
+          echo "Duplicate option: $arg" >&2
+          echo "$usage" >&2
+          exit 1
+        fi
+        keyring_only=1
+        ;;
+      --dry-run)
+        if [[ $dry_run -eq 1 ]]; then
+          echo "Duplicate option: $arg" >&2
+          echo "$usage" >&2
+          exit 1
+        fi
+        dry_run=1
+        ;;
+      *)
+        echo "Unknown option: $*" >&2
+        echo "$usage" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ $EUID -ne 0 && $dry_run -eq 0 ]]; then
     echo "Please run as root (with sudo)."
     exit 1
   fi
@@ -333,6 +647,10 @@ main() {
           exit 1
         fi
       fi
+    fi
+
+    if [[ -z "${TARGET_HOME:-}" && $dry_run -eq 1 && $EUID -ne 0 ]]; then
+      TARGET_HOME="${HOME:-}"
     fi
 
     if [[ -z "${TARGET_HOME:-}" ]]; then
@@ -364,6 +682,11 @@ main() {
     if [[ -n "$oldest_epoch" ]]; then
       BACKUP_FILE="${LOGIN_FILE}.lightxde.bak.${oldest_epoch}"
     fi
+  fi
+
+  if [[ $dry_run -eq 1 ]]; then
+    preview_uninstall "$keyring_only" "$BACKUP_FILE"
+    exit 0
   fi
 
   # Remove GNOME session-type lines before comparing the login file with its backup.
