@@ -13822,4 +13822,105 @@ else
   fail "install.sh --doctor repair hints:$doctor_hints_report"
 fi
 
+# ---------------------------------------------------------------------------
+# install.sh --doctor preserves --keyring kwallet on custom sessions and avoids duplicate symlink ok output
+# ---------------------------------------------------------------------------
+doctor_diag_ok=1
+doctor_diag_report=""
+
+# 1) Custom desktop installed with kwallet gets --keyring kwallet in .pacnew and missing-kwallet hints
+reset_doctor_gnome_fixture
+rm -f "$doctor_home/.wayland-session" "$doctor_etc/lightxdm/gnome-session-type.conf"
+printf 'de=customwm\nno_packages=1\n' >"$doctor_state/lightxdm/install-choices"
+printf '#!/bin/bash\nexec startxfce4\n' >"$doctor_home/.config/lightxdm/.wayland-session-customwm"
+cp "$doctor_home/.config/lightxdm/.wayland-session-customwm" "$doctor_home/.wayland-session"
+chmod 755 "$doctor_home/.wayland-session"
+printf 'kwallet\n' >"$doctor_etc/lightxdm/pam-keyring"
+cat >"$doctor_etc/pam.d/login" <<'EOF'
+#%PAM-1.0
+# updated pambase
+auth       include      system-local-login
+session    include      system-local-login
+EOF
+: >"$doctor_etc/pam.d/login.pacnew"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 ||
+  "$doc_out" != *"PAM .pacnew: FAIL"* ||
+  "$doc_out" != *"PAM keyring: FAIL"* ||
+  "$doc_out" != *"--pam-only --de customwm --keyring kwallet"* ]]; then
+  doctor_diag_ok=0
+  doctor_diag_report+=" custom-kwallet-pacnew rc=$doc_rc out=[$doc_out];"
+fi
+
+# 2) Partial kwallet PAM lines without pam-keyring state file still include --keyring kwallet for custom id
+rm -f "$doctor_etc/pam.d/login.pacnew" "$doctor_etc/lightxdm/pam-keyring"
+cat >"$doctor_etc/pam.d/login" <<'EOF'
+#%PAM-1.0
+auth       include      system-local-login
+auth       optional   pam_kwallet5.so
+session    include      system-local-login
+EOF
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"partial keyring PAM lines"* || "$doc_out" != *"--pam-only --de customwm --keyring kwallet"* ]]; then
+  doctor_diag_ok=0
+  doctor_diag_report+=" partial-kwallet rc=$doc_rc out=[$doc_out];"
+fi
+
+# 3) Built-in plasma missing kwallet PAM lines emits --pam-only --de plasma without --keyring
+printf 'de=plasma\nno_packages=1\n' >"$doctor_state/lightxdm/install-choices"
+printf 'kwallet\n' >"$doctor_etc/lightxdm/pam-keyring"
+cat >"$doctor_etc/pam.d/login" <<'EOF'
+#%PAM-1.0
+auth       include      system-local-login
+session    include      system-local-login
+EOF
+cp "$REPO_ROOT/dotfiles/.wayland-session-plasma" "$doctor_home/.wayland-session"
+chmod 755 "$doctor_home/.wayland-session"
+mkdir -p "$doctor_root/usr/lib"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$doctor_root/usr/lib/plasma-dbus-run-session-if-needed"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$doctor_root/usr/bin/startplasma-wayland"
+chmod +x "$doctor_root/usr/lib/plasma-dbus-run-session-if-needed" "$doctor_root/usr/bin/startplasma-wayland"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"--pam-only --de plasma)"* || "$doc_out" == *"--keyring"* ]]; then
+  doctor_diag_ok=0
+  doctor_diag_report+=" builtin-plasma-no-keyring rc=$doc_rc out=[$doc_out];"
+fi
+
+# 4) Valid ~/.xinitrc symlink emits only WARN (never contradictory Session launcher: ok) and directory symlinks FAIL
+reset_doctor_gnome_fixture
+rm -f "$doctor_home/.wayland-session" "$doctor_etc/lightxdm/pam-keyring" "$doctor_etc/lightxdm/gnome-session-type.conf"
+cat >"$doctor_etc/pam.d/login" <<'EOF'
+#%PAM-1.0
+auth       include      system-local-login
+session    include      system-local-login
+EOF
+printf 'de=xfce\nno_packages=1\n' >"$doctor_state/lightxdm/install-choices"
+cp "$REPO_ROOT/dotfiles/.xinitrc-xfce" "$doctor_home/real-xinitrc"
+ln -s "$doctor_home/real-xinitrc" "$doctor_home/.xinitrc"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"Session launcher: WARN"* || "$doc_out" == *"Session launcher: ok"* || "$doc_out" != *"Doctor: PASS (0 issue(s), 1 warning(s))"* ]]; then
+  doctor_diag_ok=0
+  doctor_diag_report+=" valid-xi-symlink rc=$doc_rc out=[$doc_out];"
+fi
+
+rm -f "$doctor_home/.xinitrc"
+mkdir -p "$doctor_home/dir-launcher"
+ln -s "$doctor_home/dir-launcher" "$doctor_home/.xinitrc"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"symlink to a non-regular file"* || "$doc_out" == *"Session launcher: ok"* ]]; then
+  doctor_diag_ok=0
+  doctor_diag_report+=" dir-xi-symlink rc=$doc_rc out=[$doc_out];"
+fi
+
+if [[ $doctor_diag_ok -eq 1 ]]; then
+  pass "install.sh --doctor preserves --keyring kwallet hints for custom sessions and diagnoses X11/directory symlink launchers cleanly"
+else
+  fail "install.sh --doctor custom kwallet/symlink diagnostics:$doctor_diag_report"
+fi
+
 finish_harness

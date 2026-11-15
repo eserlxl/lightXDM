@@ -1169,6 +1169,29 @@ pam_lines_to_remove() {
   done
 }
 
+# Format `--pam-only --de <id> [--keyring <backend>]` for remediation hints, keeping built-ins
+# free of --keyring while preserving the backend for custom desktop ids.
+pam_restore_hint() {
+  local de="${1:-}" backend="${2:-}" target_de="" hint=""
+  if [[ -n "$de" ]]; then
+    target_de="$de"
+  elif [[ "$backend" == kwallet ]]; then
+    target_de="plasma"
+  elif [[ "$backend" == gnome ]]; then
+    target_de="gnome"
+  else
+    target_de="<id>"
+  fi
+  hint="--pam-only --de $target_de"
+  if [[ -n "$de" && -n "$backend" ]]; then
+    case "$de" in
+      plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
+      *) hint+=" --keyring $backend" ;;
+    esac
+  fi
+  printf '%s\n' "$hint"
+}
+
 # Configure PAM for KWallet/GNOME Keyring auto-unlock, or preview the missing lines.
 configure_pam() {
   local de preview="${2:-0}" keyring="${3:-gnome}"
@@ -1244,11 +1267,8 @@ configure_pam() {
       deferred_login="$(read_pam_file "$LOGIN_FILE" 0)" || return 1
       if [[ "$deferred_record" == gnome || "$deferred_record" == kwallet ]] ||
         grep -Eq "^[[:space:]]*-?(auth|session)[[:space:]][^#]*${module//./\\.}" <<<"$deferred_login"; then
-        local deferred_hint="--pam-only --de $de"
-        case "$de" in
-          plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
-          *) deferred_hint+=" --keyring $backend" ;;
-        esac
+        local deferred_hint
+        deferred_hint="$(pam_restore_hint "$de" "$backend")"
         log "Some or all of lightXDM's $backend keyring lines are not in $LOGIN_FILE (removed or commented out), which has your own edits, so --update leaves it alone. Add them back with $(script_cmd install.sh) $deferred_hint, or turn keyring unlock off with sudo $(script_cmd uninstall.sh) --keyring-only."
       fi
       return 0
@@ -1915,11 +1935,8 @@ saved_install_args() {
   # there: only a login file a .pacnew merge replaced lost lightXDM's lines without the user.
   if [[ $login_readable -eq 1 && -n "$(pam_lines_to_add "$module" "$auth_line" "$session_line" "" "$preview")" ]]; then
     if [[ -z "$record" || "${UPDATE_RESTORE_PAM:-0}" != 1 ]]; then
-      local hint="--pam-only --de $de"
-      case "$de" in
-        plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
-        *) hint+=" --keyring $backend" ;;
-      esac
+      local hint
+      hint="$(pam_restore_hint "$de" "$backend")"
       log "Some or all of lightXDM's $backend keyring lines are not in $LOGIN_FILE (removed or commented out), which has your own edits, so --update leaves it alone. Add them back with $(script_cmd install.sh) $hint, or turn keyring unlock off with sudo $(script_cmd uninstall.sh) --keyring-only."
       printf '%s\n' --no-keyring
       return 0
@@ -2702,6 +2719,9 @@ run_doctor() {
       if [[ ! -e "$wl" ]]; then
         printf 'Session launcher: FAIL (broken symlink %s — restore with: %s)\n' "$wl" "$recover_cmd"
         issues=$((issues + 1))
+      elif [[ ! -f "$wl" ]]; then
+        printf 'Session launcher: FAIL (%s is a symlink to a non-regular file — restore with: %s)\n' "$wl" "$recover_cmd"
+        issues=$((issues + 1))
       elif [[ ! -x "$wl" ]]; then
         printf 'Session launcher: FAIL (%s is not executable — fix with: chmod +x ~/.wayland-session)\n' "$wl"
         issues=$((issues + 1))
@@ -2729,6 +2749,9 @@ run_doctor() {
       if [[ ! -e "$xi" ]]; then
         printf 'Session launcher: FAIL (broken symlink %s — restore with: %s)\n' "$xi" "$recover_cmd"
         issues=$((issues + 1))
+      elif [[ ! -f "$xi" ]]; then
+        printf 'Session launcher: FAIL (%s is a symlink to a non-regular file — restore with: %s)\n' "$xi" "$recover_cmd"
+        issues=$((issues + 1))
       else
         printf 'Session launcher: WARN (%s is a symlink; --update ignores symlinks)\n' "$xi"
         warnings=$((warnings + 1))
@@ -2743,7 +2766,7 @@ run_doctor() {
     if ! command -v startx >/dev/null 2>&1; then
       printf 'X11 starter: FAIL (startx not found on PATH — install xorg-xinit)\n'
       issues=$((issues + 1))
-    elif [[ -n "$active_launcher" ]]; then
+    elif [[ -n "$active_launcher" && ! -L "$xi" ]]; then
       printf 'Session launcher: ok (%s via startx for de=%s)\n' "$xi" "$de"
     fi
   elif [[ $installed_any -eq 1 ]]; then
@@ -2920,8 +2943,8 @@ run_doctor() {
 
     if [[ -e "${LOGIN_FILE}.pacnew" || -L "${LOGIN_FILE}.pacnew" ]]; then
       if login_file_replaced_by_package 1; then
-        printf 'PAM .pacnew: FAIL (%s appears replaced by package upgrade while %s.pacnew exists — restore with: %s or %s --pam-only --de %s)\n' \
-          "$LOGIN_FILE" "$LOGIN_FILE" "$update_cmd" "$install_cmd" "${de:-<id>}"
+        printf 'PAM .pacnew: FAIL (%s appears replaced by package upgrade while %s.pacnew exists — restore with: %s or %s %s)\n' \
+          "$LOGIN_FILE" "$LOGIN_FILE" "$update_cmd" "$install_cmd" "$(pam_restore_hint "$de" "$pam_expected")"
         issues=$((issues + 1))
       else
         printf 'PAM .pacnew: WARN (%s.pacnew waiting — merge carefully without dropping lightXDM PAM lines)\n' "$LOGIN_FILE"
@@ -2931,15 +2954,23 @@ run_doctor() {
 
     local keyring_issue=0
     if [[ "$pam_expected" == gnome && -n "$missing_gnome" ]]; then
-      printf 'PAM keyring: FAIL (recorded gnome keyring lines missing from %s — restore with: %s --pam-only --de %s)\n' "$LOGIN_FILE" "$install_cmd" "${de:-gnome}"
+      printf 'PAM keyring: FAIL (recorded gnome keyring lines missing from %s — restore with: %s %s)\n' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" gnome)"
       issues=$((issues + 1))
       keyring_issue=1
     elif [[ "$pam_expected" == kwallet && -n "$missing_kwallet" ]]; then
-      printf 'PAM keyring: FAIL (recorded kwallet5 lines missing from %s — restore with: %s --pam-only --de %s)\n' "$LOGIN_FILE" "$install_cmd" "${de:-plasma}"
+      printf 'PAM keyring: FAIL (recorded kwallet5 lines missing from %s — restore with: %s %s)\n' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" kwallet)"
       issues=$((issues + 1))
       keyring_issue=1
     elif { [[ $has_gnome_line -eq 1 && -n "$missing_gnome" ]]; } || { [[ $has_kwallet_line -eq 1 && -n "$missing_kwallet" ]]; }; then
-      printf 'PAM keyring: FAIL (partial keyring PAM lines in %s — missing auth or session line; restore with: %s --pam-only --de %s)\n' "$LOGIN_FILE" "$install_cmd" "${de:-<id>}"
+      local partial_backend="$pam_expected"
+      if [[ -z "$partial_backend" ]]; then
+        if [[ $has_kwallet_line -eq 1 && -n "$missing_kwallet" && $has_gnome_line -eq 0 ]]; then
+          partial_backend="kwallet"
+        elif [[ $has_gnome_line -eq 1 && -n "$missing_gnome" && $has_kwallet_line -eq 0 ]]; then
+          partial_backend="gnome"
+        fi
+      fi
+      printf 'PAM keyring: FAIL (partial keyring PAM lines in %s — missing auth or session line; restore with: %s %s)\n' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" "$partial_backend")"
       issues=$((issues + 1))
       keyring_issue=1
     fi
@@ -2999,7 +3030,7 @@ run_doctor() {
         ;;
     esac
   elif [[ ! -e "$LOGIN_FILE" && -x "$(dirname -- "$LOGIN_FILE")" ]]; then
-    printf 'PAM login: FAIL (%s is missing — restore pambase or re-run %s --pam-only --de %s)\n' "$LOGIN_FILE" "$install_cmd" "${de:-<id>}"
+    printf 'PAM login: FAIL (%s is missing — restore pambase or re-run %s %s)\n' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" "$pam_expected")"
     issues=$((issues + 1))
   else
     printf 'PAM login: WARN (%s: unknown (needs root) — inspect PAM lines separately with sudo)\n' "$LOGIN_FILE"
