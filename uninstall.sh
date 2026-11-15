@@ -373,23 +373,97 @@ matches_lightxdm_template() {
 SHELL_HOOK_BEGIN="# >>> lightXDM TTY1 auto-start >>>"
 SHELL_HOOK_END="# <<< lightXDM TTY1 auto-start <<<"
 
+is_safe_rel_hook_path() {
+  local rel="$1" seg
+  local -a segs=()
+  [[ -n "$rel" && "$rel" != /* && "$rel" != */ && "$rel" != *//* ]] || return 1
+  IFS=/ read -r -a segs <<<"$rel"
+  for seg in "${segs[@]}"; do
+    [[ -n "$seg" && "$seg" != "." && "$seg" != ".." ]] || return 1
+  done
+  return 0
+}
+
+resolve_home_subpath() {
+  local home="$1" raw="$2" seg out="" base=""
+  local -a segs=()
+  [[ -n "$raw" && "$raw" == /* ]] || return 1
+  IFS=/ read -r -a segs <<<"$raw"
+  for seg in "${segs[@]}"; do
+    [[ -n "$seg" && "$seg" != "." ]] || continue
+    [[ "$seg" != ".." ]] || return 1
+    out+="/$seg"
+  done
+  [[ -n "$out" ]] || out="/"
+  if [[ "$out" == "$home" ]]; then
+    base=""
+  elif [[ "$home" == "/" ]]; then
+    base="${out#/}"
+  elif [[ "$out" == "$home/"* ]]; then
+    base="${out#"$home"/}"
+  else
+    return 1
+  fi
+  printf '%s\n' "$base"
+}
+
 cleanup_shell_hooks() {
   local dry_run="${1:-0}" home rc rel target marker_info bc ec bl el tmp
+  local hooks_file line env_sub env_rel existing
+  local -a hook_rels=(.zprofile .config/fish/config.fish)
   home="$(normalize_home_path "${TARGET_HOME:-}")"
   target_home_is_safe "$home" || return $?
 
-  for rel in .zprofile .config/fish/config.fish; do
+  _add_shell_hook_rel() {
+    local candidate="$1"
+    is_safe_rel_hook_path "$candidate" || return 0
+    for existing in "${hook_rels[@]}"; do
+      [[ "$existing" == "$candidate" ]] && return 0
+    done
+    hook_rels+=("$candidate")
+  }
+
+  rc=0
+  home_dir_is_safe ".local/state/lightxdm" || rc=$?
+  if [[ $rc -eq 0 ]]; then
+    [[ "$home" == "/" ]] && hooks_file="/.local/state/lightxdm/installed-shell-hooks" || hooks_file="$home/.local/state/lightxdm/installed-shell-hooks"
+    if [[ -L "$hooks_file" ]]; then
+      dry_warn_err "Warning: Refusing symlinked shell hook record $hooks_file."
+    elif [[ -f "$hooks_file" ]]; then
+      if [[ -r "$hooks_file" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+          _add_shell_hook_rel "$line"
+        done <"$hooks_file"
+      else
+        dry_warn_err "Warning: Cannot read $hooks_file; skipping custom shell hook lookup."
+        if [[ $dry_run -eq 1 && $EUID -ne 0 ]]; then
+          DRY_NEEDS_ROOT=true
+        fi
+      fi
+    fi
+  fi
+
+  if [[ -n "${ZDOTDIR:-}" ]] && env_sub="$(resolve_home_subpath "$home" "$ZDOTDIR")"; then
+    env_rel="${env_sub:+$env_sub/}.zprofile"
+    _add_shell_hook_rel "$env_rel"
+  fi
+  if [[ -n "${XDG_CONFIG_HOME:-}" ]] && env_sub="$(resolve_home_subpath "$home" "$XDG_CONFIG_HOME")"; then
+    env_rel="${env_sub:+$env_sub/}fish/config.fish"
+    _add_shell_hook_rel "$env_rel"
+  fi
+
+  for rel in "${hook_rels[@]}"; do
     rc=0
     home_parent_is_safe "$rel" || rc=$?
+    [[ "$home" == "/" ]] && target="/$rel" || target="$home/$rel"
     if [[ $rc -eq 2 ]]; then
-      dry_warn_err "Warning: Refusing symlinked directory along $home/$rel."
-      [[ $dry_run -eq 1 ]] && append_dry_shell_hook_json "$home/$rel" "refused-symlink-dir"
+      dry_warn_err "Warning: Refusing symlinked directory along $target."
+      [[ $dry_run -eq 1 ]] && append_dry_shell_hook_json "$target" "refused-symlink-dir"
       continue
     elif [[ $rc -ne 0 ]]; then
-      [[ $dry_run -eq 1 ]] && append_dry_shell_hook_json "$home/$rel" "absent"
+      [[ $dry_run -eq 1 ]] && append_dry_shell_hook_json "$target" "absent"
       continue
     fi
-    target="$home/$rel"
     if [[ -L "$target" ]]; then
       dry_warn_err "Warning: Refusing symlinked shell config $target."
       [[ $dry_run -eq 1 ]] && append_dry_shell_hook_json "$target" "refused-symlink-file"
@@ -601,9 +675,10 @@ cleanup_home_dotfiles() {
 }
 
 # The .bash_profile respawn guard keeps launch timestamps here, and install.sh the choices --update
-# reuses and what it wrote into each dotfile; copies under a custom XDG_STATE_HOME are not removed.
+# reuses, what it wrote into each dotfile, and custom shell hook paths; copies under a custom XDG_STATE_HOME are not removed.
 cleanup_home_state_dir() {
   local dry_run="${1:-0}" home state_dir state_file state_removed=0 rc=0
+  local -a state_files=(startx-attempts install-choices installed-dotfiles installed-shell-hooks)
   home="$(normalize_home_path "${TARGET_HOME:-}")"
   state_dir="$home/.local/state/lightxdm"
   DRY_STATE_DIR="$state_dir"
@@ -615,13 +690,13 @@ cleanup_home_state_dir() {
       dry_warn_err "Warning: Refusing symlinked directory along $home/.local/state/lightxdm."
       DRY_STATE_DIR_STATUS="refused-symlink-dir"
     elif [[ $dry_run -eq 1 ]]; then
-      for state_file in startx-attempts install-choices installed-dotfiles; do
+      for state_file in "${state_files[@]}"; do
         append_dry_state_file_json "$state_file" "$state_dir/$state_file" "absent"
       done
     fi
     return 0
   fi
-  for state_file in startx-attempts install-choices installed-dotfiles; do
+  for state_file in "${state_files[@]}"; do
     if [[ -f "$state_dir/$state_file" && ! -L "$state_dir/$state_file" ]]; then
       if [[ $dry_run -eq 1 ]]; then
         dry_action "Would remove $state_dir/$state_file."

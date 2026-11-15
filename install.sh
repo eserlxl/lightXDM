@@ -3180,16 +3180,125 @@ detect_enabled_dms() {
   fi
 }
 
-# Return 0 when login shell ($1: bash|zsh|fish) already has a readable TTY1 auto-start hook.
-shell_has_tty1_hook() {
-  local shell_kind="$1" target=""
-  [[ -n "${HOME:-}" ]] || return 1
+# Normalize an absolute directory path without resolving symlinks; return 1 if relative or containing '..'.
+_normalize_abs_dir_path() {
+  local raw="$1" seg out=""
+  local -a segs=()
+  [[ "$raw" == /* ]] || return 1
+  IFS=/ read -r -a segs <<<"$raw"
+  for seg in "${segs[@]}"; do
+    [[ -n "$seg" && "$seg" != "." ]] || continue
+    [[ "$seg" != ".." ]] || return 1
+    out+="/$seg"
+  done
+  [[ -n "$out" ]] || out="/"
+  printf '%s\n' "$out"
+}
+
+# Resolve HOME-relative path for an env override ($1=val, $2=var name, $3=default rel, $4=file rel, $5=strict 0|1).
+_resolve_env_shell_hook_relpath() {
+  local env_val="$1" env_name="$2" default_rel="$3" file_rel="$4" strict="${5:-0}"
+  local home norm_env base_rel
+  if [[ -z "$env_val" || "$env_val" != /* ]]; then
+    printf '%s\n' "$default_rel"
+    return 0
+  fi
+  if [[ -z "${HOME:-}" ]]; then
+    [[ $strict -eq 1 ]] && log "HOME is unset; cannot validate $env_name."
+    return 1
+  fi
+  if ! home="$(_normalize_abs_dir_path "$HOME")"; then
+    [[ $strict -eq 1 ]] && log "Refusing unsafe HOME path: $HOME"
+    return 1
+  fi
+  if ! norm_env="$(_normalize_abs_dir_path "$env_val")"; then
+    [[ $strict -eq 1 ]] && log "Refusing unsafe $env_name path ($env_val): '..' segments are not allowed."
+    return 1
+  fi
+  if [[ "$norm_env" == "$home" ]]; then
+    base_rel=""
+  elif [[ "$home" == "/" ]]; then
+    base_rel="${norm_env#/}"
+  elif [[ "$norm_env" == "$home/"* ]]; then
+    base_rel="${norm_env#"$home"/}"
+  else
+    [[ $strict -eq 1 ]] && log "Refusing $env_name outside HOME ($home): $env_val"
+    return 1
+  fi
+  if [[ -n "$base_rel" ]]; then
+    printf '%s/%s\n' "$base_rel" "$file_rel"
+  else
+    printf '%s\n' "$file_rel"
+  fi
+}
+
+shell_hook_relpath() {
+  local shell_kind="$1" strict="${2:-0}"
   case "$shell_kind" in
-    bash) target="$HOME/.bash_profile" ;;
-    zsh) target="$HOME/.zprofile" ;;
-    fish) target="$HOME/.config/fish/config.fish" ;;
+    bash) printf '.bash_profile\n' ;;
+    zsh) _resolve_env_shell_hook_relpath "${ZDOTDIR:-}" "ZDOTDIR" ".zprofile" ".zprofile" "$strict" ;;
+    fish) _resolve_env_shell_hook_relpath "${XDG_CONFIG_HOME:-}" "XDG_CONFIG_HOME" ".config/fish/config.fish" "fish/config.fish" "$strict" ;;
     *) return 1 ;;
   esac
+}
+
+# shellcheck disable=SC2088 # literal home-relative display paths for user instructions
+shell_hook_display_path() {
+  local shell_kind="$1" rel=""
+  if rel="$(shell_hook_relpath "$shell_kind" 0)"; then
+    printf '~/%s\n' "$rel"
+    return 0
+  fi
+  case "$shell_kind" in
+    bash) printf '~/.bash_profile\n' ;;
+    zsh) printf '~/.zprofile\n' ;;
+    fish) printf '~/.config/fish/config.fish\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+shell_hook_record_file() {
+  printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/lightxdm/installed-shell-hooks"
+}
+
+record_shell_hook() {
+  local rel="$1" file dir line seen=0 tmp="" LC_ALL=C
+  local -a kept=()
+  [[ "$rel" != ".zprofile" && "$rel" != ".config/fish/config.fish" ]] || return 0
+  file="$(shell_hook_record_file)"
+  dir="${file%/*}"
+  if [[ -L "$dir" || -L "${dir%/*}" ]]; then
+    log "WARNING: Refusing symlinked state directory for shell hook record: $dir"
+    return 0
+  fi
+  if [[ -f "$file" && ! -L "$file" && -r "$file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -n "$line" ]] || continue
+      [[ "$line" == "$rel" ]] && seen=1
+      kept+=("$line")
+    done <"$file"
+  fi
+  [[ $seen -eq 1 ]] && return 0
+  if ! { mkdir -p -- "$dir" && [[ ! -L "$dir" && ! -L "${dir%/*}" ]] &&
+    tmp="$(mktemp "$dir/.installed-shell-hooks.XXXXXX")" &&
+    { if [[ ${#kept[@]} -gt 0 ]]; then printf '%s\n' "${kept[@]}" "$rel"; else printf '%s\n' "$rel"; fi; } >"$tmp" &&
+    chmod 644 -- "$tmp" && mv -Tf -- "$tmp" "$file"; } 2>/dev/null; then
+    [[ -z "$tmp" ]] || rm -f -- "$tmp" 2>/dev/null || true
+    log "WARNING: Could not save custom shell hook path in $file."
+  fi
+}
+
+# Return 0 when login shell ($1: bash|zsh|fish) already has a readable TTY1 auto-start hook.
+shell_has_tty1_hook() {
+  local shell_kind="$1" rel="" home="" target=""
+  [[ -n "${HOME:-}" ]] || return 1
+  rel="$(shell_hook_relpath "$shell_kind" 0)" || return 1
+  home="${HOME%/}"
+  if [[ -n "$home" ]]; then
+    target="${home}/${rel}"
+  else
+    target="/${rel}"
+  fi
   [[ -f "$target" && -r "$target" ]] && grep -Eq '\.wayland-session|startx' "$target" 2>/dev/null
 }
 
@@ -3274,6 +3383,7 @@ run_preflight() {
   if [[ -n "$current_user" ]] && command -v getent >/dev/null 2>&1; then
     login_shell="$(getent passwd "$current_user" | cut -d: -f7 || true)"
   fi
+  local hook_kind="" hook_env_name="" hook_env_val="" hook_display=""
   case "$login_shell" in
     "")
       printf -v diag_msg 'non-bash users see: %s --shell-snippet <zsh|fish>' "$install_cmd"
@@ -3283,22 +3393,27 @@ run_preflight() {
       printf -v diag_msg '%s — reads ~/.bash_profile' "$login_shell"
       diag_record_check "$json_mode" "Login shell" "ok" "$diag_msg"
       ;;
-    *zsh)
-      if shell_has_tty1_hook zsh; then
-        printf -v diag_msg '%s — TTY1 hook present in ~/.zprofile' "$login_shell"
-        diag_record_check "$json_mode" "Login shell" "ok" "$diag_msg"
+    *zsh | *fish)
+      if [[ "$login_shell" == *zsh ]]; then
+        hook_kind="zsh"
+        hook_env_name="ZDOTDIR"
+        hook_env_val="${ZDOTDIR:-}"
       else
-        printf -v diag_msg '%s does not read ~/.bash_profile — run: %s --shell-snippet zsh >> ~/.zprofile' "$login_shell" "$install_cmd"
+        hook_kind="fish"
+        hook_env_name="XDG_CONFIG_HOME"
+        hook_env_val="${XDG_CONFIG_HOME:-}"
+      fi
+      if ! shell_hook_relpath "$hook_kind" 0 >/dev/null; then
+        printf -v diag_msg '%s uses %s (%s) outside HOME — move %s inside HOME to manage or detect automatically' "$login_shell" "$hook_env_name" "$hook_env_val" "$hook_env_name"
         diag_record_check "$json_mode" "Login shell" "warn" "$diag_msg"
         warnings=$((warnings + 1))
-      fi
-      ;;
-    *fish)
-      if shell_has_tty1_hook fish; then
-        printf -v diag_msg '%s — TTY1 hook present in ~/.config/fish/config.fish' "$login_shell"
+      elif shell_has_tty1_hook "$hook_kind"; then
+        hook_display="$(shell_hook_display_path "$hook_kind")"
+        printf -v diag_msg '%s — TTY1 hook present in %s' "$login_shell" "$hook_display"
         diag_record_check "$json_mode" "Login shell" "ok" "$diag_msg"
       else
-        printf -v diag_msg '%s does not read ~/.bash_profile — run: %s --shell-snippet fish >> ~/.config/fish/config.fish' "$login_shell" "$install_cmd"
+        hook_display="$(shell_hook_display_path "$hook_kind")"
+        printf -v diag_msg '%s does not read ~/.bash_profile — run: %s --shell-snippet %s >> %s' "$login_shell" "$install_cmd" "$hook_kind" "$hook_display"
         diag_record_check "$json_mode" "Login shell" "warn" "$diag_msg"
         warnings=$((warnings + 1))
       fi
@@ -3627,6 +3742,7 @@ run_doctor() {
     login_shell="$(getent passwd "$real_user" | cut -d: -f7 || true)"
   fi
   if [[ $installed_any -eq 1 ]]; then
+    local doc_hook_kind="" doc_env_name="" doc_env_val="" doc_hook_display=""
     case "$login_shell" in
       *bash)
         if shell_has_tty1_hook bash; then
@@ -3639,22 +3755,27 @@ run_doctor() {
           issues=$((issues + 1))
         fi
         ;;
-      *zsh)
-        if shell_has_tty1_hook zsh; then
-          printf -v diag_msg '%s via ~/.zprofile' "$login_shell"
-          diag_record_check "$json_mode" "Login shell auto-start" "ok" "$diag_msg"
+      *zsh | *fish)
+        if [[ "$login_shell" == *zsh ]]; then
+          doc_hook_kind="zsh"
+          doc_env_name="ZDOTDIR"
+          doc_env_val="${ZDOTDIR:-}"
         else
-          printf -v diag_msg 'zsh login shell lacks TTY1 auto-start block in ~/.zprofile — run: %s --shell-snippet zsh >> ~/.zprofile' "$install_cmd"
+          doc_hook_kind="fish"
+          doc_env_name="XDG_CONFIG_HOME"
+          doc_env_val="${XDG_CONFIG_HOME:-}"
+        fi
+        if ! shell_hook_relpath "$doc_hook_kind" 0 >/dev/null; then
+          printf -v diag_msg '%s uses %s (%s) outside HOME — move %s inside HOME to manage or detect automatically' "$doc_hook_kind" "$doc_env_name" "$doc_env_val" "$doc_env_name"
           diag_record_check "$json_mode" "Login shell auto-start" "fail" "$diag_msg"
           issues=$((issues + 1))
-        fi
-        ;;
-      *fish)
-        if shell_has_tty1_hook fish; then
-          printf -v diag_msg '%s via ~/.config/fish/config.fish' "$login_shell"
+        elif shell_has_tty1_hook "$doc_hook_kind"; then
+          doc_hook_display="$(shell_hook_display_path "$doc_hook_kind")"
+          printf -v diag_msg '%s via %s' "$login_shell" "$doc_hook_display"
           diag_record_check "$json_mode" "Login shell auto-start" "ok" "$diag_msg"
         else
-          printf -v diag_msg 'fish login shell lacks TTY1 auto-start block in ~/.config/fish/config.fish — run: %s --shell-snippet fish >> ~/.config/fish/config.fish' "$install_cmd"
+          doc_hook_display="$(shell_hook_display_path "$doc_hook_kind")"
+          printf -v diag_msg '%s login shell lacks TTY1 auto-start block in %s — run: %s --shell-snippet %s >> %s' "$doc_hook_kind" "$doc_hook_display" "$install_cmd" "$doc_hook_kind" "$doc_hook_display"
           diag_record_check "$json_mode" "Login shell auto-start" "fail" "$diag_msg"
           issues=$((issues + 1))
         fi
@@ -4196,18 +4317,19 @@ run_recover() {
   if [[ -n "$real_user" ]] && command -v getent >/dev/null 2>&1; then
     login_shell="$(getent passwd "$real_user" | cut -d: -f7 || true)"
   fi
+  local rec_hook_kind="" rec_hook_display=""
   case "$login_shell" in
-    *zsh)
-      if [[ "$resolved_setup_shell" != "zsh" ]] && ! shell_has_tty1_hook zsh; then
-        log "Note: Login shell is $login_shell without a TTY1 trigger in ~/.zprofile; run: $(script_cmd install.sh) --shell-snippet zsh >> ~/.zprofile"
-      fi
-      ;;
-    *fish)
-      if [[ "$resolved_setup_shell" != "fish" ]] && ! shell_has_tty1_hook fish; then
-        log "Note: Login shell is $login_shell without a TTY1 trigger in ~/.config/fish/config.fish; run: $(script_cmd install.sh) --shell-snippet fish >> ~/.config/fish/config.fish"
-      fi
-      ;;
+    *zsh) rec_hook_kind="zsh" ;;
+    *fish) rec_hook_kind="fish" ;;
   esac
+  if [[ -n "$rec_hook_kind" && "$resolved_setup_shell" != "$rec_hook_kind" ]]; then
+    if ! shell_hook_relpath "$rec_hook_kind" 0 >/dev/null; then
+      log "Note: Login shell is $login_shell with configured shell directory outside \$HOME; move it inside \$HOME or add the TTY1 snippet manually ($(script_cmd install.sh) --shell-snippet $rec_hook_kind)."
+    elif ! shell_has_tty1_hook "$rec_hook_kind"; then
+      rec_hook_display="$(shell_hook_display_path "$rec_hook_kind")"
+      log "Note: Login shell is $login_shell without a TTY1 trigger in $rec_hook_display; run: $(script_cmd install.sh) --shell-snippet $rec_hook_kind >> $rec_hook_display"
+    fi
+  fi
 
   if [[ $preview -eq 0 ]]; then
     log "Home recovery complete for $target_de. Run '$(script_cmd install.sh) --doctor' to verify PAM and systemd health."
@@ -4642,14 +4764,6 @@ resolve_setup_shell() {
   esac
 }
 
-shell_hook_relpath() {
-  case "$1" in
-    zsh) printf '.zprofile\n' ;;
-    fish) printf '.config/fish/config.fish\n' ;;
-    *) return 1 ;;
-  esac
-}
-
 check_shell_hook_path_safe() {
   local home="${HOME%/}" rel="$1" preview="${2:-0}" target parent="" seg segs=()
   if [[ -z "${HOME:-}" ]]; then
@@ -4666,17 +4780,19 @@ check_shell_hook_path_safe() {
     for seg in "${segs[@]}"; do
       [[ -n "$seg" ]] || continue
       parent+="/$seg"
-      if [[ -L "${home}${parent}" ]]; then
-        log "Refusing symlinked directory for shell hook: ${home}${parent}"
+      local check_dir
+      [[ "$home" == "/" ]] && check_dir="$parent" || check_dir="${home}${parent}"
+      if [[ -L "$check_dir" ]]; then
+        log "Refusing symlinked directory for shell hook: $check_dir"
         return 1
       fi
-      if [[ -e "${home}${parent}" && ! -d "${home}${parent}" ]]; then
-        log "Refusing non-directory path for shell hook: ${home}${parent}"
+      if [[ -e "$check_dir" && ! -d "$check_dir" ]]; then
+        log "Refusing non-directory path for shell hook: $check_dir"
         return 1
       fi
     done
   fi
-  target="${home}/${rel}"
+  [[ "$home" == "/" ]] && target="/${rel}" || target="${home}/${rel}"
   if [[ -L "$target" ]]; then
     log "Refusing symlinked shell configuration file: $target"
     return 1
@@ -4721,9 +4837,9 @@ validate_setup_shell() {
     return 0
   fi
   [[ -n "$home" ]] || home="/"
-  rel="$(shell_hook_relpath "$resolved")" || return 1
+  rel="$(shell_hook_relpath "$resolved" 1)" || return 1
   check_shell_hook_path_safe "$rel" "$preview" || return 1
-  target="${home}/${rel}"
+  [[ "$home" == "/" ]] && target="/${rel}" || target="${home}/${rel}"
   if [[ -f "$target" ]]; then
     local marker_rc=0
     check_shell_hook_markers "$target" || marker_rc=$?
@@ -4735,7 +4851,7 @@ validate_setup_shell() {
 }
 
 apply_shell_hook() {
-  local spec="$1" preview="${2:-0}" resolved rel target home="${HOME%/}"
+  local spec="$1" preview="${2:-0}" resolved rel target home="${HOME%/}" parent_dir
   resolved="$(resolve_setup_shell "$spec")" || return 1
   if [[ "$resolved" == "bash" ]]; then
     if [[ $preview -eq 1 ]]; then
@@ -4747,9 +4863,10 @@ apply_shell_hook() {
   fi
 
   [[ -n "$home" ]] || home="/"
-  rel="$(shell_hook_relpath "$resolved")" || return 1
+  rel="$(shell_hook_relpath "$resolved" 1)" || return 1
   check_shell_hook_path_safe "$rel" "$preview" || return 1
-  target="${home}/${rel}"
+  [[ "$home" == "/" ]] && target="/${rel}" || target="${home}/${rel}"
+  parent_dir="${target%/*}"
 
   local block_file tmp="" dest_tmp=""
   block_file="$(mktemp)" || return 1
@@ -4790,6 +4907,7 @@ apply_shell_hook() {
         if [[ $preview -eq 1 ]]; then
           printf 'Shell hook (%s): already up to date in %s\n' "$resolved" "$target"
         else
+          record_shell_hook "$rel"
           log "Shell hook ($resolved) is already up to date in $target."
         fi
         return 0
@@ -4799,7 +4917,7 @@ apply_shell_hook() {
         printf 'Shell hook (%s): would update managed block in %s\n' "$resolved" "$target"
         return 0
       fi
-      dest_tmp="$(mktemp "${target%/*}/.${target##*/}.lightxdm.XXXXXX")" || {
+      dest_tmp="$(mktemp "${parent_dir}/.${target##*/}.lightxdm.XXXXXX")" || {
         rm -f -- "$block_file" "$tmp"
         return 1
       }
@@ -4809,6 +4927,7 @@ apply_shell_hook() {
         return 1
       fi
       rm -f -- "$block_file" "$tmp"
+      record_shell_hook "$rel"
       log "Updated lightXDM shell hook ($resolved) in $target."
       return 0
     fi
@@ -4829,7 +4948,7 @@ apply_shell_hook() {
       return 0
     fi
 
-    dest_tmp="$(mktemp "${target%/*}/.${target##*/}.lightxdm.XXXXXX")" || {
+    dest_tmp="$(mktemp "${parent_dir}/.${target##*/}.lightxdm.XXXXXX")" || {
       rm -f -- "$block_file"
       return 1
     }
@@ -4847,6 +4966,7 @@ apply_shell_hook() {
       return 1
     fi
     rm -f -- "$block_file"
+    record_shell_hook "$rel"
     log "Installed lightXDM shell hook ($resolved) in $target."
     return 0
   fi
@@ -4857,11 +4977,13 @@ apply_shell_hook() {
     return 0
   fi
 
-  mkdir -p -- "${target%/*}" || {
-    rm -f -- "$block_file"
-    return 1
-  }
-  dest_tmp="$(mktemp "${target%/*}/.${target##*/}.lightxdm.XXXXXX")" || {
+  if [[ -n "$parent_dir" ]]; then
+    mkdir -p -- "$parent_dir" || {
+      rm -f -- "$block_file"
+      return 1
+    }
+  fi
+  dest_tmp="$(mktemp "${parent_dir}/.${target##*/}.lightxdm.XXXXXX")" || {
     rm -f -- "$block_file"
     return 1
   }
@@ -4871,6 +4993,7 @@ apply_shell_hook() {
     return 1
   fi
   rm -f -- "$block_file"
+  record_shell_hook "$rel"
   log "Installed lightXDM shell hook ($resolved) in $target."
   return 0
 }
@@ -4961,10 +5084,11 @@ Options:
   --json            with --status, --preflight, --doctor, --list-sessions, or --check-keyring, print the read-only result as structured JSON on stdout
   --list-sessions   scan installed X11 and Wayland session entries (system /usr/share and user ~/.local/share),
                     check executables, and suggest --init-template --from-session commands without sudo or changes (use alone, or with --json)
-  --shell-snippet <zsh|fish> print the non-bash TTY1 auto-start block for ~/.zprofile or ~/.config/fish/config.fish
-                    without sudo or changes (use alone)
-  --setup-shell <zsh|fish|auto> install or update the managed TTY1 auto-start hook in ~/.zprofile or
-                    ~/.config/fish/config.fish (standalone with optional --dry-run, or combined with install / --recover)
+  --shell-snippet <zsh|fish> print the non-bash TTY1 auto-start block for ~/.zprofile ($ZDOTDIR/.zprofile) or
+                    ~/.config/fish/config.fish ($XDG_CONFIG_HOME/fish/config.fish) without sudo or changes (use alone)
+  --setup-shell <zsh|fish|auto> install or update the managed TTY1 auto-start hook in ~/.zprofile ($ZDOTDIR/.zprofile) or
+                    ~/.config/fish/config.fish ($XDG_CONFIG_HOME/fish/config.fish), when inside $HOME
+                    (standalone with optional --dry-run, or combined with install / --recover)
   --preflight       check user/sudo, pacman/systemctl, getty@tty1.service, display managers, login shell,
                     and installed desktops without sudo or changes, then suggest the next command (use alone, or with --json)
   --doctor          verify post-install session launcher, shell hooks, PAM keyring/GNOME rules, .pacnew drift,
@@ -5717,30 +5841,35 @@ EOF
   local login_shell shell_profile="" shell_hint="docs/startx-autologin.md" shell_hook_configured=0
   login_shell="$(getent passwd "$real_user" | cut -d: -f7 || true)"
   if [[ -n "$login_shell" && "$login_shell" != *bash ]]; then
+    local main_hook_kind="" main_env_outside=0
     case "$login_shell" in
-      *zsh)
-        if [[ "$resolved_setup_shell" == "zsh" ]] || shell_has_tty1_hook zsh; then
-          shell_hook_configured=1
-        else
-          shell_profile=".zprofile"
-          shell_hint="run '$(script_cmd install.sh) --setup-shell zsh' or '$(script_cmd install.sh) --shell-snippet zsh' (see docs/startx-autologin.md)"
-        fi
-        ;;
-      *fish)
-        if [[ "$resolved_setup_shell" == "fish" ]] || shell_has_tty1_hook fish; then
-          shell_hook_configured=1
-        else
-          shell_profile=".config/fish/config.fish"
-          shell_hint="run '$(script_cmd install.sh) --setup-shell fish' or '$(script_cmd install.sh) --shell-snippet fish' (see docs/startx-autologin.md)"
-        fi
-        ;;
-      *)
-        shell_profile=".profile"
-        shell_hint="see docs/startx-autologin.md"
-        ;;
+      *zsh) main_hook_kind="zsh" ;;
+      *fish) main_hook_kind="fish" ;;
     esac
+    if [[ -n "$main_hook_kind" ]]; then
+      if [[ "$resolved_setup_shell" == "$main_hook_kind" ]]; then
+        shell_hook_configured=1
+      elif ! shell_hook_relpath "$main_hook_kind" 0 >/dev/null; then
+        main_env_outside=1
+        shell_profile="$(shell_hook_display_path "$main_hook_kind")"
+        shell_hint="configured shell directory is outside \$HOME; move it inside \$HOME or add the TTY1 snippet manually with '$(script_cmd install.sh) --shell-snippet $main_hook_kind'"
+      elif shell_has_tty1_hook "$main_hook_kind"; then
+        shell_hook_configured=1
+      else
+        shell_profile="$(shell_hook_display_path "$main_hook_kind")"
+        shell_hint="run '$(script_cmd install.sh) --setup-shell $main_hook_kind' or '$(script_cmd install.sh) --shell-snippet $main_hook_kind' (see docs/startx-autologin.md)"
+      fi
+    else
+      # shellcheck disable=SC2088 # literal home-relative display path for user instructions
+      shell_profile="~/.profile"
+      shell_hint="see docs/startx-autologin.md"
+    fi
     if [[ $shell_hook_configured -eq 0 ]]; then
-      log "WARNING: Login shell for $real_user is $login_shell, which does not read ~/.bash_profile. Add the TTY1 auto-start block to ~/$shell_profile ($shell_hint)."
+      if [[ $main_env_outside -eq 1 ]]; then
+        log "WARNING: Login shell for $real_user is $login_shell, which does not read ~/.bash_profile ($shell_hint)."
+      else
+        log "WARNING: Login shell for $real_user is $login_shell, which does not read ~/.bash_profile. Add the TTY1 auto-start block to $shell_profile ($shell_hint)."
+      fi
     fi
   fi
   if [[ $no_keyring -eq 1 ]]; then

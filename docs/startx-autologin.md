@@ -21,7 +21,7 @@ The installer writes `~/.bash_profile` by default. If your login shell is zsh or
 ```sh
 bash install.sh --setup-shell auto   # or pass zsh / fish explicitly (supports --dry-run and --recover)
 ```
-or add the equivalent block yourself (`--setup-shell` manages `# >>> lightXDM TTY1 auto-start >>>` .. `# <<< lightXDM TTY1 auto-start <<<` markers safely and `uninstall.sh` cleans up only that fenced block). These snippets honor the `~/.config/lightxdm/no-autostart` marker (see Recovery below), but only the Bash profile pauses auto-start on its own after repeated crashes and honors `~/.config/lightxdm/session-journal`.
+or add the equivalent block yourself (`--setup-shell` honors in-home `$ZDOTDIR/.zprofile` and `$XDG_CONFIG_HOME/fish/config.fish` automatically, manages `# >>> lightXDM TTY1 auto-start >>>` .. `# <<< lightXDM TTY1 auto-start <<<` markers safely, and records custom hook paths in `${XDG_STATE_HOME:-~/.local/state}/lightxdm/installed-shell-hooks` so `uninstall.sh` cleans up only that fenced block). These snippets honor the `~/.config/lightxdm/no-autostart` marker (see Recovery below), but only the Bash profile pauses auto-start on its own after repeated crashes and honors `~/.config/lightxdm/session-journal`.
 
 You can also print either snippet directly to stdout without opening this file (for example under a package install with `lightxdm-install`):
 ```sh

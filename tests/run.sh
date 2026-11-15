@@ -91,7 +91,7 @@ printf -v CMD_AUTOLOGIN 'bash %q' "$REPO_ROOT/enable-autologin.sh"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-unset SUDO_USER LIGHTXDM_STRICT_TESTS XDG_STATE_HOME
+unset SUDO_USER LIGHTXDM_STRICT_TESTS XDG_STATE_HOME ZDOTDIR XDG_CONFIG_HOME
 export HOME="$TMP_DIR/home"
 mkdir -p "$HOME"
 
@@ -13284,7 +13284,7 @@ assert hooks[f"{home}/.config/fish/config.fish"] == "absent", hooks
 assert d["state_files"]["status"] == "remove", d
 assert d["state_files"]["remove_dir_if_empty"] is True, d
 sfiles = {x["name"]: x["status"] for x in d["state_files"]["files"]}
-assert sfiles["install-choices"] == "remove" and sfiles["startx-attempts"] == "absent", sfiles
+assert sfiles["install-choices"] == "remove" and sfiles["startx-attempts"] == "absent" and sfiles["installed-shell-hooks"] == "absent", sfiles
 assert any("missing.service" in w for w in d["warnings"]), d["warnings"]
 assert any(".zprofile" in a for a in d["actions"]), d["actions"]
 ' "$un_js_out" "$un_js_dir/home" "$un_js_dir/state" "$un_js_dir/getty.d" "$un_js_dir/login"; then
@@ -16331,6 +16331,180 @@ if [[ $ss_ok -eq 1 ]]; then
   pass "install.sh --setup-shell and uninstall.sh manage and clean non-bash TTY1 hooks safely and idempotently"
 else
   fail "install.sh --setup-shell / uninstall hook cleanup:$ss_report"
+fi
+
+# --- Custom $ZDOTDIR and $XDG_CONFIG_HOME shell hook integration ---
+xdg_ss_dir="$TMP_DIR/xdg_shell_hook_test"
+xdg_ss_home="$xdg_ss_dir/home"
+xdg_ss_etc="$xdg_ss_dir/etc"
+xdg_ss_ok=1
+xdg_ss_report=""
+mkdir -p "$xdg_ss_home/.config/zsh" "$xdg_ss_home/.xdg-cfg/fish" "$xdg_ss_etc/pam.d" "$xdg_ss_etc/lightxdm" "$xdg_ss_etc/systemd/system" "$xdg_ss_etc/getty@tty1.service.d"
+printf '#%%PAM-1.0\nauth include system-local-login\n' >"$xdg_ss_etc/pam.d/login"
+: >"$setup_shell_sudo_log"
+
+run_xdg_ss_cmd() {
+  env \
+    -u XDG_STATE_HOME \
+    HOME="$xdg_ss_home" \
+    LOGIN_FILE="$xdg_ss_etc/pam.d/login" \
+    GNOME_SESSION_TYPE_DEST="$xdg_ss_etc/lightxdm/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$xdg_ss_etc/lightxdm/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$xdg_ss_etc/lightxdm/pam-login-base" \
+    DM_STATE_FILE="$xdg_ss_etc/lightxdm/disabled-display-managers" \
+    DISPLAY_MANAGER_LINK="$xdg_ss_etc/systemd/system/display-manager.service" \
+    AUTOLOGIN_DROPIN_DIR="$xdg_ss_etc/getty@tty1.service.d" \
+    SETUP_SHELL_SUDO_LOG="$setup_shell_sudo_log" \
+    PATH="$setup_shell_bin:/usr/bin:/bin" \
+    "$@"
+}
+
+# 1. Custom ZDOTDIR inside HOME: preflight missing -> --setup-shell zsh -> preflight ok -> doctor ok
+pf_zdot_miss="$(FAKE_SHELL=/usr/bin/zsh ZDOTDIR="$xdg_ss_home/.config/zsh/" run_xdg_ss_cmd bash "$REPO_ROOT/install.sh" --preflight 2>&1)" || true
+if [[ "$pf_zdot_miss" != *"--shell-snippet zsh >> ~/.config/zsh/.zprofile"* ]]; then
+  xdg_ss_ok=0
+  xdg_ss_report+=" zdotdir-preflight-miss=[$pf_zdot_miss];"
+fi
+
+printf '# keep zsh user line\n' >"$xdg_ss_home/.config/zsh/.zprofile"
+ss_zdot_dry="$(ZDOTDIR="$xdg_ss_home/.config/zsh/" run_xdg_ss_cmd bash "$REPO_ROOT/install.sh" --setup-shell zsh --dry-run 2>&1)" || ss_rc=$?
+if [[ "$ss_zdot_dry" != *"would append managed block to $xdg_ss_home/.config/zsh/.zprofile"* ]] ||
+  grep -Fq "lightXDM TTY1 auto-start" "$xdg_ss_home/.config/zsh/.zprofile"; then
+  xdg_ss_ok=0
+  xdg_ss_report+=" zdotdir-dry=[$ss_zdot_dry];"
+fi
+
+ss_zdot_rc=0
+ss_zdot_out="$(ZDOTDIR="$xdg_ss_home/.config/zsh/" run_xdg_ss_cmd bash "$REPO_ROOT/install.sh" --setup-shell zsh 2>&1)" || ss_zdot_rc=$?
+# Run again to verify idempotency and deduplicated installed-shell-hooks entry
+ZDOTDIR="$xdg_ss_home/.config/zsh" run_xdg_ss_cmd bash "$REPO_ROOT/install.sh" --setup-shell zsh >/dev/null 2>&1 || ss_zdot_rc=$?
+hooks_rec="$xdg_ss_home/.local/state/lightxdm/installed-shell-hooks"
+if [[ $ss_zdot_rc -ne 0 || ! -f "$hooks_rec" ]] ||
+  ! grep -Fxq "# >>> lightXDM TTY1 auto-start >>>" "$xdg_ss_home/.config/zsh/.zprofile" ||
+  [[ "$(grep -Fxc '.config/zsh/.zprofile' "$hooks_rec" 2>/dev/null || echo 0)" != "1" ]]; then
+  xdg_ss_ok=0
+  xdg_ss_report+=" zdotdir-apply rc=$ss_zdot_rc out=[$ss_zdot_out];"
+fi
+
+pf_zdot_ok_rc=0
+pf_zdot_ok="$(FAKE_SHELL=/usr/bin/zsh ZDOTDIR="$xdg_ss_home/.config/zsh" run_xdg_ss_cmd bash "$REPO_ROOT/install.sh" --preflight 2>&1)" || pf_zdot_ok_rc=$?
+if [[ $pf_zdot_ok_rc -ne 0 || "$pf_zdot_ok" != *"TTY1 hook present in ~/.config/zsh/.zprofile"* ]]; then
+  xdg_ss_ok=0
+  xdg_ss_report+=" zdotdir-preflight-ok rc=$pf_zdot_ok_rc out=[$pf_zdot_ok];"
+fi
+
+# 2. Custom XDG_CONFIG_HOME inside HOME: setup-shell fish, preflight + doctor report ~/.xdg-cfg/fish/config.fish
+ss_fish_rc=0
+ss_fish_out="$(XDG_CONFIG_HOME="$xdg_ss_home/.xdg-cfg" run_xdg_ss_cmd bash "$REPO_ROOT/install.sh" --setup-shell fish 2>&1)" || ss_fish_rc=$?
+if [[ $ss_fish_rc -ne 0 || ! -f "$xdg_ss_home/.xdg-cfg/fish/config.fish" ]] ||
+  ! grep -Fxq "# >>> lightXDM TTY1 auto-start >>>" "$xdg_ss_home/.xdg-cfg/fish/config.fish" ||
+  ! grep -Fxq ".xdg-cfg/fish/config.fish" "$hooks_rec"; then
+  xdg_ss_ok=0
+  xdg_ss_report+=" xdg-fish rc=$ss_fish_rc out=[$ss_fish_out];"
+fi
+
+# Check --doctor with installed dotfiles and custom XDG_CONFIG_HOME
+FAKE_SHELL=/usr/bin/fish XDG_CONFIG_HOME="$xdg_ss_home/.xdg-cfg" run_xdg_ss_cmd bash "$REPO_ROOT/install.sh" --de i3 --no-packages >/dev/null 2>&1 || true
+doc_xdg_rc=0
+doc_xdg_out="$(FAKE_SHELL=/usr/bin/fish XDG_CONFIG_HOME="$xdg_ss_home/.xdg-cfg" run_xdg_ss_cmd bash "$REPO_ROOT/install.sh" --doctor 2>&1)" || doc_xdg_rc=$?
+if [[ "$doc_xdg_out" != *"/usr/bin/fish via ~/.xdg-cfg/fish/config.fish"* ]]; then
+  xdg_ss_ok=0
+  xdg_ss_report+=" xdg-doctor rc=$doc_xdg_rc out=[$doc_xdg_out];"
+fi
+
+# 3. Relative overrides fall back to default; out-of-home, '..' traversal, and symlinked overrides refuse
+ss_rel_rc=0
+ZDOTDIR="relative/zsh" run_xdg_ss_cmd bash "$REPO_ROOT/install.sh" --setup-shell zsh --dry-run >/dev/null 2>&1 || ss_rel_rc=$?
+if [[ $ss_rel_rc -ne 0 || -e "$xdg_ss_home/relative" ]]; then
+  xdg_ss_ok=0
+  xdg_ss_report+=" relative-zdotdir rc=$ss_rel_rc;"
+fi
+
+for bad_override in "ZDOTDIR=$xdg_ss_dir/outside" "ZDOTDIR=$xdg_ss_home/.config/../outside" "XDG_CONFIG_HOME=$xdg_ss_dir/outside_cfg" "XDG_CONFIG_HOME=$xdg_ss_home/.config/../outside_cfg"; do
+  bad_var="${bad_override%%=*}"
+  bad_val="${bad_override#*=}"
+  bad_shell="zsh"
+  [[ "$bad_var" == "XDG_CONFIG_HOME" ]] && bad_shell="fish"
+  bad_rc=0
+  bad_out="$(run_xdg_ss_cmd env "$bad_var=$bad_val" bash "$REPO_ROOT/install.sh" --setup-shell "$bad_shell" 2>&1)" || bad_rc=$?
+  if [[ $bad_rc -eq 0 || -e "$bad_val" ]] ||
+    [[ "$bad_out" != *"Refusing $bad_var outside HOME"* && "$bad_out" != *"'..' segments"* ]]; then
+    xdg_ss_ok=0
+    xdg_ss_report+=" bad-$bad_var($bad_val) rc=$bad_rc out=[$bad_out];"
+  fi
+done
+
+ln -s "$xdg_ss_dir/outside_sym" "$xdg_ss_home/.symzsh"
+sym_zdot_rc=0
+sym_zdot_out="$(ZDOTDIR="$xdg_ss_home/.symzsh" run_xdg_ss_cmd bash "$REPO_ROOT/install.sh" --setup-shell zsh 2>&1)" || sym_zdot_rc=$?
+if [[ $sym_zdot_rc -eq 0 || -e "$xdg_ss_dir/outside_sym" || "$sym_zdot_out" != *"Refusing symlinked directory"* ]]; then
+  xdg_ss_ok=0
+  xdg_ss_report+=" sym-zdotdir rc=$sym_zdot_rc out=[$sym_zdot_out];"
+fi
+
+# 4. uninstall.sh --dry-run --json and live cleanup honor recorded hooks EVEN with ZDOTDIR/XDG_CONFIG_HOME unset,
+# reject malicious entries in installed-shell-hooks, and remove installed-shell-hooks cleanly
+printf '/etc/passwd\n../escape\n' >>"$hooks_rec"
+printf 'sentinel\n' >"$xdg_ss_dir/escape"
+un_xdg_dry_rc=0
+un_xdg_dry_out="$(env -u ZDOTDIR -u XDG_CONFIG_HOME \
+  TARGET_HOME="$xdg_ss_home" \
+  LOGIN_FILE="$xdg_ss_etc/pam.d/login" \
+  GNOME_SESSION_TYPE_DEST="$xdg_ss_etc/lightxdm/gnome-session-type.conf" \
+  PAM_KEYRING_STATE="$xdg_ss_etc/lightxdm/pam-keyring" \
+  PAM_LOGIN_BASE_STATE="$xdg_ss_etc/lightxdm/pam-login-base" \
+  DM_STATE_FILE="$xdg_ss_etc/lightxdm/disabled-display-managers" \
+  OVERRIDE_DIR="$xdg_ss_etc/getty@tty1.service.d" \
+  POLKIT_RULE="$xdg_ss_etc/49-nopasswd.rules" \
+  bash "$REPO_ROOT/uninstall.sh" --dry-run --json 2>"$xdg_ss_dir/dry.err")" || un_xdg_dry_rc=$?
+if [[ $un_xdg_dry_rc -ne 0 || -s "$xdg_ss_dir/dry.err" ]] ||
+  ! python3 - "$un_xdg_dry_out" "$xdg_ss_home" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1])
+home = sys.argv[2]
+hooks = {x["path"]: x["status"] for x in d["shell_hooks"]}
+assert hooks.get(f"{home}/.config/zsh/.zprofile") == "remove", hooks
+assert hooks.get(f"{home}/.xdg-cfg/fish/config.fish") == "remove", hooks
+assert all("passwd" not in p and "escape" not in p for p in hooks), hooks
+sfiles = {x["name"]: x["status"] for x in d["state_files"]["files"]}
+assert sfiles.get("installed-shell-hooks") == "remove", sfiles
+PY
+then
+  xdg_ss_ok=0
+  xdg_ss_report+=" un-dry-json rc=$un_xdg_dry_rc err=$(cat "$xdg_ss_dir/dry.err") out=[$un_xdg_dry_out];"
+fi
+
+un_xdg_rc=0
+if [[ $can_unshare -eq 1 ]]; then
+  un_xdg_out="$(env -u ZDOTDIR -u XDG_CONFIG_HOME \
+    TARGET_HOME="$xdg_ss_home" \
+    LOGIN_FILE="$xdg_ss_etc/pam.d/login" \
+    GNOME_SESSION_TYPE_DEST="$xdg_ss_etc/lightxdm/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$xdg_ss_etc/lightxdm/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$xdg_ss_etc/lightxdm/pam-login-base" \
+    DM_STATE_FILE="$xdg_ss_etc/lightxdm/disabled-display-managers" \
+    OVERRIDE_DIR="$xdg_ss_etc/getty@tty1.service.d" \
+    POLKIT_RULE="$xdg_ss_etc/49-nopasswd.rules" \
+    PATH="$setup_shell_bin:/usr/bin:/bin" \
+    unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)" || un_xdg_rc=$?
+else
+  # shellcheck disable=SC2016 # $1 is intentionally evaluated by the inner bash -c process
+  un_xdg_out="$(env -u ZDOTDIR -u XDG_CONFIG_HOME \
+    TARGET_HOME="$xdg_ss_home" \
+    bash -c 'source "$1/uninstall.sh" && cleanup_home_dotfiles && cleanup_home_state_dir' _ "$REPO_ROOT" 2>&1)" || un_xdg_rc=$?
+fi
+if [[ $un_xdg_rc -ne 0 || -e "$xdg_ss_home/.xdg-cfg/fish/config.fish" || ! -f "$xdg_ss_home/.config/zsh/.zprofile" ||
+  -e "$hooks_rec" || ! -f "$xdg_ss_dir/escape" ]] ||
+  grep -Fq "lightXDM TTY1 auto-start" "$xdg_ss_home/.config/zsh/.zprofile" ||
+  ! grep -Fxq "# keep zsh user line" "$xdg_ss_home/.config/zsh/.zprofile"; then
+  xdg_ss_ok=0
+  xdg_ss_report+=" un-live rc=$un_xdg_rc out=[$un_xdg_out];"
+fi
+
+if [[ $xdg_ss_ok -eq 1 ]]; then
+  pass "install.sh and uninstall.sh honor in-home \$ZDOTDIR and \$XDG_CONFIG_HOME shell hooks safely"
+else
+  fail "custom ZDOTDIR/XDG_CONFIG_HOME shell hook integration:$xdg_ss_report"
 fi
 
 # --- install.sh --install-session ---
