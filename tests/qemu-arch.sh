@@ -10,12 +10,12 @@ JOBS="${LIGHTXDM_VM_JOBS:-2}"
 
 usage() {
   cat <<EOF
-Usage: bash $0 [-h|--help] [--strict] [--rebuild-image] [desktop | <from>:<to> | <desktop>+autologin | <desktop>+lightdm | <desktop>+relogin | <desktop>+recovery | <desktop>+package ...]   (default: plasma xfce)
+Usage: bash $0 [-h|--help] [--strict] [--rebuild-image] [desktop | <from>:<to> | (<desktop>|<from>:<to>)+(autologin|lightdm|relogin|recovery|package) ...]   (default: plasma xfce)
 
 Builds an Arch Linux VM image in Docker (once per package set), then for each desktop boots a
 VM, runs install.sh --de <desktop> as a test user, reboots, types the password at the TTY1
 login and checks that the desktop session starts and PAM unlocks the keyring, twice.
-An argument <from>:<to> installs <from>, then <to> in the same VM, and checks <to>.
+An argument <from>:<to> (optionally +<mode>) installs <from>, then <to> in the same VM, and checks <to>.
 An argument <desktop>+autologin installs with --no-keyring --autologin and boots without typing a password.
 An argument <desktop>+lightdm checks that install.sh disables LightDM and uninstall.sh restores it after both logins.
 An argument <desktop>+relogin logs out and back in on TTY1 in the same boot instead of rebooting for the second login.
@@ -49,6 +49,14 @@ is_mode() {
   esac
 }
 
+is_target_spec() {
+  case "$1" in
+    *:*:*) return 1 ;;
+    *:*) is_desktop "${1%%:*}" && is_desktop "${1#*:}" ;;
+    *) is_desktop "$1" ;;
+  esac
+}
+
 strict=0
 rebuild_image=0
 if [[ "${LIGHTXDM_STRICT_TESTS:-0}" == "1" ]]; then
@@ -71,23 +79,15 @@ for arg in "$@"; do
   done
   case "$arg" in
     -h | --help) usage; exit 0 ;;
-    *:*:*) echo "Unknown desktop: $arg" >&2; usage >&2; exit 1 ;;
     *+*)
-      if is_desktop "${arg%%+*}" && is_mode "${arg#*+}"; then
-        desktops+=("$arg")
-      else
-        echo "Unknown desktop: $arg" >&2; usage >&2; exit 1
-      fi
-      ;;
-    *:*)
-      if is_desktop "${arg%%:*}" && is_desktop "${arg#*:}"; then
+      if is_target_spec "${arg%%+*}" && is_mode "${arg#*+}"; then
         desktops+=("$arg")
       else
         echo "Unknown desktop: $arg" >&2; usage >&2; exit 1
       fi
       ;;
     *)
-      if is_desktop "$arg"; then
+      if is_target_spec "$arg"; then
         desktops+=("$arg")
       else
         echo "Unknown desktop: $arg" >&2; usage >&2; exit 1

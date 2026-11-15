@@ -9913,6 +9913,48 @@ else
   fail "Integration strict mode (default=$strict_default_status: $strict_default_output; flag=$strict_flag_status: $strict_flag_output; env=$strict_env_status: $strict_env_output; help=$strict_help_status, no Docker=$strict_help_no_docker: $strict_help_output; unknown=$strict_unknown_status, no Docker=$strict_unknown_no_docker: $strict_unknown_output; qemu=$strict_qemu_status: $strict_qemu_output)"
 fi
 
+qemu_spec_ok=1
+qemu_spec_report=""
+for valid_spec in xfce:plasma+package xfce:plasma+lightdm xfce:plasma+autologin xfce:plasma+relogin xfce:plasma+recovery; do
+  set +e
+  spec_out="$("${strict_int_env[@]}" bash "$REPO_ROOT/tests/qemu-arch.sh" "$valid_spec" 2>&1)"
+  spec_rc=$?
+  spec_strict_out="$("${strict_int_env[@]}" bash "$REPO_ROOT/tests/qemu-arch.sh" --strict "$valid_spec" 2>&1)"
+  spec_strict_rc=$?
+  set -e
+  if [[ $spec_rc -ne 0 || "$spec_out" != *"SKIP: "* || "$spec_out" == *"Unknown desktop"* ||
+    $spec_strict_rc -ne 1 || "$spec_strict_out" != *"SKIP: "* || "$spec_strict_out" == *"Unknown desktop"* ]]; then
+    qemu_spec_ok=0
+    qemu_spec_report+=" [valid $valid_spec rc=$spec_rc/$spec_strict_rc out=$spec_out | $spec_strict_out]"
+  fi
+done
+for bad_spec in "xfce:plasma+bad" "xfce:plasma+" "xfce:+package" ":plasma+package" "xfce:plasma:i3+package" "xfce+autologin+package"; do
+  rm -f "$strict_int_dir/docker.log"
+  set +e
+  bad_spec_out="$("${strict_int_env[@]}" bash "$REPO_ROOT/tests/qemu-arch.sh" "$bad_spec" 2>&1)"
+  bad_spec_rc=$?
+  set -e
+  if [[ $bad_spec_rc -ne 1 || "$bad_spec_out" != *"Unknown desktop: $bad_spec"* ||
+    "$bad_spec_out" == *"SKIP:"* || -e "$strict_int_dir/docker.log" ]]; then
+    qemu_spec_ok=0
+    qemu_spec_report+=" [invalid $bad_spec rc=$bad_spec_rc out=$bad_spec_out]"
+  fi
+done
+rm -f "$strict_int_dir/docker.log"
+set +e
+dup_combo_out="$("${strict_int_env[@]}" bash "$REPO_ROOT/tests/qemu-arch.sh" xfce:plasma+package xfce:plasma+package 2>&1)"
+dup_combo_rc=$?
+set -e
+if [[ $dup_combo_rc -ne 1 || "$dup_combo_out" != *"Duplicate desktop: xfce:plasma+package"* || -e "$strict_int_dir/docker.log" ]]; then
+  qemu_spec_ok=0
+  qemu_spec_report+=" [dup xfce:plasma+package rc=$dup_combo_rc out=$dup_combo_out]"
+fi
+if [[ $qemu_spec_ok -eq 1 ]]; then
+  pass "qemu-arch.sh validates <from>:<to>+<mode> specs and rejects malformed combined specs cleanly"
+else
+  fail "qemu-arch.sh <from>:<to>+<mode> validation:$qemu_spec_report"
+fi
+
 # The package launchers run the right script with the right option; LIGHTXDM_DIR points them here.
 launcher_report=""
 for launcher_case in "lightxdm-install|--help|0|Usage: bash $REPO_ROOT/install.sh " \

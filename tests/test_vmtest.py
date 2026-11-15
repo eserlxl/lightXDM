@@ -983,6 +983,131 @@ class MainModeOrchestrationTests(unittest.TestCase):
             lines = f.read().splitlines()
         self.assertTrue(lines[-1].startswith("DONE pass=") and lines[-1].endswith(" fail=0"), lines)
 
+    def test_main_upgrade_package_mode(self):
+        pkgcache = os.path.join(self.vm_dir, "pkgcache")
+        os.makedirs(pkgcache, exist_ok=True)
+        with open(os.path.join(self.vm_dir, "lightxdm.pkg.tar.zst"), "wb") as f:
+            f.write(b"fake-lightxdm-pkg")
+        with open(os.path.join(pkgcache, "util-linux-2.40.2-1-x86_64.pkg.tar.zst"), "wb") as f:
+            f.write(b"fake-util-linux-pkg")
+
+        fake_proc = mock.MagicMock(pid=5004)
+        cmds_abort = []
+
+        def abort_pkg_ssh(cmd, timeout=600, stdin=None):
+            cmds_abort.append(cmd)
+            if cmd == "pacman -U --noconfirm /root/lightxdm.pkg.tar.zst 2>&1":
+                return (0, "==> After install, run: lightxdm-install\n==> After upgrade, lightxdm-update runs: lightxdm-update\n", "")
+            if "su - tester -c 'lightxdm-install --de xfce'" in cmd:
+                return (1, "xfce pkg install failed", "")
+            return (0, "", "")
+
+        with mock.patch("vmtest.boot", return_value=fake_proc), \
+                mock.patch("vmtest.Qmp"), \
+                mock.patch("vmtest.wait_ssh", return_value=True), \
+                mock.patch("vmtest.ssh", side_effect=abort_pkg_ssh), \
+                mock.patch.dict(os.environ, {"LIGHTXDM_VM_KEEP": "0"}):
+            rc_abort = vmtest.main(["xfce:plasma+package", self.repo_dir, self.vm_dir, "2231"])
+
+        self.assertEqual(rc_abort, 0)
+        self.assertFalse(any("~/lightXDM" in c or "/lightXDM/" in c or "install.sh" in c for c in cmds_abort))
+        self.assertFalse(any("lightxdm-install --de plasma" in c for c in cmds_abort))
+        self.assertIn(
+            "FAIL: xfce:plasma+package: lightxdm-install --de xfce exits 0 (xfce pkg install failed)",
+            vmtest.results,
+        )
+
+        cmds_ok = []
+        state = {
+            "install_count": 0,
+            "update_count": 0,
+            "keyring_lines": "2",
+        }
+
+        def ok_pkg_ssh(cmd, timeout=600, stdin=None):
+            cmds_ok.append(cmd)
+            if cmd == "pacman -U --noconfirm /root/lightxdm.pkg.tar.zst 2>&1":
+                state["install_count"] += 1
+                if state["install_count"] == 1:
+                    return (0, "==> After install, run: lightxdm-install\n", "")
+                return (0, "==> After upgrade, lightxdm-update runs: lightxdm-update\n", "")
+            if cmd == "stat -c %a /home/tester/.wayland-session":
+                return (0, "755\n", "")
+            if cmd == "pacman -Q util-linux | cut -d' ' -f2":
+                return (0, "2.40.2-1\n", "")
+            if cmd == "pacman -U --noconfirm /root/util-linux.pkg.tar.zst 2>&1":
+                return (0, ":: Running post-transaction hooks...\n(1/1) Note (lightXDM)...\n", "")
+            if "cp /etc/pam.d/login /etc/pam.d/login.pacnew" in cmd:
+                return (0, "login.pacnew is waiting; run lightxdm-update\n", "")
+            if "journalctl -b -q -t lightxdm -o cat | wc -l" in cmd:
+                return (0, "1\n", "")
+            if "journalctl -b -q -t lightxdm -o cat" in cmd:
+                return (0, "", "")
+            if "sha256sum < /home/tester/.wayland-session" in cmd:
+                return (0, "deadbeef  -\n", "")
+            if "su - tester -c 'lightxdm-update'" in cmd:
+                state["update_count"] += 1
+                if state["update_count"] == 1:
+                    return (
+                        0,
+                        "~/.wayland-session has your own edits, so --update leaves it alone\n"
+                        "Run sudo systemctl disable lxdm.service to disable it.\n",
+                        "",
+                    )
+                if state["update_count"] in (2, 4):
+                    return (
+                        0,
+                        "/etc/pam.d/login, which has your own edits; pass --pam-only --de plasma,\n",
+                        "",
+                    )
+                state["keyring_lines"] = "2"
+                return (
+                    0,
+                    "Updating with the saved choices: --de plasma\n"
+                    "lightXDM's keyring lines are missing from /etc/pam.d/login\n",
+                    "",
+                )
+            if cmd == "systemctl is-enabled lxdm.service":
+                return (0, "enabled\n", "")
+            if "sed -i -E" in cmd:
+                state["keyring_lines"] = "0"
+                return (0, "", "")
+            if "grep -cE" in cmd and "/etc/pam.d/login" in cmd:
+                return (0, f"{state['keyring_lines']}\n", "")
+            if "grep -c 'lightXDM: GNOME on TTY1'" in cmd:
+                return (0, "0\n", "")
+            if "lightxdm-install --pam-only --de plasma" in cmd:
+                state["keyring_lines"] = "2"
+                return (0, "", "")
+            if "sudo lightxdm-uninstall" in cmd:
+                state["keyring_lines"] = "0"
+                return (0, "", "")
+            if cmd == "pacman -R --noconfirm lightxdm 2>&1":
+                return (0, "To remove lightXDM completely, run sudo lightxdm-uninstall first.\n", "")
+            return (0, "", "")
+
+        with mock.patch("vmtest.boot", return_value=fake_proc), \
+                mock.patch("vmtest.Qmp"), \
+                mock.patch("vmtest.wait_ssh", return_value=True), \
+                mock.patch("vmtest.ssh", side_effect=ok_pkg_ssh), \
+                mock.patch("vmtest.reboot_and_login", return_value=True), \
+                mock.patch("vmtest.session_checks"), \
+                mock.patch("vmtest.launcher_stdout", side_effect=["/dev/tty1", "socket:[789]"]), \
+                mock.patch.dict(os.environ, {"LIGHTXDM_VM_KEEP": "0"}):
+            rc_ok = vmtest.main(["xfce:plasma+package", self.repo_dir, self.vm_dir, "2231"])
+
+        self.assertEqual(rc_ok, 0)
+        self.assertFalse(any("~/lightXDM" in c or "/lightXDM/" in c or "install.sh" in c for c in cmds_ok))
+        self.assertIn("su - tester -c 'lightxdm-install --de xfce' 2>&1", cmds_ok)
+        self.assertIn("su - tester -c 'lightxdm-install --de plasma' 2>&1", cmds_ok)
+        self.assertIn("PASS: xfce:plasma+package: lightxdm-install --de xfce exits 0", vmtest.results)
+        self.assertIn("PASS: xfce:plasma+package: lightxdm-install --de plasma exits 0", vmtest.results)
+        self.assertTrue(os.path.isfile(os.path.join(vmtest.RUN, "install-xfce.log")))
+        self.assertTrue(os.path.isfile(os.path.join(vmtest.RUN, "install.log")))
+        with open(vmtest.RESULT, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        self.assertTrue(lines[-1].startswith("DONE pass=") and lines[-1].endswith(" fail=0"), lines)
+
 
 if __name__ == "__main__":
     unittest.main()

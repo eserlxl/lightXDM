@@ -563,18 +563,16 @@ def main(argv=None):
         if MODE == "lightdm":
             rc, out, err = ssh("systemctl enable lightdm.service")
             check("lightdm.service enabled before install", rc == 0, (out + err).strip())
+        install_name = "lightxdm-install" if MODE == "package" else "install.sh"
         if FROM:
-            rc, out, err = ssh(f"su - {USER} -c 'cd ~/lightXDM && bash install.sh --de {FROM}' 2>&1", timeout=1800)
+            rc, out, err = ssh(f"su - {USER} -c '{INSTALLER} --de {FROM}' 2>&1", timeout=1800)
             with open(os.path.join(RUN, f"install-{FROM}.log"), "w") as f:
                 f.write(out + err)
-            check(f"install.sh --de {FROM} exits 0", rc == 0, out[-400:])
+            check(f"{install_name} --de {FROM} exits 0", rc == 0, out[-400:])
             if rc != 0:
                 return 0
         install_args = f"--no-keyring --autologin --de {TARGET}" if MODE in ("autologin", "recovery") else f"--de {TARGET}"
-        if MODE == "package":
-            install_name, install_cmd = "lightxdm-install", f"lightxdm-install {install_args}"
-        else:
-            install_name, install_cmd = "install.sh", f"cd ~/lightXDM && bash install.sh {install_args}"
+        install_cmd = f"{INSTALLER} {install_args}"
         rc, out, err = ssh(f"su - {USER} -c '{install_cmd}' 2>&1", timeout=1800)
         with open(os.path.join(RUN, "install.log"), "w") as f:
             f.write(out + err)
