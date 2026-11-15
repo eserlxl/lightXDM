@@ -12237,6 +12237,27 @@ if [[ $EUID -ne 0 ]]; then
     "$status_priv_out" != *"Disabled display managers: unknown (needs root)"* ]]; then
     status_cmd_report+=" [unreadable: rc=$status_priv_rc, sudo=$(cat "$status_sudo_log"), out=$status_priv_out]"
   fi
+
+  mkdir -p "$status_cmd_dir/priv_gnome_dir"
+  printf '%s\n' '#%PAM-1.0' 'session include system-local-login' >"$status_cmd_dir/readable_no_block_login"
+  printf 'XDG_SESSION_TYPE DEFAULT=wayland\n' >"$status_cmd_dir/priv_gnome_dir/gnome-session-type.conf"
+  chmod 000 "$status_cmd_dir/priv_gnome_dir"
+  set +e
+  status_gnome_dir_priv_out="$(
+    env -u XDG_STATE_HOME -u STATUS_GETTY_STATE -u STATUS_DM_STATE \
+      HOME="$status_cmd_dir/fresh_home" USER=statususer PATH="$status_cmd_dir/bin:$STUB_BIN:$PATH" \
+      STATUS_SUDO_LOG="$status_sudo_log" LOGIN_FILE="$status_cmd_dir/readable_no_block_login" \
+      GNOME_SESSION_TYPE_DEST="$status_cmd_dir/priv_gnome_dir/gnome-session-type.conf" \
+      PAM_KEYRING_STATE="$status_cmd_dir/missing" PAM_LOGIN_BASE_STATE="$status_cmd_dir/missing" \
+      DM_STATE_FILE="$status_cmd_dir/missing" AUTOLOGIN_DROPIN_DIR="$status_cmd_dir/missing-getty.d" \
+      bash "$REPO_ROOT/install.sh" --status 2>&1
+  )"
+  status_gnome_dir_priv_rc=$?
+  set -e
+  chmod 755 "$status_cmd_dir/priv_gnome_dir"
+  if [[ $status_gnome_dir_priv_rc -ne 0 || "$status_gnome_dir_priv_out" != *"PAM GNOME session type: unknown (needs root)"* ]]; then
+    status_cmd_report+=" [unreadable gnome dir: rc=$status_gnome_dir_priv_rc, out=$status_gnome_dir_priv_out]"
+  fi
 fi
 
 # 4) Reject incompatible combinations and document --status in --help.
@@ -12976,10 +12997,39 @@ assert d["pam"]["keyring_record"] == "unknown-needs-root"
 assert d["pam"]["keyring_status"] == "unknown-needs-root"
 assert d["pam"]["gnome_session_type"] == "unknown-needs-root"
 assert d["disabled_display_managers"]["state"] == "unknown-needs-root"
+assert d["autologin"]["state"] == "unknown-needs-root"
 assert any("cannot read" in n for n in d["autologin"]["notes"])
 PY
   then
     js_report+=" [unreadable handling: rc=$priv_js_rc err=$(cat "$js_dir/priv.err") out=$priv_js_out]"
+  fi
+
+  mkdir -p "$js_dir/priv_gnome_only" "$js_dir/priv_dropin_dir"
+  printf '%s\n' '#%PAM-1.0' 'session include system-local-login' >"$js_dir/readable_login_noblock"
+  printf 'XDG_SESSION_TYPE DEFAULT=wayland\n' >"$js_dir/priv_gnome_only/gnome-session-type.conf"
+  printf '[Service]\nExecStart=-/usr/bin/agetty --autologin alice --noclear %%I %s\n' "\$TERM" >"$js_dir/priv_dropin_dir/lightxdm-autologin.conf"
+  chmod 000 "$js_dir/priv_gnome_only" "$js_dir/priv_dropin_dir/lightxdm-autologin.conf"
+  set +e
+  priv_gnome_js_out="$(
+    env \
+      HOME="$js_dir/home_empty" XDG_STATE_HOME="$js_dir/home_empty/.local/state" PATH="$js_dir/bin:$STUB_BIN:$PATH" \
+      LOGIN_FILE="$js_dir/readable_login_noblock" PAM_KEYRING_STATE="$js_dir/empty_etc/pam-keyring" \
+      GNOME_SESSION_TYPE_DEST="$js_dir/priv_gnome_only/gnome-session-type.conf" DM_STATE_FILE="$js_dir/empty_etc/disabled-display-managers" \
+      AUTOLOGIN_DROPIN_DIR="$js_dir/priv_dropin_dir" bash "$REPO_ROOT/install.sh" --status --json 2>"$js_dir/priv_gnome.err"
+  )"
+  priv_gnome_js_rc=$?
+  set -e
+  chmod 755 "$js_dir/priv_gnome_only"
+  chmod 644 "$js_dir/priv_dropin_dir/lightxdm-autologin.conf"
+  if [[ $priv_gnome_js_rc -ne 0 || -s "$js_dir/priv_gnome.err" ]] ||
+    ! JSON_OUT="$priv_gnome_js_out" python3 - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["pam"]["gnome_session_type"] == "unknown-needs-root"
+assert d["autologin"]["state"] == "unknown-needs-root"
+PY
+  then
+    js_report+=" [unreadable gnome-dir/dropin: rc=$priv_gnome_js_rc err=$(cat "$js_dir/priv_gnome.err") out=$priv_gnome_js_out]"
   fi
 fi
 

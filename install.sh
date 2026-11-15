@@ -2236,6 +2236,9 @@ show_install_status() {
     elif [[ -e "$GNOME_SESSION_TYPE_DEST" || -L "$GNOME_SESSION_TYPE_DEST" ]]; then
       gnome_status_id="file-without-block"
       gnome_status="session-type file present without PAM block ($GNOME_SESSION_TYPE_DEST)"
+    elif pam_path_needs_sudo "$GNOME_SESSION_TYPE_DEST" 1; then
+      gnome_status_id="unknown-needs-root"
+      gnome_status="unknown (needs root)"
     fi
   elif [[ ! -e "$LOGIN_FILE" && -x "$(dirname -- "$LOGIN_FILE")" ]]; then
     keyring_status_id="missing-login-file"
@@ -2315,6 +2318,19 @@ show_install_status() {
         auto_notes+=("$auto_line")
       fi
     done <<<"$autologin_out"
+    if [[ "$auto_state" == disabled ]]; then
+      local note_item
+      for note_item in "${auto_notes[@]}"; do
+        case "$note_item" in
+          "Note: cannot read $AUTOLOGIN_DROPIN_DIR;"* | \
+            "Note: cannot read $AUTOLOGIN_DROPIN_DIR/lightxdm-autologin.conf;"* | \
+            "Note: cannot read $AUTOLOGIN_DROPIN_DIR/override.conf;"*)
+            auto_state="unknown-needs-root"
+            break
+            ;;
+        esac
+      done
+    fi
 
     printf '{\n'
     printf '  "install_choices": {\n'
