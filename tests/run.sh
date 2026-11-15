@@ -13103,6 +13103,263 @@ else
   fail "uninstall.sh --dry-run:$dry_un_report"
 fi
 
+# uninstall.sh --dry-run --json emits structured rollback JSON with empty stderr across full, --keyring-only, unreadable, and special-char cases
+un_js_dir="$TMP_DIR/uninstall_json"
+rm -rf "$un_js_dir"
+mkdir -p "$un_js_dir/home/.config/lightxdm" "$un_js_dir/home/.local/state/lightxdm" \
+  "$un_js_dir/state" "$un_js_dir/getty.d" "$un_js_dir/ko"
+printf '%s\n' \
+  '#%PAM-1.0' \
+  'auth       include      system-local-login' \
+  'session    include      system-local-login' >"$un_js_dir/login.lightxdm.bak"
+printf '%s\n' \
+  '#%PAM-1.0' \
+  'auth       include      system-local-login' \
+  'auth       optional   pam_gnome_keyring.so' \
+  '# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)' \
+  'session    [success=2 default=ignore] pam_succeed_if.so quiet tty notin tty1:/dev/tty1' \
+  'session    [success=1 default=ignore] pam_succeed_if.so quiet user != dryuser' \
+  "session    optional   pam_env.so readenv=0 user_readenv=0 conffile=$un_js_dir/state/gnome-session-type.conf" \
+  'session    include      system-local-login' \
+  'session    optional   pam_gnome_keyring.so auto_start' >"$un_js_dir/login"
+cp "$un_js_dir/login" "$un_js_dir/login.snapshot"
+printf 'XDG_SESSION_TYPE DEFAULT=wayland\n' >"$un_js_dir/state/gnome-session-type.conf"
+printf 'gnome\n' >"$un_js_dir/state/pam-keyring"
+printf 'base-ok\n' >"$un_js_dir/state/pam-login-base"
+printf 'lightdm.service\nmissing.service\n' >"$un_js_dir/state/disabled-display-managers"
+printf '%s\n' '[Service]' 'ExecStart=' "ExecStart=-/usr/bin/agetty --autologin dryuser --noclear %I \$TERM" >"$un_js_dir/getty.d/lightxdm-autologin.conf"
+printf '// original polkit\n' >"$un_js_dir/state/49-nopasswd.rules.lightxdm.bak"
+printf '// custom user polkit\n' >"$un_js_dir/state/49-nopasswd.rules"
+printf '# orig bash_profile\n' >"$un_js_dir/home/.bash_profile.lightxdm.bak"
+cp "$REPO_ROOT/dotfiles/.bash_profile" "$un_js_dir/home/.bash_profile"
+printf '# user custom xinitrc\nexec awesome\n' >"$un_js_dir/home/.xinitrc"
+: >"$un_js_dir/home/.xinitrc.lightxdm.absent"
+cp "$REPO_ROOT/dotfiles/.xinitrc-i3" "$un_js_dir/home/.xinitrc.lightxdm-new"
+cp "$REPO_ROOT/dotfiles/.gpg-agent-gnome" "$un_js_dir/home/.gpg-agent-gnome"
+printf '# foreign wayland launcher\n' >"$un_js_dir/home/.wayland-session"
+printf 'de=gnome\nno_packages=1\n' >"$un_js_dir/home/.local/state/lightxdm/install-choices"
+printf '%s\n' '# user zsh' '# >>> lightXDM TTY1 auto-start >>>' 'exec bash -l' '# <<< lightXDM TTY1 auto-start <<<' >"$un_js_dir/home/.zprofile"
+un_js_report=""
+: >"$dry_un_sys_log"
+
+for un_js_flags in "--dry-run --json" "--json --dry-run"; do
+  read -r -a un_js_argv <<<"$un_js_flags"
+  set +e
+  un_js_out="$(
+    env -u TARGET_HOME -u SUDO_USER \
+      HOME="$un_js_dir/home" \
+      PATH="$dry_un_dir/bin:$STUB_BIN:$PATH" \
+      DRY_UN_SYS_LOG="$dry_un_sys_log" \
+      LOGIN_FILE="$un_js_dir/login" \
+      GNOME_SESSION_TYPE_DEST="$un_js_dir/state/gnome-session-type.conf" \
+      PAM_KEYRING_STATE="$un_js_dir/state/pam-keyring" \
+      PAM_LOGIN_BASE_STATE="$un_js_dir/state/pam-login-base" \
+      DM_STATE_FILE="$un_js_dir/state/disabled-display-managers" \
+      OVERRIDE_DIR="$un_js_dir/getty.d" \
+      POLKIT_RULE="$un_js_dir/state/49-nopasswd.rules" \
+      LIGHTXDM_DIR="$REPO_ROOT" \
+      bash "$REPO_ROOT/bin/lightxdm-uninstall" "${un_js_argv[@]}" 2>"$un_js_dir/full.err"
+  )"
+  un_js_rc=$?
+  set -e
+  if [[ $un_js_rc -ne 0 || -s "$un_js_dir/full.err" || -s "$dry_un_sys_log" ]] ||
+    ! cmp -s "$un_js_dir/login" "$un_js_dir/login.snapshot" ||
+    ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+home = sys.argv[2]
+state_dir = sys.argv[3]
+getty_dir = sys.argv[4]
+assert d["mode"] == "uninstall-dry-run", d
+assert d["keyring_only"] is False, d
+assert d["target_home"] == home, d
+assert d["login_file"] == sys.argv[5], d
+assert d["needs_root"] is False, d
+assert d["pam"]["status"] == "restore-from-backup", d
+assert d["pam"]["gnome_lines_to_remove"] == 4, d
+assert d["pam"]["lightxdm_lines_to_remove"] == 6, d
+assert d["pam"]["keep_backup"] is False, d
+assert d["pam"]["residual_keyring_warning"] is False, d
+assert d["gnome_session_type"]["status"] == "remove", d
+assert d["pam_keyring_state"]["status"] == "remove", d
+assert d["pam_login_base_state"]["status"] == "remove", d
+assert d["polkit"]["status"] == "restore-from-backup", d
+assert d["polkit"]["edited_backup"] == f"{state_dir}/49-nopasswd.rules.lightxdm-edited", d
+assert d["autologin"]["status"] == "disable", d
+assert d["autologin"]["remove_files"] == [f"{getty_dir}/lightxdm-autologin.conf"], d
+assert d["autologin"]["keep_files"] == [], d
+assert d["autologin"]["recommended_command"] is None, d
+assert d["display_managers"]["status"] == "reenable", d
+assert d["display_managers"]["reenable"] == ["lightdm.service"], d
+assert d["display_managers"]["skip"] == ["missing.service"], d
+dots = {x["dotfile"]: x for x in d["dotfiles"]}
+assert dots[".bash_profile"]["action"] == "restore-from-backup", dots
+assert dots[".xinitrc"]["action"] == "save-edited", dots
+assert dots[".xinitrc"]["remove_pending_update"] is True, dots
+assert dots[".xinitrc"]["remove_absent_marker"] is True, dots
+assert dots[".xinitrc"]["edited_backup"] == f"{home}/.xinitrc.lightxdm-edited", dots
+assert dots[".gpg-agent-gnome"]["action"] == "remove", dots
+assert dots[".wayland-session"]["action"] == "keep", dots
+hooks = {x["path"]: x["status"] for x in d["shell_hooks"]}
+assert hooks[f"{home}/.zprofile"] == "remove", hooks
+assert hooks[f"{home}/.config/fish/config.fish"] == "absent", hooks
+assert d["state_files"]["status"] == "remove", d
+assert d["state_files"]["remove_dir_if_empty"] is True, d
+sfiles = {x["name"]: x["status"] for x in d["state_files"]["files"]}
+assert sfiles["install-choices"] == "remove" and sfiles["startx-attempts"] == "absent", sfiles
+assert any("missing.service" in w for w in d["warnings"]), d["warnings"]
+assert any(".zprofile" in a for a in d["actions"]), d["actions"]
+' "$un_js_out" "$un_js_dir/home" "$un_js_dir/state" "$un_js_dir/getty.d" "$un_js_dir/login"; then
+    un_js_report+=" [full '$un_js_flags': rc=$un_js_rc err=$(cat "$un_js_dir/full.err") out=$un_js_out]"
+  fi
+done
+
+# 2) --keyring-only --dry-run --json across flag orders with residual keyring warning & notes
+cp "$dry_un_dir/ko/login" "$un_js_dir/ko/login"
+cp "$dry_un_dir/ko/login.lightxdm.bak" "$un_js_dir/ko/login.lightxdm.bak"
+printf 'gnome\n' >"$un_js_dir/ko/pam-keyring"
+for ko_js_flags in "--keyring-only --dry-run --json" "--json --keyring-only --dry-run" "--dry-run --keyring-only --json"; do
+  read -r -a ko_js_argv <<<"$ko_js_flags"
+  set +e
+  ko_js_out="$(
+    env -u SUDO_USER \
+      HOME="$un_js_dir/missing_home_unused" \
+      TARGET_HOME="$un_js_dir/ignored_home_for_ko" \
+      PATH="$dry_un_dir/bin:$STUB_BIN:$PATH" \
+      LOGIN_FILE="$un_js_dir/ko/login" \
+      PAM_KEYRING_STATE="$un_js_dir/ko/pam-keyring" \
+      OVERRIDE_DIR="$un_js_dir/missing-getty" \
+      bash "$REPO_ROOT/uninstall.sh" "${ko_js_argv[@]}" 2>"$un_js_dir/ko.err"
+  )"
+  ko_js_rc=$?
+  set -e
+  if [[ $ko_js_rc -ne 0 || -s "$un_js_dir/ko.err" ]] ||
+    ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["mode"] == "uninstall-dry-run", d
+assert d["keyring_only"] is True, d
+assert d["target_home"] is None, d
+assert d["needs_root"] is False, d
+assert d["pam"]["status"] == "remove-lines-keep-backup", d
+assert d["pam"]["keep_backup"] is True, d
+assert d["pam"]["lightxdm_lines_to_remove"] == 2, d
+assert d["pam"]["residual_keyring_warning"] is True, d
+assert d["gnome_session_type"]["status"] == "kept-keyring-only", d
+assert d["pam_keyring_state"]["status"] == "remove", d
+assert d["pam_login_base_state"]["status"] == "kept-keyring-only", d
+assert d["polkit"]["status"] == "kept-keyring-only", d
+assert d["autologin"]["status"] == "kept-keyring-only", d
+assert d["autologin"]["recommended_command"] and "enable-autologin.sh" in d["autologin"]["recommended_command"], d
+assert d["display_managers"]["status"] == "kept-keyring-only", d
+assert d["dotfiles"] == [] and d["shell_hooks"] == [], d
+assert d["state_files"]["status"] == "kept-keyring-only" and d["state_files"]["dir"] is None, d
+assert any("still configure PAM keyring unlock" in w for w in d["warnings"]), d["warnings"]
+assert any("Dry run (--keyring-only)" in n for n in d["notes"]), d["notes"]
+' "$ko_js_out"; then
+    un_js_report+=" [ko '$ko_js_flags': rc=$ko_js_rc err=$(cat "$un_js_dir/ko.err") out=$ko_js_out]"
+  fi
+done
+
+# 3) Unreadable root-owned files/dirs, unreadable autologin dir/drop-in, and unreadable dotfile/shell hook set needs_root=true cleanly
+if [[ $EUID -ne 0 ]]; then
+  mkdir -p "$un_js_dir/priv_files" "$un_js_dir/priv_dir" "$un_js_dir/priv_home"
+  cp "$un_js_dir/login" "$un_js_dir/priv_files/login"
+  printf 'gnome\n' >"$un_js_dir/priv_files/pam-keyring"
+  printf 'lightdm.service\n' >"$un_js_dir/priv_files/disabled-display-managers"
+  printf '// root polkit\n' >"$un_js_dir/priv_dir/49-nopasswd.rules"
+  printf '# secret xinitrc\n' >"$un_js_dir/priv_home/.xinitrc"
+  printf '# secret zsh\n' >"$un_js_dir/priv_home/.zprofile"
+  chmod 000 "$un_js_dir/priv_files/login" "$un_js_dir/priv_files/pam-keyring" "$un_js_dir/priv_files/disabled-display-managers" \
+    "$un_js_dir/priv_dir" "$un_js_dir/priv_home/.xinitrc" "$un_js_dir/priv_home/.zprofile"
+  set +e
+  priv_js_out="$(
+    env -u SUDO_USER \
+      HOME="$un_js_dir/priv_home" \
+      TARGET_HOME="$un_js_dir/priv_home" \
+      PATH="$dry_un_dir/bin:$STUB_BIN:$PATH" \
+      LOGIN_FILE="$un_js_dir/priv_files/login" \
+      GNOME_SESSION_TYPE_DEST="$un_js_dir/priv_dir/gnome-session-type.conf" \
+      PAM_KEYRING_STATE="$un_js_dir/priv_files/pam-keyring" \
+      PAM_LOGIN_BASE_STATE="$un_js_dir/priv_dir/pam-login-base" \
+      DM_STATE_FILE="$un_js_dir/priv_files/disabled-display-managers" \
+      OVERRIDE_DIR="$un_js_dir/priv_dir" \
+      POLKIT_RULE="$un_js_dir/priv_dir/49-nopasswd.rules" \
+      bash "$REPO_ROOT/uninstall.sh" --dry-run --json 2>"$un_js_dir/priv.err"
+  )"
+  priv_js_rc=$?
+  set -e
+  chmod 755 "$un_js_dir/priv_dir"
+  chmod 600 "$un_js_dir/priv_files/login" "$un_js_dir/priv_files/pam-keyring" "$un_js_dir/priv_files/disabled-display-managers" \
+    "$un_js_dir/priv_home/.xinitrc" "$un_js_dir/priv_home/.zprofile"
+  if [[ $priv_js_rc -ne 0 || -s "$un_js_dir/priv.err" ]] ||
+    ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["needs_root"] is True, d
+assert d["pam"]["status"] == "unknown-needs-root", d
+assert d["gnome_session_type"]["status"] == "unknown-needs-root", d
+assert d["pam_keyring_state"]["status"] == "unknown-needs-root", d
+assert d["pam_login_base_state"]["status"] == "unknown-needs-root", d
+assert d["polkit"]["status"] == "unknown-needs-root", d
+assert d["autologin"]["status"] == "unknown-needs-root", d
+assert d["display_managers"]["status"] == "unknown-needs-root", d
+dots = {x["dotfile"]: x["action"] for x in d["dotfiles"]}
+assert dots[".xinitrc"] == "unknown-needs-root", dots
+hooks = {x["path"]: x["status"] for x in d["shell_hooks"]}
+assert hooks[f"{sys.argv[2]}/.zprofile"] == "unknown-needs-root", hooks
+assert any("Cannot read" in w for w in d["warnings"]), d["warnings"]
+' "$priv_js_out" "$un_js_dir/priv_home"; then
+    un_js_report+=" [priv: rc=$priv_js_rc err=$(cat "$un_js_dir/priv.err") out=$priv_js_out]"
+  fi
+fi
+
+# 4) Special characters in TARGET_HOME and LOGIN_FILE stay valid JSON and reject bad --json combos cleanly
+special_un_home="$un_js_dir/special \"quote\" \\slash home"
+mkdir -p "$special_un_home"
+cp "$REPO_ROOT/dotfiles/.bash_profile" "$special_un_home/.bash_profile"
+set +e
+special_js_out="$(
+  env -u SUDO_USER HOME="$special_un_home" TARGET_HOME="$special_un_home" PATH="$dry_un_dir/bin:$STUB_BIN:$PATH" \
+    LOGIN_FILE="$special_un_home/login \"pam\"" GNOME_SESSION_TYPE_DEST="$un_js_dir/missing" \
+    PAM_KEYRING_STATE="$un_js_dir/missing" PAM_LOGIN_BASE_STATE="$un_js_dir/missing" \
+    DM_STATE_FILE="$un_js_dir/missing" OVERRIDE_DIR="$un_js_dir/missing-getty" POLKIT_RULE="$un_js_dir/missing" \
+    bash "$REPO_ROOT/uninstall.sh" --dry-run --json 2>"$un_js_dir/special.err"
+)"
+special_js_rc=$?
+set -e
+if [[ $special_js_rc -ne 0 || -s "$un_js_dir/special.err" ]] ||
+  ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["target_home"] == sys.argv[2], d
+assert d["login_file"] == sys.argv[3], d
+dots = {x["dotfile"]: x["action"] for x in d["dotfiles"]}
+assert dots[".bash_profile"] == "remove", dots
+' "$special_js_out" "$special_un_home" "$special_un_home/login \"pam\""; then
+  un_js_report+=" [special: rc=$special_js_rc err=$(cat "$un_js_dir/special.err") out=$special_js_out]"
+fi
+
+for bad_un_js in "--json" "--keyring-only --json" "--json --keyring-only" "--dry-run --json --json" "--help --json" "--json --help"; do
+  read -r -a bad_un_js_argv <<<"$bad_un_js"
+  set +e
+  bad_un_js_out="$(HOME="$un_js_dir/home" bash "$REPO_ROOT/uninstall.sh" "${bad_un_js_argv[@]}" 2>&1)"
+  bad_un_js_rc=$?
+  set -e
+  if [[ $bad_un_js_rc -ne 1 || "$bad_un_js_out" != *"Usage:"* || "$bad_un_js_out" == *"Please run as root"* ]]; then
+    un_js_report+=" [bad combo '$bad_un_js': rc=$bad_un_js_rc out=$bad_un_js_out]"
+  fi
+done
+if [[ "$help_un_out" != *"--json"* ]]; then
+  un_js_report+=" [help missing --json]"
+fi
+
+if [[ -z "$un_js_report" ]]; then
+  pass "uninstall.sh --dry-run --json emits structured rollback JSON cleanly with empty stderr"
+else
+  fail "uninstall.sh --dry-run --json:$un_js_report"
+fi
+
 # install.sh --list-sessions discovers X11 and Wayland freedesktop entries without root or side effects
 ls_dir="$TMP_DIR/list_sessions"
 rm -rf "$ls_dir"

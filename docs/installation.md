@@ -74,6 +74,7 @@ bash install.sh
 # bash install.sh --status
 # bash install.sh --status --json
 # bash enable-autologin.sh --status [--json]
+# bash uninstall.sh --dry-run [--json]      # or with --keyring-only
 ```
 
 ## What the installer does

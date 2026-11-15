@@ -32,6 +32,108 @@ LIGHTXDM_OLD_POLKIT_HASHES=(
   5f0b2207f050dd9f56f748c54cb2956abbc894f5bb85aecc47cdbee230316b2a
 )
 
+DRY_RUN_JSON=0
+DRY_NEEDS_ROOT=false
+DRY_ACTIONS=()
+DRY_WARNINGS=()
+DRY_NOTES=()
+DRY_DOTFILE_JSON=()
+DRY_SHELL_HOOK_JSON=()
+DRY_STATE_FILE_JSON=()
+DRY_STATE_DIR=""
+DRY_STATE_DIR_STATUS="absent"
+DRY_STATE_DIR_REMOVE=false
+DRY_LAST_EDITED_DEST=""
+
+json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\b'/\\b}"
+  s="${s//$'\f'/\\f}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+json_str() {
+  printf '"%s"' "$(json_escape "$1")"
+}
+
+json_str_or_null() {
+  if [[ -n "$1" ]]; then
+    json_str "$1"
+  else
+    printf 'null'
+  fi
+}
+
+print_json_string_array() {
+  local first=1 item
+  printf '['
+  for item in "$@"; do
+    [[ $first -eq 1 ]] || printf ', '
+    first=0
+    json_str "$item"
+  done
+  printf ']'
+}
+
+dry_action() {
+  DRY_ACTIONS+=("$1")
+  if [[ $DRY_RUN_JSON -eq 0 ]]; then
+    echo "$1"
+  fi
+}
+
+dry_warn_err() {
+  DRY_WARNINGS+=("$1")
+  if [[ $DRY_RUN_JSON -eq 0 ]]; then
+    echo "$1" >&2
+  fi
+}
+
+dry_warn_out() {
+  DRY_WARNINGS+=("$1")
+  if [[ $DRY_RUN_JSON -eq 0 ]]; then
+    echo "$1"
+  fi
+}
+
+dry_note() {
+  DRY_NOTES+=("$1")
+  if [[ $DRY_RUN_JSON -eq 0 ]]; then
+    echo "$1"
+  fi
+}
+
+append_dry_dotfile_json() {
+  local dotfile="$1" path="$2" action="$3" rm_new="$4" rm_past="$5" rm_absent="$6" edited_backup="$7"
+  local obj
+  printf -v obj '{"dotfile": %s, "path": %s, "action": %s, "remove_pending_update": %s, "remove_past_backup": %s, "remove_absent_marker": %s, "edited_backup": %s}' \
+    "$(json_str "$dotfile")" \
+    "$(json_str "$path")" \
+    "$(json_str "$action")" \
+    "$rm_new" \
+    "$rm_past" \
+    "$rm_absent" \
+    "$(json_str_or_null "$edited_backup")"
+  DRY_DOTFILE_JSON+=("$obj")
+}
+
+append_dry_shell_hook_json() {
+  local path="$1" status="$2" obj
+  printf -v obj '{"path": %s, "status": %s}' "$(json_str "$path")" "$(json_str "$status")"
+  DRY_SHELL_HOOK_JSON+=("$obj")
+}
+
+append_dry_state_file_json() {
+  local name="$1" path="$2" status="$3" obj
+  printf -v obj '{"name": %s, "path": %s, "status": %s}' "$(json_str "$name")" "$(json_str "$path")" "$(json_str "$status")"
+  DRY_STATE_FILE_JSON+=("$obj")
+}
+
 files_match() {
   [[ "$(sha256sum < "$1")" == "$(sha256sum < "$2")" ]]
 }
@@ -160,8 +262,9 @@ save_edited_dotfile() {
   fi
   local edited_dest
   edited_dest="$(next_edited_dotfile_dest "$src")"
+  DRY_LAST_EDITED_DEST="$edited_dest"
   if [[ $dry_run -eq 1 ]]; then
-    echo "Would save edited $src to $edited_dest."
+    dry_action "Would save edited $src to $edited_dest."
     return 0
   fi
   echo "Saving edited $src to $edited_dest..."
@@ -279,19 +382,29 @@ cleanup_shell_hooks() {
     rc=0
     home_parent_is_safe "$rel" || rc=$?
     if [[ $rc -eq 2 ]]; then
-      echo "Warning: Refusing symlinked directory along $home/$rel." >&2
+      dry_warn_err "Warning: Refusing symlinked directory along $home/$rel."
+      [[ $dry_run -eq 1 ]] && append_dry_shell_hook_json "$home/$rel" "refused-symlink-dir"
       continue
     elif [[ $rc -ne 0 ]]; then
+      [[ $dry_run -eq 1 ]] && append_dry_shell_hook_json "$home/$rel" "absent"
       continue
     fi
     target="$home/$rel"
     if [[ -L "$target" ]]; then
-      echo "Warning: Refusing symlinked shell config $target." >&2
+      dry_warn_err "Warning: Refusing symlinked shell config $target."
+      [[ $dry_run -eq 1 ]] && append_dry_shell_hook_json "$target" "refused-symlink-file"
       continue
     fi
-    [[ -f "$target" ]] || continue
+    if [[ ! -f "$target" ]]; then
+      [[ $dry_run -eq 1 ]] && append_dry_shell_hook_json "$target" "absent"
+      continue
+    fi
     if [[ ! -r "$target" ]]; then
-      echo "Warning: Cannot read $target; skipping shell hook cleanup." >&2
+      dry_warn_err "Warning: Cannot read $target; skipping shell hook cleanup."
+      if [[ $dry_run -eq 1 ]]; then
+        [[ $EUID -ne 0 ]] && DRY_NEEDS_ROOT=true
+        append_dry_shell_hook_json "$target" "unknown-needs-root"
+      fi
       continue
     fi
 
@@ -302,15 +415,18 @@ cleanup_shell_hooks() {
     ' "$target")"
     read -r bc ec bl el <<<"$marker_info"
     if [[ $bc -eq 0 && $ec -eq 0 ]]; then
+      [[ $dry_run -eq 1 ]] && append_dry_shell_hook_json "$target" "no-hook"
       continue
     fi
     if [[ $bc -ne 1 || $ec -ne 1 || $bl -ge $el ]]; then
-      echo "Warning: Malformed lightXDM hook markers in $target; leaving untouched." >&2
+      dry_warn_err "Warning: Malformed lightXDM hook markers in $target; leaving untouched."
+      [[ $dry_run -eq 1 ]] && append_dry_shell_hook_json "$target" "malformed-markers"
       continue
     fi
 
     if [[ $dry_run -eq 1 ]]; then
-      echo "Would remove managed lightXDM TTY1 auto-start hook from $target"
+      dry_action "Would remove managed lightXDM TTY1 auto-start hook from $target"
+      append_dry_shell_hook_json "$target" "remove"
       continue
     fi
 
@@ -350,22 +466,32 @@ cleanup_shell_hooks() {
 
 cleanup_home_dotfiles() {
   local dry_run="${1:-0}" home dotfile past_backup rc
+  local df_action df_rm_new df_rm_past df_rm_absent df_edited_backup
   home="$(normalize_home_path "${TARGET_HOME:-}")"
   target_home_is_safe "$home" || return $?
   cleanup_shell_hooks "${1:-0}"
   for dotfile in .bash_profile .xinitrc .wayland-session .gpg-agent-kwallet .gpg-agent-gnome .config/autostart/lightxdm-gpg-agent-tty.desktop; do
+    df_action="absent"
+    df_rm_new=false
+    df_rm_past=false
+    df_rm_absent=false
+    df_edited_backup=""
     rc=0
     home_parent_is_safe "$dotfile" || rc=$?
     if [[ $rc -ne 0 ]]; then
       if [[ $rc -eq 2 ]]; then
-        echo "Warning: Refusing symlinked directory along $home/$dotfile." >&2
+        dry_warn_err "Warning: Refusing symlinked directory along $home/$dotfile."
+        [[ $dry_run -eq 1 ]] && append_dry_dotfile_json "$dotfile" "$home/$dotfile" "refused-symlink-dir" false false false ""
+      else
+        [[ $dry_run -eq 1 ]] && append_dry_dotfile_json "$dotfile" "$home/$dotfile" "absent" false false false ""
       fi
       continue
     fi
     # The current template install.sh --update put beside a dotfile the user edited.
     if [[ -f "$home/${dotfile}.lightxdm-new" && ! -L "$home/${dotfile}.lightxdm-new" ]]; then
+      df_rm_new=true
       if [[ $dry_run -eq 1 ]]; then
-        echo "Would remove $home/${dotfile}.lightxdm-new."
+        dry_action "Would remove $home/${dotfile}.lightxdm-new."
       else
         echo "Removing $home/${dotfile}.lightxdm-new..."
         rm -f -- "$home/${dotfile}.lightxdm-new"
@@ -375,8 +501,9 @@ cleanup_home_dotfiles() {
     # A backup equal to an older bundled template is a lightXDM file an earlier install backed up
     # as the user's original: drop it and treat the dotfile as one lightXDM created.
     if [[ -r "$home/${dotfile}.lightxdm.bak" ]] && is_past_lightxdm_template "$home/${dotfile}.lightxdm.bak" "$dotfile"; then
+      df_rm_past=true
       if [[ $dry_run -eq 1 ]]; then
-        echo "Would remove $home/${dotfile}.lightxdm.bak (a file from an earlier lightXDM version)."
+        dry_action "Would remove $home/${dotfile}.lightxdm.bak (a file from an earlier lightXDM version)."
       else
         echo "Removing $home/${dotfile}.lightxdm.bak (a file from an earlier lightXDM version)..."
         rm -f -- "$home/${dotfile}.lightxdm.bak"
@@ -385,21 +512,28 @@ cleanup_home_dotfiles() {
     fi
     if [[ $past_backup -eq 0 ]] && [[ -e "$home/${dotfile}.lightxdm.bak" || -L "$home/${dotfile}.lightxdm.bak" ]]; then
       local backup_msg="Would restore $home/$dotfile from backup."
+      df_action="restore-from-backup"
       if [[ -e "$home/$dotfile" || -L "$home/$dotfile" ]]; then
         if [[ $dry_run -eq 1 && ! -L "$home/$dotfile" && ! -r "$home/$dotfile" ]]; then
           backup_msg="Would restore $home/$dotfile from backup (existing file unreadable without root to check edits)."
+          DRY_NEEDS_ROOT=true
+          df_action="restore-from-backup-unreadable"
         elif matches_lightxdm_template "$dotfile"; then
           if [[ $dry_run -eq 0 ]]; then
             rm -f -- "$home/$dotfile"
           fi
         else
+          DRY_LAST_EDITED_DEST=""
           save_edited_dotfile "$home/$dotfile" "$dry_run"
+          df_edited_backup="$DRY_LAST_EDITED_DEST"
+          df_action="save-edited-and-restore-from-backup"
         fi
       fi
       if [[ $dry_run -eq 1 ]]; then
-        echo "$backup_msg"
+        dry_action "$backup_msg"
         if [[ -e "$home/${dotfile}.lightxdm.absent" || -L "$home/${dotfile}.lightxdm.absent" ]]; then
-          echo "Would remove $home/${dotfile}.lightxdm.absent."
+          dry_action "Would remove $home/${dotfile}.lightxdm.absent."
+          df_rm_absent=true
         fi
       else
         echo "Restoring $home/$dotfile from backup..."
@@ -407,44 +541,61 @@ cleanup_home_dotfiles() {
         rm -f -- "$home/${dotfile}.lightxdm.absent"
       fi
     elif [[ $past_backup -eq 1 || -e "$home/${dotfile}.lightxdm.absent" || -L "$home/${dotfile}.lightxdm.absent" ]]; then
+      df_action="remove-markers"
       if [[ -e "$home/$dotfile" || -L "$home/$dotfile" ]]; then
         if [[ $dry_run -eq 1 && ! -L "$home/$dotfile" && ! -r "$home/$dotfile" ]]; then
-          echo "Skipped check on $home/$dotfile (unreadable without root)."
+          dry_action "Skipped check on $home/$dotfile (unreadable without root)."
+          DRY_NEEDS_ROOT=true
+          df_action="unknown-needs-root"
         elif matches_lightxdm_template "$dotfile"; then
+          df_action="remove"
           if [[ $dry_run -eq 1 ]]; then
-            echo "Would remove $home/$dotfile."
+            dry_action "Would remove $home/$dotfile."
           else
             echo "Removing $home/$dotfile..."
             rm -f -- "$home/$dotfile"
           fi
         else
+          DRY_LAST_EDITED_DEST=""
           save_edited_dotfile "$home/$dotfile" "$dry_run"
+          df_edited_backup="$DRY_LAST_EDITED_DEST"
+          df_action="save-edited"
         fi
       fi
       if [[ $dry_run -eq 1 ]]; then
         if [[ -e "$home/${dotfile}.lightxdm.absent" || -L "$home/${dotfile}.lightxdm.absent" ]]; then
-          echo "Would remove $home/${dotfile}.lightxdm.absent."
+          dry_action "Would remove $home/${dotfile}.lightxdm.absent."
+          df_rm_absent=true
         fi
       else
         rm -f -- "$home/${dotfile}.lightxdm.absent"
       fi
     elif [[ -e "$home/$dotfile" || -L "$home/$dotfile" ]]; then
       if [[ $dry_run -eq 1 && ! -L "$home/$dotfile" && ! -r "$home/$dotfile" ]]; then
-        echo "Skipped check on $home/$dotfile (unreadable without root)."
+        dry_action "Skipped check on $home/$dotfile (unreadable without root)."
+        DRY_NEEDS_ROOT=true
+        df_action="unknown-needs-root"
       elif matches_lightxdm_template "$dotfile" --bundled-only; then
+        df_action="remove"
         if [[ $dry_run -eq 1 ]]; then
-          echo "Would remove $home/$dotfile."
+          dry_action "Would remove $home/$dotfile."
         else
           echo "Removing $home/$dotfile..."
           rm -f -- "$home/$dotfile"
         fi
       else
+        df_action="keep"
         if [[ $dry_run -eq 1 ]]; then
-          echo "Would keep $home/$dotfile (not an unmodified lightXDM template)."
+          dry_action "Would keep $home/$dotfile (not an unmodified lightXDM template)."
         else
           echo "Keeping $home/$dotfile (not an unmodified lightXDM template)."
         fi
       fi
+    elif [[ "$df_rm_new" == true ]]; then
+      df_action="remove-pending-update"
+    fi
+    if [[ $dry_run -eq 1 ]]; then
+      append_dry_dotfile_json "$dotfile" "$home/$dotfile" "$df_action" "$df_rm_new" "$df_rm_past" "$df_rm_absent" "$df_edited_backup"
     fi
   done
 }
@@ -453,29 +604,41 @@ cleanup_home_dotfiles() {
 # reuses and what it wrote into each dotfile; copies under a custom XDG_STATE_HOME are not removed.
 cleanup_home_state_dir() {
   local dry_run="${1:-0}" home state_dir state_file state_removed=0 rc=0
+  home="$(normalize_home_path "${TARGET_HOME:-}")"
+  state_dir="$home/.local/state/lightxdm"
+  DRY_STATE_DIR="$state_dir"
+  DRY_STATE_DIR_STATUS="absent"
+  DRY_STATE_DIR_REMOVE=false
   home_dir_is_safe ".local/state/lightxdm" || rc=$?
   if [[ $rc -ne 0 ]]; then
     if [[ $rc -eq 2 ]]; then
-      home="$(normalize_home_path "${TARGET_HOME:-}")"
-      echo "Warning: Refusing symlinked directory along $home/.local/state/lightxdm." >&2
+      dry_warn_err "Warning: Refusing symlinked directory along $home/.local/state/lightxdm."
+      DRY_STATE_DIR_STATUS="refused-symlink-dir"
+    elif [[ $dry_run -eq 1 ]]; then
+      for state_file in startx-attempts install-choices installed-dotfiles; do
+        append_dry_state_file_json "$state_file" "$state_dir/$state_file" "absent"
+      done
     fi
     return 0
   fi
-  home="$(normalize_home_path "${TARGET_HOME:-}")"
-  state_dir="$home/.local/state/lightxdm"
   for state_file in startx-attempts install-choices installed-dotfiles; do
     if [[ -f "$state_dir/$state_file" && ! -L "$state_dir/$state_file" ]]; then
       if [[ $dry_run -eq 1 ]]; then
-        echo "Would remove $state_dir/$state_file."
+        dry_action "Would remove $state_dir/$state_file."
+        append_dry_state_file_json "$state_file" "$state_dir/$state_file" "remove"
       else
         rm -f -- "$state_dir/$state_file"
       fi
       state_removed=1
+    elif [[ $dry_run -eq 1 ]]; then
+      append_dry_state_file_json "$state_file" "$state_dir/$state_file" "absent"
     fi
   done
   if [[ $state_removed -eq 1 ]]; then
     if [[ $dry_run -eq 1 ]]; then
-      echo "Would remove $state_dir if empty."
+      dry_action "Would remove $state_dir if empty."
+      DRY_STATE_DIR_STATUS="remove"
+      DRY_STATE_DIR_REMOVE=true
     else
       rmdir --ignore-fail-on-non-empty -- "$state_dir" 2>/dev/null || true
     fi
@@ -500,19 +663,41 @@ pam_matches_backup_stream() {
 # Print the full rollback plan without modifying PAM, systemd units, Polkit rules, or dotfiles.
 preview_uninstall() {
   local keyring_only="$1" backup_file="$2"
-  echo "Dry run: no files or systemd units will be modified."
+  DRY_NEEDS_ROOT=false
+  DRY_ACTIONS=()
+  DRY_WARNINGS=()
+  DRY_NOTES=()
+  DRY_DOTFILE_JSON=()
+  DRY_SHELL_HOOK_JSON=()
+  DRY_STATE_FILE_JSON=()
+  DRY_STATE_DIR=""
+  DRY_STATE_DIR_STATUS="absent"
+  DRY_STATE_DIR_REMOVE=false
 
-  local pam_unknown=0
+  [[ $DRY_RUN_JSON -eq 0 ]] && echo "Dry run: no files or systemd units will be modified."
+
+  local pam_unknown=0 pam_status="skip-no-backup" pam_keep_backup=false pam_residual_warning=false
+  local gnome_hits=0 keyring_hits=0
+  local gnome_session_status="kept-keyring-only" pam_login_base_status="kept-keyring-only" pam_keyring_status="absent"
+  local polkit_status="kept-keyring-only" polkit_edited_backup=""
+  local override_dir="${OVERRIDE_DIR:-/etc/systemd/system/getty@tty1.service.d}"
+  local autologin_status="kept-keyring-only" autologin_recommended_cmd=""
+  local -a autologin_remove_files=() autologin_keep_files=()
+  local dm_status="kept-keyring-only"
+  local -a dm_reenable=() dm_skip=()
+
   if path_needs_sudo "$LOGIN_FILE" 1 || path_needs_sudo "$backup_file"; then
     pam_unknown=1
-    echo "PAM ($LOGIN_FILE): unknown (needs root — rerun with sudo --dry-run to inspect)."
+    pam_status="unknown-needs-root"
+    DRY_NEEDS_ROOT=true
+    dry_action "PAM ($LOGIN_FILE): unknown (needs root — rerun with sudo --dry-run to inspect)."
   fi
 
   local gnome_marker='# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)'
   local gnome_tty_gate='session    [success=2 default=ignore] pam_succeed_if.so quiet tty notin tty1:/dev/tty1'
   local gnome_user_gate_re='^session    \[success=1 default=ignore\] pam_succeed_if\.so quiet user != [abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*$'
   local gnome_env_line="session    optional   pam_env.so readenv=0 user_readenv=0 conffile=$GNOME_SESSION_TYPE_DEST"
-  local gnome_pam_sed=() gnome_hits=0
+  local gnome_pam_sed=()
   if [[ $pam_unknown -eq 0 && $keyring_only -eq 0 && -f "$LOGIN_FILE" && -r "$LOGIN_FILE" ]]; then
     local line_number=0 line
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -525,29 +710,40 @@ preview_uninstall() {
     done < "$LOGIN_FILE"
     gnome_hits=$(( ${#gnome_pam_sed[@]} / 2 ))
     if [[ $gnome_hits -gt 0 ]]; then
-      echo "Would remove $gnome_hits GNOME session-type PAM line(s) from $LOGIN_FILE."
+      dry_action "Would remove $gnome_hits GNOME session-type PAM line(s) from $LOGIN_FILE."
     fi
   fi
 
   if [[ $keyring_only -eq 0 ]]; then
     if path_needs_sudo "$GNOME_SESSION_TYPE_DEST"; then
-      echo "GNOME session-type config ($GNOME_SESSION_TYPE_DEST): unknown (needs root)."
+      gnome_session_status="unknown-needs-root"
+      DRY_NEEDS_ROOT=true
+      dry_action "GNOME session-type config ($GNOME_SESSION_TYPE_DEST): unknown (needs root)."
     elif [[ -e "$GNOME_SESSION_TYPE_DEST" || -L "$GNOME_SESSION_TYPE_DEST" ]]; then
-      echo "Would remove $GNOME_SESSION_TYPE_DEST."
+      gnome_session_status="remove"
+      dry_action "Would remove $GNOME_SESSION_TYPE_DEST."
+    else
+      gnome_session_status="absent"
     fi
     if path_needs_sudo "$PAM_LOGIN_BASE_STATE"; then
-      echo "PAM login base state ($PAM_LOGIN_BASE_STATE): unknown (needs root)."
+      pam_login_base_status="unknown-needs-root"
+      DRY_NEEDS_ROOT=true
+      dry_action "PAM login base state ($PAM_LOGIN_BASE_STATE): unknown (needs root)."
     elif [[ -e "$PAM_LOGIN_BASE_STATE" || -L "$PAM_LOGIN_BASE_STATE" ]]; then
-      echo "Would remove $PAM_LOGIN_BASE_STATE."
+      pam_login_base_status="remove"
+      dry_action "Would remove $PAM_LOGIN_BASE_STATE."
+    else
+      pam_login_base_status="absent"
     fi
   fi
 
   if [[ $pam_unknown -eq 0 ]]; then
     if [[ -f "$backup_file" && ! -L "$backup_file" && -r "$backup_file" ]]; then
       if [[ ! -e "$LOGIN_FILE" ]]; then
-        echo "Would restore $LOGIN_FILE from backup ($backup_file) and remove backup."
+        pam_status="restore-from-backup"
+        dry_action "Would restore $LOGIN_FILE from backup ($backup_file) and remove backup."
       elif [[ -f "$LOGIN_FILE" && -r "$LOGIN_FILE" ]]; then
-        local pam_sed=() pam_line pam_re hits keyring_hits=0
+        local pam_sed=() pam_line pam_re hits
         for pam_line in "${LIGHTXDM_KEYRING_LINES[@]}"; do
           pam_re="^${pam_line//./\\.}\$"
           if [[ -z "$(sed -n "/${pam_re}/p" "$backup_file")" ]]; then
@@ -558,133 +754,294 @@ preview_uninstall() {
         done
         local all_sed=("${gnome_pam_sed[@]}" "${pam_sed[@]}")
         if (if [[ ${#all_sed[@]} -gt 0 ]]; then sed "${all_sed[@]}" "$LOGIN_FILE"; else cat -- "$LOGIN_FILE"; fi) | pam_matches_backup_stream "$backup_file"; then
-          echo "Would restore $LOGIN_FILE from backup ($backup_file) and remove backup."
+          pam_status="restore-from-backup"
+          dry_action "Would restore $LOGIN_FILE from backup ($backup_file) and remove backup."
         else
-          echo "Would remove $((gnome_hits + keyring_hits)) lightXDM PAM line(s) from $LOGIN_FILE; backup would be kept for review ($backup_file)."
+          pam_status="remove-lines-keep-backup"
+          pam_keep_backup=true
+          dry_action "Would remove $((gnome_hits + keyring_hits)) lightXDM PAM line(s) from $LOGIN_FILE; backup would be kept for review ($backup_file)."
         fi
         if [[ $keyring_only -eq 1 ]] &&
           (if [[ ${#all_sed[@]} -gt 0 ]]; then sed "${all_sed[@]}" "$LOGIN_FILE"; else cat -- "$LOGIN_FILE"; fi) |
           grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*(pam_kwallet5\.so|pam_gnome_keyring\.so)([[:space:]]|$)'; then
-          echo "Warning: $LOGIN_FILE would still configure PAM keyring unlock (lines lightXDM did not add); remove them by hand if you use autologin." >&2
+          pam_residual_warning=true
+          dry_warn_err "Warning: $LOGIN_FILE would still configure PAM keyring unlock (lines lightXDM did not add); remove them by hand if you use autologin."
         fi
       fi
     else
-      echo "No $backup_file found; would skip PAM restore."
+      pam_status="skip-no-backup"
+      dry_action "No $backup_file found; would skip PAM restore."
       if [[ $keyring_only -eq 1 && -f "$LOGIN_FILE" && -r "$LOGIN_FILE" ]] &&
         grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*(pam_kwallet5\.so|pam_gnome_keyring\.so)([[:space:]]|$)' "$LOGIN_FILE"; then
-        echo "Warning: $LOGIN_FILE would still configure PAM keyring unlock (lines lightXDM did not add); remove them by hand if you use autologin." >&2
+        pam_residual_warning=true
+        dry_warn_err "Warning: $LOGIN_FILE would still configure PAM keyring unlock (lines lightXDM did not add); remove them by hand if you use autologin."
       fi
     fi
   fi
 
   if path_needs_sudo "$PAM_KEYRING_STATE"; then
-    echo "PAM keyring state ($PAM_KEYRING_STATE): unknown (needs root)."
+    pam_keyring_status="unknown-needs-root"
+    DRY_NEEDS_ROOT=true
+    dry_action "PAM keyring state ($PAM_KEYRING_STATE): unknown (needs root)."
   elif [[ -e "$PAM_KEYRING_STATE" || -L "$PAM_KEYRING_STATE" ]]; then
-    echo "Would remove $PAM_KEYRING_STATE."
+    pam_keyring_status="remove"
+    dry_action "Would remove $PAM_KEYRING_STATE."
   fi
 
   if [[ $keyring_only -eq 1 ]]; then
-    echo "Dry run (--keyring-only): dotfiles, autologin, the Polkit rule and display managers would stay unchanged."
-    local autologin_status
-    autologin_status="$(bash "$SCRIPT_DIR/enable-autologin.sh" --status 2>/dev/null || true)"
-    if [[ "$autologin_status" != "enabled for"* && "$autologin_status" != *"still enables autologin."* ]]; then
-      echo "To log in on TTY1 without a password, run: sudo $(printf 'bash %q' "$SCRIPT_DIR/enable-autologin.sh") ${SUDO_USER:-${USER:-<user>}}"
+    dry_note "Dry run (--keyring-only): dotfiles, autologin, the Polkit rule and display managers would stay unchanged."
+    local autologin_status_text
+    autologin_status_text="$(bash "$SCRIPT_DIR/enable-autologin.sh" --status 2>/dev/null || true)"
+    if [[ "$autologin_status_text" != "enabled for"* && "$autologin_status_text" != *"still enables autologin."* ]]; then
+      autologin_recommended_cmd="sudo $(printf 'bash %q' "$SCRIPT_DIR/enable-autologin.sh") ${SUDO_USER:-${USER:-<user>}}"
+      dry_note "To log in on TTY1 without a password, run: $autologin_recommended_cmd"
     fi
+    if [[ $DRY_RUN_JSON -eq 0 ]]; then
+      return 0
+    fi
+  else
+
+    local override_file="$override_dir/lightxdm-autologin.conf"
+    local legacy_override="$override_dir/override.conf"
+    local autologin_seen=0
+    if path_needs_sudo "$override_file" || path_needs_sudo "$legacy_override"; then
+      autologin_status="unknown-needs-root"
+      DRY_NEEDS_ROOT=true
+      dry_action "TTY1 autologin ($override_dir): unknown (needs root)."
+    else
+      autologin_status="absent"
+      if [[ -f "$override_file" || -L "$override_file" ]]; then
+        dry_action "Would disable TTY1 autologin (remove $override_file)."
+        autologin_remove_files+=("$override_file")
+        autologin_seen=1
+      fi
+      if [[ -f "$legacy_override" && ! -L "$legacy_override" && -r "$legacy_override" ]]; then
+        local legacy_lines=() exec_re='^ExecStart=-/usr/bin/agetty --autologin [^-[:space:]:][^[:space:]:]* --noclear %I [$]TERM$'
+        mapfile -t legacy_lines < "$legacy_override"
+        if [[ ${#legacy_lines[@]} -eq 3 && "${legacy_lines[0]}" == "[Service]" && "${legacy_lines[1]}" == "ExecStart=" && "${legacy_lines[2]}" =~ $exec_re ]]; then
+          dry_action "Would remove legacy autologin override: $legacy_override."
+          autologin_remove_files+=("$legacy_override")
+          autologin_seen=1
+        else
+          dry_action "Would keep $legacy_override (not written by lightXDM)."
+          autologin_keep_files+=("$legacy_override")
+        fi
+      elif [[ -L "$legacy_override" ]]; then
+        dry_action "Would keep $legacy_override (not written by lightXDM)."
+        autologin_keep_files+=("$legacy_override")
+      fi
+      local autologin_probe status_line
+      autologin_probe="$(LOGIN_FILE=/dev/null bash "$SCRIPT_DIR/enable-autologin.sh" --status 2>&1 || true)"
+      while IFS= read -r status_line || [[ -n "$status_line" ]]; do
+        if [[ "$status_line" == Warning:* ]]; then
+          dry_warn_out "$status_line"
+        elif [[ "$status_line" == Note:* ]]; then
+          dry_note "$status_line"
+          if [[ "$status_line" == "Note: cannot read "* || "$status_line" == *"with sudo"* ]]; then
+            DRY_NEEDS_ROOT=true
+          fi
+        fi
+      done <<<"$autologin_probe"
+      if [[ $autologin_seen -eq 0 ]]; then
+        dry_action "No lightXDM autologin drop-in found; would skip."
+        [[ ${#autologin_keep_files[@]} -gt 0 ]] && autologin_status="keep-custom"
+      else
+        autologin_status="disable"
+      fi
+    fi
+
+    if path_needs_sudo "$POLKIT_RULE" || path_needs_sudo "${POLKIT_RULE}.lightxdm.bak" || path_needs_sudo "${POLKIT_RULE}.lightxdm.absent"; then
+      polkit_status="unknown-needs-root"
+      DRY_NEEDS_ROOT=true
+      dry_action "Polkit rule ($POLKIT_RULE): unknown (needs root)."
+    elif [[ -e "${POLKIT_RULE}.lightxdm.bak" || -L "${POLKIT_RULE}.lightxdm.bak" ]]; then
+      polkit_status="restore-from-backup"
+      if [[ -L "$POLKIT_RULE" ]] || { [[ -e "$POLKIT_RULE" && -r "$POLKIT_RULE" ]] && ! is_lightxdm_polkit_rule "$POLKIT_RULE"; }; then
+        DRY_LAST_EDITED_DEST=""
+        save_edited_dotfile "$POLKIT_RULE" 1
+        polkit_edited_backup="$DRY_LAST_EDITED_DEST"
+      elif [[ -e "$POLKIT_RULE" && ! -r "$POLKIT_RULE" ]]; then
+        polkit_status="restore-from-backup-unreadable"
+        DRY_NEEDS_ROOT=true
+        dry_action "Would restore $POLKIT_RULE from backup (existing rule unreadable without root to check edits)."
+      fi
+      dry_action "Would restore $POLKIT_RULE from backup (${POLKIT_RULE}.lightxdm.bak)."
+    elif [[ -e "${POLKIT_RULE}.lightxdm.absent" || -L "${POLKIT_RULE}.lightxdm.absent" ]]; then
+      polkit_status="remove-absent-marker"
+      if [[ -e "$POLKIT_RULE" || -L "$POLKIT_RULE" ]]; then
+        if [[ -r "$POLKIT_RULE" ]] && is_lightxdm_polkit_rule "$POLKIT_RULE"; then
+          polkit_status="remove"
+          dry_action "Would remove Polkit rule: $POLKIT_RULE."
+        else
+          DRY_LAST_EDITED_DEST=""
+          save_edited_dotfile "$POLKIT_RULE" 1
+          polkit_edited_backup="$DRY_LAST_EDITED_DEST"
+          polkit_status="save-edited-and-remove-absent"
+        fi
+      fi
+      dry_action "Would remove ${POLKIT_RULE}.lightxdm.absent."
+    elif is_lightxdm_polkit_rule "$POLKIT_RULE"; then
+      polkit_status="remove"
+      dry_action "Would remove Polkit rule: $POLKIT_RULE."
+    elif [[ -e "$POLKIT_RULE" || -L "$POLKIT_RULE" ]]; then
+      polkit_status="keep"
+      dry_action "Would keep $POLKIT_RULE (not an unmodified lightXDM rule)."
+    else
+      polkit_status="absent"
+      dry_action "No Polkit rule found; would skip."
+    fi
+
+    cleanup_home_dotfiles 1
+    cleanup_home_state_dir 1
+
+    if path_needs_sudo "$DM_STATE_FILE"; then
+      dm_status="unknown-needs-root"
+      DRY_NEEDS_ROOT=true
+      dry_action "Disabled display managers ($DM_STATE_FILE): unknown (needs root)."
+    elif [[ -L "$DM_STATE_FILE" ]]; then
+      dm_status="unlink-symlink"
+      dry_action "Would unlink symlinked $DM_STATE_FILE without re-enabling display managers."
+    elif [[ -f "$DM_STATE_FILE" ]]; then
+      local dm_unit dm_state dm_recorded=0
+      while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
+        [[ -n "$dm_unit" ]] || continue
+        dm_recorded=1
+        dm_state="$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)"
+        case "$dm_state" in
+          not-found)
+            dry_warn_out "Warning: $dm_unit is not installed any more; would skip it."
+            dm_skip+=("$dm_unit")
+            ;;
+          masked | masked-runtime)
+            dry_warn_out "Warning: $dm_unit is masked; would warn and skip re-enabling."
+            dm_skip+=("$dm_unit")
+            ;;
+          *)
+            dry_action "Would re-enable display manager: $dm_unit (current state: ${dm_state:-unknown})."
+            dm_reenable+=("$dm_unit")
+            ;;
+        esac
+      done < "$DM_STATE_FILE"
+      if [[ $dm_recorded -eq 0 ]]; then
+        dm_status="empty"
+        dry_action "No disabled display managers listed in $DM_STATE_FILE."
+      elif [[ ${#dm_reenable[@]} -gt 0 ]]; then
+        dm_status="reenable"
+      else
+        dm_status="skip-only"
+      fi
+      dry_action "Would remove $DM_STATE_FILE."
+    else
+      dm_status="absent"
+      dry_action "No disabled display managers recorded ($DM_STATE_FILE)."
+    fi
+  fi
+
+  if [[ $DRY_RUN_JSON -eq 0 ]]; then
+    echo "Dry run complete: no files or systemd units were modified."
     return 0
   fi
 
-  local override_dir="${OVERRIDE_DIR:-/etc/systemd/system/getty@tty1.service.d}"
-  local override_file="$override_dir/lightxdm-autologin.conf"
-  local legacy_override="$override_dir/override.conf"
-  local autologin_seen=0
-  if path_needs_sudo "$override_file" || path_needs_sudo "$legacy_override"; then
-    echo "TTY1 autologin ($override_dir): unknown (needs root)."
+  local keyring_json="false" target_home_val="" idx
+  if [[ $keyring_only -eq 1 ]]; then
+    keyring_json="true"
   else
-    if [[ -f "$override_file" || -L "$override_file" ]]; then
-      echo "Would disable TTY1 autologin (remove $override_file)."
-      autologin_seen=1
-    fi
-    if [[ -f "$legacy_override" && ! -L "$legacy_override" && -r "$legacy_override" ]]; then
-      local legacy_lines=() exec_re='^ExecStart=-/usr/bin/agetty --autologin [^-[:space:]:][^[:space:]:]* --noclear %I [$]TERM$'
-      mapfile -t legacy_lines < "$legacy_override"
-      if [[ ${#legacy_lines[@]} -eq 3 && "${legacy_lines[0]}" == "[Service]" && "${legacy_lines[1]}" == "ExecStart=" && "${legacy_lines[2]}" =~ $exec_re ]]; then
-        echo "Would remove legacy autologin override: $legacy_override."
-        autologin_seen=1
-      else
-        echo "Would keep $legacy_override (not written by lightXDM)."
-      fi
-    elif [[ -L "$legacy_override" ]]; then
-      echo "Would keep $legacy_override (not written by lightXDM)."
-    fi
-    local autologin_status status_line
-    autologin_status="$(LOGIN_FILE=/dev/null bash "$SCRIPT_DIR/enable-autologin.sh" --status 2>&1 || true)"
-    while IFS= read -r status_line || [[ -n "$status_line" ]]; do
-      [[ "$status_line" == Warning:* || "$status_line" == Note:* ]] || continue
-      echo "$status_line"
-    done <<<"$autologin_status"
-    if [[ $autologin_seen -eq 0 ]]; then
-      echo "No lightXDM autologin drop-in found; would skip."
-    fi
+    target_home_val="${TARGET_HOME:-}"
+  fi
+  local state_dir_val="" state_status_val="kept-keyring-only"
+  if [[ $keyring_only -eq 0 ]]; then
+    state_dir_val="$DRY_STATE_DIR"
+    state_status_val="$DRY_STATE_DIR_STATUS"
   fi
 
-  if path_needs_sudo "$POLKIT_RULE" || path_needs_sudo "${POLKIT_RULE}.lightxdm.bak" || path_needs_sudo "${POLKIT_RULE}.lightxdm.absent"; then
-    echo "Polkit rule ($POLKIT_RULE): unknown (needs root)."
-  elif [[ -e "${POLKIT_RULE}.lightxdm.bak" || -L "${POLKIT_RULE}.lightxdm.bak" ]]; then
-    if [[ -L "$POLKIT_RULE" ]] || { [[ -e "$POLKIT_RULE" && -r "$POLKIT_RULE" ]] && ! is_lightxdm_polkit_rule "$POLKIT_RULE"; }; then
-      save_edited_dotfile "$POLKIT_RULE" 1
-    elif [[ -e "$POLKIT_RULE" && ! -r "$POLKIT_RULE" ]]; then
-      echo "Would restore $POLKIT_RULE from backup (existing rule unreadable without root to check edits)."
-    fi
-    echo "Would restore $POLKIT_RULE from backup (${POLKIT_RULE}.lightxdm.bak)."
-  elif [[ -e "${POLKIT_RULE}.lightxdm.absent" || -L "${POLKIT_RULE}.lightxdm.absent" ]]; then
-    if [[ -e "$POLKIT_RULE" || -L "$POLKIT_RULE" ]]; then
-      if [[ -r "$POLKIT_RULE" ]] && is_lightxdm_polkit_rule "$POLKIT_RULE"; then
-        echo "Would remove Polkit rule: $POLKIT_RULE."
-      else
-        save_edited_dotfile "$POLKIT_RULE" 1
-      fi
-    fi
-    echo "Would remove ${POLKIT_RULE}.lightxdm.absent."
-  elif is_lightxdm_polkit_rule "$POLKIT_RULE"; then
-    echo "Would remove Polkit rule: $POLKIT_RULE."
-  elif [[ -e "$POLKIT_RULE" || -L "$POLKIT_RULE" ]]; then
-    echo "Would keep $POLKIT_RULE (not an unmodified lightXDM rule)."
-  else
-    echo "No Polkit rule found; would skip."
-  fi
-
-  cleanup_home_dotfiles 1
-  cleanup_home_state_dir 1
-
-  if path_needs_sudo "$DM_STATE_FILE"; then
-    echo "Disabled display managers ($DM_STATE_FILE): unknown (needs root)."
-  elif [[ -L "$DM_STATE_FILE" ]]; then
-    echo "Would unlink symlinked $DM_STATE_FILE without re-enabling display managers."
-  elif [[ -f "$DM_STATE_FILE" ]]; then
-    local dm_unit dm_state dm_recorded=0
-    while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
-      [[ -n "$dm_unit" ]] || continue
-      dm_recorded=1
-      dm_state="$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)"
-      case "$dm_state" in
-        not-found) echo "Warning: $dm_unit is not installed any more; would skip it." ;;
-        masked | masked-runtime) echo "Warning: $dm_unit is masked; would warn and skip re-enabling." ;;
-        *) echo "Would re-enable display manager: $dm_unit (current state: ${dm_state:-unknown})." ;;
-      esac
-    done < "$DM_STATE_FILE"
-    if [[ $dm_recorded -eq 0 ]]; then
-      echo "No disabled display managers listed in $DM_STATE_FILE."
-    fi
-    echo "Would remove $DM_STATE_FILE."
-  else
-    echo "No disabled display managers recorded ($DM_STATE_FILE)."
-  fi
-  echo "Dry run complete: no files or systemd units were modified."
+  printf '{\n'
+  printf '  "mode": "uninstall-dry-run",\n'
+  printf '  "keyring_only": %s,\n' "$keyring_json"
+  printf '  "target_home": %s,\n' "$(json_str_or_null "$target_home_val")"
+  printf '  "login_file": %s,\n' "$(json_str "$LOGIN_FILE")"
+  printf '  "needs_root": %s,\n' "$DRY_NEEDS_ROOT"
+  printf '  "pam": {\n'
+  printf '    "status": %s,\n' "$(json_str "$pam_status")"
+  printf '    "backup_file": %s,\n' "$(json_str "$backup_file")"
+  printf '    "gnome_lines_to_remove": %d,\n' "$gnome_hits"
+  printf '    "lightxdm_lines_to_remove": %d,\n' "$((gnome_hits + keyring_hits))"
+  printf '    "keep_backup": %s,\n' "$pam_keep_backup"
+  printf '    "residual_keyring_warning": %s\n' "$pam_residual_warning"
+  printf '  },\n'
+  printf '  "gnome_session_type": {\n'
+  printf '    "path": %s,\n' "$(json_str "$GNOME_SESSION_TYPE_DEST")"
+  printf '    "status": %s\n' "$(json_str "$gnome_session_status")"
+  printf '  },\n'
+  printf '  "pam_keyring_state": {\n'
+  printf '    "path": %s,\n' "$(json_str "$PAM_KEYRING_STATE")"
+  printf '    "status": %s\n' "$(json_str "$pam_keyring_status")"
+  printf '  },\n'
+  printf '  "pam_login_base_state": {\n'
+  printf '    "path": %s,\n' "$(json_str "$PAM_LOGIN_BASE_STATE")"
+  printf '    "status": %s\n' "$(json_str "$pam_login_base_status")"
+  printf '  },\n'
+  printf '  "polkit": {\n'
+  printf '    "path": %s,\n' "$(json_str "$POLKIT_RULE")"
+  printf '    "status": %s,\n' "$(json_str "$polkit_status")"
+  printf '    "edited_backup": %s\n' "$(json_str_or_null "$polkit_edited_backup")"
+  printf '  },\n'
+  printf '  "autologin": {\n'
+  printf '    "override_dir": %s,\n' "$(json_str "$override_dir")"
+  printf '    "status": %s,\n' "$(json_str "$autologin_status")"
+  printf '    "remove_files": '
+  print_json_string_array "${autologin_remove_files[@]}"
+  printf ',\n'
+  printf '    "keep_files": '
+  print_json_string_array "${autologin_keep_files[@]}"
+  printf ',\n'
+  printf '    "recommended_command": %s\n' "$(json_str_or_null "$autologin_recommended_cmd")"
+  printf '  },\n'
+  printf '  "display_managers": {\n'
+  printf '    "state_file": %s,\n' "$(json_str "$DM_STATE_FILE")"
+  printf '    "status": %s,\n' "$(json_str "$dm_status")"
+  printf '    "reenable": '
+  print_json_string_array "${dm_reenable[@]}"
+  printf ',\n'
+  printf '    "skip": '
+  print_json_string_array "${dm_skip[@]}"
+  printf '\n  },\n'
+  printf '  "dotfiles": [\n'
+  for ((idx = 0; idx < ${#DRY_DOTFILE_JSON[@]}; idx++)); do
+    [[ $idx -gt 0 ]] && printf ',\n'
+    printf '    %s' "${DRY_DOTFILE_JSON[$idx]}"
+  done
+  printf '\n  ],\n'
+  printf '  "shell_hooks": [\n'
+  for ((idx = 0; idx < ${#DRY_SHELL_HOOK_JSON[@]}; idx++)); do
+    [[ $idx -gt 0 ]] && printf ',\n'
+    printf '    %s' "${DRY_SHELL_HOOK_JSON[$idx]}"
+  done
+  printf '\n  ],\n'
+  printf '  "state_files": {\n'
+  printf '    "dir": %s,\n' "$(json_str_or_null "$state_dir_val")"
+  printf '    "status": %s,\n' "$(json_str "$state_status_val")"
+  printf '    "remove_dir_if_empty": %s,\n' "$DRY_STATE_DIR_REMOVE"
+  printf '    "files": ['
+  for ((idx = 0; idx < ${#DRY_STATE_FILE_JSON[@]}; idx++)); do
+    [[ $idx -gt 0 ]] && printf ', '
+    printf '%s' "${DRY_STATE_FILE_JSON[$idx]}"
+  done
+  printf ']\n'
+  printf '  },\n'
+  printf '  "actions": '
+  print_json_string_array "${DRY_ACTIONS[@]}"
+  printf ',\n'
+  printf '  "warnings": '
+  print_json_string_array "${DRY_WARNINGS[@]}"
+  printf ',\n'
+  printf '  "notes": '
+  print_json_string_array "${DRY_NOTES[@]}"
+  printf '\n}\n'
 }
 
 main() {
-  local keyring_only=0 dry_run=0 arg
-  local usage="Usage: sudo bash $0 [-h|--help] [--keyring-only] [--dry-run]"
+  local keyring_only=0 dry_run=0 json_mode=0 arg
+  local usage="Usage: sudo bash $0 [-h|--help] [--keyring-only] [--dry-run [--json]]"
   for arg in "$@"; do
     case "$arg" in
       -h | --help)
@@ -696,6 +1053,7 @@ main() {
         echo "$usage"
         echo "  --keyring-only  remove only the keyring lines lightXDM added to /etc/pam.d/login (for switching to autologin)"
         echo "  --dry-run       preview the changes uninstall would make without modifying files or systemd units (no sudo needed for readable files)"
+        echo "  --json          emit machine-readable JSON on stdout (requires --dry-run; implies no writes or prompts)"
         echo "Run it with sudo from your user account; as root without sudo, set TARGET_HOME=/home/<user>."
         exit 0
         ;;
@@ -715,6 +1073,14 @@ main() {
         fi
         dry_run=1
         ;;
+      --json)
+        if [[ $json_mode -eq 1 ]]; then
+          echo "Duplicate option: $arg" >&2
+          echo "$usage" >&2
+          exit 1
+        fi
+        json_mode=1
+        ;;
       *)
         echo "Unknown option: $*" >&2
         echo "$usage" >&2
@@ -722,6 +1088,12 @@ main() {
         ;;
     esac
   done
+
+  if [[ $json_mode -eq 1 && $dry_run -eq 0 ]]; then
+    echo "--json requires --dry-run." >&2
+    echo "$usage" >&2
+    exit 1
+  fi
 
   if [[ $EUID -ne 0 && $dry_run -eq 0 ]]; then
     echo "Please run as root (with sudo)."
@@ -777,6 +1149,7 @@ main() {
   fi
 
   if [[ $dry_run -eq 1 ]]; then
+    DRY_RUN_JSON="$json_mode"
     preview_uninstall "$keyring_only" "$BACKUP_FILE"
     exit 0
   fi
