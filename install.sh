@@ -4000,7 +4000,7 @@ apply_shell_hook() {
         log "Failed updating shell hook in $target."
         return 1
       fi
-      if cmp -s "$tmp" "$target"; then
+      if [[ "$(sha256sum < "$tmp")" == "$(sha256sum < "$target")" ]]; then
         rm -f -- "$block_file" "$tmp"
         if [[ $preview -eq 1 ]]; then
           printf 'Shell hook (%s): already up to date in %s\n' "$resolved" "$target"

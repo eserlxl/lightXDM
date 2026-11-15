@@ -14395,7 +14395,7 @@ run_setup_shell_cmd() {
     DISPLAY_MANAGER_LINK="$setup_shell_etc/systemd/system/display-manager.service" \
     AUTOLOGIN_DROPIN_DIR="$setup_shell_etc/getty@tty1.service.d" \
     SETUP_SHELL_SUDO_LOG="$setup_shell_sudo_log" \
-    PATH="$setup_shell_bin:/usr/bin:/bin" \
+    PATH="${SETUP_SHELL_PATH:-$setup_shell_bin:/usr/bin:/bin}" \
     bash "$REPO_ROOT/install.sh" "$@"
 }
 
@@ -14477,6 +14477,54 @@ if [[ $ss_rc -ne 0 || "$zprof_mode" != "640" ]] ||
   [[ "$(cat "$setup_shell_home/.zprofile")" != *"$zsh_snip"* ]]; then
   ss_ok=0
   ss_report+=" zsh-update rc=$ss_rc mode=$zprof_mode out=[$ss_out];"
+fi
+
+# Managed hook updates and idempotency work when cmp (diffutils) is absent from PATH
+no_cmp_ss_bin="$setup_shell_dir/no_cmp_bin"
+mkdir -p "$no_cmp_ss_bin"
+for tool in bash dirname awk mktemp cat chmod mv rm mkdir grep tail wc sha256sum env; do
+  ln -sf "$(command -v "$tool")" "$no_cmp_ss_bin/$tool"
+done
+for tool in id getent sudo systemctl pacman startx i3; do
+  ln -sf "$setup_shell_bin/$tool" "$no_cmp_ss_bin/$tool"
+done
+cat >"$setup_shell_home/.zprofile" <<'EOF'
+# top comment
+# >>> lightXDM TTY1 auto-start >>>
+echo old hook
+# <<< lightXDM TTY1 auto-start <<<
+# bottom comment
+EOF
+ss_rc=0
+ss_out="$(SETUP_SHELL_PATH="$no_cmp_ss_bin" run_setup_shell_cmd --setup-shell zsh --dry-run 2>&1)" || ss_rc=$?
+if [[ $ss_rc -ne 0 || "$ss_out" != *"would update managed block"* || "$ss_out" == *"command not found"* ]] ||
+  ! grep -Fq "echo old hook" "$setup_shell_home/.zprofile"; then
+  ss_ok=0
+  ss_report+=" zsh-nocmp-dry-update rc=$ss_rc out=[$ss_out];"
+fi
+ss_rc=0
+ss_out="$(SETUP_SHELL_PATH="$no_cmp_ss_bin" run_setup_shell_cmd --setup-shell zsh 2>&1)" || ss_rc=$?
+if [[ $ss_rc -ne 0 || "$ss_out" != *"Updated lightXDM shell hook (zsh)"* || "$ss_out" == *"command not found"* ]] ||
+  grep -Fq "echo old hook" "$setup_shell_home/.zprofile" ||
+  ! grep -Fxq "# top comment" "$setup_shell_home/.zprofile" ||
+  ! grep -Fxq "# bottom comment" "$setup_shell_home/.zprofile" ||
+  [[ "$(cat "$setup_shell_home/.zprofile")" != *"$zsh_snip"* ]]; then
+  ss_ok=0
+  ss_report+=" zsh-nocmp-update rc=$ss_rc out=[$ss_out];"
+fi
+zprof_nocmp_before="$(cat "$setup_shell_home/.zprofile")"
+ss_rc=0
+ss_out="$(SETUP_SHELL_PATH="$no_cmp_ss_bin" run_setup_shell_cmd --setup-shell zsh --dry-run 2>&1)" || ss_rc=$?
+if [[ $ss_rc -ne 0 || "$ss_out" != *"already up to date"* || "$ss_out" == *"would update"* || "$ss_out" == *"command not found"* ]]; then
+  ss_ok=0
+  ss_report+=" zsh-nocmp-dry-idem rc=$ss_rc out=[$ss_out];"
+fi
+ss_rc=0
+ss_out="$(SETUP_SHELL_PATH="$no_cmp_ss_bin" run_setup_shell_cmd --setup-shell zsh 2>&1)" || ss_rc=$?
+if [[ $ss_rc -ne 0 || "$ss_out" != *"already up to date"* || "$ss_out" == *"Updated lightXDM shell hook"* || "$ss_out" == *"command not found"* ||
+  "$(cat "$setup_shell_home/.zprofile")" != "$zprof_nocmp_before" ]]; then
+  ss_ok=0
+  ss_report+=" zsh-nocmp-idem rc=$ss_rc out=[$ss_out];"
 fi
 
 # Existing unfenced snippet stays untouched (no duplicate block)
