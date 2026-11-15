@@ -3284,12 +3284,16 @@ run_preflight() {
       mapfile -t detected_des <<<"$detected_raw"
       first_de="${detected_des[0]}"
       diag_record_check "$json_mode" "Detected desktop(s)" "info" "${detected_des[*]}" "${detected_des[*]}"
-      printf -v next_step '%s --dry-run --de %s   (or %s)' "$install_cmd" "$first_de" "$install_cmd"
+      if [[ $blockers -eq 0 ]]; then
+        printf -v next_step '%s --dry-run --de %s   (or %s)' "$install_cmd" "$first_de" "$install_cmd"
+      fi
     else
       diag_record_check "$json_mode" "Detected desktop(s)" "info" "none installed" "none installed"
-      printf -v next_step '%s --list-sessions   (or %s to pick a desktop)' "$install_cmd" "$install_cmd"
+      if [[ $blockers -eq 0 ]]; then
+        printf -v next_step '%s --list-sessions   (or %s to pick a desktop)' "$install_cmd" "$install_cmd"
+      fi
     fi
-    if [[ $json_mode -eq 0 ]]; then
+    if [[ $json_mode -eq 0 && -n "$next_step" ]]; then
       printf 'Next step: %s\n' "$next_step"
     fi
   else

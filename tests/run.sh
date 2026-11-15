@@ -13922,11 +13922,13 @@ fi
 
 set +e
 pf_masked="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
-  PREFLIGHT_GETTY=masked DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  PREFLIGHT_GETTY=masked PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_rc=$?
 set -e
-if [[ $pf_rc -ne 1 || "$pf_masked" != *"getty@tty1.service: FAIL (masked"* || "$pf_masked" != *"Preflight: FAIL (1 blocker(s)"* ]]; then
+if [[ $pf_rc -ne 1 || "$pf_masked" != *"getty@tty1.service: FAIL (masked"* ||
+  "$pf_masked" != *"Detected desktop(s): xfce"* || "$pf_masked" == *"Next step:"* ||
+  "$pf_masked" != *"Preflight: FAIL (1 blocker(s)"* ]]; then
   preflight_ok=0
   preflight_report+=" [masked getty rc=$pf_rc out=$pf_masked]"
 fi
@@ -13942,7 +13944,8 @@ pf_nosudo="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_no_sud
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_rc=$?
 set -e
-if [[ $pf_rc -ne 1 || "$pf_nosudo" != *"User/sudo: FAIL (sudo not found"* || "$pf_nosudo" != *"Preflight: FAIL (1 blocker(s)"* ]]; then
+if [[ $pf_rc -ne 1 || "$pf_nosudo" != *"User/sudo: FAIL (sudo not found"* ||
+  "$pf_nosudo" == *"Next step:"* || "$pf_nosudo" != *"Preflight: FAIL (1 blocker(s)"* ]]; then
   preflight_ok=0
   preflight_report+=" [no sudo rc=$pf_rc out=$pf_nosudo]"
 fi
@@ -14066,6 +14069,10 @@ pf_js_fail="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_no_pa
   PREFLIGHT_GETTY=masked DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_fail.err")"
 pf_js_fail_rc=$?
+pf_js_masked="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_GETTY=masked PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_masked.err")"
+pf_js_masked_rc=$?
 set -e
 if [[ $pf_js_pass_rc -ne 0 || -s "$preflight_dir/js_pass.err" ]] ||
   ! JSON_OUT="$pf_js_pass" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
@@ -14091,6 +14098,20 @@ PY
 then
   preflight_ok=0
   preflight_report+=" [json fail rc=$pf_js_fail_rc err=$(<"$preflight_dir/js_fail.err") out=$pf_js_fail]"
+fi
+if [[ $pf_js_masked_rc -ne 1 || -s "$preflight_dir/js_masked.err" ]] ||
+  ! JSON_OUT="$pf_js_masked" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["ready"] is False and d["status"] == "fail" and d["blockers"] == 1
+assert d["detected_desktops"] == ["xfce"] and d["next_step"] is None
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["getty@tty1.service"]["status"] == "fail"
+assert checks["Detected desktop(s)"]["status"] == "info"
+PY
+then
+  preflight_ok=0
+  preflight_report+=" [json masked rc=$pf_js_masked_rc err=$(<"$preflight_dir/js_masked.err") out=$pf_js_masked]"
 fi
 
 for bad_pf_js in "--preflight --json --dry-run" "--preflight --doctor --json" "--status --preflight --json"; do
