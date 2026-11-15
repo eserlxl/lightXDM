@@ -13269,4 +13269,325 @@ else
   fail "install.sh --preflight:$preflight_report"
 fi
 
+doctor_dir="$(mktemp -d)"
+tmp_dirs+=("$doctor_dir")
+doctor_home="$doctor_dir/home"
+doctor_state="$doctor_dir/state"
+doctor_bin="$doctor_dir/bin"
+doctor_etc="$doctor_dir/etc"
+doctor_root="$doctor_dir/sysroot"
+mkdir -p "$doctor_home/.config/lightxdm" "$doctor_state" "$doctor_bin" "$doctor_etc/pam.d" "$doctor_etc/lightxdm" "$doctor_etc/systemd/system" "$doctor_etc/getty@tty1.service.d" "$doctor_root/usr/bin" "$doctor_root/usr/lib/security"
+
+cat >"$doctor_bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${DOCTOR_SUDO_LOG:?}"
+exit 1
+EOF
+cat >"$doctor_bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}:${2:-}" in
+  is-enabled:getty@tty1.service) printf '%s\n' "${FAKE_GETTY_STATE:-enabled}" ;;
+  is-enabled:sddm.service) printf '%s\n' "${FAKE_SDDM_STATE:-disabled}" ;;
+  list-unit-files:) printf 'getty@tty1.service enabled\nsddm.service disabled\n' ;;
+esac
+EOF
+cat >"$doctor_bin/getent" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == passwd ]]; then
+  printf '%s:x:1000:1000::%s:%s\n' "${2:-testuser}" "${HOME:-/tmp}" "${FAKE_SHELL:-/bin/bash}"
+fi
+EOF
+cat >"$doctor_bin/pacman" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  -Qqo) printf 'pambase\n' ;;
+  -Qii) printf '%s [unmodified]\n' "${LOGIN_FILE:-/etc/pam.d/login}" ;;
+esac
+EOF
+cat >"$doctor_bin/startx" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$doctor_bin/startxfce4" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$doctor_root/usr/bin/gnome-session" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+touch "$doctor_root/usr/lib/security/pam_gnome_keyring.so"
+chmod +x "$doctor_bin/sudo" "$doctor_bin/systemctl" "$doctor_bin/getent" "$doctor_bin/pacman" "$doctor_bin/startx" "$doctor_bin/startxfce4" "$doctor_root/usr/bin/gnome-session"
+
+run_doctor_cmd() {
+  env -u SUDO_USER -u DISPLAY -u WAYLAND_DISPLAY \
+    HOME="$doctor_home" \
+    USER="testuser" \
+    XDG_STATE_HOME="$doctor_state" \
+    SESSION_ROOT="$doctor_root" \
+    LOGIN_FILE="$doctor_etc/pam.d/login" \
+    GNOME_SESSION_TYPE_DEST="$doctor_etc/lightxdm/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$doctor_etc/lightxdm/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$doctor_etc/lightxdm/pam-login-base" \
+    DM_STATE_FILE="$doctor_etc/lightxdm/disabled-display-managers" \
+    DISPLAY_MANAGER_LINK="$doctor_etc/systemd/system/display-manager.service" \
+    AUTOLOGIN_DROPIN_DIR="$doctor_etc/getty@tty1.service.d" \
+    DOCTOR_SUDO_LOG="$doctor_dir/sudo.log" \
+    PATH="$doctor_bin:/usr/bin:/bin" \
+    bash "$REPO_ROOT/install.sh" "$@"
+}
+
+reset_doctor_gnome_fixture() {
+  rm -rf "$doctor_home" "$doctor_state" "$doctor_etc" "$doctor_dir/sudo.log"
+  mkdir -p "$doctor_home/.config/lightxdm" "$doctor_state/lightxdm" "$doctor_etc/pam.d" "$doctor_etc/lightxdm" "$doctor_etc/systemd/system" "$doctor_etc/getty@tty1.service.d"
+  mkdir -p "$doctor_root/usr/bin" "$doctor_root/usr/lib/security"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$doctor_root/usr/bin/gnome-session"
+  chmod +x "$doctor_root/usr/bin/gnome-session"
+  : >"$doctor_root/usr/lib/security/pam_gnome_keyring.so"
+
+  cat >"$doctor_state/lightxdm/install-choices" <<'EOF'
+de=gnome
+no_packages=1
+EOF
+  cp "$REPO_ROOT/dotfiles/.bash_profile" "$doctor_home/.bash_profile"
+  cp "$REPO_ROOT/dotfiles/.wayland-session-gnome" "$doctor_home/.wayland-session"
+  chmod 755 "$doctor_home/.wayland-session"
+  printf 'gnome\n' >"$doctor_etc/lightxdm/pam-keyring"
+  cat >"$doctor_etc/lightxdm/gnome-session-type.conf" <<'EOF'
+XDG_SESSION_TYPE=wayland
+EOF
+  cat >"$doctor_etc/pam.d/login" <<EOF
+#%PAM-1.0
+auth       include      system-local-login
+auth       optional   pam_gnome_keyring.so
+session    include      system-local-login
+session    optional   pam_gnome_keyring.so auto_start
+# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)
+session    [success=2 default=ignore] pam_succeed_if.so quiet tty notin tty1:/dev/tty1
+session    [success=1 default=ignore] pam_succeed_if.so quiet user != testuser
+session    optional   pam_env.so readenv=0 user_readenv=0 conffile=$doctor_etc/lightxdm/gnome-session-type.conf
+EOF
+  sha256sum <"$doctor_etc/pam.d/login" | awk '{print $1}' >"$doctor_etc/lightxdm/pam-login-base"
+  cat >"$doctor_etc/pam.d/login.lightxdm.bak" <<'EOF'
+#%PAM-1.0
+auth       include      system-local-login
+session    include      system-local-login
+EOF
+}
+
+doctor_ok=1
+doctor_report=""
+
+help_doc_out="$(bash "$REPO_ROOT/install.sh" --help 2>&1 || true)"
+if [[ "$help_doc_out" != *"--doctor"* ]]; then
+  doctor_ok=0
+  doctor_report+=" missing --doctor from --help;"
+fi
+
+# Fresh uninstalled tree must fail cleanly without sudo
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Install state: FAIL"* || "$doc_out" != *"Doctor: FAIL"* ]]; then
+  doctor_ok=0
+  doctor_report+=" fresh-uninstalled rc=$doc_rc out=[$doc_out];"
+fi
+
+# Healthy GNOME Wayland install
+reset_doctor_gnome_fixture
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"Doctor: PASS" || "$doc_out" == *"warning(s)"* || "$doc_out" == *"WARN"* || -e "$doctor_dir/sudo.log" ]]; then
+  doctor_ok=0
+  doctor_report+=" healthy-gnome rc=$doc_rc out=[$doc_out];"
+fi
+
+# Healthy X11 xfce install
+reset_doctor_gnome_fixture
+rm -f "$doctor_home/.wayland-session" "$doctor_etc/lightxdm/pam-keyring" "$doctor_etc/lightxdm/gnome-session-type.conf"
+cat >"$doctor_etc/pam.d/login" <<'EOF'
+#%PAM-1.0
+auth       include      system-local-login
+session    include      system-local-login
+EOF
+printf 'de=xfce\nno_packages=1\n' >"$doctor_state/lightxdm/install-choices"
+cp "$REPO_ROOT/dotfiles/.xinitrc-xfce" "$doctor_home/.xinitrc"
+chmod 755 "$doctor_home/.xinitrc"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"Session launcher: ok"* || "$doc_out" != *"Doctor: PASS"* ]]; then
+  doctor_ok=0
+  doctor_report+=" healthy-x11 rc=$doc_rc out=[$doc_out];"
+fi
+
+# X11 shadowed by executable ~/.wayland-session
+cp "$REPO_ROOT/dotfiles/.wayland-session-gnome" "$doctor_home/.wayland-session"
+chmod 755 "$doctor_home/.wayland-session"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"shadows X11"* || "$doc_out" != *"Doctor: FAIL"* ]]; then
+  doctor_ok=0
+  doctor_report+=" x11-shadowed rc=$doc_rc out=[$doc_out];"
+fi
+
+# Non-executable ~/.wayland-session for Wayland
+reset_doctor_gnome_fixture
+chmod 644 "$doctor_home/.wayland-session"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"not executable"* || "$doc_out" != *"chmod +x ~/.wayland-session"* ]]; then
+  doctor_ok=0
+  doctor_report+=" nonexec-wayland rc=$doc_rc out=[$doc_out];"
+fi
+
+# Invalid bash syntax in ~/.wayland-session
+reset_doctor_gnome_fixture
+printf '#!/usr/bin/env bash\nif true; then\nexec /usr/bin/gnome-session\n' >"$doctor_home/.wayland-session"
+chmod 755 "$doctor_home/.wayland-session"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Session syntax: FAIL"* ]]; then
+  doctor_ok=0
+  doctor_report+=" bad-syntax rc=$doc_rc out=[$doc_out];"
+fi
+
+# Missing Wayland session binary
+reset_doctor_gnome_fixture
+rm -f "$doctor_root/usr/bin/gnome-session"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Session command: FAIL"* ]]; then
+  doctor_ok=0
+  doctor_report+=" missing-session-bin rc=$doc_rc out=[$doc_out];"
+fi
+
+# Missing keyring .so module
+reset_doctor_gnome_fixture
+rm -f "$doctor_root/usr/lib/security/pam_gnome_keyring.so"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"PAM keyring module: FAIL"* ]]; then
+  doctor_ok=0
+  doctor_report+=" missing-so rc=$doc_rc out=[$doc_out];"
+fi
+
+# zsh and fish login shell checks (missing vs snippet-present)
+reset_doctor_gnome_fixture
+doc_rc=0
+doc_out="$(FAKE_SHELL=/usr/bin/zsh run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"--shell-snippet zsh >> ~/.zprofile"* ]]; then
+  doctor_ok=0
+  doctor_report+=" missing-zsh rc=$doc_rc out=[$doc_out];"
+fi
+bash "$REPO_ROOT/install.sh" --shell-snippet zsh >"$doctor_home/.zprofile"
+doc_rc=0
+doc_out="$(FAKE_SHELL=/usr/bin/zsh run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"Login shell auto-start: ok (/usr/bin/zsh via ~/.zprofile)"* ]]; then
+  doctor_ok=0
+  doctor_report+=" valid-zsh rc=$doc_rc out=[$doc_out];"
+fi
+
+mkdir -p "$doctor_home/.config/fish"
+bash "$REPO_ROOT/install.sh" --shell-snippet fish >"$doctor_home/.config/fish/config.fish"
+doc_rc=0
+doc_out="$(FAKE_SHELL=/usr/bin/fish run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"Login shell auto-start: ok (/usr/bin/fish via ~/.config/fish/config.fish)"* ]]; then
+  doctor_ok=0
+  doctor_report+=" valid-fish rc=$doc_rc out=[$doc_out];"
+fi
+
+# no-autostart pause detection
+reset_doctor_gnome_fixture
+: >"$doctor_home/.config/lightxdm/no-autostart"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Auto-start pause: FAIL"* || "$doc_out" != *"rm ~/.config/lightxdm/no-autostart"* ]]; then
+  doctor_ok=0
+  doctor_report+=" pause-marker rc=$doc_rc out=[$doc_out];"
+fi
+
+# PAM login.pacnew package replacement + dropped keyring lines
+reset_doctor_gnome_fixture
+cat >"$doctor_etc/pam.d/login" <<'EOF'
+#%PAM-1.0
+# updated pambase
+auth       include      system-local-login
+session    include      system-local-login
+EOF
+: >"$doctor_etc/pam.d/login.pacnew"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"PAM .pacnew: FAIL"* || "$doc_out" != *"PAM keyring: FAIL"* || "$doc_out" != *"PAM GNOME session type: FAIL"* ]]; then
+  doctor_ok=0
+  doctor_report+=" pacnew-replaced rc=$doc_rc out=[$doc_out];"
+fi
+
+# Missing GNOME session-type conf file while block present
+reset_doctor_gnome_fixture
+rm -f "$doctor_etc/lightxdm/gnome-session-type.conf"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"PAM GNOME session type: FAIL"* ]]; then
+  doctor_ok=0
+  doctor_report+=" missing-gnome-conf rc=$doc_rc out=[$doc_out];"
+fi
+
+# Masked getty@tty1 + re-enabled DM
+reset_doctor_gnome_fixture
+doc_rc=0
+doc_out="$(FAKE_GETTY_STATE=masked FAKE_SDDM_STATE=enabled run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"getty@tty1.service: FAIL (masked"* || "$doc_out" != *"Display managers: FAIL (sddm enabled"* ]]; then
+  doctor_ok=0
+  doctor_report+=" masked-getty-dm rc=$doc_rc out=[$doc_out];"
+fi
+
+# Autologin enabled alongside configured PAM keyring emits warning
+reset_doctor_gnome_fixture
+cat >"$doctor_etc/getty@tty1.service.d/lightxdm-autologin.conf" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty -o '-p -f -- \u' --noclear --autologin testuser %I $TERM
+EOF
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"Autologin: WARN"* || "$doc_out" != *"Doctor: PASS (0 issue(s), 1 warning(s))"* ]]; then
+  doctor_ok=0
+  doctor_report+=" autologin-warn rc=$doc_rc out=[$doc_out];"
+fi
+
+# Root-only unreadable PAM/autologin degrade softly to unknown (needs root)
+if [[ $EUID -ne 0 ]]; then
+  reset_doctor_gnome_fixture
+  chmod 000 "$doctor_etc/pam.d/login" "$doctor_etc/lightxdm/pam-keyring" "$doctor_etc/lightxdm/gnome-session-type.conf" "$doctor_etc/getty@tty1.service.d"
+  doc_rc=0
+  doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+  chmod 755 "$doctor_etc/getty@tty1.service.d"
+  chmod 644 "$doctor_etc/pam.d/login" "$doctor_etc/lightxdm/pam-keyring" "$doctor_etc/lightxdm/gnome-session-type.conf"
+  if [[ $doc_rc -ne 0 || "$doc_out" != *"unknown (needs root)"* || "$doc_out" == *"Permission denied"* ]]; then
+    doctor_ok=0
+    doctor_report+=" unreadable-root-soft rc=$doc_rc out=[$doc_out];"
+  fi
+fi
+
+# Combining --doctor with other options exits 1
+for combo in "--doctor --dry-run" "--status --doctor" "--doctor --preflight"; do
+  doc_rc=0
+  read -r -a combo_args <<<"$combo"
+  run_doctor_cmd "${combo_args[@]}" >/dev/null 2>&1 || doc_rc=$?
+  if [[ $doc_rc -ne 1 ]]; then
+    doctor_ok=0
+    doctor_report+=" combo($combo) rc=$doc_rc;"
+  fi
+done
+
+if [[ -e "$doctor_dir/sudo.log" ]]; then
+  doctor_ok=0
+  doctor_report+=" sudo-invoked;"
+fi
+
+if [[ $doctor_ok -eq 1 ]]; then
+  pass "install.sh --doctor diagnoses session, shell, PAM, and systemd boot health cleanly without sudo or side effects"
+else
+  fail "install.sh --doctor:$doctor_report"
+fi
+
 finish_harness

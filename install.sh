@@ -783,7 +783,7 @@ check_session_commands() {
     log "Cannot read $template; fix its permissions and re-run."
     return 1
   fi
-  if [[ "$base" == .wayland-session-* ]]; then
+  if [[ "$base" == .wayland-session || "$base" == .wayland-session-* ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
       case "$line" in
         "exec "*) session_line="${line#exec }" ;;
@@ -2036,6 +2036,60 @@ dotfile_status_line() {
   esac
 }
 
+# Inspect GNOME TTY1 pam_env status against $LOGIN_FILE ($1) and desktop user ($2) into GNOME_PAM_STATUS_*.
+inspect_gnome_pam_status() {
+  local login_content="$1" real_user="$2"
+  local gnome_marker gnome_tty_gate gnome_env_line has_gnome_block=0
+  local gnome_block=()
+  mapfile -t gnome_block < <(gnome_session_type_block "$real_user")
+  gnome_marker="${gnome_block[0]}"
+  gnome_tty_gate="${gnome_block[1]}"
+  gnome_env_line="${gnome_block[3]}"
+  GNOME_PAM_STATUS_ID="not-configured"
+  GNOME_PAM_STATUS_MSG="not configured"
+
+  if grep -Fxq -- "$gnome_marker" <<<"$login_content"; then
+    has_gnome_block=1
+  fi
+  if [[ $has_gnome_block -eq 1 ]]; then
+    local user_re='[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*'
+    local user_gate_re="^session    \\[success=1 default=ignore\\] pam_succeed_if\\.so quiet user != ${user_re}$"
+    local check_line check_tty check_user check_env block_valid=1
+    while IFS= read -r check_line || [[ -n "$check_line" ]]; do
+      [[ "$check_line" == "$gnome_marker" ]] || continue
+      if ! {
+        IFS= read -r check_tty && [[ "$check_tty" == "$gnome_tty_gate" ]] &&
+          IFS= read -r check_user && [[ "$check_user" =~ $user_gate_re ]] &&
+          { IFS= read -r check_env || [[ -n "$check_env" ]]; } && [[ "$check_env" == "$gnome_env_line" ]]
+      }; then
+        block_valid=0
+        break
+      fi
+    done <<<"$login_content"
+    if [[ $block_valid -eq 1 ]]; then
+      if [[ -f "$GNOME_SESSION_TYPE_DEST" && ! -L "$GNOME_SESSION_TYPE_DEST" ]]; then
+        GNOME_PAM_STATUS_ID="configured"
+        GNOME_PAM_STATUS_MSG="configured ($GNOME_SESSION_TYPE_DEST)"
+      elif pam_path_needs_sudo "$GNOME_SESSION_TYPE_DEST" 1; then
+        GNOME_PAM_STATUS_ID="block-present-needs-root"
+        GNOME_PAM_STATUS_MSG="block present ($GNOME_SESSION_TYPE_DEST: unknown, needs root)"
+      else
+        GNOME_PAM_STATUS_ID="block-present-missing-file"
+        GNOME_PAM_STATUS_MSG="block present (missing $GNOME_SESSION_TYPE_DEST)"
+      fi
+    else
+      GNOME_PAM_STATUS_ID="edited-block"
+      GNOME_PAM_STATUS_MSG="edited block in $LOGIN_FILE"
+    fi
+  elif [[ -e "$GNOME_SESSION_TYPE_DEST" || -L "$GNOME_SESSION_TYPE_DEST" ]]; then
+    GNOME_PAM_STATUS_ID="file-without-block"
+    GNOME_PAM_STATUS_MSG="session-type file present without PAM block ($GNOME_SESSION_TYPE_DEST)"
+  elif pam_path_needs_sudo "$GNOME_SESSION_TYPE_DEST" 1; then
+    GNOME_PAM_STATUS_ID="unknown-needs-root"
+    GNOME_PAM_STATUS_MSG="unknown (needs root)"
+  fi
+}
+
 # Report the current lightXDM installation state without modifying files or invoking sudo.
 show_install_status() {
   local LC_ALL=C json_mode=0
@@ -2194,52 +2248,10 @@ show_install_status() {
       keyring_status="partial (missing auth or session line)"
     fi
 
-    local gnome_marker gnome_tty_gate gnome_env_line has_gnome_block=0
-    local gnome_block=()
-    mapfile -t gnome_block < <(gnome_session_type_block "$real_user")
-    gnome_marker="${gnome_block[0]}"
-    gnome_tty_gate="${gnome_block[1]}"
-    gnome_env_line="${gnome_block[3]}"
-    if grep -Fxq -- "$gnome_marker" <<<"$login_content"; then
-      has_gnome_block=1
-    fi
-    if [[ $has_gnome_block -eq 1 ]]; then
-      local user_re='[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._][abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*'
-      local user_gate_re="^session    \\[success=1 default=ignore\\] pam_succeed_if\\.so quiet user != ${user_re}$"
-      local check_line check_tty check_user check_env block_valid=1
-      while IFS= read -r check_line || [[ -n "$check_line" ]]; do
-        [[ "$check_line" == "$gnome_marker" ]] || continue
-        if ! {
-          IFS= read -r check_tty && [[ "$check_tty" == "$gnome_tty_gate" ]] &&
-            IFS= read -r check_user && [[ "$check_user" =~ $user_gate_re ]] &&
-            { IFS= read -r check_env || [[ -n "$check_env" ]]; } && [[ "$check_env" == "$gnome_env_line" ]]
-        }; then
-          block_valid=0
-          break
-        fi
-      done <<<"$login_content"
-      if [[ $block_valid -eq 1 ]]; then
-        if [[ -f "$GNOME_SESSION_TYPE_DEST" && ! -L "$GNOME_SESSION_TYPE_DEST" ]]; then
-          gnome_status_id="configured"
-          gnome_status="configured ($GNOME_SESSION_TYPE_DEST)"
-        elif pam_path_needs_sudo "$GNOME_SESSION_TYPE_DEST" 1; then
-          gnome_status_id="block-present-needs-root"
-          gnome_status="block present ($GNOME_SESSION_TYPE_DEST: unknown, needs root)"
-        else
-          gnome_status_id="block-present-missing-file"
-          gnome_status="block present (missing $GNOME_SESSION_TYPE_DEST)"
-        fi
-      else
-        gnome_status_id="edited-block"
-        gnome_status="edited block in $LOGIN_FILE"
-      fi
-    elif [[ -e "$GNOME_SESSION_TYPE_DEST" || -L "$GNOME_SESSION_TYPE_DEST" ]]; then
-      gnome_status_id="file-without-block"
-      gnome_status="session-type file present without PAM block ($GNOME_SESSION_TYPE_DEST)"
-    elif pam_path_needs_sudo "$GNOME_SESSION_TYPE_DEST" 1; then
-      gnome_status_id="unknown-needs-root"
-      gnome_status="unknown (needs root)"
-    fi
+    local GNOME_PAM_STATUS_ID="" GNOME_PAM_STATUS_MSG=""
+    inspect_gnome_pam_status "$login_content" "$real_user"
+    gnome_status_id="$GNOME_PAM_STATUS_ID"
+    gnome_status="$GNOME_PAM_STATUS_MSG"
   elif [[ ! -e "$LOGIN_FILE" && -x "$(dirname -- "$LOGIN_FILE")" ]]; then
     keyring_status_id="missing-login-file"
     keyring_status="missing"
@@ -2469,6 +2481,32 @@ show_install_status() {
   fi
 }
 
+# Emit enabled display manager ids checked via systemctl (one per line).
+detect_enabled_dms() {
+  local dm dm_unit unit_files="" enabled_dms=()
+  unit_files="$(systemctl list-unit-files 2>/dev/null || true)"
+  for dm in "${DM_LIST[@]}"; do
+    if [[ -n "$unit_files" ]] && grep -E -- "^[[:space:]]*${dm}\.service([[:space:]]|$)" <<<"$unit_files" >/dev/null; then
+      if [[ "$(systemctl is-enabled "${dm}.service" 2>/dev/null || true)" == "enabled" ]]; then
+        enabled_dms+=("$dm")
+      fi
+    fi
+  done
+  if [[ -L "$DISPLAY_MANAGER_LINK" ]] && dm_unit="$(readlink -f "$DISPLAY_MANAGER_LINK" 2>/dev/null || true)"; then
+    dm_unit="${dm_unit##*/}"
+    dm="${dm_unit%.service}"
+    if [[ -n "$dm_unit" && " ${enabled_dms[*]} " != *" $dm "* ]] && [[ "$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)" == "enabled" ]]; then
+      enabled_dms+=("$dm")
+    fi
+  fi
+  if [[ " ${enabled_dms[*]} " != *" ly@tty1 "* ]] && [[ "$(systemctl is-enabled ly@tty1.service 2>/dev/null || true)" == "enabled" ]]; then
+    enabled_dms+=("ly@tty1")
+  fi
+  if [[ ${#enabled_dms[@]} -gt 0 ]]; then
+    printf '%s\n' "${enabled_dms[@]}"
+  fi
+}
+
 # Run pre-install onboarding readiness checks cleanly without sudo or side effects
 run_preflight() {
   local blockers=0
@@ -2521,25 +2559,7 @@ run_preflight() {
       printf 'getty@tty1.service: ok (%s)\n' "${getty_state:-unknown}"
     fi
 
-    local dm dm_unit unit_files=""
-    unit_files="$(systemctl list-unit-files 2>/dev/null || true)"
-    for dm in "${DM_LIST[@]}"; do
-      if [[ -n "$unit_files" ]] && grep -E -- "^[[:space:]]*${dm}\.service([[:space:]]|$)" <<<"$unit_files" >/dev/null; then
-        if [[ "$(systemctl is-enabled "${dm}.service" 2>/dev/null || true)" == "enabled" ]]; then
-          enabled_dms+=("$dm")
-        fi
-      fi
-    done
-    if [[ -L "$DISPLAY_MANAGER_LINK" ]] && dm_unit="$(readlink -f "$DISPLAY_MANAGER_LINK" 2>/dev/null || true)"; then
-      dm_unit="${dm_unit##*/}"
-      dm="${dm_unit%.service}"
-      if [[ -n "$dm_unit" && " ${enabled_dms[*]} " != *" $dm "* ]] && [[ "$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)" == "enabled" ]]; then
-        enabled_dms+=("$dm")
-      fi
-    fi
-    if [[ " ${enabled_dms[*]} " != *" ly@tty1 "* ]] && [[ "$(systemctl is-enabled ly@tty1.service 2>/dev/null || true)" == "enabled" ]]; then
-      enabled_dms+=("ly@tty1")
-    fi
+    mapfile -t enabled_dms < <(detect_enabled_dms)
     if [[ ${#enabled_dms[@]} -gt 0 ]]; then
       printf 'Display managers: %s enabled (install will disable cleanly; uninstall restores)\n' "${enabled_dms[*]}"
     else
@@ -2601,6 +2621,497 @@ run_preflight() {
   return 1
 }
 
+# Verify post-install session, shell trigger, PAM, and systemd boot-recovery health without sudo or changes.
+run_doctor() {
+  local LC_ALL=C issues=0 warnings=0
+  local install_cmd update_cmd
+  install_cmd="$(script_cmd install.sh)"
+  if command -v lightxdm-update >/dev/null 2>&1; then
+    update_cmd="lightxdm-update"
+  else
+    update_cmd="$install_cmd --update"
+  fi
+
+  local real_user="${SUDO_USER:-${USER:-}}"
+  if [[ -z "$real_user" ]]; then
+    real_user="$(id -un 2>/dev/null || true)"
+  fi
+
+  local choices_file line de="" no_packages="" choices_kind="not-recorded"
+  choices_file="$(install_choices_file)"
+  if install_choices_readable "$choices_file"; then
+    choices_kind="readable"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      case "$line" in
+        de=*) de="${line#de=}" ;;
+        no_packages=1) no_packages=1 ;;
+        no_packages=0) no_packages=0 ;;
+      esac
+    done <"$choices_file"
+  elif [[ -L "${choices_file%/*}" || -L "$choices_file" ]]; then
+    choices_kind="symlink-ignored"
+    printf 'Install choices: FAIL (%s or its directory is a symlink; re-run %s --de <id>)\n' "$choices_file" "$install_cmd"
+    issues=$((issues + 1))
+  elif [[ -e "$choices_file" ]]; then
+    choices_kind="unreadable"
+    printf 'Install choices: FAIL (%s is unreadable; fix permissions on %s)\n' "$choices_file" "$choices_file"
+    issues=$((issues + 1))
+  fi
+
+  local installed_any=0
+  if [[ "$choices_kind" != "not-recorded" || -e "$HOME/.wayland-session" || -L "$HOME/.wayland-session" ||
+    -e "$HOME/.xinitrc" || -L "$HOME/.xinitrc" ]]; then
+    installed_any=1
+  fi
+  if [[ $installed_any -eq 0 ]]; then
+    printf 'Install state: FAIL (lightXDM is not installed for %s — run: %s --preflight)\n' "$HOME" "$install_cmd"
+    issues=$((issues + 1))
+  elif [[ "$choices_kind" == "readable" && -n "$de" ]]; then
+    if [[ "$no_packages" == 1 ]]; then
+      printf 'Install choices: ok (de=%s, --no-packages)\n' "$de"
+    else
+      printf 'Install choices: ok (de=%s)\n' "$de"
+    fi
+  elif [[ "$choices_kind" == "readable" ]]; then
+    printf 'Install choices: WARN (%s has no desktop recorded)\n' "$choices_file"
+    warnings=$((warnings + 1))
+  fi
+
+  local template="" expected_mode="" active_launcher=""
+  if [[ -n "$de" ]]; then
+    if template="$(xinitrc_template "$de" 2>/dev/null)"; then
+      if [[ "${template##*/}" == .wayland-session-* ]]; then
+        expected_mode="wayland"
+      else
+        expected_mode="x11"
+      fi
+      if [[ ! -f "$template" ]]; then
+        printf 'Session template: FAIL (missing %s for de=%s — run: %s --init-template --de %s)\n' "$template" "$de" "$install_cmd" "$de"
+        issues=$((issues + 1))
+      fi
+    else
+      printf 'Session template: FAIL (cannot resolve template for de=%s — check ~/.config/lightxdm/ for conflicting .wayland-session-%s and .xinitrc-%s)\n' "$de" "$de" "$de"
+      issues=$((issues + 1))
+    fi
+  fi
+
+  local wl="$HOME/.wayland-session" xi="$HOME/.xinitrc"
+  if [[ "$expected_mode" == wayland ]]; then
+    if [[ -L "$wl" ]]; then
+      if [[ ! -e "$wl" ]]; then
+        printf 'Session launcher: FAIL (broken symlink %s — restore with: %s)\n' "$wl" "$update_cmd"
+        issues=$((issues + 1))
+      elif [[ ! -x "$wl" ]]; then
+        printf 'Session launcher: FAIL (%s is not executable — fix with: chmod +x ~/.wayland-session)\n' "$wl"
+        issues=$((issues + 1))
+      else
+        printf 'Session launcher: WARN (%s is a symlink; --update ignores symlinks)\n' "$wl"
+        warnings=$((warnings + 1))
+        active_launcher="$wl"
+      fi
+    elif [[ ! -f "$wl" ]]; then
+      printf 'Session launcher: FAIL (missing %s for de=%s — restore with: %s)\n' "$wl" "$de" "$update_cmd"
+      issues=$((issues + 1))
+    elif [[ ! -x "$wl" ]]; then
+      printf 'Session launcher: FAIL (%s exists but is not executable — fix with: chmod +x ~/.wayland-session)\n' "$wl"
+      issues=$((issues + 1))
+    else
+      printf 'Session launcher: ok (%s, Wayland for de=%s)\n' "$wl" "$de"
+      active_launcher="$wl"
+    fi
+  elif [[ "$expected_mode" == x11 ]]; then
+    if [[ ( -e "$wl" || -L "$wl" ) && -x "$wl" ]]; then
+      printf 'Session launcher: FAIL (%s is executable and shadows X11 %s for de=%s — remove %s or run: chmod -x ~/.wayland-session)\n' "$wl" "$xi" "$de" "$wl"
+      issues=$((issues + 1))
+    fi
+    if [[ -L "$xi" ]]; then
+      if [[ ! -e "$xi" ]]; then
+        printf 'Session launcher: FAIL (broken symlink %s — restore with: %s)\n' "$xi" "$update_cmd"
+        issues=$((issues + 1))
+      else
+        printf 'Session launcher: WARN (%s is a symlink; --update ignores symlinks)\n' "$xi"
+        warnings=$((warnings + 1))
+        active_launcher="$xi"
+      fi
+    elif [[ ! -f "$xi" ]]; then
+      printf 'Session launcher: FAIL (missing %s for de=%s — restore with: %s)\n' "$xi" "$de" "$update_cmd"
+      issues=$((issues + 1))
+    else
+      active_launcher="$xi"
+    fi
+    if ! command -v startx >/dev/null 2>&1; then
+      printf 'X11 starter: FAIL (startx not found on PATH — install xorg-xinit)\n'
+      issues=$((issues + 1))
+    elif [[ -n "$active_launcher" ]]; then
+      printf 'Session launcher: ok (%s via startx for de=%s)\n' "$xi" "$de"
+    fi
+  elif [[ $installed_any -eq 1 ]]; then
+    if [[ -L "$wl" && ! -e "$wl" ]]; then
+      printf 'Session launcher: FAIL (broken symlink %s — remove or run: %s --de <id>)\n' "$wl" "$install_cmd"
+      issues=$((issues + 1))
+    elif [[ -f "$wl" && -x "$wl" ]]; then
+      if [[ -L "$wl" ]]; then
+        printf 'Session launcher: WARN (%s is a symlink; --update ignores symlinks)\n' "$wl"
+        warnings=$((warnings + 1))
+      else
+        printf 'Session launcher: ok (%s, Wayland)\n' "$wl"
+      fi
+      active_launcher="$wl"
+    elif [[ -f "$wl" ]]; then
+      printf 'Session launcher: FAIL (%s exists but is not executable — fix with: chmod +x ~/.wayland-session)\n' "$wl"
+      issues=$((issues + 1))
+    elif [[ -L "$xi" && ! -e "$xi" ]]; then
+      printf 'Session launcher: FAIL (broken symlink %s — restore with: %s --de <id>)\n' "$xi" "$install_cmd"
+      issues=$((issues + 1))
+    elif [[ -f "$xi" ]]; then
+      if ! command -v startx >/dev/null 2>&1; then
+        printf 'X11 starter: FAIL (startx not found on PATH — install xorg-xinit)\n'
+        issues=$((issues + 1))
+      else
+        if [[ -L "$xi" ]]; then
+          printf 'Session launcher: WARN (%s is a symlink; --update ignores symlinks)\n' "$xi"
+          warnings=$((warnings + 1))
+        else
+          printf 'Session launcher: ok (%s via startx)\n' "$xi"
+        fi
+        active_launcher="$xi"
+      fi
+    fi
+  fi
+
+  if [[ -n "$active_launcher" ]]; then
+    if [[ ! -r "$active_launcher" ]]; then
+      printf 'Session checks: FAIL (%s is not readable — fix with: chmod u+r %s)\n' "$active_launcher" "$active_launcher"
+      issues=$((issues + 1))
+    else
+      local diag_err="" cmd_ok=1
+      if ! diag_err="$(check_template_syntax "$active_launcher" 2>&1)"; then
+        printf 'Session syntax: FAIL (%s)\n' "${diag_err#=> }"
+        issues=$((issues + 1))
+        cmd_ok=0
+      fi
+      if ! diag_err="$(check_session_commands "$active_launcher" 2>&1)"; then
+        printf 'Session command: FAIL (%s)\n' "${diag_err#=> }"
+        issues=$((issues + 1))
+        cmd_ok=0
+      fi
+      if [[ $cmd_ok -eq 1 ]]; then
+        printf 'Session checks: ok (syntax and command verified for %s)\n' "$active_launcher"
+      fi
+    fi
+  fi
+
+  local login_shell=""
+  if [[ -n "$real_user" ]] && command -v getent >/dev/null 2>&1; then
+    login_shell="$(getent passwd "$real_user" | cut -d: -f7 || true)"
+  fi
+  if [[ $installed_any -eq 1 ]]; then
+    case "$login_shell" in
+      *bash)
+        if [[ -f "$HOME/.bash_profile" && -r "$HOME/.bash_profile" ]] &&
+          grep -Eq '\.wayland-session|startx' "$HOME/.bash_profile"; then
+          printf 'Login shell auto-start: ok (%s via ~/.bash_profile)\n' "$login_shell"
+        else
+          printf 'Login shell auto-start: FAIL (~/.bash_profile is missing or lacks TTY1 auto-start trigger — restore with: %s)\n' "$update_cmd"
+          issues=$((issues + 1))
+        fi
+        ;;
+      *zsh)
+        if [[ -f "$HOME/.zprofile" && -r "$HOME/.zprofile" ]] &&
+          grep -Eq '\.wayland-session|startx' "$HOME/.zprofile"; then
+          printf 'Login shell auto-start: ok (%s via ~/.zprofile)\n' "$login_shell"
+        else
+          printf 'Login shell auto-start: FAIL (zsh login shell lacks TTY1 auto-start block in ~/.zprofile — run: %s --shell-snippet zsh >> ~/.zprofile)\n' "$install_cmd"
+          issues=$((issues + 1))
+        fi
+        ;;
+      *fish)
+        if [[ -f "$HOME/.config/fish/config.fish" && -r "$HOME/.config/fish/config.fish" ]] &&
+          grep -Eq '\.wayland-session|startx' "$HOME/.config/fish/config.fish"; then
+          printf 'Login shell auto-start: ok (%s via ~/.config/fish/config.fish)\n' "$login_shell"
+        else
+          printf 'Login shell auto-start: FAIL (fish login shell lacks TTY1 auto-start block in ~/.config/fish/config.fish — run: %s --shell-snippet fish >> ~/.config/fish/config.fish)\n' "$install_cmd"
+          issues=$((issues + 1))
+        fi
+        ;;
+      "")
+        if [[ -f "$HOME/.bash_profile" && -r "$HOME/.bash_profile" ]] &&
+          grep -Eq '\.wayland-session|startx' "$HOME/.bash_profile"; then
+          printf 'Login shell auto-start: ok (~/.bash_profile present)\n'
+        else
+          printf 'Login shell auto-start: WARN (login shell unknown; could not verify TTY1 shell auto-start hook)\n'
+          warnings=$((warnings + 1))
+        fi
+        ;;
+      *)
+        printf 'Login shell auto-start: WARN (%s does not read ~/.bash_profile — verify TTY1 auto-start block per docs/startx-autologin.md)\n' "$login_shell"
+        warnings=$((warnings + 1))
+        ;;
+    esac
+  fi
+
+  if [[ -e "$HOME/.config/lightxdm/no-autostart" || -L "$HOME/.config/lightxdm/no-autostart" ]]; then
+    printf 'Auto-start pause: FAIL (~/.config/lightxdm/no-autostart disables TTY1 auto-start — check logs: journalctl -b -t lightxdm, then resume: rm ~/.config/lightxdm/no-autostart)\n'
+    issues=$((issues + 1))
+  else
+    local attempts_file="${XDG_STATE_HOME:-$HOME/.local/state}/lightxdm/startx-attempts"
+    local recent_count=0
+    if [[ -f "$attempts_file" && ! -L "$attempts_file" && -r "$attempts_file" ]]; then
+      local now attempt_lines=() attempt_ts
+      printf -v now '%(%s)T' -1
+      mapfile -t attempt_lines 2>/dev/null <"$attempts_file" || :
+      for attempt_ts in "${attempt_lines[@]}"; do
+        if [[ -n "$attempt_ts" && ${#attempt_ts} -le 18 && "$attempt_ts" != *[!0123456789]* ]] &&
+          ((now - 10#$attempt_ts >= 0 && now - 10#$attempt_ts <= 30)); then
+          recent_count=$((recent_count + 1))
+        fi
+      done
+    fi
+    if [[ $recent_count -gt 0 ]]; then
+      printf 'Auto-start status: WARN (%d launch attempt(s) in last 30s — check journalctl -b -t lightxdm or touch ~/.config/lightxdm/session-journal)\n' "$recent_count"
+      warnings=$((warnings + 1))
+    else
+      printf 'Auto-start status: ok (active on TTY1)\n'
+    fi
+  fi
+
+  local pending_files=() candidate_dot
+  for candidate_dot in \
+    "$HOME/.bash_profile" "$HOME/.wayland-session" "$HOME/.xinitrc" \
+    "$HOME/.gpg-agent-gnome" "$HOME/.gpg-agent-kwallet" \
+    "$HOME/.config/autostart/lightxdm-gpg-agent-tty.desktop"; do
+    if [[ -e "${candidate_dot}.lightxdm-new" || -L "${candidate_dot}.lightxdm-new" ]]; then
+      pending_files+=("${candidate_dot}.lightxdm-new")
+    fi
+  done
+  if [[ ${#pending_files[@]} -gt 0 ]]; then
+    printf 'Pending dotfile updates: WARN (%s — review diff and merge)\n' "${pending_files[*]}"
+    warnings=$((warnings + 1))
+  fi
+
+  local pam_record="" pam_expected="" keyring_configured=0
+  if pam_record="$(read_pam_state_file "$PAM_KEYRING_STATE" 1 2>/dev/null)"; then
+    case "$pam_record" in
+      gnome | kwallet) pam_expected="$pam_record" ;;
+      *)
+        printf 'PAM keyring state: WARN (%s has unexpected value %s)\n' "$PAM_KEYRING_STATE" "${pam_record:-empty}"
+        warnings=$((warnings + 1))
+        ;;
+    esac
+  elif [[ -L "$(dirname -- "$PAM_KEYRING_STATE")" || -L "$PAM_KEYRING_STATE" ]]; then
+    printf 'PAM keyring state: FAIL (%s or its directory is a symlink; lightXDM ignores symlinks)\n' "$PAM_KEYRING_STATE"
+    issues=$((issues + 1))
+  elif pam_path_needs_sudo "$PAM_KEYRING_STATE" 1; then
+    printf 'PAM keyring state: WARN (%s: unknown (needs root))\n' "$PAM_KEYRING_STATE"
+    warnings=$((warnings + 1))
+  fi
+
+  local login_content=""
+  if [[ -L "$(dirname -- "$LOGIN_FILE")" || -L "$LOGIN_FILE" ]]; then
+    printf 'PAM login: FAIL (%s or its directory is a symlink; lightXDM ignores symlinks)\n' "$LOGIN_FILE"
+    issues=$((issues + 1))
+  elif login_content="$(read_pam_file "$LOGIN_FILE" 1 2>/dev/null)"; then
+    local missing_gnome missing_kwallet has_gnome_line=0 has_kwallet_line=0
+    missing_gnome="$(pam_lines_to_add "pam_gnome_keyring.so" "$PAM_GNOME_KEYRING_AUTH" "$PAM_GNOME_KEYRING_SESSION" "" 1 || true)"
+    missing_kwallet="$(pam_lines_to_add "pam_kwallet5.so" "$PAM_KWALLET_AUTH" "$PAM_KWALLET_SESSION" "" 1 || true)"
+    grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_gnome_keyring\.so' <<<"$login_content" && has_gnome_line=1
+    grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_kwallet5\.so' <<<"$login_content" && has_kwallet_line=1
+
+    if [[ -e "${LOGIN_FILE}.pacnew" || -L "${LOGIN_FILE}.pacnew" ]]; then
+      if login_file_replaced_by_package 1; then
+        printf 'PAM .pacnew: FAIL (%s appears replaced by package upgrade while %s.pacnew exists — restore with: %s or %s --pam-only --de %s)\n' \
+          "$LOGIN_FILE" "$LOGIN_FILE" "$update_cmd" "$install_cmd" "${de:-<id>}"
+        issues=$((issues + 1))
+      else
+        printf 'PAM .pacnew: WARN (%s.pacnew waiting — merge carefully without dropping lightXDM PAM lines)\n' "$LOGIN_FILE"
+        warnings=$((warnings + 1))
+      fi
+    fi
+
+    local keyring_issue=0
+    if [[ "$pam_expected" == gnome && -n "$missing_gnome" ]]; then
+      printf 'PAM keyring: FAIL (recorded gnome keyring lines missing from %s — restore with: %s --pam-only --de %s)\n' "$LOGIN_FILE" "$install_cmd" "${de:-gnome}"
+      issues=$((issues + 1))
+      keyring_issue=1
+    elif [[ "$pam_expected" == kwallet && -n "$missing_kwallet" ]]; then
+      printf 'PAM keyring: FAIL (recorded kwallet5 lines missing from %s — restore with: %s --pam-only --de %s)\n' "$LOGIN_FILE" "$install_cmd" "${de:-plasma}"
+      issues=$((issues + 1))
+      keyring_issue=1
+    elif { [[ $has_gnome_line -eq 1 && -n "$missing_gnome" ]]; } || { [[ $has_kwallet_line -eq 1 && -n "$missing_kwallet" ]]; }; then
+      printf 'PAM keyring: FAIL (partial keyring PAM lines in %s — missing auth or session line; restore with: %s --pam-only --de %s)\n' "$LOGIN_FILE" "$install_cmd" "${de:-<id>}"
+      issues=$((issues + 1))
+      keyring_issue=1
+    fi
+
+    if [[ -z "$missing_gnome" ]]; then
+      keyring_configured=1
+      if [[ ! -e "${SESSION_ROOT:-}/usr/lib/security/pam_gnome_keyring.so" ]]; then
+        printf 'PAM keyring module: FAIL (%s/usr/lib/security/pam_gnome_keyring.so missing — install gnome-keyring)\n' "${SESSION_ROOT:-}"
+        issues=$((issues + 1))
+        keyring_issue=1
+      fi
+    fi
+    if [[ -z "$missing_kwallet" ]]; then
+      keyring_configured=1
+      if [[ ! -e "${SESSION_ROOT:-}/usr/lib/security/pam_kwallet5.so" ]]; then
+        printf 'PAM keyring module: FAIL (%s/usr/lib/security/pam_kwallet5.so missing — install kwallet-pam)\n' "${SESSION_ROOT:-}"
+        issues=$((issues + 1))
+        keyring_issue=1
+      fi
+    fi
+    if [[ $keyring_issue -eq 0 && $keyring_configured -eq 1 ]]; then
+      printf 'PAM keyring: ok (%s)\n' "$LOGIN_FILE"
+    fi
+
+    local GNOME_PAM_STATUS_ID="" GNOME_PAM_STATUS_MSG=""
+    inspect_gnome_pam_status "$login_content" "$real_user"
+    case "$GNOME_PAM_STATUS_ID" in
+      configured)
+        printf 'PAM GNOME session type: ok (%s)\n' "$GNOME_SESSION_TYPE_DEST"
+        ;;
+      block-present-needs-root)
+        printf 'PAM GNOME session type: WARN (%s)\n' "$GNOME_PAM_STATUS_MSG"
+        warnings=$((warnings + 1))
+        ;;
+      block-present-missing-file)
+        printf 'PAM GNOME session type: FAIL (missing %s referenced by %s — restore with: %s --pam-only --de gnome)\n' "$GNOME_SESSION_TYPE_DEST" "$LOGIN_FILE" "$install_cmd"
+        issues=$((issues + 1))
+        ;;
+      edited-block)
+        printf 'PAM GNOME session type: FAIL (incomplete GNOME session-type block in %s — restore with: %s --pam-only --de gnome)\n' "$LOGIN_FILE" "$install_cmd"
+        issues=$((issues + 1))
+        ;;
+      file-without-block)
+        if [[ "$de" == gnome ]]; then
+          printf 'PAM GNOME session type: FAIL (%s — restore PAM block with: %s --pam-only --de gnome)\n' "$GNOME_PAM_STATUS_MSG" "$install_cmd"
+          issues=$((issues + 1))
+        else
+          printf 'PAM GNOME session type: WARN (%s — restore PAM block with: %s --pam-only --de gnome)\n' "$GNOME_PAM_STATUS_MSG" "$install_cmd"
+          warnings=$((warnings + 1))
+        fi
+        ;;
+      not-configured)
+        if [[ "$de" == gnome ]]; then
+          printf 'PAM GNOME session type: FAIL (GNOME Wayland session-type PAM block missing from %s — fix with: %s --pam-only --de gnome)\n' "$LOGIN_FILE" "$install_cmd"
+          issues=$((issues + 1))
+        fi
+        ;;
+    esac
+  elif [[ ! -e "$LOGIN_FILE" && -x "$(dirname -- "$LOGIN_FILE")" ]]; then
+    printf 'PAM login: FAIL (%s is missing — restore pambase or re-run %s --pam-only --de %s)\n' "$LOGIN_FILE" "$install_cmd" "${de:-<id>}"
+    issues=$((issues + 1))
+  else
+    printf 'PAM login: WARN (%s: unknown (needs root) — inspect PAM lines separately with sudo)\n' "$LOGIN_FILE"
+    warnings=$((warnings + 1))
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    local getty_state=""
+    getty_state="$(systemctl is-enabled getty@tty1.service 2>/dev/null || true)"
+    case "$getty_state" in
+      masked)
+        printf 'getty@tty1.service: FAIL (masked — unmask with: sudo systemctl unmask getty@tty1.service)\n'
+        issues=$((issues + 1))
+        ;;
+      disabled)
+        printf 'getty@tty1.service: FAIL (disabled — enable with: sudo systemctl enable getty@tty1.service)\n'
+        issues=$((issues + 1))
+        ;;
+      "")
+        printf 'getty@tty1.service: WARN (unknown systemd state)\n'
+        warnings=$((warnings + 1))
+        ;;
+      *)
+        printf 'getty@tty1.service: ok (%s)\n' "$getty_state"
+        ;;
+    esac
+
+    local enabled_dms=() dm_unit dm_state_content
+    mapfile -t enabled_dms < <(detect_enabled_dms)
+    if [[ ! -L "$DM_STATE_FILE" && -f "$DM_STATE_FILE" && -r "$DM_STATE_FILE" ]]; then
+      dm_state_content="$(cat -- "$DM_STATE_FILE")"
+      while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
+        [[ -n "$dm_unit" ]] || continue
+        local dm_short="${dm_unit%.service}"
+        if [[ " ${enabled_dms[*]} " != *" $dm_short "* ]] &&
+          [[ "$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)" == "enabled" ]]; then
+          enabled_dms+=("$dm_short")
+        fi
+      done <<<"$dm_state_content"
+    fi
+    if [[ ${#enabled_dms[@]} -gt 0 ]]; then
+      printf 'Display managers: FAIL (%s enabled — disable with: sudo systemctl disable %s.service)\n' "${enabled_dms[*]}" "${enabled_dms[0]}"
+      issues=$((issues + 1))
+    else
+      printf 'Display managers: ok (none enabled)\n'
+    fi
+  else
+    printf 'systemd checks: WARN (systemctl not available)\n'
+    warnings=$((warnings + 1))
+  fi
+
+  local autologin_out auto_line auto_state="disabled" auto_user="" auto_warnings=() auto_notes=() auto_needs_root=0
+  autologin_out="$(env OVERRIDE_DIR="$AUTOLOGIN_DROPIN_DIR" LOGIN_FILE="$LOGIN_FILE" bash "$SCRIPT_DIR/enable-autologin.sh" --status 2>&1 || true)"
+  while IFS= read -r auto_line || [[ -n "$auto_line" ]]; do
+    [[ -n "$auto_line" ]] || continue
+    if [[ "$auto_line" =~ ^enabled\ for\ ([^[:space:]]+)\ \(.*\)$ ]]; then
+      auto_state="enabled"
+      auto_user="${BASH_REMATCH[1]}"
+    elif [[ "$auto_line" == disabled ]]; then
+      auto_state="disabled"
+    elif [[ "$auto_line" == Warning:\ * ]]; then
+      auto_warnings+=("${auto_line#Warning: }")
+    elif [[ "$auto_line" == Note:\ * ]]; then
+      auto_notes+=("$auto_line")
+    fi
+  done <<<"$autologin_out"
+  if [[ "$auto_state" == disabled ]]; then
+    local note_item
+    for note_item in "${auto_notes[@]}"; do
+      case "$note_item" in
+        "Note: cannot read $AUTOLOGIN_DROPIN_DIR;"* | \
+          "Note: cannot read $AUTOLOGIN_DROPIN_DIR/lightxdm-autologin.conf;"* | \
+          "Note: cannot read $AUTOLOGIN_DROPIN_DIR/override.conf;"*)
+          auto_needs_root=1
+          break
+          ;;
+      esac
+    done
+  fi
+  if [[ $auto_needs_root -eq 1 ]]; then
+    printf 'Autologin: WARN (%s: unknown (needs root))\n' "$AUTOLOGIN_DROPIN_DIR"
+    warnings=$((warnings + 1))
+  elif [[ "$auto_state" == enabled ]]; then
+    if [[ ${#auto_warnings[@]} -gt 0 ]]; then
+      printf 'Autologin: WARN (enabled for %s — %s)\n' "$auto_user" "${auto_warnings[*]}"
+      warnings=$((warnings + 1))
+    elif [[ -n "$pam_expected" || $keyring_configured -eq 1 ]]; then
+      printf 'Autologin: WARN (enabled for %s while PAM keyring is configured; autologin leaves keyring locked — disable with: sudo %s --disable)\n' "$auto_user" "$(script_cmd enable-autologin.sh)"
+      warnings=$((warnings + 1))
+    else
+      printf 'Autologin: ok (enabled for %s)\n' "$auto_user"
+    fi
+  elif [[ ${#auto_warnings[@]} -gt 0 ]]; then
+    printf 'Autologin: WARN (disabled — %s)\n' "${auto_warnings[*]}"
+    warnings=$((warnings + 1))
+  else
+    printf 'Autologin: ok (disabled)\n'
+  fi
+
+  if [[ $issues -eq 0 && $warnings -eq 0 ]]; then
+    printf 'Doctor: PASS\n'
+    return 0
+  elif [[ $issues -eq 0 ]]; then
+    printf 'Doctor: PASS (0 issue(s), %d warning(s))\n' "$warnings"
+    return 0
+  elif [[ $warnings -gt 0 ]]; then
+    printf 'Doctor: FAIL (%d issue(s), %d warning(s) found above)\n' "$issues" "$warnings"
+    return 1
+  fi
+  printf 'Doctor: FAIL (%d issue(s) found above)\n' "$issues"
+  return 1
+}
+
 # Emit the canonical non-bash TTY1 auto-start block cleanly on stdout
 print_shell_snippet() {
   case "$1" in
@@ -2658,11 +3169,12 @@ main() {
   local list_sessions=0
   local shell_snippet=""
   local preflight_only=0
+  local doctor_only=0
   local init_template=0
   local wayland=0
   local from_session=""
   local pam_only=0
-  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions] [--shell-snippet <zsh|fish>] [--preflight] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
+  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions] [--shell-snippet <zsh|fish>] [--preflight] [--doctor] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -2714,6 +3226,8 @@ Options:
                     without sudo or changes (use alone)
   --preflight       check user/sudo, pacman/systemctl, getty@tty1.service, display managers, login shell,
                     and installed desktops without sudo or changes, then suggest the next command (use alone)
+  --doctor          verify post-install session launcher, shell hooks, PAM keyring/GNOME rules, .pacnew drift,
+                    and systemd boot health without sudo or changes, with fix commands (use alone)
 
 uninstall.sh reverts these changes; installed packages stay.
 EOF
@@ -2729,6 +3243,10 @@ EOF
         ;;
       --preflight)
         preflight_only=1
+        shift
+        ;;
+      --doctor)
+        doctor_only=1
         shift
         ;;
       --shell-snippet)
@@ -2859,7 +3377,7 @@ EOF
 
   if [[ $status_only -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" ||
-      $preflight_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 ||
+      $preflight_only -eq 1 || $doctor_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 ||
       $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 ||
       $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 ||
       -n "$from_session" || $pam_only -eq 1 ]]; then
@@ -2876,7 +3394,7 @@ EOF
   fi
 
   if [[ $list_sessions -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || -n "$shell_snippet" || $preflight_only -eq 1 ||
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || -n "$shell_snippet" || $preflight_only -eq 1 || $doctor_only -eq 1 ||
       $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
       $update -eq 1 || $status_only -eq 1 || $json_output -eq 1 || $init_template -eq 1 ||
@@ -2910,9 +3428,20 @@ EOF
     return "$preflight_status"
   fi
 
+  if [[ $doctor_only -eq 1 ]]; then
+    if [[ $argument_count -ne 1 ]]; then
+      log "--doctor cannot be combined with any other option."
+      echo "$usage" >&2
+      exit 1
+    fi
+    local doctor_status=0
+    run_doctor || doctor_status=$?
+    return "$doctor_status"
+  fi
+
   if [[ $update -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" ||
-      $preflight_only -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
+      $preflight_only -eq 1 || $doctor_only -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
       -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 ||
       $json_output -eq 1 ]]; then
