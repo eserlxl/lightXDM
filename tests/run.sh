@@ -18285,6 +18285,58 @@ assert len(broken_sec) == 1, broken_sec
   onb_report+=" [list-sessions onboarding prose rc=$onb_ls_rc out=$onb_ls_out]"
 fi
 
+mkdir -p "$onb_case/sym_home" "$onb_case/inc_home" "$onb_case/reg_home"
+: >"$onb_case/sym_home/ztarget"
+ln -s ztarget "$onb_case/sym_home/.zprofile"
+printf '# >>> lightXDM TTY1 auto-start >>>\n' >"$onb_case/inc_home/.zprofile"
+printf '# regular zsh profile without hook\n' >"$onb_case/reg_home/.zprofile"
+
+set +e
+onb_sym_out="$(env -i HOME="$onb_case/sym_home" USER=testuser PATH="$onb_case/bin" \
+  ONB_SHELL=/usr/bin/zsh ONB_PKGS="xfce4-session" SESSION_ROOT="$onb_case/sess" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  "$onb_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+onb_sym_rc=$?
+onb_sym_json_err="$onb_case/sym_json.err"
+onb_sym_json="$(env -i HOME="$onb_case/sym_home" USER=testuser PATH="$onb_case/bin" \
+  ONB_SHELL=/usr/bin/zsh ONB_PKGS="xfce4-session" SESSION_ROOT="$onb_case/sess" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  "$onb_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$onb_sym_json_err")"
+onb_sym_json_rc=$?
+onb_inc_out="$(env -i HOME="$onb_case/inc_home" USER=testuser PATH="$onb_case/bin" \
+  ONB_SHELL=/usr/bin/zsh ONB_PKGS="xfce4-session" SESSION_ROOT="$onb_case/sess" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  "$onb_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+onb_inc_rc=$?
+onb_reg_out="$(env -i HOME="$onb_case/reg_home" USER=testuser PATH="$onb_case/bin" \
+  ONB_SHELL=/usr/bin/zsh ONB_PKGS="xfce4-session" SESSION_ROOT="$onb_case/sess" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  "$onb_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+onb_reg_rc=$?
+set -e
+if [[ $onb_sym_rc -ne 0 || $onb_sym_json_rc -ne 0 || -s "$onb_sym_json_err" ||
+  "$onb_sym_out" != *"cannot be auto-configured"* ||
+  "$onb_sym_out" != *"--shell-snippet zsh"* ||
+  "$onb_sym_out" == *"--setup-shell zsh"* ||
+  "$onb_sym_out" == *">> ~/.zprofile"* ||
+  $onb_inc_rc -ne 0 || "$onb_inc_out" != *"cannot be auto-configured"* ||
+  "$onb_inc_out" != *"--shell-snippet zsh"* ||
+  "$onb_inc_out" == *"--setup-shell zsh"* ||
+  $onb_reg_rc -ne 0 || "$onb_reg_out" != *"--setup-shell zsh"* ]] ||
+  { [[ $onb_have_python -eq 1 ]] && ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["ready"] is True and d["status"] == "warn" and d["warnings"] >= 1, d
+assert "--setup-shell" not in (d["next_step"] or ""), d
+checks = {c["name"]: c for c in d["checks"]}
+detail = checks["Login shell"]["detail"]
+assert checks["Login shell"]["status"] == "warn", checks
+assert "cannot be auto-configured" in detail and "--shell-snippet zsh" in detail and "--setup-shell" not in detail, detail
+' "$onb_sym_json"; }; then
+  onb_ok=0
+  onb_report+=" [unsafe/marker preflight sym=$onb_sym_rc:$onb_sym_out inc=$onb_inc_rc:$onb_inc_out reg=$onb_reg_rc:$onb_reg_out err=$(cat "$onb_sym_json_err") json=$onb_sym_json]"
+fi
+
 if [[ $onb_have_python -eq 0 ]]; then
   skip "onboarding preflight/list-sessions JSON and Python assertions (python3 unavailable)"
 fi

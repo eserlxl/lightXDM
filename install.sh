@@ -3662,11 +3662,16 @@ run_preflight() {
         diag_record_check "$json_mode" "Login shell" "ok" "$diag_msg"
       else
         hook_display="$(shell_hook_display_path "$hook_kind")"
-        printf -v diag_msg '%s does not read ~/.bash_profile — run: %s --setup-shell %s (or: %s --shell-snippet %s >> %s)' \
-          "$login_shell" "$install_cmd" "$hook_kind" "$install_cmd" "$hook_kind" "$hook_display"
+        if validate_setup_shell "$hook_kind" 1 >/dev/null 2>&1; then
+          printf -v diag_msg '%s does not read ~/.bash_profile — run: %s --setup-shell %s (or: %s --shell-snippet %s >> %s)' \
+            "$login_shell" "$install_cmd" "$hook_kind" "$install_cmd" "$hook_kind" "$hook_display"
+          missing_hook_kind="$hook_kind"
+        else
+          printf -v diag_msg '%s does not read ~/.bash_profile and %s cannot be auto-configured (symlink, permissions, or incomplete markers) — inspect %s and add snippet via: %s --shell-snippet %s' \
+            "$login_shell" "$hook_display" "$hook_display" "$install_cmd" "$hook_kind"
+        fi
         diag_record_check "$json_mode" "Login shell" "warn" "$diag_msg"
         warnings=$((warnings + 1))
-        missing_hook_kind="$hook_kind"
       fi
       ;;
     *)
@@ -5498,13 +5503,17 @@ check_shell_hook_path_safe() {
 }
 
 check_shell_hook_markers() {
-  local target="$1" quiet="${2:-0}" marker_info bc ec bl el
-  marker_info="$(awk -v b="$SHELL_HOOK_BEGIN" -v e="$SHELL_HOOK_END" '
-    $0 == b { bc++; if (!bl) bl = NR }
-    $0 == e { ec++; if (!el) el = NR }
-    END { printf "%d %d %d %d\n", bc+0, ec+0, bl+0, el+0 }
-  ' "$target")"
-  read -r bc ec bl el <<<"$marker_info"
+  local target="$1" quiet="${2:-0}" line="" nr=0 bc=0 ec=0 bl=0 el=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    nr=$((nr + 1))
+    if [[ "$line" == "$SHELL_HOOK_BEGIN" ]]; then
+      bc=$((bc + 1))
+      [[ $bl -eq 0 ]] && bl=$nr
+    elif [[ "$line" == "$SHELL_HOOK_END" ]]; then
+      ec=$((ec + 1))
+      [[ $el -eq 0 ]] && el=$nr
+    fi
+  done < "$target" || return 1
   if [[ $bc -eq 0 && $ec -eq 0 ]]; then
     return 0
   fi
