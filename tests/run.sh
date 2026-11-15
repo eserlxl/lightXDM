@@ -3814,6 +3814,58 @@ else
   fail "main login shell check (zsh=$status_zsh:$out_zsh | fish=$status_fish:$out_fish | bash=$status_bash:$out_bash)"
 fi
 
+zsh_hook_home="$TMP_DIR/zsh_hook_home"
+fish_hook_home="$TMP_DIR/fish_hook_home"
+zsh_nohook_home="$TMP_DIR/zsh_nohook_home"
+hook_upd_login="$TMP_DIR/hook_upd_login"
+hook_upd_kr="$TMP_DIR/hook_upd_kr"
+hook_upd_base="$TMP_DIR/hook_upd_base"
+mkdir -p "$zsh_hook_home" "$fish_hook_home/.config/fish" "$zsh_nohook_home"
+cat >"$zsh_hook_home/.zprofile" <<'EOF'
+[[ -z ${DISPLAY:-} && ${XDG_VTNR:-} -eq 1 ]] && exec startx
+EOF
+cat >"$fish_hook_home/.config/fish/config.fish" <<'EOF'
+if status is-login; and test -z "$WAYLAND_DISPLAY"; exec ~/.wayland-session; end
+EOF
+printf '%s\n' '# stock login' >"$hook_upd_login"
+
+set +e
+out_zsh_hook="$(HOME="$zsh_hook_home" USER=testuser run_main_with_stubs "$zsh_stub_dir:$sudo_pw_dir" --no-packages --de i3 2>&1)"
+status_zsh_hook=$?
+out_fish_hook="$(HOME="$fish_hook_home" USER=testuser run_main_with_stubs "$fish_stub_dir:$sudo_pw_dir" --no-packages --de i3 2>&1)"
+status_fish_hook=$?
+out_zsh_upd_hook="$(HOME="$zsh_hook_home" USER=testuser LOGIN_FILE="$hook_upd_login" \
+  PAM_KEYRING_STATE="$hook_upd_kr" PAM_LOGIN_BASE_STATE="$hook_upd_base" \
+  run_main_with_stubs "$zsh_stub_dir:$sudo_pw_dir" --update 2>&1)"
+status_zsh_upd_hook=$?
+out_fish_upd_hook="$(HOME="$fish_hook_home" USER=testuser LOGIN_FILE="$hook_upd_login" \
+  PAM_KEYRING_STATE="$hook_upd_kr" PAM_LOGIN_BASE_STATE="$hook_upd_base" \
+  run_main_with_stubs "$fish_stub_dir:$sudo_pw_dir" --update 2>&1)"
+status_fish_upd_hook=$?
+HOME="$zsh_nohook_home" USER=testuser run_main_with_stubs "$zsh_stub_dir:$sudo_pw_dir" --no-packages --de i3 >/dev/null 2>&1
+out_zsh_upd_nohook="$(HOME="$zsh_nohook_home" USER=testuser LOGIN_FILE="$hook_upd_login" \
+  PAM_KEYRING_STATE="$hook_upd_kr" PAM_LOGIN_BASE_STATE="$hook_upd_base" \
+  run_main_with_stubs "$zsh_stub_dir:$sudo_pw_dir" --update 2>&1)"
+status_zsh_upd_nohook=$?
+set -e
+
+if [[ $status_zsh_hook -eq 0 && "$out_zsh_hook" != *"WARNING:"* && "$out_zsh_hook" != *"--setup-shell"* &&
+  "$out_zsh_hook" != *"auto-start requires"* && "$out_zsh_hook" == *"- i3 will auto-start on TTY1 for testuser"* &&
+  "$out_zsh_hook" == *"No need to run 'startx'."* &&
+  $status_fish_hook -eq 0 && "$out_fish_hook" != *"WARNING:"* && "$out_fish_hook" != *"--setup-shell"* &&
+  "$out_fish_hook" != *"auto-start requires"* && "$out_fish_hook" == *"- i3 will auto-start on TTY1 for testuser"* &&
+  "$out_fish_hook" == *"No need to run 'startx'."* &&
+  $status_zsh_upd_hook -eq 0 && "$out_zsh_upd_hook" != *"WARNING:"* && "$out_zsh_upd_hook" != *"--setup-shell"* &&
+  "$out_zsh_upd_hook" == *"- i3 will auto-start on TTY1 for testuser"* &&
+  $status_fish_upd_hook -eq 0 && "$out_fish_upd_hook" != *"WARNING:"* && "$out_fish_upd_hook" != *"--setup-shell"* &&
+  "$out_fish_upd_hook" == *"- i3 will auto-start on TTY1 for testuser"* &&
+  $status_zsh_upd_nohook -eq 0 && "$out_zsh_upd_nohook" == *"WARNING:"* && "$out_zsh_upd_nohook" == *"--setup-shell zsh"* &&
+  "$out_zsh_upd_nohook" != *"will auto-start on TTY1"* ]]; then
+  pass "reinstall and --update suppress bogus warnings when zsh/fish TTY1 hooks exist while keeping missing-hook warnings"
+else
+  fail "existing zsh/fish hook reinstall/--update check (zsh=$status_zsh_hook fish=$status_fish_hook upd_zsh=$status_zsh_upd_hook upd_fish=$status_fish_upd_hook upd_nohook=$status_zsh_upd_nohook | $out_zsh_hook | $out_fish_hook | $out_zsh_upd_hook | $out_fish_upd_hook | $out_zsh_upd_nohook)"
+fi
+
 for snippet_shell in zsh fish; do
   if ! snippet_shell_path="$(command -v "$snippet_shell")"; then
     skip "$snippet_shell TTY1 snippet starts a session from ~/.local/bin (shell missing)"
@@ -13449,6 +13501,42 @@ if [[ $can_unshare -eq 1 ]]; then
     preflight_ok=0
     preflight_report+=" [root rc=$pf_rc out=$pf_root]"
   fi
+fi
+
+preflight_hook_home="$preflight_dir/hook_home"
+mkdir -p "$preflight_hook_home/.config/fish"
+cat >"$preflight_hook_home/.zprofile" <<'EOF'
+[[ -z ${DISPLAY:-} && ${XDG_VTNR:-} -eq 1 ]] && exec startx
+EOF
+cat >"$preflight_hook_home/.config/fish/config.fish" <<'EOF'
+if status is-login; and test -z "$WAYLAND_DISPLAY"; exec ~/.wayland-session; end
+EOF
+
+set +e
+pf_zsh_hook="$(env -i HOME="$preflight_hook_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_zsh_hook_rc=$?
+pf_fish_hook="$(env -i HOME="$preflight_hook_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/usr/bin/fish PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_fish_hook_rc=$?
+pf_fish_nohook="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/usr/bin/fish PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_fish_nohook_rc=$?
+set -e
+if [[ $pf_zsh_hook_rc -ne 0 || "$pf_zsh_hook" != *"Login shell: ok (/usr/bin/zsh — TTY1 hook present in ~/.zprofile)"* ||
+  "$pf_zsh_hook" == *"Login shell: WARN"* || "$pf_zsh_hook" != *"Preflight: PASS"* ||
+  $pf_fish_hook_rc -ne 0 || "$pf_fish_hook" != *"Login shell: ok (/usr/bin/fish — TTY1 hook present in ~/.config/fish/config.fish)"* ||
+  "$pf_fish_hook" == *"Login shell: WARN"* || "$pf_fish_hook" != *"Preflight: PASS"* ||
+  $pf_fish_nohook_rc -ne 0 || "$pf_fish_nohook" != *"Login shell: WARN (/usr/bin/fish"* ||
+  "$pf_fish_nohook" != *"--shell-snippet fish >> ~/.config/fish/config.fish"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [hook zsh/fish rc=$pf_zsh_hook_rc/$pf_fish_hook_rc/$pf_fish_nohook_rc out=$pf_zsh_hook | $pf_fish_hook | $pf_fish_nohook]"
 fi
 
 if [[ $preflight_ok -eq 1 ]]; then

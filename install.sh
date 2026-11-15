@@ -2683,6 +2683,19 @@ detect_enabled_dms() {
   fi
 }
 
+# Return 0 when login shell ($1: bash|zsh|fish) already has a readable TTY1 auto-start hook.
+shell_has_tty1_hook() {
+  local shell_kind="$1" target=""
+  [[ -n "${HOME:-}" ]] || return 1
+  case "$shell_kind" in
+    bash) target="$HOME/.bash_profile" ;;
+    zsh) target="$HOME/.zprofile" ;;
+    fish) target="$HOME/.config/fish/config.fish" ;;
+    *) return 1 ;;
+  esac
+  [[ -f "$target" && -r "$target" ]] && grep -Eq '\.wayland-session|startx' "$target" 2>/dev/null
+}
+
 # Run pre-install onboarding readiness checks cleanly without sudo or side effects
 run_preflight() {
   local blockers=0
@@ -2763,10 +2776,18 @@ run_preflight() {
       printf 'Login shell: ok (%s — reads ~/.bash_profile)\n' "$login_shell"
       ;;
     *zsh)
-      printf 'Login shell: WARN (%s does not read ~/.bash_profile — run: %s --shell-snippet zsh >> ~/.zprofile)\n' "$login_shell" "$(script_cmd install.sh)"
+      if shell_has_tty1_hook zsh; then
+        printf 'Login shell: ok (%s — TTY1 hook present in ~/.zprofile)\n' "$login_shell"
+      else
+        printf 'Login shell: WARN (%s does not read ~/.bash_profile — run: %s --shell-snippet zsh >> ~/.zprofile)\n' "$login_shell" "$(script_cmd install.sh)"
+      fi
       ;;
     *fish)
-      printf 'Login shell: WARN (%s does not read ~/.bash_profile — run: %s --shell-snippet fish >> ~/.config/fish/config.fish)\n' "$login_shell" "$(script_cmd install.sh)"
+      if shell_has_tty1_hook fish; then
+        printf 'Login shell: ok (%s — TTY1 hook present in ~/.config/fish/config.fish)\n' "$login_shell"
+      else
+        printf 'Login shell: WARN (%s does not read ~/.bash_profile — run: %s --shell-snippet fish >> ~/.config/fish/config.fish)\n' "$login_shell" "$(script_cmd install.sh)"
+      fi
       ;;
     *)
       printf 'Login shell: WARN (%s does not read ~/.bash_profile — add TTY1 auto-start block per docs/startx-autologin.md)\n' "$login_shell"
@@ -3006,8 +3027,7 @@ run_doctor() {
   if [[ $installed_any -eq 1 ]]; then
     case "$login_shell" in
       *bash)
-        if [[ -f "$HOME/.bash_profile" && -r "$HOME/.bash_profile" ]] &&
-          grep -Eq '\.wayland-session|startx' "$HOME/.bash_profile"; then
+        if shell_has_tty1_hook bash; then
           printf 'Login shell auto-start: ok (%s via ~/.bash_profile)\n' "$login_shell"
         else
           printf 'Login shell auto-start: FAIL (~/.bash_profile is missing or lacks TTY1 auto-start trigger — restore with: %s)\n' "$recover_cmd"
@@ -3015,8 +3035,7 @@ run_doctor() {
         fi
         ;;
       *zsh)
-        if [[ -f "$HOME/.zprofile" && -r "$HOME/.zprofile" ]] &&
-          grep -Eq '\.wayland-session|startx' "$HOME/.zprofile"; then
+        if shell_has_tty1_hook zsh; then
           printf 'Login shell auto-start: ok (%s via ~/.zprofile)\n' "$login_shell"
         else
           printf 'Login shell auto-start: FAIL (zsh login shell lacks TTY1 auto-start block in ~/.zprofile — run: %s --shell-snippet zsh >> ~/.zprofile)\n' "$install_cmd"
@@ -3024,8 +3043,7 @@ run_doctor() {
         fi
         ;;
       *fish)
-        if [[ -f "$HOME/.config/fish/config.fish" && -r "$HOME/.config/fish/config.fish" ]] &&
-          grep -Eq '\.wayland-session|startx' "$HOME/.config/fish/config.fish"; then
+        if shell_has_tty1_hook fish; then
           printf 'Login shell auto-start: ok (%s via ~/.config/fish/config.fish)\n' "$login_shell"
         else
           printf 'Login shell auto-start: FAIL (fish login shell lacks TTY1 auto-start block in ~/.config/fish/config.fish — run: %s --shell-snippet fish >> ~/.config/fish/config.fish)\n' "$install_cmd"
@@ -3033,8 +3051,7 @@ run_doctor() {
         fi
         ;;
       "")
-        if [[ -f "$HOME/.bash_profile" && -r "$HOME/.bash_profile" ]] &&
-          grep -Eq '\.wayland-session|startx' "$HOME/.bash_profile"; then
+        if shell_has_tty1_hook bash; then
           printf 'Login shell auto-start: ok (~/.bash_profile present)\n'
         else
           printf 'Login shell auto-start: WARN (login shell unknown; could not verify TTY1 shell auto-start hook)\n'
@@ -3474,14 +3491,12 @@ run_recover() {
   fi
   case "$login_shell" in
     *zsh)
-      if [[ "$resolved_setup_shell" != "zsh" ]] &&
-        { [[ ! -f "$HOME/.zprofile" ]] || ! grep -Eq '\.wayland-session|startx' "$HOME/.zprofile" 2>/dev/null; }; then
+      if [[ "$resolved_setup_shell" != "zsh" ]] && ! shell_has_tty1_hook zsh; then
         log "Note: Login shell is $login_shell without a TTY1 trigger in ~/.zprofile; run: $(script_cmd install.sh) --shell-snippet zsh >> ~/.zprofile"
       fi
       ;;
     *fish)
-      if [[ "$resolved_setup_shell" != "fish" ]] &&
-        { [[ ! -f "$HOME/.config/fish/config.fish" ]] || ! grep -Eq '\.wayland-session|startx' "$HOME/.config/fish/config.fish" 2>/dev/null; }; then
+      if [[ "$resolved_setup_shell" != "fish" ]] && ! shell_has_tty1_hook fish; then
         log "Note: Login shell is $login_shell without a TTY1 trigger in ~/.config/fish/config.fish; run: $(script_cmd install.sh) --shell-snippet fish >> ~/.config/fish/config.fish"
       fi
       ;;
@@ -3657,20 +3672,17 @@ run_fix() {
 
   case "$login_shell" in
     *bash | "")
-      if [[ ! -f "$HOME/.bash_profile" || ! -r "$HOME/.bash_profile" ]] ||
-        ! grep -Eq '\.wayland-session|startx' "$HOME/.bash_profile"; then
+      if ! shell_has_tty1_hook bash; then
         need_home_recover=1
       fi
       ;;
     *zsh)
-      if [[ ! -f "$HOME/.zprofile" || ! -r "$HOME/.zprofile" ]] ||
-        ! grep -Eq '\.wayland-session|startx' "$HOME/.zprofile" 2>/dev/null; then
+      if ! shell_has_tty1_hook zsh; then
         need_shell_hook="zsh"
       fi
       ;;
     *fish)
-      if [[ ! -f "$HOME/.config/fish/config.fish" || ! -r "$HOME/.config/fish/config.fish" ]] ||
-        ! grep -Eq '\.wayland-session|startx' "$HOME/.config/fish/config.fish" 2>/dev/null; then
+      if ! shell_has_tty1_hook fish; then
         need_shell_hook="fish"
       fi
       ;;
@@ -4976,7 +4988,7 @@ EOF
   if [[ -n "$login_shell" && "$login_shell" != *bash ]]; then
     case "$login_shell" in
       *zsh)
-        if [[ "$resolved_setup_shell" == "zsh" ]]; then
+        if [[ "$resolved_setup_shell" == "zsh" ]] || shell_has_tty1_hook zsh; then
           shell_hook_configured=1
         else
           shell_profile=".zprofile"
@@ -4984,7 +4996,7 @@ EOF
         fi
         ;;
       *fish)
-        if [[ "$resolved_setup_shell" == "fish" ]]; then
+        if [[ "$resolved_setup_shell" == "fish" ]] || shell_has_tty1_hook fish; then
           shell_hook_configured=1
         else
           shell_profile=".config/fish/config.fish"
