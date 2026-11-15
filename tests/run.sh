@@ -14467,4 +14467,245 @@ else
   fail "install.sh --setup-shell / uninstall hook cleanup:$ss_report"
 fi
 
+# --- install.sh --install-session ---
+isess_dir="$TMP_DIR/install_session_test"
+isess_home="$isess_dir/home"
+isess_state="$isess_dir/state"
+isess_etc="$isess_dir/etc"
+isess_bin="$isess_dir/bin"
+isess_xsess="$isess_dir/share/xsessions"
+isess_wl="$isess_dir/share/wayland-sessions"
+isess_custom="$isess_dir/custom"
+isess_sudo_log="$isess_dir/sudo.log"
+mkdir -p "$isess_home" "$isess_state" "$isess_etc/pam.d" "$isess_etc/lightxdm" "$isess_etc/systemd/system" \
+  "$isess_etc/getty@tty1.service.d" "$isess_bin" "$isess_xsess" "$isess_wl" "$isess_custom"
+
+cp "$setup_shell_bin/"{id,getent,systemctl,pacman,startx} "$isess_bin/"
+cat >"$isess_bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${ISESS_SUDO_LOG:?}"
+has_n=0
+for a in "$@"; do
+  [[ "$a" == "-n" ]] && has_n=1
+done
+if [[ "${FAKE_SUDO_FAIL_N:-0}" == "1" && $has_n -eq 1 ]]; then
+  exit 1
+fi
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -v | -k | -K | -n | -S) shift ;;
+    -p) shift 2 ;;
+    --)
+      shift
+      break
+      ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+if [[ $# -eq 0 ]]; then
+  exit 0
+fi
+"$@"
+EOF
+cat >"$isess_bin/sway" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$isess_bin/openbox" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$isess_bin/waybox" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$isess_bin/"{sudo,sway,openbox,waybox}
+
+cat >"$isess_wl/sway.desktop" <<'EOF'
+[Desktop Entry]
+Name=Sway
+Exec=sway --unsupported-gpu
+DesktopNames=sway
+Type=Application
+EOF
+cat >"$isess_xsess/openbox.desktop" <<'EOF'
+[Desktop Entry]
+Name=Openbox
+Exec=openbox --sm-disable
+DesktopNames=OPENBOX
+Type=Application
+EOF
+cat >"$isess_custom/waybox.desktop" <<'EOF'
+[Desktop Entry]
+Name=Waybox
+Exec=waybox
+DesktopNames=Waybox
+Type=Application
+EOF
+cat >"$isess_wl/bad-cmd.desktop" <<'EOF'
+[Desktop Entry]
+Name=BadCmd
+Exec=definitely-missing-wm-binary
+Type=Application
+EOF
+cat >"$isess_wl/bad-try.desktop" <<'EOF'
+[Desktop Entry]
+Name=BadTry
+TryExec=definitely-missing-tryexec
+Exec=sway
+Type=Application
+EOF
+
+run_isess_cmd() {
+  env -u SUDO_USER -u DISPLAY -u WAYLAND_DISPLAY \
+    HOME="$isess_home" \
+    USER="testuser" \
+    XDG_STATE_HOME="$isess_state" \
+    XSESSIONS_DIR="$isess_xsess" \
+    WAYLAND_SESSIONS_DIR="$isess_wl" \
+    LOGIN_FILE="$isess_etc/pam.d/login" \
+    GNOME_SESSION_TYPE_DEST="$isess_etc/lightxdm/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$isess_etc/lightxdm/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$isess_etc/lightxdm/pam-login-base" \
+    DM_STATE_FILE="$isess_etc/lightxdm/disabled-display-managers" \
+    DISPLAY_MANAGER_LINK="$isess_etc/systemd/system/display-manager.service" \
+    AUTOLOGIN_DROPIN_DIR="$isess_etc/getty@tty1.service.d" \
+    ISESS_SUDO_LOG="$isess_sudo_log" \
+    PATH="$isess_bin:/usr/bin:/bin" \
+    bash "$REPO_ROOT/install.sh" "$@"
+}
+
+reset_isess_fixture() {
+  rm -rf "$isess_home" "$isess_state" "$isess_etc"
+  mkdir -p "$isess_home" "$isess_state" "$isess_etc/pam.d" "$isess_etc/lightxdm" "$isess_etc/systemd/system" "$isess_etc/getty@tty1.service.d"
+  printf '#%%PAM-1.0\nauth include system-local-login\n' >"$isess_etc/pam.d/login"
+  : >"$isess_sudo_log"
+}
+
+is_ok=1
+is_report=""
+
+# 1. Wayland --install-session --dry-run + live create + --keyring kwallet + idempotent custom edit preservation
+reset_isess_fixture
+is_rc=0
+is_out="$(run_isess_cmd --install-session "$isess_wl/sway.desktop" --keyring kwallet --dry-run 2>&1)" || is_rc=$?
+if [[ $is_rc -ne 0 || -e "$isess_home/.config" || -s "$isess_sudo_log" ||
+  "$is_out" != *"Session entry: $isess_wl/sway.desktop (de=sway, mode=wayland, template=create $isess_home/.config/lightxdm/.wayland-session-sway)"* ||
+  "$is_out" != *"Template: $isess_home/.config/lightxdm/.wayland-session-sway (would create from $isess_wl/sway.desktop)"* ||
+  "$is_out" != *"Packages: skipped (--no-packages)"* ]]; then
+  is_ok=0
+  is_report+=" wl-dry rc=$is_rc out=[$is_out];"
+fi
+
+is_rc=0
+is_out="$(run_isess_cmd --install-session "$isess_wl/sway.desktop" --keyring kwallet 2>&1)" || is_rc=$?
+if [[ $is_rc -ne 0 || ! -f "$isess_home/.config/lightxdm/.wayland-session-sway" || ! -x "$isess_home/.wayland-session" ]] ||
+  ! grep -Fq 'exec sway --unsupported-gpu' "$isess_home/.wayland-session" ||
+  ! grep -Fq 'pam_kwallet5.so' "$isess_etc/pam.d/login" ||
+  ! grep -Fxq 'de=sway' "$isess_state/lightxdm/install-choices" ||
+  ! grep -Fxq 'no_packages=1' "$isess_state/lightxdm/install-choices"; then
+  is_ok=0
+  is_report+=" wl-live rc=$is_rc out=[$is_out];"
+fi
+
+# Customize user template and verify idempotent dry-run + live rerun preserves it
+printf '# user-custom-sway\n' >>"$isess_home/.config/lightxdm/.wayland-session-sway"
+is_rc=0
+is_out="$(run_isess_cmd --install-session "$isess_wl/sway.desktop" --keyring kwallet --dry-run 2>&1)" || is_rc=$?
+if [[ $is_rc -ne 0 || "$is_out" != *"template=reuse $isess_home/.config/lightxdm/.wayland-session-sway"* ]]; then
+  is_ok=0
+  is_report+=" wl-reuse-dry rc=$is_rc out=[$is_out];"
+fi
+is_rc=0
+is_out="$(run_isess_cmd --install-session "$isess_wl/sway.desktop" --keyring kwallet 2>&1)" || is_rc=$?
+if [[ $is_rc -ne 0 ]] || ! grep -Fxq '# user-custom-sway' "$isess_home/.config/lightxdm/.wayland-session-sway" ||
+  ! grep -Fxq '# user-custom-sway' "$isess_home/.wayland-session"; then
+  is_ok=0
+  is_report+=" wl-reuse-live rc=$is_rc out=[$is_out];"
+fi
+
+# 2. X11 .desktop with custom --de, --non-interactive, and --setup-shell; plus --wayland override outside wayland-sessions/
+reset_isess_fixture
+is_rc=0
+is_out="$(FAKE_SHELL=/usr/bin/zsh run_isess_cmd --install-session "$isess_xsess/openbox.desktop" --de myopenbox --non-interactive --setup-shell zsh 2>&1)" || is_rc=$?
+if [[ $is_rc -ne 0 || ! -f "$isess_home/.config/lightxdm/.xinitrc-myopenbox" || ! -x "$isess_home/.xinitrc" || ! -f "$isess_home/.zprofile" ]] ||
+  ! grep -Fq 'exec openbox --sm-disable' "$isess_home/.xinitrc" ||
+  ! grep -Fq 'export XDG_CURRENT_DESKTOP=OPENBOX' "$isess_home/.xinitrc" ||
+  ! grep -Fxq '# >>> lightXDM TTY1 auto-start >>>' "$isess_home/.zprofile" ||
+  ! grep -Fxq 'de=myopenbox' "$isess_state/lightxdm/install-choices"; then
+  is_ok=0
+  is_report+=" x11-live rc=$is_rc out=[$is_out];"
+fi
+
+reset_isess_fixture
+is_rc=0
+is_out="$(run_isess_cmd --install-session "$isess_custom/waybox.desktop" --wayland --dry-run 2>&1)" || is_rc=$?
+if [[ $is_rc -ne 0 || -s "$isess_sudo_log" || -e "$isess_home/.config" ||
+  "$is_out" != *"de=waybox, mode=wayland, template=create $isess_home/.config/lightxdm/.wayland-session-waybox"* ]]; then
+  is_ok=0
+  is_report+=" wayland-override-dry rc=$is_rc out=[$is_out];"
+fi
+
+# 3. Fail-fast validation before sudo / $HOME writes and disallowed flag combinations
+reset_isess_fixture
+is_rc=0
+is_out="$(FAKE_SUDO_FAIL_N=1 run_isess_cmd --install-session "$isess_wl/sway.desktop" --non-interactive 2>&1)" || is_rc=$?
+if [[ $is_rc -eq 0 || -e "$isess_home/.config" ]]; then
+  is_ok=0
+  is_report+=" sudo-n-wrote-home rc=$is_rc out=[$is_out];"
+fi
+
+reset_isess_fixture
+for bad_is in \
+  "--install-session" \
+  "--install-session $isess_wl/missing.desktop" \
+  "--install-session $isess_wl/bad-cmd.desktop" \
+  "--install-session $isess_wl/bad-try.desktop" \
+  "--install-session $isess_wl/sway.desktop --de i3" \
+  "--install-session $isess_wl/sway.desktop --init-template" \
+  "--install-session $isess_wl/sway.desktop --from-session $isess_xsess/openbox.desktop" \
+  "--install-session $isess_wl/sway.desktop --pam-only" \
+  "--install-session $isess_wl/sway.desktop --list-packages" \
+  "--install-session $isess_wl/sway.desktop --status" \
+  "--install-session $isess_wl/sway.desktop --recover" \
+  "--install-session $isess_wl/sway.desktop --update"; do
+  is_rc=0
+  read -r -a is_bad_args <<<"$bad_is"
+  run_isess_cmd "${is_bad_args[@]}" >/dev/null 2>&1 || is_rc=$?
+  if [[ $is_rc -ne 1 ]]; then
+    is_ok=0
+    is_report+=" bad($bad_is) rc=$is_rc;"
+  fi
+done
+if [[ -s "$isess_sudo_log" || -e "$isess_home/.config" ]]; then
+  is_ok=0
+  is_report+=" bad-touched-sudo-or-home;"
+fi
+
+# Sibling conflict and symlinked template path stop before sudo
+mkdir -p "$isess_home/.config/lightxdm"
+: >"$isess_home/.config/lightxdm/.xinitrc-sway"
+is_rc=0
+run_isess_cmd --install-session "$isess_wl/sway.desktop" >/dev/null 2>&1 || is_rc=$?
+if [[ $is_rc -ne 1 || -s "$isess_sudo_log" ]]; then
+  is_ok=0
+  is_report+=" sibling-conflict rc=$is_rc;"
+fi
+
+rm -f "$isess_home/.config/lightxdm/.xinitrc-sway"
+ln -s "$isess_dir/elsewhere" "$isess_home/.config/lightxdm/.wayland-session-sway"
+is_rc=0
+run_isess_cmd --install-session "$isess_wl/sway.desktop" >/dev/null 2>&1 || is_rc=$?
+if [[ $is_rc -ne 1 || -s "$isess_sudo_log" || -e "$isess_dir/elsewhere" ]]; then
+  is_ok=0
+  is_report+=" sym-template rc=$is_rc;"
+fi
+
+if [[ $is_ok -eq 1 ]]; then
+  pass "install.sh --install-session provisions custom X11/Wayland sessions idempotently with pre-sudo validation"
+else
+  fail "install.sh --install-session:$is_report"
+fi
+
 finish_harness

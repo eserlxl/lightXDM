@@ -55,7 +55,8 @@ You need Arch Linux (or a derivative) with systemd, and a user in the `wheel` gr
 - `--setup-shell <zsh|fish|auto>`: idempotently install or update the managed `# >>> lightXDM TTY1 auto-start >>>` block in `~/.zprofile` or `~/.config/fish/config.fish` (standalone with optional `--dry-run`, or combined with install / `--recover`; `uninstall.sh` removes only lightXDM's fenced block)
 - `--pam-only --de <id>`: add only lightXDM's lines to `/etc/pam.d/login` (keyring unlock, and GNOME's session-type block), touching nothing else
 - `--init-template --de <id>`: create `~/.config/lightxdm/.xinitrc-<id>` (or `.wayland-session-<id>` for Plasma, GNOME, and Budgie) to edit first (no sudo)
-- `--init-template --wayland --de sway`: create `~/.config/lightxdm/.wayland-session-sway` for a custom Wayland compositor; edit it, then install with `--no-packages --de sway`. `--wayland` requires `--init-template` and a custom id; keep only one X11 or Wayland template per custom id.
+- `--init-template --wayland --de sway`: create `~/.config/lightxdm/.wayland-session-sway` for a custom Wayland compositor; edit it, then install with `--no-packages --de sway`. `--wayland` requires `--init-template` or `--install-session` and a custom id; keep only one X11 or Wayland template per custom id.
+- `--install-session <path>`: validate an installed X11/Wayland `.desktop` session entry, create `~/.config/lightxdm/` template if missing (preserving existing edits on rerun), and install with `--no-packages` in one command (auto-derives `--de <custom-id>` and infers Wayland under `wayland-sessions`; optional `--de <custom-id>`, `--wayland`, `--dry-run`, `--non-interactive`, `--keyring`, `--no-keyring`, `--autologin`, `--setup-shell`)
 
 `bash install.sh --help` lists every option. [docs/installation.md](docs/installation.md) explains each step and option in full.
 

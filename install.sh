@@ -398,6 +398,10 @@ preserve_dotfile() {
 
 # Print the session template path for a session id
 xinitrc_template() {
+  if [[ -n "${SESSION_PREVIEW_TEMPLATE:-}" ]]; then
+    printf '%s\n' "$SESSION_PREVIEW_TEMPLATE"
+    return 0
+  fi
   local name=".xinitrc-$1"
   case "$1" in
     plasma | gnome | budgie) name=".wayland-session-$1" ;;
@@ -639,7 +643,8 @@ list_desktop_sessions() {
 # built-in template, or a custom X11 (from i3) or minimal Wayland template.
 init_xinitrc_template() {
   local id="$1" wayland="${2:-0}" dest="$HOME/.config/lightxdm/.xinitrc-$1"
-  local from_session="${3:-}" exec_line="exec $1" current_desktop="$1"
+  local from_session="${3:-}" dest_override="${4:-}" quiet="${5:-0}"
+  local exec_line="exec $1" current_desktop="$1"
   local SESSION_ENTRY_NAME="" SESSION_ENTRY_EXEC_LINE="" SESSION_ENTRY_EXEC_CMD=""
   local SESSION_ENTRY_DESKTOP="" SESSION_ENTRY_TRY_EXEC=""
   local SESSION_ENTRY_HIDDEN=0 SESSION_ENTRY_NO_DISPLAY=0 SESSION_ENTRY_ERROR=""
@@ -672,22 +677,26 @@ init_xinitrc_template() {
     esac
     dest="$HOME/.config/lightxdm/.wayland-session-$id"
   fi
-  if [[ -e "$dest" || -L "$dest" ]]; then
-    log "$dest already exists; edit it, or remove it to start over."
-    return 1
+  if [[ -n "$dest_override" ]]; then
+    dest="$dest_override"
+  else
+    if [[ -e "$dest" || -L "$dest" ]]; then
+      log "$dest already exists; edit it, or remove it to start over."
+      return 1
+    fi
+    case "$id" in
+      plasma | gnome | budgie | xfce | lxqt | lxde | mate | cinnamon | i3) ;;
+      *)
+        # install.sh refuses a custom id with both templates, so never create the second one.
+        local sibling="$HOME/.config/lightxdm/.wayland-session-$id"
+        [[ $wayland -eq 1 ]] && sibling="$HOME/.config/lightxdm/.xinitrc-$id"
+        if [[ -e "$sibling" || -L "$sibling" ]]; then
+          log "$sibling already exists for $id; a custom id uses one session template: edit it, or remove it to switch."
+          return 1
+        fi
+        ;;
+    esac
   fi
-  case "$id" in
-    plasma | gnome | budgie | xfce | lxqt | lxde | mate | cinnamon | i3) ;;
-    *)
-      # install.sh refuses a custom id with both templates, so never create the second one.
-      local sibling="$HOME/.config/lightxdm/.wayland-session-$id"
-      [[ $wayland -eq 1 ]] && sibling="$HOME/.config/lightxdm/.xinitrc-$id"
-      if [[ -e "$sibling" || -L "$sibling" ]]; then
-        log "$sibling already exists for $id; a custom id uses one session template: edit it, or remove it to switch."
-        return 1
-      fi
-      ;;
-  esac
   if [[ -n "$from_session" ]]; then
     if ! parse_desktop_session_entry "$from_session"; then
       log "$SESSION_ENTRY_ERROR"
@@ -698,17 +707,21 @@ init_xinitrc_template() {
       current_desktop="$SESSION_ENTRY_DESKTOP"
     fi
   fi
-  mkdir -p "$HOME/.config/lightxdm"
+  if [[ -n "$dest_override" ]]; then
+    mkdir -p -- "${dest%/*}"
+  else
+    mkdir -p -- "$HOME/.config/lightxdm"
+  fi
   case "$id" in
     plasma | gnome | budgie)
       cp -- "$SCRIPT_DIR/dotfiles/.wayland-session-$id" "$dest"
       chmod 755 "$dest"
-      log "Created $dest from the built-in $id template. Edit it, then run: $(script_cmd install.sh) --de $id"
+      [[ $quiet -eq 1 ]] || log "Created $dest from the built-in $id template. Edit it, then run: $(script_cmd install.sh) --de $id"
       ;;
     xfce | lxqt | lxde | mate | cinnamon | i3)
       cp -- "$SCRIPT_DIR/dotfiles/.xinitrc-$id" "$dest"
       chmod 755 "$dest"
-      log "Created $dest from the built-in $id template. Edit it, then run: $(script_cmd install.sh) --de $id"
+      [[ $quiet -eq 1 ]] || log "Created $dest from the built-in $id template. Edit it, then run: $(script_cmd install.sh) --de $id"
       ;;
     *)
       if [[ $wayland -eq 1 ]]; then
@@ -745,9 +758,110 @@ EOF
         done <"$SCRIPT_DIR/dotfiles/.xinitrc-i3" >"$dest"
       fi
       chmod 755 "$dest"
-      log "Created $dest for $id. Check its exec line, then run: $(script_cmd install.sh) --no-packages --de $id"
+      [[ $quiet -eq 1 ]] || log "Created $dest for $id. Check its exec line, then run: $(script_cmd install.sh) --no-packages --de $id"
       ;;
   esac
+}
+
+session_entry_is_wayland() {
+  local entry="$1" explicit_wayland="${2:-0}" wayland_dir resolved_entry
+  [[ $explicit_wayland -eq 1 ]] && return 0
+  wayland_dir="${WAYLAND_SESSIONS_DIR:-${SESSION_ROOT:-}/usr/share/wayland-sessions}"
+  wayland_dir="${wayland_dir%/}"
+  if [[ "$entry" == "${wayland_dir}/"* || "$entry" == */wayland-sessions/* ]]; then
+    return 0
+  fi
+  resolved_entry="$(readlink -f -- "$entry" 2>/dev/null || true)"
+  if [[ -n "$resolved_entry" ]] &&
+    [[ "$resolved_entry" == "${wayland_dir}/"* || "$resolved_entry" == */wayland-sessions/* ]]; then
+    return 0
+  fi
+  return 1
+}
+
+prepare_install_session() {
+  local entry="$1" requested_de="$2" de_specified="$3" explicit_wayland="${4:-0}"
+  local target_de="$requested_de" is_wl=0 dest sibling resolved_entry_check=0
+  local SESSION_ENTRY_NAME="" SESSION_ENTRY_EXEC_LINE="" SESSION_ENTRY_EXEC_CMD=""
+  local SESSION_ENTRY_DESKTOP="" SESSION_ENTRY_TRY_EXEC=""
+  local SESSION_ENTRY_HIDDEN=0 SESSION_ENTRY_NO_DISPLAY=0 SESSION_ENTRY_ERROR=""
+
+  if [[ $de_specified -eq 1 ]]; then
+    if [[ -z "$target_de" || "$target_de" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* ]]; then
+      log "Invalid desktop id: $target_de (use lowercase letters, digits, _ and -)"
+      return 1
+    fi
+    case "$target_de" in
+      plasma | gnome | budgie | xfce | lxqt | lxde | mate | cinnamon | i3)
+        log "--install-session is only for custom ids; $target_de has a built-in template."
+        return 1
+        ;;
+    esac
+  fi
+
+  if ! parse_desktop_session_entry "$entry"; then
+    log "$SESSION_ENTRY_ERROR"
+    return 1
+  fi
+  if [[ -n "$SESSION_ENTRY_TRY_EXEC" ]] && ! session_command_exists "$SESSION_ENTRY_TRY_EXEC"; then
+    log "Session entry TryExec executable not found: $SESSION_ENTRY_TRY_EXEC ($entry)"
+    return 1
+  fi
+  if ! session_command_exists "$SESSION_ENTRY_EXEC_CMD"; then
+    log "Session entry command not found: $SESSION_ENTRY_EXEC_CMD ($entry)"
+    return 1
+  fi
+
+  if [[ -z "$target_de" ]]; then
+    target_de="$(suggest_custom_session_id "$entry")"
+  fi
+  if session_entry_is_wayland "$entry" "$explicit_wayland"; then
+    is_wl=1
+    dest="$HOME/.config/lightxdm/.wayland-session-$target_de"
+    sibling="$HOME/.config/lightxdm/.xinitrc-$target_de"
+  else
+    dest="$HOME/.config/lightxdm/.xinitrc-$target_de"
+    sibling="$HOME/.config/lightxdm/.wayland-session-$target_de"
+  fi
+
+  local home="${HOME%/}"
+  [[ -n "$home" ]] || home="/"
+  if [[ -z "${HOME:-}" || -L "$home" || ! -d "$home" ]]; then
+    log "Refusing unsafe home directory: ${HOME:-<unset>}"
+    return 1
+  fi
+  if [[ -L "$home/.config" ]] || [[ -e "$home/.config" && ! -d "$home/.config" ]]; then
+    log "Refusing unsafe directory path: $home/.config"
+    return 1
+  fi
+  if [[ -L "$home/.config/lightxdm" ]] || [[ -e "$home/.config/lightxdm" && ! -d "$home/.config/lightxdm" ]]; then
+    log "Refusing unsafe directory path: $home/.config/lightxdm"
+    return 1
+  fi
+  if [[ -e "$sibling" || -L "$sibling" ]]; then
+    log "$sibling already exists for $target_de; a custom id uses one session template: edit it, or remove it to switch."
+    return 1
+  fi
+  if [[ -L "$dest" ]] || [[ -e "$dest" && ! -f "$dest" ]]; then
+    log "Refusing non-regular or symlinked session template: $dest"
+    return 1
+  fi
+  if [[ -f "$dest" ]]; then
+    if [[ ! -r "$dest" ]]; then
+      log "Cannot read existing session template: $dest"
+      return 1
+    fi
+    check_template_syntax "$dest" || return 1
+    check_template_not_self "$target_de" "$dest" || return 1
+    check_session_commands "$dest" || return 1
+    resolved_entry_check=1
+  fi
+
+  INSTALL_SESSION_DE="$target_de"
+  INSTALL_SESSION_WAYLAND="$is_wl"
+  INSTALL_SESSION_DEST="$dest"
+  INSTALL_SESSION_TEMPLATE_EXISTS="$resolved_entry_check"
+  return 0
 }
 
 # Parse Bash templates without executing them, before installing packages or previewing changes.
@@ -1707,7 +1821,7 @@ preview_install() {
   check_tty1_getty || return 1
   check_template_not_self "$de" "$template" || return 1
   real_user="${USER:-$(id -un)}"
-  printf 'Desktop: %s\nTemplate: %s\n' "$de" "$template"
+  printf 'Desktop: %s\nTemplate: %s\n' "$de" "${SESSION_PREVIEW_DEST:-$template}"
   if [[ ! -r "$template" ]]; then
     printf '  template contents: unknown (needs root)\n'
   fi
@@ -3614,8 +3728,12 @@ main() {
   local init_template=0
   local wayland=0
   local from_session=""
+  local install_session=""
+  local install_session_wayland=0
+  local install_session_dest=""
+  local install_session_template_exists=0
   local pam_only=0
-  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--preflight] [--doctor] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
+  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--preflight] [--doctor] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -3642,6 +3760,9 @@ Options:
                     (any lowercase id: a custom one starts from the i3 template unless --wayland is used)
   --from-session <path> with --init-template --de <custom-id>, use a session entry's Exec and first DesktopNames entry
                     (literal arguments or plain double-quoted words only; no field codes or backslash escapes)
+  --install-session <path> validate a custom X11/Wayland .desktop entry, create ~/.config/lightxdm/ template if missing,
+                    and run the custom install (--no-packages implied; infers Wayland for wayland-sessions or --wayland;
+                    optional --de <custom-id>, --wayland, --dry-run, --non-interactive, --keyring, --no-keyring, --autologin, --setup-shell)
   --wayland         with --init-template --de <custom-id>, create a minimal Wayland template (default command: exec <id>)
   --no-packages     skip package installation
   --keyring <gnome|kwallet> choose the PAM keyring backend for a custom id (requires --no-packages;
@@ -3816,6 +3937,15 @@ EOF
         from_session="$2"
         shift 2
         ;;
+      --install-session)
+        if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then
+          log "Missing argument for --install-session"
+          echo "$usage" >&2
+          exit 1
+        fi
+        install_session="$2"
+        shift 2
+        ;;
       --de)
         if [[ $# -lt 2 || "$2" == -* ]]; then
           log "Missing argument for --de (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
@@ -3842,9 +3972,9 @@ EOF
 
   if [[ $status_only -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 ||
-      $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 ||
-      $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 ||
+      -n "$install_session" || $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $dry_run -eq 1 ||
+      $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
+      $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 ||
       -n "$from_session" || $pam_only -eq 1 ]]; then
       log "--status cannot be combined with any other option."
       echo "$usage" >&2
@@ -3859,7 +3989,8 @@ EOF
   fi
 
   if [[ $list_sessions -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 ||
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
+      -n "$install_session" || $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 ||
       $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
       $update -eq 1 || $status_only -eq 1 || $json_output -eq 1 || $init_template -eq 1 ||
@@ -3905,7 +4036,7 @@ EOF
   fi
 
   if [[ $recover -eq 1 ]]; then
-    if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || $preflight_only -eq 1 ||
+    if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$install_session" || $preflight_only -eq 1 ||
       $doctor_only -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
       $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" ||
@@ -3929,7 +4060,7 @@ EOF
   fi
 
   if [[ $update -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || -n "$install_session" ||
       $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
       -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 ||
@@ -3992,7 +4123,7 @@ EOF
     esac
   fi
 
-  if [[ $wayland -eq 1 && $init_template -eq 0 ]]; then
+  if [[ $wayland -eq 1 && $init_template -eq 0 && -z "$install_session" ]]; then
     log "--wayland requires --init-template --de <custom-id>."
     echo "$usage" >&2
     exit 1
@@ -4005,8 +4136,8 @@ EOF
   fi
 
   if [[ $pam_only -eq 1 ]]; then
-    if [[ $autologin -eq 1 || $list_only -eq 1 || $init_template -eq 1 || -n "$setup_shell" ]]; then
-      log "--pam-only changes only $LOGIN_FILE and cannot be combined with --autologin, --list-packages, --init-template or --setup-shell."
+    if [[ $autologin -eq 1 || $list_only -eq 1 || $init_template -eq 1 || -n "$setup_shell" || -n "$install_session" ]]; then
+      log "--pam-only changes only $LOGIN_FILE and cannot be combined with --autologin, --list-packages, --init-template, --setup-shell or --install-session."
       echo "$usage" >&2
       exit 1
     fi
@@ -4020,7 +4151,7 @@ EOF
   fi
 
   if [[ $init_template -eq 1 ]]; then
-    if [[ $list_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || -n "$setup_shell" ]]; then
+    if [[ $list_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || -n "$setup_shell" || -n "$install_session" ]]; then
       log "--init-template takes only --de <id> and optional --wayland and --from-session <path> for custom ids; it creates the template and exits without installing."
       echo "$usage" >&2
       exit 1
@@ -4037,6 +4168,26 @@ EOF
     fi
     init_xinitrc_template "$de" "$wayland" "$from_session"
     exit $?
+  fi
+
+  if [[ -n "$install_session" ]]; then
+    if [[ $list_only -eq 1 ]]; then
+      log "--list-packages cannot be combined with --install-session."
+      echo "$usage" >&2
+      exit 1
+    fi
+    if [[ -n "$keyring" && $no_keyring -eq 1 ]]; then
+      log "--keyring cannot be combined with --no-keyring."
+      exit 1
+    fi
+    local INSTALL_SESSION_DE="" INSTALL_SESSION_WAYLAND=0 INSTALL_SESSION_DEST="" INSTALL_SESSION_TEMPLATE_EXISTS=0
+    prepare_install_session "$install_session" "$de" "$de_specified" "$wayland" || exit 1
+    de="$INSTALL_SESSION_DE"
+    de_specified=1
+    no_packages=1
+    install_session_wayland="$INSTALL_SESSION_WAYLAND"
+    install_session_dest="$INSTALL_SESSION_DEST"
+    install_session_template_exists="$INSTALL_SESSION_TEMPLATE_EXISTS"
   fi
 
   if [[ -n "$keyring" ]]; then
@@ -4120,7 +4271,7 @@ EOF
     esac
   fi
 
-  if [[ $de_specified -eq 1 ]]; then
+  if [[ $de_specified -eq 1 && -z "$install_session" ]]; then
     case "$de" in
       plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
       *)
@@ -4147,6 +4298,36 @@ EOF
   if [[ $dry_run -eq 1 ]]; then
     if [[ $pam_only -eq 1 ]]; then
       preview_pam_only "$de" "$no_keyring" "$keyring"
+    elif [[ -n "$install_session" ]]; then
+      local mode_label="x11" template_action="create" preview_rc=0 preview_tmpl_dir=""
+      local SESSION_PREVIEW_TEMPLATE="" SESSION_PREVIEW_DEST=""
+      [[ $install_session_wayland -eq 1 ]] && mode_label="wayland"
+      [[ $install_session_template_exists -eq 1 ]] && template_action="reuse"
+      printf 'Session entry: %s (de=%s, mode=%s, template=%s %s)\n' \
+        "$install_session" "$de" "$mode_label" "$template_action" "$install_session_dest"
+      if [[ $install_session_template_exists -eq 0 ]]; then
+        local preview_tmpl_name=".xinitrc-$de"
+        [[ $install_session_wayland -eq 1 ]] && preview_tmpl_name=".wayland-session-$de"
+        preview_tmpl_dir="$(mktemp -d)" || return 1
+        SESSION_PREVIEW_TEMPLATE="$preview_tmpl_dir/$preview_tmpl_name"
+        SESSION_PREVIEW_DEST="$install_session_dest (would create from $install_session)"
+        if ! init_xinitrc_template "$de" "$install_session_wayland" "$install_session" "$SESSION_PREVIEW_TEMPLATE" 1; then
+          SESSION_PREVIEW_TEMPLATE=""
+          SESSION_PREVIEW_DEST=""
+          rm -rf -- "$preview_tmpl_dir"
+          return 1
+        fi
+      fi
+      preview_install "$de" "$no_packages" "$no_keyring" "$autologin" "$keyring" || preview_rc=$?
+      if [[ -n "$preview_tmpl_dir" ]]; then
+        SESSION_PREVIEW_TEMPLATE=""
+        SESSION_PREVIEW_DEST=""
+        rm -rf -- "$preview_tmpl_dir"
+      fi
+      [[ $preview_rc -eq 0 ]] || return "$preview_rc"
+      if [[ -n "$setup_shell" ]]; then
+        apply_shell_hook "$setup_shell" 1 || return $?
+      fi
     else
       preview_install "$de" "$no_packages" "$no_keyring" "$autologin" "$keyring" || return $?
       if [[ -n "$setup_shell" ]]; then
@@ -4165,6 +4346,15 @@ EOF
   if [[ $UPDATE_SUDO_READY -ne 1 ]]; then
     check_root
     authenticate_sudo "$non_interactive" "$real_user"
+  fi
+
+  if [[ -n "$install_session" ]]; then
+    check_tty1_getty || exit 1
+    if [[ $install_session_template_exists -eq 0 ]]; then
+      init_xinitrc_template "$de" "$install_session_wayland" "$install_session" || exit 1
+    else
+      log "Using existing session template $install_session_dest (preserving customizations)."
+    fi
   fi
 
   if [[ -z "$de" ]]; then
