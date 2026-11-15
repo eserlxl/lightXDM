@@ -724,5 +724,265 @@ class VmPhaseHelpersTests(unittest.TestCase):
         self.assertEqual(len(vmtest.results), 6)
 
 
+class MainModeOrchestrationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.vm_dir = os.path.join(self.tmpdir.name, "vm")
+        self.repo_dir = os.path.join(self.tmpdir.name, "repo")
+        os.makedirs(self.vm_dir, exist_ok=True)
+        os.makedirs(self.repo_dir, exist_ok=True)
+        with open(os.path.join(self.vm_dir, "host_key.pub"), "w", encoding="utf-8") as f:
+            f.write("ssh-ed25519 AAAATESTKEY\n")
+
+    @staticmethod
+    def _fake_tree_copy_run(cmd, **kwargs):
+        if cmd[:2] == ["git", "-C"]:
+            return SimpleNamespace(returncode=0, stdout=b"install.sh\0", stderr=b"")
+        if cmd[0] == "tar":
+            return SimpleNamespace(returncode=0, stdout=b"tarbytes", stderr=b"")
+        raise AssertionError(f"unexpected subprocess.run: {cmd}")
+
+    def test_main_from_upgrade_early_abort_and_target_install(self):
+        fake_proc = mock.MagicMock(pid=5001)
+        cmds_abort = []
+
+        def abort_ssh(cmd, timeout=600, stdin=None):
+            cmds_abort.append(cmd)
+            if "install.sh --de xfce" in cmd:
+                return (1, "xfce install failed", "")
+            return (0, "", "")
+
+        with mock.patch("vmtest.boot", return_value=fake_proc), \
+                mock.patch("vmtest.Qmp"), \
+                mock.patch("vmtest.wait_ssh", return_value=True), \
+                mock.patch("vmtest.subprocess.run", side_effect=self._fake_tree_copy_run), \
+                mock.patch("vmtest.ssh", side_effect=abort_ssh), \
+                mock.patch("vmtest.os.path.lexists", return_value=True), \
+                mock.patch.dict(os.environ, {"LIGHTXDM_VM_KEEP": "0"}):
+            rc = vmtest.main(["xfce:plasma", self.repo_dir, self.vm_dir, "2231"])
+
+        self.assertEqual(rc, 0)
+        self.assertFalse(any("install.sh --de plasma" in c for c in cmds_abort))
+        self.assertIn("FAIL: xfce:plasma: install.sh --de xfce exits 0 (xfce install failed)", vmtest.results)
+        with open(vmtest.RESULT, encoding="utf-8") as f:
+            self.assertEqual(f.read().splitlines()[-1], "DONE pass=2 fail=1")
+
+        cmds_ok = []
+
+        def ok_ssh(cmd, timeout=600, stdin=None):
+            cmds_ok.append(cmd)
+            if "journalctl" in cmd:
+                return (0, "", "")
+            return (0, "ok", "")
+
+        with mock.patch("vmtest.boot", return_value=fake_proc), \
+                mock.patch("vmtest.Qmp"), \
+                mock.patch("vmtest.wait_ssh", return_value=True), \
+                mock.patch("vmtest.subprocess.run", side_effect=self._fake_tree_copy_run), \
+                mock.patch("vmtest.ssh", side_effect=ok_ssh), \
+                mock.patch("vmtest.os.path.lexists", return_value=True), \
+                mock.patch("vmtest.reboot_and_login", return_value=True), \
+                mock.patch("vmtest.session_checks"), \
+                mock.patch("vmtest.launcher_stdout", return_value="/dev/tty1"), \
+                mock.patch.dict(os.environ, {"LIGHTXDM_VM_KEEP": "1"}):
+            rc_ok = vmtest.main(["xfce:plasma", self.repo_dir, self.vm_dir, "2231"])
+
+        self.assertEqual(rc_ok, 0)
+        self.assertTrue(any("install.sh --de xfce" in c for c in cmds_ok))
+        self.assertTrue(any("install.sh --de plasma" in c for c in cmds_ok))
+        self.assertTrue(os.path.isfile(os.path.join(vmtest.RUN, "install-xfce.log")))
+        self.assertTrue(os.path.isfile(os.path.join(vmtest.RUN, "install.log")))
+        with open(vmtest.RESULT, encoding="utf-8") as f:
+            self.assertEqual(f.read().splitlines()[-1], "DONE pass=6 fail=0 kept")
+
+    def test_main_lightdm_and_relogin_modes(self):
+        fake_proc = mock.MagicMock(pid=5002)
+        lightdm_enabled = False
+        lightdm_cmds = []
+
+        def lightdm_ssh(cmd, timeout=600, stdin=None):
+            nonlocal lightdm_enabled
+            lightdm_cmds.append(cmd)
+            if cmd == "systemctl enable lightdm.service":
+                lightdm_enabled = True
+                return (0, "", "")
+            if cmd == "systemctl is-enabled lightdm.service":
+                return (0 if lightdm_enabled else 1, "enabled\n" if lightdm_enabled else "disabled\n", "")
+            if "install.sh --de xfce" in cmd:
+                lightdm_enabled = False
+                return (0, "", "")
+            if "uninstall.sh" in cmd:
+                lightdm_enabled = True
+                return (0, "", "")
+            if cmd == "readlink -f /etc/systemd/system/display-manager.service":
+                return (0, "/etc/systemd/system/lightdm.service\n", "")
+            if "journalctl -b -q -t lightxdm -o cat | wc -l" in cmd:
+                return (0, "1\n", "")
+            if "journalctl -b -q -t lightxdm -o cat" in cmd:
+                return (0, "", "")
+            return (0, "", "")
+
+        with mock.patch("vmtest.boot", return_value=fake_proc), \
+                mock.patch("vmtest.Qmp"), \
+                mock.patch("vmtest.wait_ssh", return_value=True), \
+                mock.patch("vmtest.subprocess.run", side_effect=self._fake_tree_copy_run), \
+                mock.patch("vmtest.ssh", side_effect=lightdm_ssh), \
+                mock.patch("vmtest.os.path.lexists", return_value=True), \
+                mock.patch("vmtest.reboot_and_login", return_value=True), \
+                mock.patch("vmtest.session_checks"), \
+                mock.patch("vmtest.launcher_stdout", side_effect=["/dev/tty1", "socket:[456]"]), \
+                mock.patch.dict(os.environ, {"LIGHTXDM_VM_KEEP": "0"}):
+            rc = vmtest.main(["xfce+lightdm", self.repo_dir, self.vm_dir, "2231"])
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(any(c == "systemctl enable lightdm.service" for c in lightdm_cmds))
+        self.assertTrue(any("uninstall.sh" in c for c in lightdm_cmds))
+        self.assertTrue(os.path.isfile(os.path.join(vmtest.RUN, "uninstall.log")))
+        with open(vmtest.RESULT, encoding="utf-8") as f:
+            self.assertEqual(f.read().splitlines()[-1], "DONE pass=14 fail=0")
+
+        call_order = []
+        relogin_ssh_cmds = []
+
+        def relogin_ssh(cmd, timeout=600, stdin=None):
+            relogin_ssh_cmds.append(cmd)
+            if "journalctl" in cmd:
+                return (0, "", "")
+            return (0, "", "")
+
+        with mock.patch("vmtest.boot", return_value=fake_proc), \
+                mock.patch("vmtest.Qmp"), \
+                mock.patch("vmtest.wait_ssh", return_value=True), \
+                mock.patch("vmtest.subprocess.run", side_effect=self._fake_tree_copy_run), \
+                mock.patch("vmtest.ssh", side_effect=relogin_ssh), \
+                mock.patch("vmtest.os.path.lexists", return_value=True), \
+                mock.patch("vmtest.reboot_and_login", return_value=True), \
+                mock.patch("vmtest.launcher_stdout", return_value="/dev/tty1"), \
+                mock.patch("vmtest.lock_keyring", side_effect=lambda tag: call_order.append(("lock", tag))), \
+                mock.patch("vmtest.relogin", side_effect=lambda qmp, tag: call_order.append(("relogin", tag)) or True), \
+                mock.patch("vmtest.session_checks", side_effect=lambda tag, qmp: call_order.append(("session", tag))), \
+                mock.patch.dict(os.environ, {"LIGHTXDM_VM_KEEP": "0"}):
+            rc_relogin = vmtest.main(["xfce+relogin", self.repo_dir, self.vm_dir, "2231"])
+
+        self.assertEqual(rc_relogin, 0)
+        self.assertEqual(
+            call_order,
+            [("session", "login1"), ("lock", "relogin"), ("relogin", "relogin"), ("session", "relogin")],
+        )
+        self.assertFalse(any("session-journal" in c for c in relogin_ssh_cmds))
+        with open(vmtest.RESULT, encoding="utf-8") as f:
+            self.assertEqual(f.read().splitlines()[-1], "DONE pass=5 fail=0")
+
+    def test_main_package_mode_exercises_install_pacnew_update_and_uninstall(self):
+        pkgcache = os.path.join(self.vm_dir, "pkgcache")
+        os.makedirs(pkgcache, exist_ok=True)
+        with open(os.path.join(self.vm_dir, "lightxdm.pkg.tar.zst"), "wb") as f:
+            f.write(b"fake-lightxdm-pkg")
+        with open(os.path.join(pkgcache, "util-linux-2.40.2-1-x86_64.pkg.tar.zst"), "wb") as f:
+            f.write(b"fake-util-linux-pkg")
+
+        fake_proc = mock.MagicMock(pid=5003)
+        state = {
+            "install_count": 0,
+            "update_count": 0,
+            "keyring_lines": "2",
+            "gnome_blocks": "1",
+        }
+
+        def pkg_ssh(cmd, timeout=600, stdin=None):
+            if cmd == "cat > /root/lightxdm.pkg.tar.zst":
+                return (0, "", "")
+            if cmd == "pacman -U --noconfirm /root/lightxdm.pkg.tar.zst 2>&1":
+                state["install_count"] += 1
+                if state["install_count"] == 1:
+                    return (0, "==> After install, run: lightxdm-install\n", "")
+                return (0, "==> After upgrade, lightxdm-update runs: lightxdm-update\n", "")
+            if "su - tester -c 'lightxdm-install --de gnome'" in cmd:
+                return (0, "installed\n", "")
+            if cmd == "stat -c %a /home/tester/.wayland-session":
+                return (0, "755\n", "")
+            if cmd == "pacman -Q util-linux | cut -d' ' -f2":
+                return (0, "2.40.2-1\n", "")
+            if cmd == "cat > /root/util-linux.pkg.tar.zst":
+                return (0, "", "")
+            if cmd == "pacman -U --noconfirm /root/util-linux.pkg.tar.zst 2>&1":
+                return (0, ":: Running post-transaction hooks...\n(1/1) Note (lightXDM)...\n", "")
+            if "cp /etc/pam.d/login /etc/pam.d/login.pacnew" in cmd:
+                return (0, "login.pacnew is waiting; run lightxdm-update\n", "")
+            if "journalctl -b -q -t lightxdm -o cat | wc -l" in cmd:
+                return (0, "1\n", "")
+            if "journalctl -b -q -t lightxdm -o cat" in cmd:
+                return (0, "", "")
+            if "sha256sum < /home/tester/.wayland-session" in cmd:
+                return (0, "deadbeef  -\n", "")
+            if "su - tester -c 'lightxdm-update'" in cmd:
+                state["update_count"] += 1
+                if state["update_count"] == 1:
+                    return (
+                        0,
+                        "~/.wayland-session has your own edits, so --update leaves it alone\n"
+                        "Run sudo systemctl disable lxdm.service to disable it.\n",
+                        "",
+                    )
+                if state["update_count"] in (2, 4):
+                    return (
+                        0,
+                        "/etc/pam.d/login, which has your own edits; pass --pam-only --de gnome,\n"
+                        "GNOME session-type block is not in /etc/pam.d/login; pass --pam-only --de gnome --no-keyring\n",
+                        "",
+                    )
+                state["keyring_lines"] = "2"
+                state["gnome_blocks"] = "1"
+                return (
+                    0,
+                    "Updating with the saved choices: --de gnome\n"
+                    "lightXDM's keyring lines are missing from /etc/pam.d/login\n",
+                    "",
+                )
+            if cmd == "cmp -s /home/tester/.wayland-session.lightxdm-new /usr/share/lightxdm/dotfiles/.wayland-session-gnome":
+                return (0, "", "")
+            if cmd == "systemctl is-enabled lxdm.service":
+                return (0, "enabled\n", "")
+            if "sed -i -E" in cmd:
+                state["keyring_lines"] = "0"
+                state["gnome_blocks"] = "0"
+                return (0, "", "")
+            if "grep -cE" in cmd and "/etc/pam.d/login" in cmd:
+                return (0, f"{state['keyring_lines']}\n", "")
+            if "grep -c 'lightXDM: GNOME on TTY1'" in cmd:
+                return (0, f"{state['gnome_blocks']}\n", "")
+            if "lightxdm-install --pam-only --de gnome" in cmd:
+                state["keyring_lines"] = "2"
+                state["gnome_blocks"] = "1"
+                return (0, "", "")
+            if "echo '# a line an older util-linux shipped'" in cmd or cmd == "test -s /etc/lightxdm/pam-login-base":
+                return (0, "", "")
+            if "sudo lightxdm-uninstall" in cmd:
+                state["keyring_lines"] = "0"
+                state["gnome_blocks"] = "0"
+                return (0, "", "")
+            if cmd == "pacman -R --noconfirm lightxdm 2>&1":
+                return (0, "To remove lightXDM completely, run sudo lightxdm-uninstall first.\n", "")
+            return (0, "", "")
+
+        with mock.patch("vmtest.boot", return_value=fake_proc), \
+                mock.patch("vmtest.Qmp"), \
+                mock.patch("vmtest.wait_ssh", return_value=True), \
+                mock.patch("vmtest.ssh", side_effect=pkg_ssh), \
+                mock.patch("vmtest.reboot_and_login", return_value=True), \
+                mock.patch("vmtest.session_checks"), \
+                mock.patch("vmtest.launcher_stdout", side_effect=["/dev/tty1", "socket:[789]"]), \
+                mock.patch.dict(os.environ, {"LIGHTXDM_VM_KEEP": "0"}):
+            rc = vmtest.main(["gnome+package", self.repo_dir, self.vm_dir, "2231"])
+
+        self.assertEqual(rc, 0)
+        for log_name in ("install.log", "update-user-changes.log", "update-hand-edit.log", "update.log", "pam-only.log", "uninstall.log"):
+            self.assertTrue(os.path.isfile(os.path.join(vmtest.RUN, log_name)), log_name)
+        with open(vmtest.RESULT, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        self.assertTrue(lines[-1].startswith("DONE pass=") and lines[-1].endswith(" fail=0"), lines)
+
+
 if __name__ == "__main__":
     unittest.main()
