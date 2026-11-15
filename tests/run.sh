@@ -16313,6 +16313,57 @@ else
   fail "PAM parity checks:$pam_parity_report"
 fi
 
+if [[ $EUID -ne 0 ]]; then
+  auto_priv_case="$TMP_DIR/auto_priv_login"
+  mkdir -p "$auto_priv_case/getty.d" "$auto_priv_case/priv_pamd" "$auto_priv_case/pub_pamd" \
+    "$auto_priv_case/home/.local/state/lightxdm" "$auto_priv_case/lightxdm"
+  cat >"$auto_priv_case/getty.d/override.conf" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/usr/bin/agetty --autologin testuser --noclear %I $TERM
+EOF
+  printf '%s\n' '#%PAM-1.0' 'auth optional pam_gnome_keyring.so' >"$auto_priv_case/priv_pamd/login"
+  ln -s "$auto_priv_case/priv_pamd/login" "$auto_priv_case/pub_pamd/login"
+  chmod 000 "$auto_priv_case/priv_pamd"
+
+  set +e
+  auto_direct_out="$(env OVERRIDE_DIR="$auto_priv_case/getty.d" LOGIN_FILE="$auto_priv_case/priv_pamd/login" \
+    bash "$REPO_ROOT/enable-autologin.sh" --status 2>&1)"
+  auto_direct_rc=$?
+  auto_sym_out="$(env OVERRIDE_DIR="$auto_priv_case/getty.d" LOGIN_FILE="$auto_priv_case/pub_pamd/login" \
+    bash "$REPO_ROOT/enable-autologin.sh" --status 2>&1)"
+  auto_sym_rc=$?
+  auto_miss_out="$(env OVERRIDE_DIR="$auto_priv_case/getty.d" LOGIN_FILE="$auto_priv_case/pub_pamd/missing_login" \
+    bash "$REPO_ROOT/enable-autologin.sh" --status 2>&1)"
+  auto_miss_rc=$?
+  auto_sym_json="$(env HOME="$auto_priv_case/home" USER=testuser PATH="$STUB_BIN:$PATH" \
+    LOGIN_FILE="$auto_priv_case/pub_pamd/login" PAM_KEYRING_STATE="$auto_priv_case/lightxdm/pam-keyring" \
+    GNOME_SESSION_TYPE_DEST="$auto_priv_case/lightxdm/gnome-session-type.conf" \
+    DM_STATE_FILE="$auto_priv_case/lightxdm/disabled-display-managers" \
+    AUTOLOGIN_DROPIN_DIR="$auto_priv_case/getty.d" \
+    bash "$REPO_ROOT/install.sh" --status --json 2>&1)"
+  set -e
+  chmod 755 "$auto_priv_case/priv_pamd"
+
+  if [[ $auto_direct_rc -eq 0 && "$auto_direct_out" == *"enabled for testuser"* &&
+    "$auto_direct_out" == *"Note: cannot read $auto_priv_case/priv_pamd/login; run --status with sudo for an exact result."* &&
+    "$auto_direct_out" != *"Permission denied"* &&
+    $auto_sym_rc -eq 0 && "$auto_sym_out" == *"enabled for testuser"* &&
+    "$auto_sym_out" == *"Note: cannot read $auto_priv_case/pub_pamd/login; run --status with sudo for an exact result."* &&
+    $auto_miss_rc -eq 0 && "$auto_miss_out" != *"Note: cannot read"* ]] &&
+    PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["autologin"]["state"] == "enabled", d
+assert d["pam"]["keyring_status"] == "unknown-needs-root", d
+assert any("cannot read " in n and "pub_pamd/login" in n for n in d["autologin"]["notes"]), d
+' "$auto_sym_json"; then
+    pass "enable-autologin.sh --status warns when LOGIN_FILE sits behind or symlinks into an unsearchable dir"
+  else
+    fail "enable-autologin.sh unsearchable LOGIN_FILE status (direct=$auto_direct_rc:$auto_direct_out | sym=$auto_sym_rc:$auto_sym_out | miss=$auto_miss_rc:$auto_miss_out | json=$auto_sym_json)"
+  fi
+fi
+
 if ! command -v python3 >/dev/null 2>&1; then
   skip "Python VM driver unit tests (python3 unavailable)"
 else

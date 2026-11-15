@@ -49,6 +49,16 @@ warn_keyring_unlock() {
     if grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*(pam_kwallet5\.so|pam_gnome_keyring\.so)([[:space:]]|$)' "$LOGIN_FILE"; then
       echo "Warning: PAM keyring unlock is configured in $LOGIN_FILE; the keyring will not unlock automatically with autologin and will ask for its password in the desktop, unless its password is empty. To remove the keyring lines lightXDM added, run 'sudo $(printf 'bash %q' "$SCRIPT_DIR/uninstall.sh") --keyring-only'."
     fi
+  elif [[ ! -e "$LOGIN_FILE" ]]; then
+    local resolved probe
+    resolved="$(readlink -m -- "$LOGIN_FILE" 2>/dev/null || printf '%s\n' "$LOGIN_FILE")"
+    probe="$(dirname -- "$resolved")"
+    while [[ "$probe" != "/" && "$probe" != "." && ! -e "$probe" && ! -L "$probe" ]]; do
+      probe="$(dirname -- "$probe")"
+    done
+    if [[ -d "$probe" && ! -x "$probe" ]]; then
+      echo "Note: cannot read $LOGIN_FILE; run --status with sudo for an exact result." >&2
+    fi
   fi
 }
 
