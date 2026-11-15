@@ -14224,9 +14224,27 @@ cp "$REPO_ROOT/dotfiles/.wayland-session-gnome" "$doctor_home/.wayland-session"
 chmod 755 "$doctor_home/.wayland-session"
 doc_rc=0
 doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
-if [[ $doc_rc -ne 1 || "$doc_out" != *"shadows X11"* || "$doc_out" != *"Doctor: FAIL"* ]]; then
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Wayland launcher shadow: FAIL"* || "$doc_out" != *"shadows X11"* || "$doc_out" != *"Session launcher: ok"* || "$doc_out" != *"Doctor: FAIL"* ]]; then
   doctor_ok=0
   doctor_report+=" x11-shadowed rc=$doc_rc out=[$doc_out];"
+fi
+doc_rc=0
+doc_js_shadow="$(run_doctor_cmd --doctor --json 2>"$doctor_dir/doc_js_shadow.err")" || doc_rc=$?
+if [[ $doc_rc -ne 1 || -s "$doctor_dir/doc_js_shadow.err" ]] ||
+  ! JSON_OUT="$doc_js_shadow" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+names = [c["name"] for c in d["checks"]]
+assert len(names) == len(set(names)), names
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["Wayland launcher shadow"]["status"] == "fail"
+assert "shadows X11" in checks["Wayland launcher shadow"]["detail"]
+assert checks["Session launcher"]["status"] == "ok"
+assert d["issues"] == sum(1 for c in d["checks"] if c["status"] == "fail")
+PY
+then
+  doctor_ok=0
+  doctor_report+=" x11-shadowed-json rc=$doc_rc err=$(cat "$doctor_dir/doc_js_shadow.err") out=[$doc_js_shadow];"
 fi
 
 # Non-executable ~/.wayland-session for Wayland
@@ -14546,6 +14564,7 @@ assert d["issues"] == 0 and d["warnings"] == 0
 assert d["de"] == "gnome"
 assert d["summary"] == "Doctor: PASS"
 checks = {c["name"]: c for c in d["checks"]}
+assert len(checks) == len(d["checks"])
 assert checks["Install choices"]["status"] == "ok" and checks["Install choices"]["detail"] == "de=gnome, --no-packages"
 assert checks["PAM keyring"]["status"] == "ok"
 assert checks["Autologin"]["status"] == "ok" and checks["Autologin"]["detail"] == "disabled"
@@ -14609,6 +14628,7 @@ d = json.loads(os.environ["JSON_OUT"])
 assert d["healthy"] is False and d["status"] == "fail"
 assert d["issues"] >= 2
 checks = {c["name"]: c for c in d["checks"]}
+assert len(checks) == len(d["checks"])
 assert tricky_home in checks["Session launcher"]["detail"]
 assert checks["Auto-start pause"]["status"] == "fail"
 assert checks["getty@tty1.service"]["status"] == "fail"
@@ -14617,6 +14637,33 @@ then
   doctor_ok=0
   doctor_report+=" doc-json-fail rc=$doc_rc err=$(cat "$doctor_dir/doc_js_fail.err") out=[$doc_js_fail];"
 fi
+
+# Dual missing PAM keyring modules must emit a single unique "PAM keyring module" check in --doctor --json
+reset_doctor_gnome_fixture
+cat >>"$doctor_etc/pam.d/login" <<'EOF'
+auth       optional   pam_kwallet5.so
+session    optional   pam_kwallet5.so auto_start
+EOF
+rm -f "$doctor_root/usr/lib/security/pam_gnome_keyring.so" "$doctor_root/usr/lib/security/pam_kwallet5.so"
+doc_rc=0
+doc_js_mods="$(run_doctor_cmd --doctor --json 2>"$doctor_dir/doc_js_mods.err")" || doc_rc=$?
+if [[ $doc_rc -ne 1 || -s "$doctor_dir/doc_js_mods.err" ]] ||
+  ! JSON_OUT="$doc_js_mods" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+names = [c["name"] for c in d["checks"]]
+assert len(names) == len(set(names)), names
+checks = {c["name"]: c for c in d["checks"]}
+mod = checks["PAM keyring module"]
+assert mod["status"] == "fail"
+assert "pam_gnome_keyring.so" in mod["detail"] and "pam_kwallet5.so" in mod["detail"]
+assert d["issues"] == sum(1 for c in d["checks"] if c["status"] == "fail")
+PY
+then
+  doctor_ok=0
+  doctor_report+=" doc-json-dual-mod rc=$doc_rc err=$(cat "$doctor_dir/doc_js_mods.err") out=[$doc_js_mods];"
+fi
+reset_doctor_gnome_fixture
 
 if [[ -e "$doctor_dir/sudo.log" ]]; then
   doctor_ok=0

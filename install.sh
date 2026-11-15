@@ -3439,7 +3439,7 @@ run_doctor() {
   elif [[ "$expected_mode" == x11 ]]; then
     if [[ ( -e "$wl" || -L "$wl" ) && -x "$wl" ]]; then
       printf -v diag_msg '%s is executable and shadows X11 %s for de=%s — remove %s or run: chmod -x ~/.wayland-session' "$wl" "$xi" "$de" "$wl"
-      diag_record_check "$json_mode" "Session launcher" "fail" "$diag_msg"
+      diag_record_check "$json_mode" "Wayland launcher shadow" "fail" "$diag_msg"
       issues=$((issues + 1))
     fi
     if [[ -L "$xi" ]]; then
@@ -3763,23 +3763,27 @@ run_doctor() {
       fi
     fi
 
+    local missing_keyring_mods=()
     if [[ -z "$missing_gnome" ]]; then
       keyring_configured=1
       if [[ ! -e "${SESSION_ROOT:-}/usr/lib/security/pam_gnome_keyring.so" ]]; then
-        printf -v diag_msg '%s/usr/lib/security/pam_gnome_keyring.so missing — install gnome-keyring' "${SESSION_ROOT:-}"
-        diag_record_check "$json_mode" "PAM keyring module" "fail" "$diag_msg"
-        issues=$((issues + 1))
-        keyring_issue=1
+        missing_keyring_mods+=("${SESSION_ROOT:-}/usr/lib/security/pam_gnome_keyring.so missing — install gnome-keyring")
       fi
     fi
     if [[ -z "$missing_kwallet" ]]; then
       keyring_configured=1
       if [[ ! -e "${SESSION_ROOT:-}/usr/lib/security/pam_kwallet5.so" ]]; then
-        printf -v diag_msg '%s/usr/lib/security/pam_kwallet5.so missing — install kwallet-pam' "${SESSION_ROOT:-}"
-        diag_record_check "$json_mode" "PAM keyring module" "fail" "$diag_msg"
-        issues=$((issues + 1))
-        keyring_issue=1
+        missing_keyring_mods+=("${SESSION_ROOT:-}/usr/lib/security/pam_kwallet5.so missing — install kwallet-pam")
       fi
+    fi
+    if [[ ${#missing_keyring_mods[@]} -gt 0 ]]; then
+      diag_msg="${missing_keyring_mods[0]}"
+      if [[ ${#missing_keyring_mods[@]} -gt 1 ]]; then
+        printf -v diag_msg '%s; %s' "${missing_keyring_mods[0]}" "${missing_keyring_mods[1]}"
+      fi
+      diag_record_check "$json_mode" "PAM keyring module" "fail" "$diag_msg"
+      issues=$((issues + 1))
+      keyring_issue=1
     fi
     if [[ $keyring_issue -eq 0 && $keyring_configured -eq 1 ]]; then
       diag_record_check "$json_mode" "PAM keyring" "ok" "$LOGIN_FILE"
