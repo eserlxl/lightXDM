@@ -419,5 +419,310 @@ class HelpersAndMainBoundaryTests(unittest.TestCase):
         self.assertIn("fail=0 kept", kept_lines[-1])
 
 
+class VmPhaseHelpersTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.vm_dir = os.path.join(self.tmpdir.name, "vm")
+        self.repo_dir = os.path.join(self.tmpdir.name, "repo")
+        os.makedirs(self.vm_dir, exist_ok=True)
+        os.makedirs(self.repo_dir, exist_ok=True)
+
+    def _use_spec(self, spec):
+        vmtest.configure(vmtest.parse_args([spec, self.repo_dir, self.vm_dir, "2231"]))
+        os.makedirs(vmtest.RUN, exist_ok=True)
+
+    def test_boot_removes_stale_qmp_socket_sets_tmpdir_and_waits_for_socket(self):
+        self._use_spec("xfce")
+        with open(vmtest.QMP_SOCK, "w", encoding="utf-8") as f:
+            f.write("stale")
+
+        fake_proc = mock.MagicMock(pid=4321)
+        exists_calls = 0
+
+        def fake_exists(path):
+            nonlocal exists_calls
+            if path != vmtest.QMP_SOCK:
+                return False
+            exists_calls += 1
+            return exists_calls in (1, 3)  # 1st check triggers remove(); 3rd check ends QMP poll loop
+
+        with mock.patch("vmtest.os.path.exists", side_effect=fake_exists), \
+                mock.patch("vmtest.os.remove") as remove_mock, \
+                mock.patch("vmtest.subprocess.Popen", return_value=fake_proc) as popen_mock, \
+                mock.patch("vmtest.time.sleep") as sleep_mock:
+            proc = vmtest.boot()
+
+        self.assertIs(proc, fake_proc)
+        remove_mock.assert_called_once_with(vmtest.QMP_SOCK)
+        args = popen_mock.call_args[0][0]
+        self.assertEqual(args[0], "qemu-system-x86_64")
+        self.assertIn("-snapshot", args)
+        self.assertIn("user,id=n0,hostfwd=tcp:127.0.0.1:2231-:22", args)
+        self.assertIn(f"unix:{vmtest.QMP_SOCK},server=on,wait=off", args)
+        self.assertTrue(popen_mock.call_args.kwargs["start_new_session"])
+        self.assertEqual(popen_mock.call_args.kwargs["env"]["TMPDIR"], vmtest.RUN)
+        self.assertEqual(sleep_mock.call_count, 1)
+
+    def test_reboot_and_login_handles_boot_id_failure_password_and_autologin(self):
+        self._use_spec("xfce")
+        qmp = mock.MagicMock()
+
+        with mock.patch("vmtest.ssh", side_effect=subprocess.TimeoutExpired("ssh", 15)):
+            self.assertFalse(vmtest.reboot_and_login(qmp, "login1"))
+        self.assertEqual(vmtest.results[-1], "FAIL: xfce: login1: VM back after reboot (ssh timed out)")
+        qmp.type.assert_not_called()
+
+        self._use_spec("xfce")
+        ssh_replies = [
+            (0, "boot-1\n", ""),
+            subprocess.TimeoutExpired("ssh", 20),  # systemctl reboot timeout is ignored
+            (0, "boot-1\n", ""),
+            subprocess.TimeoutExpired("ssh", 15),
+            (0, "boot-2\n", ""),
+            (0, "inactive\n", ""),
+            (0, "active\n", ""),
+        ]
+        with mock.patch("vmtest.ssh", side_effect=ssh_replies), \
+                mock.patch("vmtest.time.time", side_effect=[0.0, 1.0, 2.0, 3.0, 4.0]), \
+                mock.patch("vmtest.time.sleep"):
+            self.assertTrue(vmtest.reboot_and_login(qmp, "login1"))
+        self.assertEqual(vmtest.results[-1], "PASS: xfce: login1: VM back after reboot")
+        self.assertEqual(
+            qmp.type.call_args_list,
+            [mock.call(vmtest.USER + "\n"), mock.call(vmtest.PASSWORD + "\n")],
+        )
+
+        self._use_spec("xfce+autologin")
+        qmp.reset_mock()
+        with mock.patch(
+            "vmtest.ssh",
+            side_effect=[(0, "boot-2\n", ""), (0, "", ""), (0, "boot-3\n", ""), (0, "active\n", "")],
+        ), mock.patch("vmtest.time.time", side_effect=[10.0, 11.0]), mock.patch("vmtest.time.sleep"):
+            self.assertTrue(vmtest.reboot_and_login(qmp, "login1"))
+        qmp.type.assert_not_called()
+
+    def test_relogin_uses_dbus_or_loginctl_and_checks_display_exit(self):
+        self._use_spec("plasma+relogin")
+        qmp = mock.MagicMock()
+        seen_cmds = []
+
+        def plasma_ssh(cmd, timeout=600, stdin=None):
+            seen_cmds.append(cmd)
+            if "org.kde.Shutdown" in cmd:
+                return (0, "", "")
+            if cmd == f"pgrep -u {vmtest.USER} -x kwin_wayland":
+                return (1, "", "")
+            if cmd == "systemctl is-active getty@tty1":
+                return (0, "active\n", "")
+            if "ps -u " in cmd:
+                return (0, "gpg-agent\n", "")
+            raise AssertionError(f"unexpected ssh cmd: {cmd}")
+
+        with mock.patch("vmtest.ssh", side_effect=plasma_ssh), \
+                mock.patch("vmtest.time.monotonic", side_effect=[0.0, 1.0, 2.0, 3.0]), \
+                mock.patch("vmtest.time.sleep"):
+            self.assertTrue(vmtest.relogin(qmp, "relogin"))
+        self.assertTrue(any("org.kde.Shutdown logout" in c for c in seen_cmds))
+        self.assertEqual(vmtest.results[-1], "PASS: plasma+relogin: relogin: logged out through the desktop and the login prompt is back")
+        self.assertEqual(qmp.type.call_args_list, [mock.call(vmtest.USER + "\n"), mock.call(vmtest.PASSWORD + "\n")])
+
+        self._use_spec("i3+relogin")
+        qmp.reset_mock()
+
+        def i3_timeout_ssh(cmd, timeout=600, stdin=None):
+            if cmd == f"loginctl terminate-user {vmtest.USER}":
+                return (0, "", "")
+            if cmd == "pgrep -x Xorg":
+                return (0, "123\n", "")
+            if cmd == "systemctl is-active getty@tty1":
+                return (3, "inactive\n", "")
+            if "ps -u " in cmd:
+                return (0, "Xorg\n", "")
+            raise AssertionError(f"unexpected ssh cmd: {cmd}")
+
+        with mock.patch("vmtest.ssh", side_effect=i3_timeout_ssh), \
+                mock.patch("vmtest.time.monotonic", side_effect=[0.0, 1.0, 2.0, 3.0, 4.0, 150.0, 150.0]), \
+                mock.patch("vmtest.time.sleep"):
+            self.assertFalse(vmtest.relogin(qmp, "relogin"))
+        self.assertIn("relogin: forced logout (loginctl terminate-user)", vmtest.results[-1])
+        self.assertIn("Xorg: running; getty@tty1: inactive", vmtest.results[-1])
+        qmp.type.assert_not_called()
+
+        self._use_spec("i3+relogin")
+        with mock.patch("vmtest.ssh", side_effect=subprocess.TimeoutExpired("ssh", 20)):
+            self.assertFalse(vmtest.relogin(qmp, "relogin"))
+        self.assertIn("logout command timed out", vmtest.results[-1])
+
+    def test_recovery_checks_pauses_probes_shell_restores_and_runs_session_checks(self):
+        self._use_spec("gnome+recovery")
+        qmp = mock.MagicMock()
+
+        def rec_ssh(cmd, timeout=600, stdin=None):
+            if "recovery-backup" in cmd:
+                return (0, "", "")
+            if cmd == f"test -f /home/{vmtest.USER}/.config/lightxdm/no-autostart":
+                return (0, "", "")
+            if cmd == "systemctl is-active getty@tty1":
+                return (0, "active\n", "")
+            if cmd == f"test -f /home/{vmtest.USER}/recovery-shell-ok":
+                return (0, "", "")
+            raise AssertionError(f"unexpected recovery ssh cmd: {cmd}")
+
+        with mock.patch("vmtest.ssh", side_effect=rec_ssh), \
+                mock.patch("vmtest.reboot_and_login", return_value=True) as reboot_mock, \
+                mock.patch("vmtest.session_checks") as session_mock, \
+                mock.patch("vmtest.time.monotonic", return_value=1.0):
+            vmtest.recovery_checks(qmp)
+
+        reboot_mock.assert_called_once_with(qmp, "recovery")
+        self.assertEqual(
+            qmp.type.call_args_list,
+            [mock.call(f"touch /home/{vmtest.USER}/recovery-shell-ok\n"), mock.call("exit\n")],
+        )
+        session_mock.assert_called_once_with("recovery", qmp)
+        self.assertEqual(len(vmtest.results), 5)
+        self.assertTrue(all(r.startswith("PASS: gnome+recovery: ") for r in vmtest.results))
+
+        self._use_spec("gnome+recovery")
+        qmp.reset_mock()
+        with mock.patch("vmtest.ssh", return_value=(1, "", "perm denied")):
+            vmtest.recovery_checks(qmp)
+        self.assertEqual(vmtest.results, ["FAIL: gnome+recovery: recovery: failing launcher installed as the user (perm denied)"])
+        qmp.type.assert_not_called()
+
+    def test_wait_proc_user_bus_and_lock_keyring(self):
+        self._use_spec("plasma+relogin")
+        with mock.patch("vmtest.ssh", side_effect=[(1, "", ""), (0, "100\n", "")]), \
+                mock.patch("vmtest.time.time", side_effect=[0.0, 1.0, 6.0]), \
+                mock.patch("vmtest.time.sleep"):
+            self.assertTrue(vmtest.wait_proc("plasmashell", limit=20))
+
+        with mock.patch("vmtest.ssh", return_value=(1, "", "")), \
+                mock.patch("vmtest.time.time", side_effect=[10.0, 11.0, 35.0]), \
+                mock.patch("vmtest.time.sleep"):
+            self.assertFalse(vmtest.wait_proc("plasmashell", limit=20))
+
+        ssh_calls = []
+
+        def fake_ssh(cmd, timeout=600, stdin=None):
+            ssh_calls.append(cmd)
+            if "get-property" in cmd:
+                return (0, "b true\n", "")
+            return (0, "", "")
+
+        with mock.patch("vmtest.ssh", side_effect=fake_ssh):
+            vmtest.lock_keyring("relogin")
+
+        self.assertEqual(len(ssh_calls), 2)
+        self.assertIn("Lock ao 1 /org/freedesktop/secrets/collection/kdewallet", ssh_calls[0])
+        self.assertIn("sudo -u tester DBUS_SESSION_BUS_ADDRESS=", ssh_calls[0])
+        self.assertEqual(
+            vmtest.results[-1],
+            "PASS: plasma+relogin: relogin: keyring collection 'kdewallet' is locked before logout",
+        )
+
+    def test_session_checks_covers_wayland_lxqt_and_autologin_modes(self):
+        self._use_spec("plasma")
+        qmp = mock.MagicMock()
+        gpg_calls = 0
+        pkcheck_calls = 0
+
+        def plasma_ssh(cmd, timeout=600, stdin=None):
+            nonlocal gpg_calls, pkcheck_calls
+            if "loginctl list-sessions" in cmd:
+                return (0, "TTY=tty1\nService=login\nActive=yes\n", "")
+            if "XDG_SESSION_TYPE=wayland" in cmd:
+                return (0, "", "")
+            if cmd == "pgrep -x Xorg":
+                return (1, "", "")
+            if "gpg-connect-agent" in cmd:
+                gpg_calls += 1
+                return (0, "WAYLAND_DISPLAY=wayland-0\n" if gpg_calls >= 2 else "", "")
+            if "ksecretd --pam-login" in cmd:
+                return (0, "42\n", "")
+            if "org.freedesktop.Secret.Collection Locked" in cmd:
+                return (0, "b false\n", "")
+            if "--check-keyring kwallet" in cmd:
+                return (0, "collection 'kdewallet' is unlocked\n", "")
+            if "pkcheck" in cmd:
+                pkcheck_calls += 1
+                return (0, "rc=124\n" if pkcheck_calls >= 2 else "rc=2\n", "")
+            if "grep -E 'polkit|policykit|lxpolkit'" in cmd:
+                return (0, "polkit-kde-authentication-agent-1\n", "")
+            raise AssertionError(f"unexpected plasma session_checks cmd: {cmd}")
+
+        with mock.patch("vmtest.wait_proc", return_value=True), \
+                mock.patch("vmtest.ssh", side_effect=plasma_ssh), \
+                mock.patch("vmtest.time.sleep"):
+            vmtest.session_checks("login1", qmp)
+
+        self.assertTrue(all(r.startswith("PASS: plasma: ") for r in vmtest.results), vmtest.results)
+        self.assertEqual(len(vmtest.results), 10)
+        qmp.cmd.assert_called_once_with(
+            "screendump", filename=os.path.join(vmtest.RUN, "login1.png"), format="png"
+        )
+
+        self._use_spec("lxqt")
+        qmp.reset_mock()
+        waited_procs = []
+
+        def fake_wait_proc(name, limit=240):
+            waited_procs.append(name)
+            return True
+
+        def lxqt_ssh(cmd, timeout=600, stdin=None):
+            if "session.conf" in cmd:
+                return (0, "[General]\nwindow_manager=/usr/bin/openbox\n", "")
+            if "loginctl list-sessions" in cmd:
+                return (0, "TTY=tty1\nService=login\nActive=yes\n", "")
+            if "XDG_SESSION_TYPE=x11" in cmd:
+                return (0, "", "")
+            if cmd == "pgrep -x Xorg":
+                return (0, "99\n", "")
+            if "org.freedesktop.Secret.Collection Locked" in cmd:
+                return (0, "b false\n", "")
+            if "--check-keyring gnome" in cmd:
+                return (0, "collection 'login' is unlocked\n", "")
+            if "pkcheck" in cmd:
+                return (0, "rc=124\n", "")
+            if "grep -E 'polkit|policykit|lxpolkit'" in cmd:
+                return (0, "lxqt-policykit-agent\n", "")
+            raise AssertionError(f"unexpected lxqt cmd: {cmd}")
+
+        with mock.patch("vmtest.wait_proc", side_effect=fake_wait_proc), \
+                mock.patch("vmtest.ssh", side_effect=lxqt_ssh), \
+                mock.patch("vmtest.time.sleep"):
+            vmtest.session_checks("login1", qmp)
+
+        qmp.type.assert_called_once_with("\n")
+        self.assertEqual(waited_procs, ["lxqt-session", "lxqt-panel", "openbox"])
+        self.assertTrue(all(r.startswith("PASS: lxqt: ") for r in vmtest.results), vmtest.results)
+
+        self._use_spec("xfce+autologin")
+        qmp.reset_mock()
+
+        def autologin_ssh(cmd, timeout=600, stdin=None):
+            if "Secret" in cmd or "--check-keyring" in cmd or "ksecretd" in cmd:
+                raise AssertionError(f"autologin must skip keyring checks: {cmd}")
+            if "loginctl list-sessions" in cmd:
+                return (0, "TTY=tty1\nService=login\nActive=yes\n", "")
+            if "XDG_SESSION_TYPE=x11" in cmd or cmd == "pgrep -x Xorg":
+                return (0, "", "")
+            if "pkcheck" in cmd:
+                return (0, "rc=124\n", "")
+            if "grep -E 'polkit|policykit|lxpolkit'" in cmd:
+                return (0, "polkit-gnome-authentication-agent-1\n", "")
+            raise AssertionError(f"unexpected autologin cmd: {cmd}")
+
+        with mock.patch("vmtest.wait_proc", return_value=True), \
+                mock.patch("vmtest.ssh", side_effect=autologin_ssh), \
+                mock.patch("vmtest.time.sleep"):
+            vmtest.session_checks("login1", qmp)
+
+        self.assertTrue(all(r.startswith("PASS: xfce+autologin: ") for r in vmtest.results), vmtest.results)
+        self.assertEqual(len(vmtest.results), 6)
+
+
 if __name__ == "__main__":
     unittest.main()
