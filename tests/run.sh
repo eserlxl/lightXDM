@@ -4060,23 +4060,41 @@ if status is-login; and test -z "$WAYLAND_DISPLAY"; exec ~/.wayland-session; end
 EOF
 printf '%s\n' '# stock login' >"$hook_upd_login"
 
+# Child shell runs before install.sh marks LOGIN_FILE and PAM_* readonly.
+# shellcheck disable=SC2016 # inner shell variables expand in the child bash process
+run_hook_upd_with_stubs() {
+  local stub_path="$1" hook_home="$2"
+  shift 2
+  env -u SUDO_USER HOME="$hook_home" USER=testuser \
+    LOGIN_FILE="$hook_upd_login" \
+    PAM_KEYRING_STATE="$hook_upd_kr" \
+    PAM_LOGIN_BASE_STATE="$hook_upd_base" \
+    GNOME_SESSION_TYPE_DEST="$TMP_DIR/hook_upd_gnome" \
+    DM_STATE_FILE="$TMP_DIR/hook_upd_dm" \
+    PATH="$stub_path:$PATH" \
+    bash -c '
+      source "$1"
+      shift
+      check_tty1_getty() { :; }
+      copy_dotfiles() { echo "copy_dotfiles $1" >>"$STUB_LOG"; }
+      configure_pam() { echo "configure_pam $1" >>"$STUB_LOG"; }
+      configure_gnome_session_type() { :; }
+      disable_display_managers() { display_manager_disabled=0; }
+      main "$@"
+    ' _ "$REPO_ROOT/install.sh" "$@" </dev/null
+}
+
 set +e
 out_zsh_hook="$(HOME="$zsh_hook_home" USER=testuser run_main_with_stubs "$zsh_stub_dir:$sudo_pw_dir" --no-packages --de i3 2>&1)"
 status_zsh_hook=$?
 out_fish_hook="$(HOME="$fish_hook_home" USER=testuser run_main_with_stubs "$fish_stub_dir:$sudo_pw_dir" --no-packages --de i3 2>&1)"
 status_fish_hook=$?
-out_zsh_upd_hook="$(HOME="$zsh_hook_home" USER=testuser LOGIN_FILE="$hook_upd_login" \
-  PAM_KEYRING_STATE="$hook_upd_kr" PAM_LOGIN_BASE_STATE="$hook_upd_base" \
-  run_main_with_stubs "$zsh_stub_dir:$sudo_pw_dir" --update 2>&1)"
+out_zsh_upd_hook="$(run_hook_upd_with_stubs "$zsh_stub_dir:$sudo_pw_dir" "$zsh_hook_home" --update 2>&1)"
 status_zsh_upd_hook=$?
-out_fish_upd_hook="$(HOME="$fish_hook_home" USER=testuser LOGIN_FILE="$hook_upd_login" \
-  PAM_KEYRING_STATE="$hook_upd_kr" PAM_LOGIN_BASE_STATE="$hook_upd_base" \
-  run_main_with_stubs "$fish_stub_dir:$sudo_pw_dir" --update 2>&1)"
+out_fish_upd_hook="$(run_hook_upd_with_stubs "$fish_stub_dir:$sudo_pw_dir" "$fish_hook_home" --update 2>&1)"
 status_fish_upd_hook=$?
 HOME="$zsh_nohook_home" USER=testuser run_main_with_stubs "$zsh_stub_dir:$sudo_pw_dir" --no-packages --de i3 >/dev/null 2>&1
-out_zsh_upd_nohook="$(HOME="$zsh_nohook_home" USER=testuser LOGIN_FILE="$hook_upd_login" \
-  PAM_KEYRING_STATE="$hook_upd_kr" PAM_LOGIN_BASE_STATE="$hook_upd_base" \
-  run_main_with_stubs "$zsh_stub_dir:$sudo_pw_dir" --update 2>&1)"
+out_zsh_upd_nohook="$(run_hook_upd_with_stubs "$zsh_stub_dir:$sudo_pw_dir" "$zsh_nohook_home" --update 2>&1)"
 status_zsh_upd_nohook=$?
 set -e
 
