@@ -17249,6 +17249,156 @@ else
   fail "custom ZDOTDIR/XDG_CONFIG_HOME shell hook integration:$xdg_ss_report"
 fi
 
+# --update (dry-run & live) refreshes outdated managed zsh/fish shell hooks including installed-shell-hooks
+# while keeping surrounding lines, file modes, and custom unmarked triggers untouched, and warns safely
+# on symlinks/incomplete markers; main, --recover, and --guided use inspect_shell_hook_status parity.
+upd_ss_ok=1
+upd_ss_report=""
+upd_ss_dir="$TMP_DIR/update_shell_hook_test"
+upd_ss_home="$upd_ss_dir/home"
+upd_ss_etc="$upd_ss_dir/etc"
+mkdir -p "$upd_ss_home/.local/state/lightxdm" "$upd_ss_home/.config/custom" \
+  "$upd_ss_home/.config/fish" "$upd_ss_etc/pam.d" "$upd_ss_etc/lightxdm" "$upd_ss_etc/getty@tty1.service.d" \
+  "$upd_ss_dir/empty_sess"
+printf 'de=i3\nno_packages=1\n' >"$upd_ss_home/.local/state/lightxdm/install-choices"
+printf '#%%PAM-1.0\nauth include system-local-login\nsession include system-local-login\n' >"$upd_ss_etc/pam.d/login"
+cat >"$upd_ss_home/.zprofile" <<'EOF'
+# keep before zsh line
+# >>> lightXDM TTY1 auto-start >>>
+[[ -z "${DISPLAY:-}" ]] && exec startx
+# <<< lightXDM TTY1 auto-start <<<
+# keep after zsh line
+EOF
+chmod 640 "$upd_ss_home/.zprofile"
+cat >"$upd_ss_home/.config/custom/hook.fish" <<'EOF'
+# keep before fish line
+# >>> lightXDM TTY1 auto-start >>>
+if status is-login
+  exec startx
+end
+# <<< lightXDM TTY1 auto-start <<<
+# keep after fish line
+EOF
+chmod 600 "$upd_ss_home/.config/custom/hook.fish"
+printf '.config/custom/hook.fish\n' >"$upd_ss_home/.local/state/lightxdm/installed-shell-hooks"
+cat >"$upd_ss_home/.config/fish/config.fish" <<'EOF'
+# user-managed fish trigger stays untouched
+if status is-login; and test -z "$DISPLAY"; exec startx; end
+EOF
+
+run_upd_ss_cmd() {
+  env -u SHELLOPTS -u SUDO_USER -u ZDOTDIR -u XDG_CONFIG_HOME -u XDG_STATE_HOME \
+    HOME="$upd_ss_home" USER=testuser \
+    PATH="$setup_shell_bin:$PATH" \
+    LOGIN_FILE="$upd_ss_etc/pam.d/login" \
+    PAM_KEYRING_STATE="$upd_ss_etc/lightxdm/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$upd_ss_etc/lightxdm/pam-login-base" \
+    GNOME_SESSION_TYPE_DEST="$upd_ss_etc/lightxdm/gnome-session-type.conf" \
+    DM_STATE_FILE="$upd_ss_etc/lightxdm/disabled-display-managers" \
+    DISPLAY_MANAGER_LINK="$upd_ss_etc/dm.link" \
+    AUTOLOGIN_DROPIN_DIR="$upd_ss_etc/getty@tty1.service.d" \
+    SETUP_SHELL_SUDO_LOG="$upd_ss_dir/sudo.log" \
+    SESSION_ROOT="$upd_ss_dir/empty_sess" \
+    bash "$REPO_ROOT/install.sh" "$@"
+}
+
+# 1) main, --recover, and --guided detect outdated managed zsh hook
+upd_rec_rc=0
+upd_rec_out="$(FAKE_SHELL=/usr/bin/zsh run_upd_ss_cmd --recover --dry-run 2>&1)" || upd_rec_rc=$?
+if [[ $upd_rec_rc -ne 0 || "$upd_rec_out" != *"older managed TTY1 hook"* || "$upd_rec_out" != *"--setup-shell zsh"* ]]; then
+  upd_ss_ok=0
+  upd_ss_report+=" recover-stale rc=$upd_rec_rc out=[$upd_rec_out];"
+fi
+upd_main_rc=0
+upd_main_out="$(FAKE_SHELL=/usr/bin/zsh run_upd_ss_cmd --de i3 --no-packages --no-keyring --non-interactive 2>&1)" || upd_main_rc=$?
+if [[ $upd_main_rc -ne 0 || "$upd_main_out" != *"older lightXDM TTY1 auto-start block"* || "$upd_main_out" != *"--setup-shell zsh"* ]]; then
+  upd_ss_ok=0
+  upd_ss_report+=" main-stale rc=$upd_main_rc out=[$upd_main_out];"
+fi
+upd_g_rc=0
+upd_g_out="$(printf '9\n1\nn\n' | env -u SHELLOPTS -u SUDO_USER -u ZDOTDIR -u XDG_CONFIG_HOME -u XDG_STATE_HOME \
+  HOME="$upd_ss_home" USER=testuser FAKE_SHELL=/usr/bin/zsh \
+  PATH="$setup_shell_bin:$PATH" \
+  LOGIN_FILE="$upd_ss_etc/pam.d/login" \
+  PAM_KEYRING_STATE="$upd_ss_etc/lightxdm/pam-keyring" \
+  PAM_LOGIN_BASE_STATE="$upd_ss_etc/lightxdm/pam-login-base" \
+  GNOME_SESSION_TYPE_DEST="$upd_ss_etc/lightxdm/gnome-session-type.conf" \
+  DM_STATE_FILE="$upd_ss_etc/lightxdm/disabled-display-managers" \
+  DISPLAY_MANAGER_LINK="$upd_ss_etc/dm.link" \
+  AUTOLOGIN_DROPIN_DIR="$upd_ss_etc/getty@tty1.service.d" \
+  SETUP_SHELL_SUDO_LOG="$upd_ss_dir/sudo.log" \
+  SESSION_ROOT="$upd_ss_dir/empty_sess" \
+  bash "$REPO_ROOT/install.sh" --guided --dry-run 2>&1)" || upd_g_rc=$?
+if [[ $upd_g_rc -ne 0 || "$upd_g_out" != *"Update older auto-start hook in ~/.zprofile (--setup-shell zsh)?"* ]]; then
+  upd_ss_ok=0
+  upd_ss_report+=" guided-stale rc=$upd_g_rc out=[$upd_g_out];"
+fi
+
+# 2) --update --dry-run previews updating stale .zprofile & recorded custom fish hook without modifying files
+upd_dry_rc=0
+upd_dry_out="$(FAKE_SHELL=/usr/bin/zsh run_upd_ss_cmd --update --dry-run 2>&1)" || upd_dry_rc=$?
+if [[ $upd_dry_rc -ne 0 ||
+  "$upd_dry_out" != *"Shell hook (zsh): would update managed block in $upd_ss_home/.zprofile"* ||
+  "$upd_dry_out" != *"Shell hook (fish): would update managed block in $upd_ss_home/.config/custom/hook.fish"* ]] ||
+  grep -Fq 'startx-attempts' "$upd_ss_home/.zprofile" ||
+  grep -Fq 'startx-attempts' "$upd_ss_home/.config/custom/hook.fish"; then
+  upd_ss_ok=0
+  upd_ss_report+=" update-dry rc=$upd_dry_rc out=[$upd_dry_out];"
+fi
+
+# 3) live --update refreshes outdated managed blocks, keeps custom file, modes & surrounding lines, then --doctor PASSes
+upd_live_rc=0
+upd_live_out="$(FAKE_SHELL=/usr/bin/zsh run_upd_ss_cmd --update --non-interactive 2>&1)" || upd_live_rc=$?
+upd_doc_rc=0
+upd_doc_out="$(FAKE_SHELL=/usr/bin/zsh run_upd_ss_cmd --doctor 2>&1)" || upd_doc_rc=$?
+if [[ $upd_live_rc -ne 0 || $upd_doc_rc -ne 0 ||
+  "$upd_live_out" != *"Updated lightXDM shell hook (zsh) in $upd_ss_home/.zprofile"* ||
+  "$upd_live_out" != *"Updated lightXDM shell hook (fish) in $upd_ss_home/.config/custom/hook.fish"* ||
+  "$upd_doc_out" != *"Doctor: PASS"* ||
+  "$(stat -c '%a' "$upd_ss_home/.zprofile")" != "640" ||
+  "$(stat -c '%a' "$upd_ss_home/.config/custom/hook.fish")" != "600" ]] ||
+  ! grep -Fxq '# keep before zsh line' "$upd_ss_home/.zprofile" ||
+  ! grep -Fxq '# keep after zsh line' "$upd_ss_home/.zprofile" ||
+  ! grep -Fq 'startx-attempts' "$upd_ss_home/.zprofile" ||
+  ! grep -Fq 'session-journal' "$upd_ss_home/.zprofile" ||
+  ! grep -Fxq '# keep before fish line' "$upd_ss_home/.config/custom/hook.fish" ||
+  ! grep -Fxq '# keep after fish line' "$upd_ss_home/.config/custom/hook.fish" ||
+  ! grep -Fq 'startx-attempts' "$upd_ss_home/.config/custom/hook.fish" ||
+  grep -Fq 'lightXDM TTY1 auto-start' "$upd_ss_home/.config/fish/config.fish"; then
+  upd_ss_ok=0
+  upd_ss_report+=" update-live rc=$upd_live_rc doc_rc=$upd_doc_rc doc=[$upd_doc_out] out=[$upd_live_out];"
+fi
+
+# 4) subsequent --update --dry-run is a clean no-op when hooks are current, and incomplete markers / symlinks warn without aborting update
+upd_noop_out="$(FAKE_SHELL=/usr/bin/zsh run_upd_ss_cmd --update --dry-run 2>&1)" || upd_ss_ok=0
+if [[ "$upd_noop_out" == *"would update managed block"* ]]; then
+  upd_ss_ok=0
+  upd_ss_report+=" update-noop out=[$upd_noop_out];"
+fi
+printf '# >>> lightXDM TTY1 auto-start >>>\nexec startx\n' >"$upd_ss_home/.zprofile"
+upd_mal_dry_out="$(FAKE_SHELL=/usr/bin/zsh run_upd_ss_cmd --update --dry-run 2>&1)" || upd_ss_ok=0
+upd_mal_live_out="$(FAKE_SHELL=/usr/bin/zsh run_upd_ss_cmd --update --non-interactive 2>&1)" || upd_ss_ok=0
+if [[ "$upd_mal_dry_out" != *"incomplete lightXDM hook markers"* ||
+  "$upd_mal_live_out" != *"WARNING: Found incomplete lightXDM hook markers"* ||
+  "$upd_mal_live_out" != *"lightXDM install complete!"* ]]; then
+  upd_ss_ok=0
+  upd_ss_report+=" update-malformed dry=[$upd_mal_dry_out] live=[$upd_mal_live_out];"
+fi
+rm -f "$upd_ss_home/.zprofile"
+ln -s "$upd_ss_dir/missing_target" "$upd_ss_home/.zprofile"
+upd_sym_live_out="$(FAKE_SHELL=/usr/bin/zsh run_upd_ss_cmd --update --non-interactive 2>&1)" || upd_ss_ok=0
+if [[ "$upd_sym_live_out" != *"WARNING: Refusing symlinked shell hook file"* ||
+  "$upd_sym_live_out" != *"cannot be trusted or read (symlink)"* ]]; then
+  upd_ss_ok=0
+  upd_ss_report+=" update-symlink live=[$upd_sym_live_out];"
+fi
+
+if [[ $upd_ss_ok -eq 1 ]]; then
+  pass "install.sh --update refreshes outdated managed zsh/fish shell hooks safely while unifying hook diagnostics across main, --recover, and --guided"
+else
+  fail "install.sh --update shell hook refresh:$upd_ss_report"
+fi
+
 # --- install.sh --install-session ---
 isess_dir="$TMP_DIR/install_session_test"
 isess_home="$isess_dir/home"

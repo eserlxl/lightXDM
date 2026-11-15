@@ -2335,6 +2335,9 @@ preview_install() {
     printf '  template contents: unknown (needs root)\n'
   fi
   copy_dotfiles "$de" 1 || return 1
+  if [[ "${UPDATE_RUN:-0}" == 1 ]]; then
+    refresh_managed_shell_hooks_on_update 1
+  fi
   if [[ $no_packages -eq 1 ]]; then
     printf 'Packages: skipped (--no-packages)\n'
   elif [[ "${UPDATE_RUN:-0}" == 1 ]]; then
@@ -2809,7 +2812,7 @@ autologin_note_needs_root() {
 
 # Inspect the regular user's login shell and TTY1 shell hook state into SHELL_HOOK_STATUS_*.
 inspect_shell_hook_status() {
-  local shell_user="${SUDO_USER:-${USER:-}}" passwd_line="" login_shell=""
+  local shell_user="${1:-${SUDO_USER:-${USER:-}}}" passwd_line="" login_shell=""
   local rel="" home="${HOME%/}" target="" parent="" seg segs=() dir_check="" marker_rc=0
   [[ -n "$shell_user" ]] || shell_user="$(id -un 2>/dev/null || true)"
   if [[ -n "$shell_user" ]] && command -v getent >/dev/null 2>&1; then
@@ -4111,27 +4114,31 @@ run_guided_wizard() {
     done
   fi
 
-  local chosen_setup_shell="" current_user="" login_shell="" hook_kind="" hook_display=""
+  local chosen_setup_shell="" current_user="" login_shell="" hook_kind="" hook_display="" hook_action="Configure"
   current_user="${SUDO_USER:-${USER:-}}"
   [[ -n "$current_user" ]] || current_user="$(id -un 2>/dev/null || true)"
-  if [[ -n "$current_user" ]] && command -v getent >/dev/null 2>&1; then
-    login_shell="$(getent passwd "$current_user" | cut -d: -f7 || true)"
-  fi
-  case "$login_shell" in
-    *zsh) hook_kind="zsh" ;;
-    *fish) hook_kind="fish" ;;
+  local SHELL_HOOK_STATUS_LOGIN_SHELL="" SHELL_HOOK_STATUS_KIND="" SHELL_HOOK_STATUS_PATH=""
+  local SHELL_HOOK_STATUS_DISPLAY="" SHELL_HOOK_STATUS_STATE="" SHELL_HOOK_STATUS_TEXT=""
+  inspect_shell_hook_status "$current_user"
+  login_shell="$SHELL_HOOK_STATUS_LOGIN_SHELL"
+  case "$SHELL_HOOK_STATUS_KIND" in
+    zsh | fish) hook_kind="$SHELL_HOOK_STATUS_KIND" ;;
   esac
   if [[ -n "$hook_kind" ]]; then
-    if ! shell_hook_relpath "$hook_kind" 0 >/dev/null; then
+    if [[ "$SHELL_HOOK_STATUS_STATE" == "outside-home" ]]; then
       printf '\nNote: %s uses an out-of-home config directory; add TTY1 snippet manually with %s --shell-snippet %s\n' \
         "$login_shell" "$(script_cmd install.sh)" "$hook_kind"
-    elif ! shell_has_tty1_hook "$hook_kind"; then
-      hook_display="$(shell_hook_display_path "$hook_kind")"
+    elif [[ "$SHELL_HOOK_STATUS_STATE" == "custom" ]] ||
+      { [[ "$SHELL_HOOK_STATUS_STATE" == "managed" ]] && managed_shell_hook_is_current "$hook_kind" "$SHELL_HOOK_STATUS_PATH"; }; then
+      printf '\nLogin shell TTY1 hook already present in %s.\n' "$SHELL_HOOK_STATUS_DISPLAY"
+    else
+      hook_display="$SHELL_HOOK_STATUS_DISPLAY"
+      [[ "$SHELL_HOOK_STATUS_STATE" == "managed" ]] && hook_action="Update older"
       local shell_validate_err=""
       if shell_validate_err="$(validate_setup_shell "$hook_kind" "$dry_run" 2>&1)"; then
         printf '\nStep 3 — Login shell TTY1 hook (%s):\n' "$login_shell"
         while true; do
-          printf 'Configure auto-start hook in %s (--setup-shell %s)? [Y/n]: ' "$hook_display" "$hook_kind"
+          printf '%s auto-start hook in %s (--setup-shell %s)? [Y/n]: ' "$hook_action" "$hook_display" "$hook_kind"
           if ! IFS= read -r reply; then
             log "Input closed (EOF) during guided setup; no changes were made."
             return 1
@@ -4152,9 +4159,6 @@ run_guided_wizard() {
         printf 'Note: cannot auto-configure %s (see warning above); add TTY1 snippet manually with %s --shell-snippet %s\n' \
           "$hook_display" "$(script_cmd install.sh)" "$hook_kind"
       fi
-    else
-      hook_display="$(shell_hook_display_path "$hook_kind")"
-      printf '\nLogin shell TTY1 hook already present in %s.\n' "$hook_display"
     fi
   fi
 
@@ -5147,23 +5151,28 @@ run_recover() {
     apply_shell_hook "$setup_shell" "$preview" || return 1
   fi
 
-  local real_user="${SUDO_USER:-${USER:-}}" login_shell=""
-  [[ -n "$real_user" ]] || real_user="$(id -un 2>/dev/null || true)"
-  if [[ -n "$real_user" ]] && command -v getent >/dev/null 2>&1; then
-    login_shell="$(getent passwd "$real_user" | cut -d: -f7 || true)"
-  fi
-  local rec_hook_kind="" rec_hook_display=""
-  case "$login_shell" in
-    *zsh) rec_hook_kind="zsh" ;;
-    *fish) rec_hook_kind="fish" ;;
-  esac
-  if [[ -n "$rec_hook_kind" && "$resolved_setup_shell" != "$rec_hook_kind" ]]; then
-    if ! shell_hook_relpath "$rec_hook_kind" 0 >/dev/null; then
-      log "Note: Login shell is $login_shell with configured shell directory outside \$HOME; move it inside \$HOME or add the TTY1 snippet manually ($(script_cmd install.sh) --shell-snippet $rec_hook_kind)."
-    elif ! shell_has_tty1_hook "$rec_hook_kind"; then
-      rec_hook_display="$(shell_hook_display_path "$rec_hook_kind")"
-      log "Note: Login shell is $login_shell without a TTY1 trigger in $rec_hook_display; run: $(script_cmd install.sh) --shell-snippet $rec_hook_kind >> $rec_hook_display"
-    fi
+  local SHELL_HOOK_STATUS_LOGIN_SHELL="" SHELL_HOOK_STATUS_KIND="" SHELL_HOOK_STATUS_PATH=""
+  local SHELL_HOOK_STATUS_DISPLAY="" SHELL_HOOK_STATUS_STATE="" SHELL_HOOK_STATUS_TEXT=""
+  inspect_shell_hook_status
+  local login_shell="$SHELL_HOOK_STATUS_LOGIN_SHELL"
+  if [[ ( "$SHELL_HOOK_STATUS_KIND" == "zsh" || "$SHELL_HOOK_STATUS_KIND" == "fish" ) && "$resolved_setup_shell" != "$SHELL_HOOK_STATUS_KIND" ]]; then
+    case "$SHELL_HOOK_STATUS_STATE" in
+      outside-home)
+        log "Note: Login shell is $login_shell with configured shell directory outside \$HOME; move it inside \$HOME or add the TTY1 snippet manually ($(script_cmd install.sh) --shell-snippet $SHELL_HOOK_STATUS_KIND)."
+        ;;
+      custom) ;;
+      managed)
+        if ! managed_shell_hook_is_current "$SHELL_HOOK_STATUS_KIND" "$SHELL_HOOK_STATUS_PATH"; then
+          log "Note: Login shell is $login_shell with an older managed TTY1 hook in $SHELL_HOOK_STATUS_DISPLAY; update it with: $(script_cmd install.sh) --setup-shell $SHELL_HOOK_STATUS_KIND"
+        fi
+        ;;
+      symlink | malformed | not-regular | unreadable | unsearchable | refused-symlink-dir)
+        log "Note: Login shell is $login_shell and shell hook at $SHELL_HOOK_STATUS_DISPLAY cannot be trusted or read ($SHELL_HOOK_STATUS_STATE); inspect it and update with: $(script_cmd install.sh) --setup-shell $SHELL_HOOK_STATUS_KIND"
+        ;;
+      *)
+        log "Note: Login shell is $login_shell without a TTY1 trigger in $SHELL_HOOK_STATUS_DISPLAY; run: $(script_cmd install.sh) --shell-snippet $SHELL_HOOK_STATUS_KIND >> $SHELL_HOOK_STATUS_DISPLAY"
+        ;;
+    esac
   fi
 
   if [[ $preview -eq 0 ]]; then
@@ -5787,6 +5796,286 @@ validate_setup_shell() {
   return 0
 }
 
+_is_safe_shell_hook_relpath() {
+  local rel="$1" seg=""
+  local -a segs=()
+  [[ -n "$rel" && "$rel" != /* && "$rel" != */ && "$rel" != *//* ]] || return 1
+  IFS=/ read -r -a segs <<<"$rel"
+  for seg in "${segs[@]}"; do
+    [[ -n "$seg" && "$seg" != "." && "$seg" != ".." ]] || return 1
+  done
+  return 0
+}
+
+# Replace the fenced lightXDM shell-hook block inside $1 using block file $2, writing result to $3.
+_write_managed_shell_hook_block() {
+  local target="$1" block_file="$2" out_file="$3" line="" b_line="" skip=0
+  : >"$out_file" || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$SHELL_HOOK_BEGIN" ]]; then
+      while IFS= read -r b_line || [[ -n "$b_line" ]]; do
+        printf '%s\n' "$b_line"
+      done <"$block_file" || return 1
+      skip=1
+      continue
+    elif [[ "$line" == "$SHELL_HOOK_END" ]]; then
+      skip=0
+      continue
+    fi
+    [[ $skip -eq 0 ]] && printf '%s\n' "$line"
+  done <"$target" >"$out_file" || return 1
+}
+
+_infer_managed_shell_hook_kind() {
+  local rel="$1" target="$2" hint_kind="${3:-}" line="" inside=0 block_text=""
+  if [[ "$hint_kind" == "zsh" || "$hint_kind" == "fish" ]]; then
+    printf '%s\n' "$hint_kind"
+    return 0
+  fi
+  case "$rel" in
+    .zprofile | *.zprofile | *.zsh)
+      printf 'zsh\n'
+      return 0
+      ;;
+    .config/fish/config.fish | */config.fish | *.fish)
+      printf 'fish\n'
+      return 0
+      ;;
+  esac
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$SHELL_HOOK_BEGIN" ]]; then
+      inside=1
+    elif [[ "$line" == "$SHELL_HOOK_END" ]]; then
+      break
+    elif [[ $inside -eq 1 ]]; then
+      block_text+="${line}"$'\n'
+    fi
+  done <"$target" || return 1
+  if [[ "$block_text" == *"status is-login"* || "$block_text" == *"and test "* || "$block_text" == *"set -l _lightxdm"* ]]; then
+    printf 'fish\n'
+    return 0
+  elif [[ "$block_text" == *"[["* || "$block_text" == *"exec "* || "$block_text" == *"startx"* || "$block_text" == *".wayland-session"* ]]; then
+    printf 'zsh\n'
+    return 0
+  fi
+  return 1
+}
+
+# During --update, refresh intact outdated managed zsh/fish shell hooks while leaving unmanaged
+# files alone and reporting symlinks, malformed markers, or permission issues without failing updates.
+refresh_managed_shell_hooks_on_update() {
+  local preview="${1:-0}" home="${HOME%/}"
+  local -a rels=() hints=() explicit_flags=()
+  [[ -n "${HOME:-}" ]] || return 0
+  [[ -n "$home" ]] || home="/"
+  if [[ -L "$home" || ! -d "$home" || ! -x "$home" ]]; then
+    log "WARNING: Refusing unsafe home directory for shell hook update: $HOME"
+    return 0
+  fi
+
+  _add_update_hook_candidate() {
+    local cand="$1" hint="$2" explicit="${3:-0}" i=0
+    _is_safe_shell_hook_relpath "$cand" || return 0
+    for ((i = 0; i < ${#rels[@]}; i++)); do
+      if [[ "${rels[$i]}" == "$cand" ]]; then
+        [[ -z "${hints[$i]}" && -n "$hint" ]] && hints[i]="$hint"
+        [[ $explicit -eq 1 ]] && explicit_flags[i]=1
+        return 0
+      fi
+    done
+    rels+=("$cand")
+    hints+=("$hint")
+    explicit_flags+=("$explicit")
+  }
+
+  local login_user="${SUDO_USER:-${USER:-}}" login_shell="" active_kind="" active_rel=""
+  [[ -n "$login_user" ]] || login_user="$(id -un 2>/dev/null || true)"
+  if [[ -n "$login_user" ]] && command -v getent >/dev/null 2>&1; then
+    login_shell="$(getent passwd "$login_user" 2>/dev/null | cut -d: -f7 || true)"
+  fi
+  case "$login_shell" in
+    *zsh) active_kind="zsh" ;;
+    *fish) active_kind="fish" ;;
+  esac
+  if [[ -n "$active_kind" ]]; then
+    active_rel="$(shell_hook_relpath "$active_kind" 0 2>/dev/null || true)"
+  fi
+
+  local is_act=0
+  [[ "$active_rel" == ".zprofile" ]] && is_act=1
+  _add_update_hook_candidate ".zprofile" "zsh" "$is_act"
+  is_act=0
+  [[ "$active_rel" == ".config/fish/config.fish" ]] && is_act=1
+  _add_update_hook_candidate ".config/fish/config.fish" "fish" "$is_act"
+
+  local env_rel=""
+  if env_rel="$(shell_hook_relpath zsh 0 2>/dev/null)"; then
+    is_act=0
+    [[ "$active_rel" == "$env_rel" ]] && is_act=1
+    _add_update_hook_candidate "$env_rel" "zsh" "$is_act"
+  fi
+  if env_rel="$(shell_hook_relpath fish 0 2>/dev/null)"; then
+    is_act=0
+    [[ "$active_rel" == "$env_rel" ]] && is_act=1
+    _add_update_hook_candidate "$env_rel" "fish" "$is_act"
+  fi
+
+  local rec_file="" rec_dir="" rec_parent="" rec_line=""
+  rec_file="$(shell_hook_record_file)"
+  rec_dir="${rec_file%/*}"
+  rec_parent="${rec_dir%/*}"
+  if [[ -L "$rec_parent" || -L "$rec_dir" || -L "$rec_file" ]]; then
+    log "WARNING: Refusing symlinked shell hook record $rec_file; skipping custom shell hook update lookup."
+  elif [[ -f "$rec_file" ]]; then
+    if [[ ! -r "$rec_file" ]]; then
+      log "WARNING: Cannot read $rec_file; skipping custom shell hook update lookup."
+    else
+      while IFS= read -r rec_line || [[ -n "$rec_line" ]]; do
+        [[ -n "$rec_line" ]] || continue
+        if ! _is_safe_shell_hook_relpath "$rec_line"; then
+          log "WARNING: Ignoring unsafe shell hook record entry in ${rec_file}: $rec_line"
+          continue
+        fi
+        _add_update_hook_candidate "$rec_line" "" 1
+      done <"$rec_file"
+    fi
+  elif [[ -e "$rec_file" ]]; then
+    log "WARNING: Ignoring non-regular shell hook record $rec_file."
+  fi
+
+  local idx=0 rel="" target="" hint="" explicit=0 parent_bad="" dir_seg="" check_dir="" parent_acc=""
+  local -a dir_segs=()
+  for ((idx = 0; idx < ${#rels[@]}; idx++)); do
+    rel="${rels[$idx]}"
+    hint="${hints[$idx]}"
+    explicit="${explicit_flags[$idx]}"
+    [[ "$home" == "/" ]] && target="/${rel}" || target="${home}/${rel}"
+    parent_bad=""
+    parent_acc=""
+    if [[ "$rel" == */* ]]; then
+      IFS=/ read -r -a dir_segs <<<"${rel%/*}"
+      for dir_seg in "${dir_segs[@]}"; do
+        [[ -n "$dir_seg" ]] || continue
+        parent_acc+="/$dir_seg"
+        [[ "$home" == "/" ]] && check_dir="$parent_acc" || check_dir="${home}${parent_acc}"
+        if [[ -L "$check_dir" ]]; then
+          parent_bad="symlinked directory ($check_dir)"
+          break
+        elif [[ -e "$check_dir" && ! -d "$check_dir" ]]; then
+          parent_bad="non-directory path ($check_dir)"
+          break
+        elif [[ -d "$check_dir" && ! -x "$check_dir" ]]; then
+          parent_bad="unsearchable directory ($check_dir)"
+          break
+        fi
+      done
+    fi
+
+    if [[ -n "$parent_bad" ]]; then
+      if [[ $explicit -eq 1 ]] || { [[ -f "$target" && ! -L "$target" && -r "$target" ]] && grep -Fq -- "$SHELL_HOOK_BEGIN" "$target" 2>/dev/null; }; then
+        if [[ $preview -eq 1 ]]; then
+          printf 'Shell hook: %s (stays: %s; --update)\n' "$target" "$parent_bad"
+        else
+          log "WARNING: Skipping shell hook $target during --update: $parent_bad."
+        fi
+      fi
+      continue
+    fi
+
+    [[ -e "$target" || -L "$target" ]] || continue
+
+    if [[ -L "$target" ]]; then
+      if [[ $explicit -eq 1 ]] || { [[ -f "$target" && -r "$target" ]] && grep -Fq -- "$SHELL_HOOK_BEGIN" "$target" 2>/dev/null; }; then
+        if [[ $preview -eq 1 ]]; then
+          printf 'Shell hook: %s (stays: symlink ignored; --update)\n' "$target"
+        else
+          log "WARNING: Refusing symlinked shell hook file $target; leaving untouched during --update."
+        fi
+      fi
+      continue
+    fi
+    if [[ ! -f "$target" ]]; then
+      if [[ $explicit -eq 1 ]]; then
+        if [[ $preview -eq 1 ]]; then
+          printf 'Shell hook: %s (stays: not a regular file; --update)\n' "$target"
+        else
+          log "WARNING: Skipping non-regular shell hook file $target during --update."
+        fi
+      fi
+      continue
+    fi
+    if [[ ! -r "$target" ]]; then
+      if [[ $preview -eq 1 ]]; then
+        printf 'Shell hook: %s (stays: unreadable; --update)\n' "$target"
+      else
+        log "WARNING: Cannot read shell hook $target during --update; leaving untouched."
+      fi
+      continue
+    fi
+
+    local marker_rc=0
+    check_shell_hook_markers "$target" 1 || marker_rc=$?
+    if [[ $marker_rc -eq 0 ]]; then
+      continue
+    elif [[ $marker_rc -eq 1 ]]; then
+      if [[ $preview -eq 1 ]]; then
+        printf 'Shell hook: %s (left alone: incomplete lightXDM hook markers; --update)\n' "$target"
+      else
+        log "WARNING: Found incomplete lightXDM hook markers in $target; leaving untouched during --update."
+      fi
+      continue
+    fi
+
+    local kind=""
+    if ! kind="$(_infer_managed_shell_hook_kind "$rel" "$target" "$hint")"; then
+      log "WARNING: Could not identify shell kind (zsh or fish) for managed hook in $target; leaving untouched during --update."
+      continue
+    fi
+    if managed_shell_hook_is_current "$kind" "$target"; then
+      continue
+    fi
+    if [[ $preview -eq 1 ]]; then
+      printf 'Shell hook (%s): would update managed block in %s\n' "$kind" "$target"
+      continue
+    fi
+
+    local target_parent="${target%/*}"
+    if [[ ! -w "$target" || ! -w "$target_parent" ]]; then
+      log "WARNING: Cannot write shell hook $target during --update; leaving untouched."
+      continue
+    fi
+
+    local block_file="" tmp="" dest_tmp=""
+    block_file="$(mktemp)" || {
+      log "WARNING: Failed preparing shell hook update for $target."
+      continue
+    }
+    tmp="$(mktemp)" || {
+      rm -f -- "$block_file"
+      log "WARNING: Failed preparing shell hook update for $target."
+      continue
+    }
+    {
+      printf '%s\n' "$SHELL_HOOK_BEGIN"
+      print_shell_snippet "$kind"
+      printf '%s\n' "$SHELL_HOOK_END"
+    } >"$block_file"
+    dest_tmp="$(mktemp "${target_parent}/.${target##*/}.lightxdm.XXXXXX")" || {
+      rm -f -- "$block_file" "$tmp"
+      log "WARNING: Failed preparing shell hook update for $target."
+      continue
+    }
+    if ! { _write_managed_shell_hook_block "$target" "$block_file" "$tmp" && cat "$tmp" >"$dest_tmp" && chmod --reference="$target" -- "$dest_tmp" && mv -Tf -- "$dest_tmp" "$target"; }; then
+      rm -f -- "$block_file" "$tmp" "$dest_tmp"
+      log "WARNING: Failed updating managed shell hook in $target; leaving untouched."
+      continue
+    fi
+    rm -f -- "$block_file" "$tmp"
+    record_shell_hook "$rel"
+    log "Updated lightXDM shell hook ($kind) in $target."
+  done
+}
+
 apply_shell_hook() {
   local spec="$1" preview="${2:-0}" resolved rel target home="${HOME%/}" parent_dir
   resolved="$(resolve_setup_shell "$spec")" || return 1
@@ -5825,16 +6114,7 @@ apply_shell_hook() {
         rm -f -- "$block_file"
         return 1
       }
-      if ! awk -v b="$SHELL_HOOK_BEGIN" -v e="$SHELL_HOOK_END" -v bf="$block_file" '
-        $0 == b {
-          while ((getline line < bf) > 0) print line
-          close(bf)
-          skip = 1
-          next
-        }
-        $0 == e { skip = 0; next }
-        !skip { print }
-      ' "$target" >"$tmp"; then
+      if ! _write_managed_shell_hook_block "$target" "$block_file" "$tmp"; then
         rm -f -- "$block_file" "$tmp"
         log "Failed updating shell hook in $target."
         return 1
@@ -6787,6 +7067,11 @@ EOF
   install_step="copy_dotfiles"
   copy_dotfiles "$de"
   completed_steps+=("$install_step")
+  if [[ "${UPDATE_RUN:-0}" == 1 ]]; then
+    install_step="refresh_shell_hooks"
+    refresh_managed_shell_hooks_on_update 0
+    completed_steps+=("$install_step")
+  fi
   local resolved_setup_shell=""
   if [[ -n "$setup_shell" ]]; then
     install_step="apply_shell_hook"
@@ -6795,9 +7080,12 @@ EOF
     completed_steps+=("$install_step")
   fi
   local login_shell shell_profile="" shell_hint="docs/startx-autologin.md" shell_hook_configured=0
-  login_shell="$(getent passwd "$real_user" | cut -d: -f7 || true)"
+  local SHELL_HOOK_STATUS_LOGIN_SHELL="" SHELL_HOOK_STATUS_KIND="" SHELL_HOOK_STATUS_PATH=""
+  local SHELL_HOOK_STATUS_DISPLAY="" SHELL_HOOK_STATUS_STATE="" SHELL_HOOK_STATUS_TEXT=""
+  inspect_shell_hook_status "$real_user"
+  login_shell="$SHELL_HOOK_STATUS_LOGIN_SHELL"
   if [[ -n "$login_shell" && "$login_shell" != *bash ]]; then
-    local main_hook_kind="" main_env_outside=0
+    local main_hook_kind="" main_env_outside=0 main_hook_problem=0
     case "$login_shell" in
       *zsh) main_hook_kind="zsh" ;;
       *fish) main_hook_kind="fish" ;;
@@ -6805,25 +7093,43 @@ EOF
     if [[ -n "$main_hook_kind" ]]; then
       if [[ "$resolved_setup_shell" == "$main_hook_kind" ]]; then
         shell_hook_configured=1
-      elif ! shell_hook_relpath "$main_hook_kind" 0 >/dev/null; then
-        main_env_outside=1
-        case "$main_hook_kind" in
-          zsh) shell_profile="\$ZDOTDIR/.zprofile" ;;
-          fish) shell_profile="\$XDG_CONFIG_HOME/fish/config.fish" ;;
-        esac
-        shell_hint="configured shell directory is outside \$HOME; move it inside \$HOME or add the TTY1 snippet manually with '$(script_cmd install.sh) --shell-snippet $main_hook_kind'"
-      elif shell_has_tty1_hook "$main_hook_kind"; then
-        shell_hook_configured=1
       else
-        shell_profile="$(shell_hook_display_path "$main_hook_kind")"
-        shell_hint="run '$(script_cmd install.sh) --setup-shell $main_hook_kind' or '$(script_cmd install.sh) --shell-snippet $main_hook_kind' (see docs/startx-autologin.md)"
+        case "$SHELL_HOOK_STATUS_STATE" in
+          outside-home)
+            main_env_outside=1
+            case "$main_hook_kind" in
+              zsh) shell_profile="\$ZDOTDIR/.zprofile" ;;
+              fish) shell_profile="\$XDG_CONFIG_HOME/fish/config.fish" ;;
+            esac
+            shell_hint="configured shell directory is outside \$HOME; move it inside \$HOME or add the TTY1 snippet manually with '$(script_cmd install.sh) --shell-snippet $main_hook_kind'"
+            ;;
+          custom)
+            shell_hook_configured=1
+            ;;
+          managed)
+            shell_hook_configured=1
+            if ! managed_shell_hook_is_current "$main_hook_kind" "$SHELL_HOOK_STATUS_PATH"; then
+              log "WARNING: $SHELL_HOOK_STATUS_DISPLAY has an older lightXDM TTY1 auto-start block; update it with '$(script_cmd install.sh) --setup-shell $main_hook_kind'."
+            fi
+            ;;
+          symlink | malformed | not-regular | unreadable | unsearchable | refused-symlink-dir)
+            main_hook_problem=1
+            shell_profile="$SHELL_HOOK_STATUS_DISPLAY"
+            shell_hint="run '$(script_cmd install.sh) --setup-shell $main_hook_kind' or '$(script_cmd install.sh) --shell-snippet $main_hook_kind' (see docs/startx-autologin.md)"
+            log "WARNING: Login shell for $real_user is $login_shell, and shell hook at $shell_profile cannot be trusted or read ($SHELL_HOOK_STATUS_STATE). Inspect $shell_profile and update with $shell_hint."
+            ;;
+          *)
+            shell_profile="$SHELL_HOOK_STATUS_DISPLAY"
+            shell_hint="run '$(script_cmd install.sh) --setup-shell $main_hook_kind' or '$(script_cmd install.sh) --shell-snippet $main_hook_kind' (see docs/startx-autologin.md)"
+            ;;
+        esac
       fi
     else
       # shellcheck disable=SC2088 # literal home-relative display path for user instructions
       shell_profile="~/.profile"
       shell_hint="see docs/startx-autologin.md"
     fi
-    if [[ $shell_hook_configured -eq 0 ]]; then
+    if [[ $shell_hook_configured -eq 0 && $main_hook_problem -eq 0 ]]; then
       if [[ $main_env_outside -eq 1 ]]; then
         log "WARNING: Login shell for $real_user is $login_shell, which does not read ~/.bash_profile ($shell_hint)."
       else
