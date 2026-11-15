@@ -4765,7 +4765,7 @@ resolve_setup_shell() {
 }
 
 check_shell_hook_path_safe() {
-  local home="${HOME%/}" rel="$1" preview="${2:-0}" target parent="" seg segs=()
+  local home="${HOME%/}" rel="$1" preview="${2:-0}" target parent="" seg segs=() writable_parent=""
   if [[ -z "${HOME:-}" ]]; then
     log "HOME is unset; cannot locate shell configuration file."
     return 1
@@ -4775,6 +4775,11 @@ check_shell_hook_path_safe() {
     log "Refusing unsafe home directory for shell hook: $HOME"
     return 1
   fi
+  if [[ ! -x "$home" ]]; then
+    log "Cannot search home directory for shell hook: $home"
+    return 1
+  fi
+  writable_parent="$home"
   if [[ "$rel" == */* ]]; then
     IFS=/ read -ra segs <<<"${rel%/*}"
     for seg in "${segs[@]}"; do
@@ -4789,6 +4794,13 @@ check_shell_hook_path_safe() {
       if [[ -e "$check_dir" && ! -d "$check_dir" ]]; then
         log "Refusing non-directory path for shell hook: $check_dir"
         return 1
+      fi
+      if [[ -d "$check_dir" ]]; then
+        if [[ ! -x "$check_dir" ]]; then
+          log "Cannot search directory for shell hook: $check_dir"
+          return 1
+        fi
+        writable_parent="$check_dir"
       fi
     done
   fi
@@ -4807,6 +4819,10 @@ check_shell_hook_path_safe() {
   fi
   if [[ $preview -eq 0 && -f "$target" && ! -w "$target" ]]; then
     log "Cannot write shell configuration file: $target"
+    return 1
+  fi
+  if [[ $preview -eq 0 && ! -w "$writable_parent" ]]; then
+    log "Cannot write directory for shell hook: $writable_parent"
     return 1
   fi
   return 0

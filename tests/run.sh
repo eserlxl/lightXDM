@@ -16443,6 +16443,54 @@ else
   fail "install.sh --setup-shell / uninstall hook cleanup:$ss_report"
 fi
 
+# Unsearchable (000) and read-only (555) parent directories are caught before sudo or file edits
+if [[ $EUID -ne 0 ]]; then
+  ss_perm_home="$TMP_DIR/ss_perm_home"
+  ss_perm_etc="$TMP_DIR/ss_perm_etc"
+  mkdir -p "$ss_perm_home/.config/fish" "$ss_perm_home/.local/state/lightxdm" "$ss_perm_etc"
+  printf 'de=i3\nno_packages=1\n' >"$ss_perm_home/.local/state/lightxdm/install-choices"
+  cp "$REPO_ROOT/dotfiles/.bash_profile" "$ss_perm_home/.bash_profile"
+  cp "$REPO_ROOT/dotfiles/.xinitrc-i3" "$ss_perm_home/.xinitrc"
+  cp "$REPO_ROOT/dotfiles/.gpg-agent-gnome" "$ss_perm_home/.gpg-agent-gnome"
+  mkdir -p "$ss_perm_home/.config/autostart"
+  cp "$REPO_ROOT/dotfiles/lightxdm-gpg-agent-tty.desktop" "$ss_perm_home/.config/autostart/lightxdm-gpg-agent-tty.desktop"
+  chmod +x "$ss_perm_home/.xinitrc" "$ss_perm_home/.gpg-agent-gnome"
+  printf '# existing fish\n' >"$ss_perm_home/.config/fish/config.fish"
+  printf '#%%PAM-1.0\n' >"$ss_perm_etc/login"
+
+  chmod 000 "$ss_perm_home/.config"
+  : >"$setup_shell_sudo_log"
+  set +e
+  ss_unsearch_dry="$(env HOME="$ss_perm_home" XDG_STATE_HOME="$ss_perm_home/.local/state" PATH="$setup_shell_bin:/usr/bin:/bin" SETUP_SHELL_SUDO_LOG="$setup_shell_sudo_log" bash "$REPO_ROOT/install.sh" --setup-shell fish --dry-run 2>&1)"
+  ss_unsearch_dry_rc=$?
+  ss_unsearch_fix="$(env FAKE_SHELL=/usr/bin/fish HOME="$ss_perm_home" XDG_STATE_HOME="$ss_perm_home/.local/state" LOGIN_FILE="$ss_perm_etc/login" PATH="$setup_shell_bin:/usr/bin:/bin" SETUP_SHELL_SUDO_LOG="$setup_shell_sudo_log" bash "$REPO_ROOT/install.sh" --fix 2>&1)"
+  ss_unsearch_fix_rc=$?
+  set -e
+
+  chmod 755 "$ss_perm_home/.config"
+  chmod 555 "$ss_perm_home/.config/fish"
+  set +e
+  ss_ro_dry="$(env HOME="$ss_perm_home" XDG_STATE_HOME="$ss_perm_home/.local/state" PATH="$setup_shell_bin:/usr/bin:/bin" SETUP_SHELL_SUDO_LOG="$setup_shell_sudo_log" bash "$REPO_ROOT/install.sh" --setup-shell fish --dry-run 2>&1)"
+  ss_ro_dry_rc=$?
+  ss_ro_live="$(env HOME="$ss_perm_home" XDG_STATE_HOME="$ss_perm_home/.local/state" PATH="$setup_shell_bin:/usr/bin:/bin" SETUP_SHELL_SUDO_LOG="$setup_shell_sudo_log" bash "$REPO_ROOT/install.sh" --setup-shell fish 2>&1)"
+  ss_ro_live_rc=$?
+  ss_ro_fix="$(env FAKE_SHELL=/usr/bin/fish HOME="$ss_perm_home" XDG_STATE_HOME="$ss_perm_home/.local/state" LOGIN_FILE="$ss_perm_etc/login" PATH="$setup_shell_bin:/usr/bin:/bin" SETUP_SHELL_SUDO_LOG="$setup_shell_sudo_log" bash "$REPO_ROOT/install.sh" --fix 2>&1)"
+  ss_ro_fix_rc=$?
+  set -e
+  chmod 755 "$ss_perm_home/.config/fish"
+
+  if [[ $ss_unsearch_dry_rc -ne 0 && "$ss_unsearch_dry" == *"Cannot search directory for shell hook"* &&
+    $ss_unsearch_fix_rc -ne 0 && "$ss_unsearch_fix" == *"Cannot search directory for shell hook"* &&
+    $ss_ro_dry_rc -eq 0 && "$ss_ro_dry" == *"would append managed block"* &&
+    $ss_ro_live_rc -ne 0 && "$ss_ro_live" == *"Cannot write directory for shell hook"* &&
+    $ss_ro_fix_rc -ne 0 && "$ss_ro_fix" == *"Cannot write directory for shell hook"* &&
+    ! -s "$setup_shell_sudo_log" ]]; then
+    pass "install.sh check_shell_hook_path_safe catches unsearchable and read-only parent dirs before sudo or writes"
+  else
+    fail "check_shell_hook_path_safe perms (unsearch_dry=$ss_unsearch_dry_rc:$ss_unsearch_dry | unsearch_fix=$ss_unsearch_fix_rc:$ss_unsearch_fix | ro_dry=$ss_ro_dry_rc:$ss_ro_dry | ro_live=$ss_ro_live_rc:$ss_ro_live | ro_fix=$ss_ro_fix_rc:$ss_ro_fix | sudo=$(cat "$setup_shell_sudo_log"))"
+  fi
+fi
+
 # --- Custom $ZDOTDIR and $XDG_CONFIG_HOME shell hook integration ---
 xdg_ss_dir="$TMP_DIR/xdg_shell_hook_test"
 xdg_ss_home="$xdg_ss_dir/home"
