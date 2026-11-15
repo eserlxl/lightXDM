@@ -1190,19 +1190,95 @@ copy_dotfiles() {
   fi
 }
 
+# Resolve $1 through symlinks and print the deepest existing (or symlink) component at or above its parent dir.
+pam_resolve_probe_dir() {
+  local resolved probe
+  resolved="$(readlink -m -- "$1" 2>/dev/null || printf '%s\n' "$1")"
+  probe="$(dirname -- "$resolved")"
+  while [[ "$probe" != "/" && "$probe" != "." && ! -e "$probe" && ! -L "$probe" ]]; do
+    probe="$(dirname -- "$probe")"
+  done
+  printf '%s\n' "$probe"
+}
+
 # True when inspecting $1 ($2 == 1 for regular non-symlink backup/state files) cannot be settled without sudo.
 pam_path_needs_sudo() {
-  local file="$1" no_symlink="${2:-0}" dir
+  local file="$1" no_symlink="${2:-0}" dir probe=""
   dir="$(dirname -- "$file")"
   if [[ $no_symlink -eq 1 && ( -L "$dir" || -L "$file" ) ]]; then
     return 1
   fi
   if [[ -f "$file" && -r "$file" ]] ||
-    [[ -d "$dir" && -x "$dir" && ! -e "$file" ]] ||
     [[ ! -e "$dir" && ! -L "$dir" && -x "$(dirname -- "$dir")" ]]; then
     return 1
   fi
+  if [[ -d "$dir" && -x "$dir" && ! -e "$file" ]]; then
+    if [[ ! -L "$file" ]]; then
+      return 1
+    fi
+    probe="$(pam_resolve_probe_dir "$file")"
+    if [[ -d "$probe" && -x "$probe" ]]; then
+      return 1
+    fi
+  fi
   return 0
+}
+
+# Validate $LOGIN_FILE, permitting valid symlinks to regular files and searchable symlinked dirs
+# while rejecting broken symlinks or non-regular targets. Sets LOGIN_PATH_STATE (ok|needs-root|missing|invalid)
+# and LOGIN_PATH_REASON when invalid. When preview=$1 is 0, probes root-restricted paths with sudo.
+inspect_login_pam_path() {
+  local preview="${1:-1}" probe login_dir
+  LOGIN_PATH_STATE="ok"
+  LOGIN_PATH_REASON=""
+
+  if [[ -f "$LOGIN_FILE" ]]; then
+    if [[ -r "$LOGIN_FILE" || $preview -eq 0 ]]; then
+      return 0
+    fi
+    LOGIN_PATH_STATE="needs-root"
+    return 0
+  fi
+
+  if [[ -e "$LOGIN_FILE" ]]; then
+    LOGIN_PATH_STATE="invalid"
+    LOGIN_PATH_REASON="$LOGIN_FILE is not a regular file"
+    return 0
+  fi
+
+  probe="$(pam_resolve_probe_dir "$LOGIN_FILE")"
+  if [[ -d "$probe" && ! -x "$probe" ]]; then
+    if [[ $preview -eq 1 ]]; then
+      LOGIN_PATH_STATE="needs-root"
+      return 0
+    fi
+    if sudo test -f "$LOGIN_FILE"; then
+      LOGIN_PATH_STATE="ok"
+    elif sudo test -e "$LOGIN_FILE"; then
+      LOGIN_PATH_STATE="invalid"
+      LOGIN_PATH_REASON="$LOGIN_FILE is not a regular file"
+    elif sudo test -L "$LOGIN_FILE"; then
+      LOGIN_PATH_STATE="invalid"
+      LOGIN_PATH_REASON="$LOGIN_FILE is a broken symlink"
+    else
+      LOGIN_PATH_STATE="missing"
+    fi
+    return 0
+  fi
+
+  login_dir="$(dirname -- "$LOGIN_FILE")"
+  if [[ -e "$probe" && ! -d "$probe" ]]; then
+    LOGIN_PATH_STATE="invalid"
+    LOGIN_PATH_REASON="$login_dir is not a directory"
+  elif [[ -L "$LOGIN_FILE" || -L "$probe" ]]; then
+    LOGIN_PATH_STATE="invalid"
+    LOGIN_PATH_REASON="$LOGIN_FILE is a broken symlink"
+  elif [[ -L "$login_dir" ]]; then
+    LOGIN_PATH_STATE="invalid"
+    LOGIN_PATH_REASON="$login_dir is a broken symlink"
+  else
+    LOGIN_PATH_STATE="missing"
+  fi
 }
 
 # Print PAM file $1; use sudo only during a real run ($2 == 0) when $1 is not user-readable.
@@ -1374,11 +1450,19 @@ configure_pam() {
   fi
   # Never create the login PAM file: a file holding only the optional keyring lines is an unsafe login stack.
   if [[ ! -f "$LOGIN_FILE" ]]; then
-    log "ERROR: $LOGIN_FILE is missing; lightXDM will not create it."
-    if [[ -e "${LOGIN_FILE}.lightxdm.bak" ]]; then
-      log "Restore it from the backup first: sudo cp ${LOGIN_FILE}.lightxdm.bak $LOGIN_FILE"
+    local LOGIN_PATH_STATE="" LOGIN_PATH_REASON=""
+    inspect_login_pam_path "$preview"
+    if [[ "$LOGIN_PATH_STATE" == "invalid" ]]; then
+      log "ERROR: $LOGIN_PATH_REASON; lightXDM will not create it."
+      return 1
+    elif [[ "$LOGIN_PATH_STATE" != "ok" ]]; then
+      log "ERROR: $LOGIN_FILE is missing; lightXDM will not create it."
+      if [[ -e "${LOGIN_FILE}.lightxdm.bak" ]] ||
+        { [[ $preview -eq 0 ]] && pam_path_needs_sudo "${LOGIN_FILE}.lightxdm.bak" 1 && sudo test -e "${LOGIN_FILE}.lightxdm.bak"; }; then
+        log "Restore it from the backup first: sudo cp ${LOGIN_FILE}.lightxdm.bak $LOGIN_FILE"
+      fi
+      return 1
     fi
-    return 1
   fi
   local module auth_line session_line backend builtin_keyring=""
   if builtin_keyring="$(builtin_de_keyring_backend "$de" 2>/dev/null)"; then
@@ -1452,7 +1536,8 @@ configure_pam() {
   fi
 
   local backup_file="${LOGIN_FILE}.lightxdm.bak"
-  if [[ -f "$backup_file" && ! -L "$backup_file" ]]; then
+  if [[ -f "$backup_file" && ! -L "$backup_file" ]] ||
+    { pam_path_needs_sudo "$backup_file" 1 && ! sudo test -L "$backup_file" && sudo test -f "$backup_file"; }; then
     local pam_sed=() stale_lines=() stale_line
     while IFS= read -r stale_line; do
       if [[ -n "$stale_line" ]]; then
@@ -1472,10 +1557,11 @@ configure_pam() {
   mapfile -t lines_to_add < <(pam_lines_to_add "$module" "$auth_line" "$session_line" "" 0)
 
   if [[ ${#lines_to_add[@]} -gt 0 ]]; then
-    if [[ -L "$backup_file" ]]; then
+    if [[ -L "$backup_file" ]] || { pam_path_needs_sudo "$backup_file" 1 && sudo test -L "$backup_file"; }; then
       sudo rm -f -- "$backup_file" || return 1
     fi
-    if [[ ! -e "$backup_file" ]]; then
+    if [[ ! -e "$backup_file" ]] &&
+      { ! pam_path_needs_sudo "$backup_file" 1 || ! sudo test -e "$backup_file"; }; then
       log "Backing up $LOGIN_FILE to $backup_file"
       sudo cp -p -- "$LOGIN_FILE" "$backup_file" || return 1
     fi
@@ -1559,6 +1645,12 @@ configure_gnome_session_type() (
       login_src="$login_copy"
       login_readable=1
     fi
+  elif [[ $preview -eq 0 ]] && pam_path_needs_sudo "$LOGIN_FILE" 0 && sudo test -f "$LOGIN_FILE"; then
+    login_copy="$(mktemp)" || return 1
+    # shellcheck disable=SC2024  # the temporary output file belongs to the calling user
+    sudo cat -- "$LOGIN_FILE" > "$login_copy" || return 1
+    login_src="$login_copy"
+    login_readable=1
   fi
   if [[ $login_readable -eq 1 ]] && grep -Fxq -- "$marker" "$login_src"; then
     has_block=1
@@ -1632,9 +1724,16 @@ configure_gnome_session_type() (
     fi
     return 0
   fi
-  if [[ ! -f "$LOGIN_FILE" ]]; then
-    log "ERROR: $LOGIN_FILE is missing; lightXDM will not create it."
-    return 1
+  if [[ $login_readable -eq 0 && ! -f "$LOGIN_FILE" ]]; then
+    local LOGIN_PATH_STATE="" LOGIN_PATH_REASON=""
+    inspect_login_pam_path "$preview"
+    if [[ "$LOGIN_PATH_STATE" == "invalid" ]]; then
+      log "ERROR: $LOGIN_PATH_REASON; lightXDM will not create it."
+      return 1
+    elif [[ "$LOGIN_PATH_STATE" != "ok" ]]; then
+      log "ERROR: $LOGIN_FILE is missing; lightXDM will not create it."
+      return 1
+    fi
   fi
   if block_edited_on_update; then
     log "lightXDM's GNOME session-type block in $LOGIN_FILE has your own edits, so --update leaves it alone."
@@ -3144,11 +3243,9 @@ run_doctor() {
     warnings=$((warnings + 1))
   fi
 
-  local login_content=""
-  if [[ -L "$(dirname -- "$LOGIN_FILE")" || -L "$LOGIN_FILE" ]]; then
-    printf 'PAM login: FAIL (%s or its directory is a symlink; lightXDM ignores symlinks)\n' "$LOGIN_FILE"
-    issues=$((issues + 1))
-  elif login_content="$(read_pam_file "$LOGIN_FILE" 1 2>/dev/null)"; then
+  local login_content="" LOGIN_PATH_STATE="" LOGIN_PATH_REASON=""
+  inspect_login_pam_path 1
+  if [[ "$LOGIN_PATH_STATE" == "ok" ]] && login_content="$(read_pam_file "$LOGIN_FILE" 1 2>/dev/null)"; then
     local missing_gnome missing_kwallet has_gnome_line=0 has_kwallet_line=0
     missing_gnome="$(pam_lines_to_add "pam_gnome_keyring.so" "$PAM_GNOME_KEYRING_AUTH" "$PAM_GNOME_KEYRING_SESSION" "" 1 || true)"
     missing_kwallet="$(pam_lines_to_add "pam_kwallet5.so" "$PAM_KWALLET_AUTH" "$PAM_KWALLET_SESSION" "" 1 || true)"
@@ -3281,7 +3378,10 @@ run_doctor() {
         fi
         ;;
     esac
-  elif [[ ! -e "$LOGIN_FILE" && -x "$(dirname -- "$LOGIN_FILE")" ]]; then
+  elif [[ "$LOGIN_PATH_STATE" == "invalid" ]]; then
+    printf 'PAM login: FAIL (%s — restore pambase or re-run %s %s)\n' "$LOGIN_PATH_REASON" "$install_cmd" "$(pam_restore_hint "$de" "$pam_expected")"
+    issues=$((issues + 1))
+  elif [[ "$LOGIN_PATH_STATE" == "missing" ]]; then
     printf 'PAM login: FAIL (%s is missing — restore pambase or re-run %s %s)\n' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" "$pam_expected")"
     issues=$((issues + 1))
   else
@@ -3532,10 +3632,6 @@ inspect_fix_pam_state() {
     log "ERROR: $PAM_KEYRING_STATE or its directory is a symlink; lightXDM ignores symlinks."
     return 1
   fi
-  if [[ -L "$(dirname -- "$LOGIN_FILE")" || -L "$LOGIN_FILE" ]]; then
-    log "ERROR: $LOGIN_FILE or its directory is a symlink; lightXDM ignores symlinks."
-    return 1
-  fi
   if [[ -L "$(dirname -- "$GNOME_SESSION_TYPE_DEST")" || -L "$GNOME_SESSION_TYPE_DEST" ]]; then
     log "ERROR: $GNOME_SESSION_TYPE_DEST or its directory is a symlink; lightXDM ignores symlinks."
     return 1
@@ -3558,8 +3654,9 @@ inspect_fix_pam_state() {
     FIX_NEED_PAM_PROBE=1
   fi
 
-  local login_content=""
-  if login_content="$(read_pam_file "$LOGIN_FILE" "$probe_preview" 2>/dev/null)"; then
+  local login_content="" LOGIN_PATH_STATE="" LOGIN_PATH_REASON=""
+  inspect_login_pam_path "$probe_preview"
+  if [[ "$LOGIN_PATH_STATE" == "ok" ]] && login_content="$(read_pam_file "$LOGIN_FILE" "$probe_preview" 2>/dev/null)"; then
     local missing_gnome="" missing_kwallet="" has_gnome_line=0 has_kwallet_line=0
     missing_gnome="$(pam_lines_to_add "pam_gnome_keyring.so" "$PAM_GNOME_KEYRING_AUTH" "$PAM_GNOME_KEYRING_SESSION" "" "$probe_preview" || true)"
     missing_kwallet="$(pam_lines_to_add "pam_kwallet5.so" "$PAM_KWALLET_AUTH" "$PAM_KWALLET_SESSION" "" "$probe_preview" || true)"
@@ -3637,9 +3734,12 @@ inspect_fix_pam_state() {
         fi
         ;;
     esac
-  elif [[ $probe_preview -eq 1 ]] && pam_path_needs_sudo "$LOGIN_FILE" 0; then
+  elif [[ "$LOGIN_PATH_STATE" == "needs-root" ]]; then
     FIX_NEED_PAM_PROBE=1
-  elif [[ ! -e "$LOGIN_FILE" && -x "$(dirname -- "$LOGIN_FILE")" ]]; then
+  elif [[ "$LOGIN_PATH_STATE" == "invalid" ]]; then
+    log "ERROR: $LOGIN_PATH_REASON; lightXDM requires a valid regular file."
+    return 1
+  elif [[ "$LOGIN_PATH_STATE" == "missing" ]]; then
     log "ERROR: $LOGIN_FILE is missing; lightXDM will not create it. Reinstall pambase or restore ${LOGIN_FILE}.lightxdm.bak."
     return 1
   fi

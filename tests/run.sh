@@ -14096,6 +14096,77 @@ EOF
   fi
 fi
 
+# Valid regular-file LOGIN_FILE symlinks and searchable symlinked /etc/pam.d dirs pass; broken/non-regular symlinks fail
+reset_doctor_gnome_fixture
+mv "$doctor_etc/pam.d/login" "$doctor_etc/real_login"
+ln -s "$doctor_etc/real_login" "$doctor_etc/pam.d/login"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"Doctor: PASS" || "$doc_out" == *"warning(s)"* || "$doc_out" == *"WARN"* ||
+  "$doc_out" != *"PAM keyring: ok ($doctor_etc/pam.d/login)"* ||
+  "$doc_out" != *"PAM GNOME session type: ok ($doctor_etc/lightxdm/gnome-session-type.conf)"* ]]; then
+  doctor_ok=0
+  doctor_report+=" sym-login-regular rc=$doc_rc out=[$doc_out];"
+fi
+
+reset_doctor_gnome_fixture
+mv "$doctor_etc/pam.d" "$doctor_etc/real_pamd"
+ln -s "$doctor_etc/real_pamd" "$doctor_etc/pam.d"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"Doctor: PASS" || "$doc_out" == *"warning(s)"* || "$doc_out" == *"WARN"* ||
+  "$doc_out" != *"PAM keyring: ok ($doctor_etc/pam.d/login)"* ]]; then
+  doctor_ok=0
+  doctor_report+=" sym-pamd-dir rc=$doc_rc out=[$doc_out];"
+fi
+
+if [[ $EUID -ne 0 ]]; then
+  reset_doctor_gnome_fixture
+  mkdir -p "$doctor_etc/priv_pamd"
+  mv "$doctor_etc/pam.d/login" "$doctor_etc/priv_pamd/login"
+  ln -s "$doctor_etc/priv_pamd/login" "$doctor_etc/pam.d/login"
+  chmod 000 "$doctor_etc/priv_pamd"
+  doc_rc=0
+  doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+  chmod 755 "$doctor_etc/priv_pamd"
+  if [[ $doc_rc -ne 0 || "$doc_out" != *"PAM login: WARN ($doctor_etc/pam.d/login: unknown (needs root)"* ||
+    "$doc_out" == *"ignores symlinks"* || "$doc_out" == *"Permission denied"* ]]; then
+    doctor_ok=0
+    doctor_report+=" sym-login-priv-dir rc=$doc_rc out=[$doc_out];"
+  fi
+fi
+
+reset_doctor_gnome_fixture
+rm -f "$doctor_etc/pam.d/login"
+ln -s "$doctor_etc/missing_login_target" "$doctor_etc/pam.d/login"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"PAM login: FAIL"* || "$doc_out" != *"broken symlink"* ]]; then
+  doctor_ok=0
+  doctor_report+=" sym-login-broken rc=$doc_rc out=[$doc_out];"
+fi
+
+reset_doctor_gnome_fixture
+rm -f "$doctor_etc/pam.d/login"
+mkdir -p "$doctor_etc/login_is_dir"
+ln -s "$doctor_etc/login_is_dir" "$doctor_etc/pam.d/login"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"PAM login: FAIL"* || "$doc_out" != *"not a regular file"* ]]; then
+  doctor_ok=0
+  doctor_report+=" sym-login-dir-target rc=$doc_rc out=[$doc_out];"
+fi
+
+reset_doctor_gnome_fixture
+rm -rf "$doctor_etc/pam.d"
+ln -s "$doctor_etc/missing_pamd_dir" "$doctor_etc/pam.d"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"PAM login: FAIL"* || "$doc_out" != *"broken symlink"* ]]; then
+  doctor_ok=0
+  doctor_report+=" sym-pamd-broken rc=$doc_rc out=[$doc_out];"
+fi
+
 # Combining --doctor with other options exits 1
 for combo in "--doctor --dry-run" "--status --doctor" "--doctor --preflight"; do
   doc_rc=0
@@ -15876,6 +15947,120 @@ if [[ $fx_rc -ne 0 || "$fx_out" != *"Doctor: PASS"* ||
   ! grep -Fq 'pam_gnome_keyring.so' "$fix_etc/pam.d/login"; then
   fix_ok=0
   fix_report+=" xfce-mismatch-live rc=$fx_rc out=[$fx_out];"
+fi
+
+# 7. Valid regular-file LOGIN_FILE symlinks and searchable symlinked /etc/pam.d dirs work in --fix --dry-run and live --fix; broken/non-regular symlinks fail cleanly
+reset_fix_fixture gnome
+printf '#%%PAM-1.0\nauth include system-local-login\nsession include system-local-login\n' >"$fix_etc/real_login"
+rm -f "$fix_etc/pam.d/login"
+ln -s "$fix_etc/real_login" "$fix_etc/pam.d/login"
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || -s "$fix_sudo_log" || "$fx_out" != *"Fix plan for de=gnome"* ||
+  "$fx_out" != *"pam_gnome_keyring.so"* || "$fx_out" == *"ignores symlinks"* ]]; then
+  fix_ok=0
+  fix_report+=" sym-login-dry rc=$fx_rc out=[$fx_out];"
+fi
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --non-interactive 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || ! -L "$fix_etc/pam.d/login" || "$fx_out" != *"Doctor: PASS"* ]] ||
+  ! grep -Fq 'pam_gnome_keyring.so' "$fix_etc/real_login" ||
+  ! grep -Fq '# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)' "$fix_etc/real_login"; then
+  fix_ok=0
+  fix_report+=" sym-login-live rc=$fx_rc out=[$fx_out];"
+fi
+
+reset_fix_fixture i3
+mv "$fix_etc/pam.d" "$fix_etc/real_pamd"
+ln -s "$fix_etc/real_pamd" "$fix_etc/pam.d"
+printf '#%%PAM-1.0\nauth include system-local-login\nsession include system-local-login\n' >"$fix_etc/real_pamd/login"
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --non-interactive 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || ! -L "$fix_etc/pam.d" || "$fx_out" != *"Doctor: PASS"* ]] ||
+  ! grep -Fq 'pam_gnome_keyring.so' "$fix_etc/real_pamd/login"; then
+  fix_ok=0
+  fix_report+=" sym-pamd-live rc=$fx_rc out=[$fx_out];"
+fi
+
+if [[ $EUID -ne 0 ]]; then
+  reset_fix_fixture i3
+  mkdir -p "$fix_etc/priv_pamd"
+  printf '#%%PAM-1.0\nauth include system-local-login\nsession include system-local-login\n' >"$fix_etc/priv_pamd/login"
+  rm -f "$fix_etc/pam.d/login"
+  ln -s "$fix_etc/priv_pamd/login" "$fix_etc/pam.d/login"
+  chmod 000 "$fix_etc/priv_pamd"
+  fx_rc=0
+  fx_out="$(run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+  chmod 755 "$fix_etc/priv_pamd"
+  if [[ $fx_rc -ne 0 || -s "$fix_sudo_log" || "$fx_out" != *"PAM probe: unknown (needs root"* ||
+    "$fx_out" == *"is missing"* || "$fx_out" == *"Permission denied"* ]]; then
+    fix_ok=0
+    fix_report+=" sym-priv-dir-dry rc=$fx_rc out=[$fx_out];"
+  fi
+
+  fix_sym_priv_bin="$fix_dir/sym_priv_bin"
+  rm -rf "$fix_sym_priv_bin"
+  mkdir -p "$fix_sym_priv_bin"
+  cat >"$fix_sym_priv_bin/sudo" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$fix_sudo_log"
+if [[ "\${1:-}" == "-n" ]]; then
+  shift
+fi
+if [[ "\${1:-}" == "-v" ]]; then
+  exit 0
+fi
+chmod 755 "$fix_etc/priv_pamd"
+"\$@"
+rc=\$?
+chmod 000 "$fix_etc/priv_pamd"
+exit "\$rc"
+EOF
+  chmod +x "$fix_sym_priv_bin/sudo"
+  : >"$fix_sudo_log"
+  chmod 000 "$fix_etc/priv_pamd"
+  fx_rc=0
+  fx_out="$(FIX_PATH_PREFIX="$fix_sym_priv_bin" run_fix_cmd --fix --non-interactive 2>&1)" || fx_rc=$?
+  chmod 755 "$fix_etc/priv_pamd"
+  rm -rf "$fix_sym_priv_bin"
+  if [[ $fx_rc -ne 0 || "$fx_out" != *"Doctor: PASS"* ]] ||
+    ! grep -Fq 'pam_gnome_keyring.so' "$fix_etc/priv_pamd/login"; then
+    fix_ok=0
+    fix_report+=" sym-priv-dir-live rc=$fx_rc out=[$fx_out];"
+  fi
+fi
+
+reset_fix_fixture i3
+rm -f "$fix_etc/pam.d/login"
+ln -s "$fix_etc/missing_login_target" "$fix_etc/pam.d/login"
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+if [[ $fx_rc -eq 0 || -s "$fix_sudo_log" || "$fx_out" != *"broken symlink"* ]]; then
+  fix_ok=0
+  fix_report+=" sym-broken-dry rc=$fx_rc out=[$fx_out];"
+fi
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --non-interactive 2>&1)" || fx_rc=$?
+if [[ $fx_rc -eq 0 || "$fx_out" != *"broken symlink"* ]]; then
+  fix_ok=0
+  fix_report+=" sym-broken-live rc=$fx_rc out=[$fx_out];"
+fi
+
+reset_fix_fixture i3
+rm -f "$fix_etc/pam.d/login"
+mkdir -p "$fix_etc/login_dir_target"
+ln -s "$fix_etc/login_dir_target" "$fix_etc/pam.d/login"
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+if [[ $fx_rc -eq 0 || -s "$fix_sudo_log" || "$fx_out" != *"not a regular file"* ]]; then
+  fix_ok=0
+  fix_report+=" sym-dir-target-dry rc=$fx_rc out=[$fx_out];"
+fi
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --non-interactive 2>&1)" || fx_rc=$?
+if [[ $fx_rc -eq 0 || "$fx_out" != *"not a regular file"* ]]; then
+  fix_ok=0
+  fix_report+=" sym-dir-target-live rc=$fx_rc out=[$fx_out];"
 fi
 
 if [[ $fix_ok -eq 1 ]]; then
