@@ -3802,8 +3802,10 @@ status_bash=$?
 set -e
 
 if [[ $status_zsh -eq 0 && "$out_zsh" == *"WARNING:"* && "$out_zsh" == *'~/.zprofile'* &&
+  "$out_zsh" == *"--shell-snippet zsh"* &&
   "$out_zsh" != *"will auto-start on TTY1"* && "$out_zsh" != *"No need to run 'startx'"* &&
   $status_fish -eq 0 && "$out_fish" == *"WARNING:"* && "$out_fish" == *'~/.config/fish/config.fish'* &&
+  "$out_fish" == *"--shell-snippet fish"* &&
   "$out_fish" != *"will auto-start on TTY1"* && "$out_fish" != *"No need to run 'startx'"* &&
   $status_bash -eq 0 && "$out_bash" != *"WARNING:"* &&
   "$out_bash" == *"- i3 will auto-start on TTY1 for testuser"* && "$out_bash" == *"No need to run 'startx'."* ]]; then
@@ -13051,6 +13053,49 @@ if [[ -z "$js_report" ]]; then
   pass "install.sh --status --json emits valid structured JSON without sudo or side effects"
 else
   fail "install.sh --status --json:$js_report"
+fi
+
+# --- install.sh --shell-snippet ---
+snippet_test_dir="$TMP_DIR/shell_snippet_test"
+snippet_home="$snippet_test_dir/home"
+snippet_bin="$snippet_test_dir/bin"
+mkdir -p "$snippet_home" "$snippet_bin"
+snippet_err="$snippet_test_dir/err"
+
+snippet_mismatch=0
+for sh_name in zsh fish; do
+  awk -v fence="\`\`\`$sh_name" '$0 == fence { in_snippet = 1; next } in_snippet && $0 == "```" { exit } in_snippet { print }' \
+    "$REPO_ROOT/docs/startx-autologin.md" >"$snippet_test_dir/doc_$sh_name"
+  sh_out="$snippet_test_dir/cli_$sh_name"
+  sh_rc=0
+  HOME="$snippet_home" PATH="$snippet_bin:/usr/bin:/bin" bash "$REPO_ROOT/install.sh" --shell-snippet "$sh_name" >"$sh_out" 2>"$snippet_err" || sh_rc=$?
+  if [[ $sh_rc -ne 0 ]] || [[ -s "$snippet_err" ]] || ! cmp -s "$sh_out" "$snippet_test_dir/doc_$sh_name"; then
+    snippet_mismatch=1
+    fail "install.sh --shell-snippet $sh_name mismatch (rc=$sh_rc, err=$(<"$snippet_err"))"
+  fi
+done
+if [[ -n "$(ls -A "$snippet_home")" ]]; then
+  fail "install.sh --shell-snippet wrote files to HOME"
+elif [[ $snippet_mismatch -eq 0 ]]; then
+  pass "install.sh --shell-snippet zsh/fish matches docs/startx-autologin.md cleanly without sudo or side effects"
+fi
+
+snippet_bad_ok=1
+for bad_args in \
+  "--shell-snippet" \
+  "--shell-snippet bash" \
+  "--shell-snippet --status" \
+  "--shell-snippet zsh --dry-run" \
+  "--status --shell-snippet zsh" \
+  "--list-sessions --shell-snippet fish"; do
+  # shellcheck disable=SC2086 # intentional word splitting over literal flag combinations
+  if HOME="$snippet_home" PATH="$snippet_bin:/usr/bin:/bin" bash "$REPO_ROOT/install.sh" $bad_args >/dev/null 2>&1; then
+    fail "install.sh $bad_args unexpectedly succeeded"
+    snippet_bad_ok=0
+  fi
+done
+if [[ $snippet_bad_ok -eq 1 ]]; then
+  pass "install.sh --shell-snippet rejects missing, unsupported, and combined options"
 fi
 
 finish_harness

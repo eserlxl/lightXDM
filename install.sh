@@ -2469,6 +2469,40 @@ show_install_status() {
   fi
 }
 
+# Emit the canonical non-bash TTY1 auto-start block cleanly on stdout
+print_shell_snippet() {
+  case "$1" in
+    zsh)
+      cat <<'EOF'
+if [[ -o interactive && -z $DISPLAY && -z $WAYLAND_DISPLAY && $(tty) == /dev/tty1 && ! -e ~/.config/lightxdm/no-autostart ]]; then
+  export PATH="$HOME/.local/bin:$PATH"
+  if [[ -f ~/.wayland-session && -x ~/.wayland-session ]]; then
+    exec ~/.wayland-session
+  elif command -v startx >/dev/null 2>&1; then
+    exec startx
+  fi
+fi
+EOF
+      ;;
+    fish)
+      cat <<'EOF'
+if status is-login; and status is-interactive; and test -z "$DISPLAY"; and test -z "$WAYLAND_DISPLAY"; and test (tty) = /dev/tty1; and not test -e ~/.config/lightxdm/no-autostart
+  set -gx PATH $HOME/.local/bin $PATH
+  if test -f ~/.wayland-session; and test -x ~/.wayland-session
+    exec ~/.wayland-session
+  else if command -q startx
+    exec startx
+  end
+end
+EOF
+      ;;
+    *)
+      log "Invalid shell for --shell-snippet: $1 (valid shells: zsh fish)"
+      return 1
+      ;;
+  esac
+}
+
 # --- Main ---
 
 main() {
@@ -2490,11 +2524,12 @@ main() {
   local status_only=0
   local json_output=0
   local list_sessions=0
+  local shell_snippet=""
   local init_template=0
   local wayland=0
   local from_session=""
   local pam_only=0
-  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
+  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions] [--shell-snippet <zsh|fish>] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -2542,6 +2577,8 @@ Options:
   --json            with --status, print the read-only status summary as structured JSON on stdout
   --list-sessions   scan installed X11 and Wayland session entries, check executables, and suggest
                     --init-template --from-session commands without sudo or changes (use alone)
+  --shell-snippet <zsh|fish> print the non-bash TTY1 auto-start block for ~/.zprofile or ~/.config/fish/config.fish
+                    without sudo or changes (use alone)
 
 uninstall.sh reverts these changes; installed packages stay.
 EOF
@@ -2554,6 +2591,21 @@ EOF
       --list-sessions)
         list_sessions=1
         shift
+        ;;
+      --shell-snippet)
+        if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then
+          log "Missing argument for --shell-snippet (valid shells: zsh fish)"
+          echo "$usage" >&2
+          exit 1
+        fi
+        case "$2" in
+          zsh | fish) shell_snippet="$2" ;;
+          *)
+            log "Invalid shell for --shell-snippet: $2 (valid shells: zsh fish)"
+            exit 1
+            ;;
+        esac
+        shift 2
         ;;
       --dry-run)
         dry_run=1
@@ -2667,10 +2719,11 @@ EOF
   fi
 
   if [[ $status_only -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || $dry_run -eq 1 ||
-      $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
-      -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 ||
-      $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" ||
+      $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
+      -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
+      $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" ||
+      $pam_only -eq 1 ]]; then
       log "--status cannot be combined with any other option."
       echo "$usage" >&2
       exit 1
@@ -2684,11 +2737,11 @@ EOF
   fi
 
   if [[ $list_sessions -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 ||
-      $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
-      $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $status_only -eq 1 ||
-      $json_output -eq 1 || $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" ||
-      $pam_only -eq 1 ]]; then
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || -n "$shell_snippet" || $dry_run -eq 1 ||
+      $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
+      -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 ||
+      $status_only -eq 1 || $json_output -eq 1 || $init_template -eq 1 || $wayland -eq 1 ||
+      -n "$from_session" || $pam_only -eq 1 ]]; then
       log "--list-sessions cannot be combined with any other option."
       echo "$usage" >&2
       exit 1
@@ -2697,11 +2750,21 @@ EOF
     return 0
   fi
 
+  if [[ -n "$shell_snippet" ]]; then
+    if [[ $argument_count -ne 2 ]]; then
+      log "--shell-snippet cannot be combined with any other option."
+      echo "$usage" >&2
+      exit 1
+    fi
+    print_shell_snippet "$shell_snippet"
+    return 0
+  fi
+
   if [[ $update -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || $no_packages -eq 1 ||
-      $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 ||
-      $autologin -eq 1 || $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" ||
-      $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" ||
+      $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
+      $no_polkit_rule -eq 1 || $autologin -eq 1 || $init_template -eq 1 || $wayland -eq 1 ||
+      -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
       log "--update reuses the saved choices and takes only --dry-run and --non-interactive; to change a choice, run $(script_cmd install.sh) with its options."
       exit 1
     fi
@@ -3024,21 +3087,24 @@ EOF
   install_step="copy_dotfiles"
   copy_dotfiles "$de"
   completed_steps+=("$install_step")
-  local login_shell shell_profile=""
+  local login_shell shell_profile="" shell_hint="docs/startx-autologin.md"
   login_shell="$(getent passwd "$real_user" | cut -d: -f7 || true)"
   if [[ -n "$login_shell" && "$login_shell" != *bash ]]; then
     case "$login_shell" in
       *zsh)
         shell_profile=".zprofile"
+        shell_hint="run '$(script_cmd install.sh) --shell-snippet zsh' or see docs/startx-autologin.md"
         ;;
       *fish)
         shell_profile=".config/fish/config.fish"
+        shell_hint="run '$(script_cmd install.sh) --shell-snippet fish' or see docs/startx-autologin.md"
         ;;
       *)
         shell_profile=".profile"
+        shell_hint="see docs/startx-autologin.md"
         ;;
     esac
-    log "WARNING: Login shell for $real_user is $login_shell, which does not read ~/.bash_profile. Add the TTY1 auto-start block to ~/$shell_profile (zsh and fish snippets: docs/startx-autologin.md)."
+    log "WARNING: Login shell for $real_user is $login_shell, which does not read ~/.bash_profile. Add the TTY1 auto-start block to ~/$shell_profile ($shell_hint)."
   fi
   if [[ $no_keyring -eq 1 ]]; then
     log "Skipping keyring PAM configuration (--no-keyring)."
@@ -3112,7 +3178,7 @@ EOF
 lightXDM install complete!
 - $de is configured in ~/$session_dotfile for $real_user (auto-start requires ~/$shell_profile)
 - $unlock_summary
-- Add the TTY1 auto-start block to ~/$shell_profile (see docs/startx-autologin.md), then $test_summary_after_then
+- Add the TTY1 auto-start block to ~/$shell_profile ($shell_hint), then $test_summary_after_then
 
 Your login shell ($login_shell) does not read ~/.bash_profile, so $de will not auto-start on TTY1 until you add the auto-start block to ~/$shell_profile (or run '$manual_start' manually).
 EOF
