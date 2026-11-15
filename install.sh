@@ -5851,7 +5851,10 @@ EOF
         shell_hook_configured=1
       elif ! shell_hook_relpath "$main_hook_kind" 0 >/dev/null; then
         main_env_outside=1
-        shell_profile="$(shell_hook_display_path "$main_hook_kind")"
+        case "$main_hook_kind" in
+          zsh) shell_profile="\$ZDOTDIR/.zprofile" ;;
+          fish) shell_profile="\$XDG_CONFIG_HOME/fish/config.fish" ;;
+        esac
         shell_hint="configured shell directory is outside \$HOME; move it inside \$HOME or add the TTY1 snippet manually with '$(script_cmd install.sh) --shell-snippet $main_hook_kind'"
       elif shell_has_tty1_hook "$main_hook_kind"; then
         shell_hook_configured=1
@@ -5942,11 +5945,11 @@ EOF
     cat <<EOF
 
 lightXDM install complete!
-- $de is configured in ~/$session_dotfile for $real_user (auto-start requires ~/$shell_profile)
+- $de is configured in ~/$session_dotfile for $real_user (auto-start requires $shell_profile)
 - $unlock_summary
-- Add the TTY1 auto-start block to ~/$shell_profile ($shell_hint), then $test_summary_after_then
+- Add the TTY1 auto-start block to $shell_profile ($shell_hint), then $test_summary_after_then
 
-Your login shell ($login_shell) does not read ~/.bash_profile, so $de will not auto-start on TTY1 until you add the auto-start block to ~/$shell_profile (or run '$manual_start' manually).
+Your login shell ($login_shell) does not read ~/.bash_profile, so $de will not auto-start on TTY1 until you add the auto-start block to $shell_profile (or run '$manual_start' manually).
 EOF
   fi
 

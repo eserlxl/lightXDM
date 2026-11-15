@@ -3982,9 +3982,17 @@ status_bash=$?
 set -e
 
 if [[ $status_zsh -eq 0 && "$out_zsh" == *"WARNING:"* && "$out_zsh" == *'~/.zprofile'* &&
+  "$out_zsh" != *'~/~/'* &&
+  "$out_zsh" == *'auto-start requires ~/.zprofile)'* &&
+  "$out_zsh" == *'Add the TTY1 auto-start block to ~/.zprofile ('* &&
+  "$out_zsh" == *'add the auto-start block to ~/.zprofile ('* &&
   "$out_zsh" == *"--shell-snippet zsh"* &&
   "$out_zsh" != *"will auto-start on TTY1"* && "$out_zsh" != *"No need to run 'startx'"* &&
   $status_fish -eq 0 && "$out_fish" == *"WARNING:"* && "$out_fish" == *'~/.config/fish/config.fish'* &&
+  "$out_fish" != *'~/~/'* &&
+  "$out_fish" == *'auto-start requires ~/.config/fish/config.fish)'* &&
+  "$out_fish" == *'Add the TTY1 auto-start block to ~/.config/fish/config.fish ('* &&
+  "$out_fish" == *'add the auto-start block to ~/.config/fish/config.fish ('* &&
   "$out_fish" == *"--shell-snippet fish"* &&
   "$out_fish" != *"will auto-start on TTY1"* && "$out_fish" != *"No need to run 'startx'"* &&
   $status_bash -eq 0 && "$out_bash" != *"WARNING:"* &&
@@ -3992,6 +4000,49 @@ if [[ $status_zsh -eq 0 && "$out_zsh" == *"WARNING:"* && "$out_zsh" == *'~/.zpro
   pass "main warns for non-bash login shells (zsh, fish) and keeps bash closing message unchanged"
 else
   fail "main login shell check (zsh=$status_zsh:$out_zsh | fish=$status_fish:$out_fish | bash=$status_bash:$out_bash)"
+fi
+
+sh_stub_dir="$TMP_DIR/getent_sh"
+mkdir -p "$sh_stub_dir" "$TMP_DIR/nonbash_zsh_in" "$TMP_DIR/nonbash_zsh_out" "$TMP_DIR/nonbash_fish_out" "$TMP_DIR/nonbash_sh"
+cat >"$sh_stub_dir/getent" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "passwd" && "${2:-}" == "testuser" ]]; then
+  echo "testuser:x:1000:1000::/home/testuser:/bin/sh"
+  exit 0
+fi
+exit 2
+EOF
+chmod +x "$sh_stub_dir/getent"
+
+set +e
+out_zsh_in="$(HOME="$TMP_DIR/nonbash_zsh_in" ZDOTDIR="$TMP_DIR/nonbash_zsh_in/.config/zsh" USER=testuser run_main_with_stubs "$zsh_stub_dir:$sudo_pw_dir" --no-packages --de i3 2>&1)"
+status_zsh_in=$?
+out_zsh_out="$(HOME="$TMP_DIR/nonbash_zsh_out" ZDOTDIR="$TMP_DIR/outside_zsh" USER=testuser run_main_with_stubs "$zsh_stub_dir:$sudo_pw_dir" --no-packages --de i3 2>&1)"
+status_zsh_out=$?
+out_fish_out="$(HOME="$TMP_DIR/nonbash_fish_out" XDG_CONFIG_HOME="$TMP_DIR/outside_cfg" USER=testuser run_main_with_stubs "$fish_stub_dir:$sudo_pw_dir" --no-packages --de i3 2>&1)"
+status_fish_out=$?
+out_sh_other="$(HOME="$TMP_DIR/nonbash_sh" USER=testuser run_main_with_stubs "$sh_stub_dir:$sudo_pw_dir" --no-packages --de i3 2>&1)"
+status_sh_other=$?
+set -e
+
+if [[ $status_zsh_in -eq 0 && "$out_zsh_in" != *'~/~/'* &&
+  "$out_zsh_in" == *'auto-start requires ~/.config/zsh/.zprofile)'* &&
+  "$out_zsh_in" == *'Add the TTY1 auto-start block to ~/.config/zsh/.zprofile ('* &&
+  $status_zsh_out -eq 0 && "$out_zsh_out" != *'~/~/'* &&
+  "$out_zsh_out" == *"outside \$HOME"* &&
+  "$out_zsh_out" == *"auto-start requires \$ZDOTDIR/.zprofile)"* &&
+  "$out_zsh_out" == *"Add the TTY1 auto-start block to \$ZDOTDIR/.zprofile ("* &&
+  "$out_zsh_out" != *'~/.zprofile'* &&
+  $status_fish_out -eq 0 && "$out_fish_out" != *'~/~/'* &&
+  "$out_fish_out" == *"outside \$HOME"* &&
+  "$out_fish_out" == *"auto-start requires \$XDG_CONFIG_HOME/fish/config.fish)"* &&
+  "$out_fish_out" == *"Add the TTY1 auto-start block to \$XDG_CONFIG_HOME/fish/config.fish ("* &&
+  "$out_fish_out" != *'~/.config/fish/config.fish'* &&
+  $status_sh_other -eq 0 && "$out_sh_other" != *'~/~/'* &&
+  "$out_sh_other" == *'Add the TTY1 auto-start block to ~/.profile (see docs/startx-autologin.md)'* ]]; then
+  pass "main non-bash missing-hook summary renders custom in-home, out-of-home, and ~/.profile paths without ~/~/ duplication"
+else
+  fail "main non-bash summary env paths (zsh_in=$status_zsh_in:$out_zsh_in | zsh_out=$status_zsh_out:$out_zsh_out | fish_out=$status_fish_out:$out_fish_out | sh=$status_sh_other:$out_sh_other)"
 fi
 
 zsh_hook_home="$TMP_DIR/zsh_hook_home"
