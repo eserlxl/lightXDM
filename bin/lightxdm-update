@@ -2,4 +2,27 @@
 # SPDX-FileCopyrightText: 2025-2026 Eser KUBALI
 # SPDX-License-Identifier: GPL-3.0-or-later
 # lightxdm-update: rerun the last lightXDM install with its saved choices (install.sh --update)
+for arg in "$@"; do
+  case "$arg" in
+    -h | --help)
+      cat <<'EOF'
+Usage: lightxdm-update [-h|--help] [--dry-run] [--non-interactive]
+
+Rerun the last lightXDM install with its saved choices (install.sh --update), changing only what
+lightXDM installed and you left as it was: edited dotfiles stay (the new template goes beside
+them as *.lightxdm-new), removed packages stay removed, display managers you enabled stay
+enabled, and PAM lines you removed stay removed (ones a .pacnew merge removed come back);
+autologin stays as it is.
+
+Options:
+  --dry-run          preview what --update would change without sudo or file changes
+  --non-interactive  fail instead of prompting for sudo credentials
+  -h, --help         show this help
+EOF
+      exit 0
+      ;;
+    --dry-run | --non-interactive | --update) ;;
+    *) break ;;
+  esac
+done
 exec bash "${LIGHTXDM_DIR:-/usr/share/lightxdm}/install.sh" --update "$@"
