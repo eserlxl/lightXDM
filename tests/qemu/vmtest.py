@@ -21,13 +21,8 @@ import socket
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
-DESKTOP, REPO, VM_DIR, PORT = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
-spec, _, MODE = DESKTOP.partition("+")
-FROM, TARGET = spec.split(":") if ":" in spec else (None, spec)
-RUN = os.path.join(VM_DIR, f"run-{DESKTOP.replace(':', '-').replace('+', '-')}")
-RESULT = os.path.join(RUN, "result")
-QMP_SOCK = os.path.join(RUN, "qmp.sock")
 USER, PASSWORD = "tester", "lightxdm-test"  # throwaway account inside the disposable VM
 
 # desktop -> (session type, processes that must run, keyring checked over D-Bus)
@@ -43,14 +38,106 @@ DESKTOPS = {
     "cinnamon": ("x11", ["cinnamon"], "gnome"),
     "i3": ("x11", ["i3"], "gnome"),
 }
-SESSION_TYPE, PROCS, KEYRING = DESKTOPS[TARGET]
+VALID_MODES = ("", "autologin", "lightdm", "relogin", "recovery", "package")
 # Keys a user presses once on the first login: LXQt asks for a default window manager before it
 # runs its autostart entries (the polkit agent among them); Enter accepts the highlighted one.
 FIRST_LOGIN_KEYS = {"lxqt": "\n"}
-# The package lane runs the installed lightxdm-* commands; every other lane the copied tree.
-INSTALLER = "lightxdm-install" if MODE == "package" else f"bash /home/{USER}/lightXDM/install.sh"
-PACKAGE = os.path.join(VM_DIR, "lightxdm.pkg.tar.zst")
+
+DESKTOP = None
+REPO = None
+VM_DIR = None
+PORT = None
+FROM = None
+TARGET = None
+MODE = None
+RUN = None
+RESULT = None
+QMP_SOCK = None
+KNOWN_HOSTS = None
+SESSION_TYPE = None
+PROCS = None
+KEYRING = None
+INSTALLER = None
+PACKAGE = None
 results = []
+
+
+def parse_spec(desktop):
+    if not isinstance(desktop, str) or not desktop:
+        raise ValueError(f"Invalid desktop spec: {desktop!r}")
+    spec, sep, mode = desktop.partition("+")
+    if sep == "+" and mode == "":
+        raise ValueError(f"Invalid desktop spec (empty mode after '+'): {desktop!r}")
+    if mode not in VALID_MODES:
+        raise ValueError(f"Unknown mode {mode!r} in desktop spec {desktop!r}")
+    if ":" in spec:
+        parts = spec.split(":")
+        if len(parts) != 2:
+            raise ValueError(f"Invalid upgrade spec (expected <from>:<to>): {desktop!r}")
+        from_de, target = parts
+        if from_de not in DESKTOPS:
+            raise ValueError(f"Unknown source desktop {from_de!r} in spec {desktop!r}")
+    else:
+        from_de, target = None, spec
+    if target not in DESKTOPS:
+        raise ValueError(f"Unknown target desktop {target!r} in spec {desktop!r}")
+    return from_de, target, mode
+
+
+def parse_args(argv=None):
+    args = sys.argv[1:] if argv is None else list(argv)
+    if len(args) != 4:
+        raise ValueError(f"Expected 4 arguments (<spec> <repo> <vm-dir> <ssh-port>), got {len(args)}")
+    desktop, repo, vm_dir, raw_port = args
+    from_de, target, mode = parse_spec(desktop)
+    if not isinstance(repo, str) or not repo:
+        raise ValueError(f"Invalid repo path: {repo!r}")
+    if not isinstance(vm_dir, str) or not vm_dir:
+        raise ValueError(f"Invalid vm-dir path: {vm_dir!r}")
+    if isinstance(raw_port, bool) or not isinstance(raw_port, (int, str)):
+        raise ValueError(f"Invalid SSH port: {raw_port!r}")
+    if isinstance(raw_port, str):
+        port_text = raw_port.strip()
+        if not port_text.isdigit():
+            raise ValueError(f"Invalid SSH port: {raw_port!r}")
+        port = int(port_text)
+    else:
+        port = raw_port
+    if not (1 <= port <= 65535):
+        raise ValueError(f"SSH port out of range (1-65535): {port}")
+    return SimpleNamespace(
+        desktop=desktop,
+        repo=repo,
+        vm_dir=vm_dir,
+        port=port,
+        from_de=from_de,
+        target=target,
+        mode=mode,
+    )
+
+
+def configure(args):
+    global DESKTOP, REPO, VM_DIR, PORT, FROM, TARGET, MODE
+    global RUN, RESULT, QMP_SOCK, KNOWN_HOSTS
+    global SESSION_TYPE, PROCS, KEYRING, INSTALLER, PACKAGE, results
+
+    from_de, target, mode = parse_spec(args.desktop)
+    DESKTOP = args.desktop
+    REPO = args.repo
+    VM_DIR = args.vm_dir
+    PORT = args.port
+    FROM = getattr(args, "from_de", from_de)
+    TARGET = getattr(args, "target", target)
+    MODE = getattr(args, "mode", mode)
+    RUN = os.path.join(VM_DIR, f"run-{DESKTOP.replace(':', '-').replace('+', '-')}")
+    RESULT = os.path.join(RUN, "result")
+    QMP_SOCK = os.path.join(RUN, "qmp.sock")
+    KNOWN_HOSTS = os.path.join(RUN, "known_hosts")
+    SESSION_TYPE, PROCS, KEYRING = DESKTOPS[TARGET]
+    # The package lane runs the installed lightxdm-* commands; every other lane the copied tree.
+    INSTALLER = "lightxdm-install" if MODE == "package" else f"bash /home/{USER}/lightXDM/install.sh"
+    PACKAGE = os.path.join(VM_DIR, "lightxdm.pkg.tar.zst")
+    results = []
 
 
 def log(msg):
@@ -63,9 +150,6 @@ def check(name, ok, detail=""):
     log(results[-1])
     with open(RESULT, "w") as f:
         f.write("\n".join(results) + "\n")
-
-
-KNOWN_HOSTS = os.path.join(RUN, "known_hosts")
 
 
 def pin_host_key():
@@ -438,9 +522,16 @@ def session_checks(tag, qmp):
     qmp.cmd("screendump", filename=os.path.join(RUN, f"{tag}.png"), format="png")
 
 
-def main():
+def main(argv=None):
+    try:
+        args = parse_args(argv)
+    except ValueError as exc:
+        print(f"vmtest.py: {exc}", file=sys.stderr)
+        return 1
+    configure(args)
     os.makedirs(RUN, exist_ok=True)
-    open(RESULT, "w").close()
+    with open(RESULT, "w"):
+        pass
     pin_host_key()
     proc = boot()
     kept = False
@@ -478,7 +569,7 @@ def main():
                 f.write(out + err)
             check(f"install.sh --de {FROM} exits 0", rc == 0, out[-400:])
             if rc != 0:
-                return
+                return 0
         install_args = f"--no-keyring --autologin --de {TARGET}" if MODE in ("autologin", "recovery") else f"--de {TARGET}"
         if MODE == "package":
             install_name, install_cmd = "lightxdm-install", f"lightxdm-install {install_args}"
@@ -489,7 +580,7 @@ def main():
             f.write(out + err)
         check(f"{install_name} {install_args} exits 0", rc == 0, out[-400:])
         if rc != 0:
-            return
+            return 0
         if MODE == "package":
             # The package ships the templates without the executable bit; the installer sets it.
             launcher = ".wayland-session" if SESSION_TYPE == "wayland" else ".xinitrc"
@@ -523,7 +614,7 @@ def main():
             if os.environ.get("LIGHTXDM_VM_KEEP") == "1":
                 kept = True
                 log(f"LIGHTXDM_VM_KEEP=1: VM left running (qemu pid {proc.pid})")
-            return
+            return 0
         login1_ok = reboot_and_login(qmp, "login1")
         if login1_ok:
             session_checks("login1", qmp)
@@ -535,7 +626,7 @@ def main():
         if os.environ.get("LIGHTXDM_VM_KEEP") == "1":
             kept = True
             log(f"LIGHTXDM_VM_KEEP=1: VM left running (qemu pid {proc.pid})")
-            return
+            return 0
         if MODE == "relogin":
             if login1_ok:
                 lock_keyring("relogin")
@@ -695,6 +786,8 @@ def main():
         failed = sum(r.startswith("FAIL") for r in results)
         with open(RESULT, "a") as f:
             f.write(f"DONE pass={passed} fail={failed}" + (" kept" if kept else "") + "\n")
+    return 0
 
 
-main()
+if __name__ == "__main__":
+    sys.exit(main())
