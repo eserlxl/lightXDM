@@ -416,11 +416,229 @@ xinitrc_template() {
   fi
 }
 
+# Parse [Desktop Entry] metadata and validate Exec/DesktopNames rules for --from-session and --list-sessions.
+parse_desktop_session_entry() {
+  local entry="$1" line key value in_desktop=0 exec_seen=0 desktop_seen=0 exec_value=""
+  SESSION_ENTRY_NAME=""
+  SESSION_ENTRY_EXEC_LINE=""
+  SESSION_ENTRY_EXEC_CMD=""
+  SESSION_ENTRY_DESKTOP=""
+  SESSION_ENTRY_TRY_EXEC=""
+  SESSION_ENTRY_HIDDEN=0
+  SESSION_ENTRY_NO_DISPLAY=0
+  SESSION_ENTRY_ERROR=""
+
+  if [[ ! -f "$entry" || ! -r "$entry" ]]; then
+    SESSION_ENTRY_ERROR="Cannot read session entry: $entry"
+    return 1
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    case "$line" in
+      '' | \#*) continue ;;
+      '[Desktop Entry]') in_desktop=1; continue ;;
+      \[*\]) in_desktop=0; continue ;;
+    esac
+    [[ $in_desktop -eq 1 && "$line" == *=* ]] || continue
+    key="${line%%=*}"
+    key="${key%"${key##*[![:space:]]}"}"
+    value="${line#*=}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    case "$key" in
+      Name)
+        [[ -n "$SESSION_ENTRY_NAME" ]] || SESSION_ENTRY_NAME="$value"
+        ;;
+      Hidden)
+        case "$value" in
+          true | 1 | True | TRUE) SESSION_ENTRY_HIDDEN=1 ;;
+        esac
+        ;;
+      NoDisplay)
+        case "$value" in
+          true | 1 | True | TRUE) SESSION_ENTRY_NO_DISPLAY=1 ;;
+        esac
+        ;;
+      TryExec)
+        [[ -n "$SESSION_ENTRY_TRY_EXEC" ]] || SESSION_ENTRY_TRY_EXEC="$value"
+        ;;
+      Exec)
+        if [[ $exec_seen -eq 1 ]]; then
+          [[ -n "$SESSION_ENTRY_ERROR" ]] || SESSION_ENTRY_ERROR="Duplicate Exec in [Desktop Entry]: $entry"
+        else
+          exec_seen=1
+          exec_value="$value"
+        fi
+        ;;
+      DesktopNames)
+        if [[ $desktop_seen -eq 1 || -z "${value%%;*}" ]]; then
+          [[ -n "$SESSION_ENTRY_ERROR" ]] || SESSION_ENTRY_ERROR="Invalid DesktopNames in [Desktop Entry]: $entry"
+        else
+          desktop_seen=1
+          SESSION_ENTRY_DESKTOP="${value%%;*}"
+        fi
+        ;;
+    esac
+  done <"$entry"
+
+  [[ -z "$SESSION_ENTRY_ERROR" ]] || return 1
+
+  # This deliberately supports only literal words and whole double-quoted words.
+  # Never interpret desktop entries as shell code or expand desktop field codes.
+  if [[ $exec_seen -eq 0 || "$exec_value" == *%* || "$exec_value" == *\\* ]]; then
+    SESSION_ENTRY_ERROR="Missing or unsupported Exec in [Desktop Entry] (field codes and backslash escapes are refused): $entry"
+    return 1
+  fi
+  local remaining="$exec_value" word quoted_word='^"([^"]*)"([[:space:]]|$)'
+  local exec_args=()
+  while :; do
+    remaining="${remaining#"${remaining%%[![:space:]]*}"}"
+    [[ -n "$remaining" ]] || break
+    if [[ "$remaining" == \"* ]]; then
+      if [[ ! "$remaining" =~ $quoted_word ]]; then
+        SESSION_ENTRY_ERROR="Unsupported quoting in Exec: $entry"
+        return 1
+      fi
+      word="${BASH_REMATCH[1]}"
+      remaining="${remaining:${#BASH_REMATCH[0]}}"
+    else
+      word="${remaining%%[[:space:]]*}"
+      remaining="${remaining:${#word}}"
+      if [[ "$word" == *\"* || "$word" == *"'"* ]]; then
+        SESSION_ENTRY_ERROR="Unsupported quoting in Exec: $entry"
+        return 1
+      fi
+    fi
+    exec_args+=("$word")
+  done
+  if [[ ${#exec_args[@]} -eq 0 || -z "${exec_args[0]}" ]]; then
+    SESSION_ENTRY_ERROR="Empty Exec in [Desktop Entry]: $entry"
+    return 1
+  fi
+  SESSION_ENTRY_EXEC_CMD="${exec_args[0]}"
+  printf -v SESSION_ENTRY_EXEC_LINE '%q ' "${exec_args[@]}"
+  SESSION_ENTRY_EXEC_LINE="exec ${SESSION_ENTRY_EXEC_LINE% }"
+}
+
+# True when command $1 (absolute path under SESSION_ROOT or command name on PATH) is executable.
+session_command_exists() {
+  local cmd="$1"
+  [[ -n "$cmd" ]] || return 1
+  if [[ "$cmd" == /* ]]; then
+    [[ -f "${SESSION_ROOT:-}$cmd" && -x "${SESSION_ROOT:-}$cmd" ]]
+  else
+    PATH="$HOME/.local/bin:$PATH" command -v "$cmd" >/dev/null 2>&1
+  fi
+}
+
+# Normalize a .desktop filename into a valid custom session id under LC_ALL=C.
+suggest_custom_session_id() {
+  local LC_ALL=C stem="${1##*/}"
+  stem="${stem%.desktop}"
+  stem="$(printf '%s' "$stem" | LC_ALL=C tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')"
+  while [[ "$stem" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* ]]; do
+    stem="${stem/[!abcdefghijklmnopqrstuvwxyz0123456789_-]/-}"
+  done
+  while [[ "$stem" == -* ]]; do
+    stem="${stem#-}"
+  done
+  [[ -n "$stem" ]] || stem="custom"
+  case "$stem" in
+    plasma | gnome | budgie | xfce | lxqt | lxde | mate | cinnamon | i3)
+      printf '%s-custom\n' "$stem"
+      ;;
+    *)
+      printf '%s\n' "$stem"
+      ;;
+  esac
+}
+
+# List installed freedesktop X11 and Wayland session entries and their --from-session compatibility.
+list_desktop_sessions() {
+  local LC_ALL=C
+  local xsessions_dir="${XSESSIONS_DIR:-${SESSION_ROOT:-}/usr/share/xsessions}"
+  local wayland_dir="${WAYLAND_SESSIONS_DIR:-${SESSION_ROOT:-}/usr/share/wayland-sessions}"
+  local session_type dir entry label raw_stem suggested_id status_note init_cmd existing_tmpl found=0
+  local SESSION_ENTRY_NAME="" SESSION_ENTRY_EXEC_LINE="" SESSION_ENTRY_EXEC_CMD=""
+  local SESSION_ENTRY_DESKTOP="" SESSION_ENTRY_TRY_EXEC=""
+  local SESSION_ENTRY_HIDDEN=0 SESSION_ENTRY_NO_DISPLAY=0 SESSION_ENTRY_ERROR=""
+
+  for session_type in x11 wayland; do
+    if [[ "$session_type" == x11 ]]; then
+      dir="$xsessions_dir"
+    else
+      dir="$wayland_dir"
+    fi
+    [[ -d "$dir" ]] || continue
+    if [[ ! -r "$dir" || ! -x "$dir" ]]; then
+      log "Note: cannot read session directory $dir."
+      continue
+    fi
+    for entry in "$dir"/*.desktop; do
+      [[ -e "$entry" || -L "$entry" ]] || continue
+      if parse_desktop_session_entry "$entry"; then
+        [[ $SESSION_ENTRY_HIDDEN -eq 0 && $SESSION_ENTRY_NO_DISPLAY -eq 0 ]] || continue
+        found=$((found + 1))
+        label="${SESSION_ENTRY_NAME:-${entry##*/}}"
+        raw_stem="${entry##*/}"
+        raw_stem="${raw_stem%.desktop}"
+        raw_stem="$(printf '%s' "$raw_stem" | LC_ALL=C tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')"
+        suggested_id="$(suggest_custom_session_id "$entry")"
+        if [[ -n "$SESSION_ENTRY_TRY_EXEC" ]] && ! session_command_exists "$SESSION_ENTRY_TRY_EXEC"; then
+          status_note="unavailable (missing TryExec: $SESSION_ENTRY_TRY_EXEC)"
+        elif ! session_command_exists "$SESSION_ENTRY_EXEC_CMD"; then
+          status_note="unavailable (missing command: $SESSION_ENTRY_EXEC_CMD)"
+        else
+          status_note="ready"
+        fi
+        if [[ "$session_type" == wayland ]]; then
+          existing_tmpl="$HOME/.config/lightxdm/.wayland-session-$suggested_id"
+          printf -v init_cmd '%s --init-template --wayland --de %q --from-session %q' \
+            "$(script_cmd install.sh)" "$suggested_id" "$entry"
+        else
+          existing_tmpl="$HOME/.config/lightxdm/.xinitrc-$suggested_id"
+          printf -v init_cmd '%s --init-template --de %q --from-session %q' \
+            "$(script_cmd install.sh)" "$suggested_id" "$entry"
+        fi
+        case "$raw_stem" in
+          plasma | gnome | budgie | xfce | lxqt | lxde | mate | cinnamon | i3)
+            status_note+="; built-in: --de $raw_stem"
+            ;;
+        esac
+        if [[ -n "$SESSION_ENTRY_DESKTOP" ]]; then
+          status_note+="; desktop: $SESSION_ENTRY_DESKTOP"
+        fi
+        if [[ -e "$existing_tmpl" || -L "$existing_tmpl" ]]; then
+          status_note+="; template exists: $existing_tmpl"
+        fi
+        printf '[%s] %s (%s) — %s\n' "$session_type" "$label" "$entry" "$status_note"
+        if [[ "$status_note" == ready* ]]; then
+          printf '  init: %s\n' "$init_cmd"
+        fi
+      else
+        [[ $SESSION_ENTRY_HIDDEN -eq 0 && $SESSION_ENTRY_NO_DISPLAY -eq 0 ]] || continue
+        found=$((found + 1))
+        label="${SESSION_ENTRY_NAME:-${entry##*/}}"
+        status_note="${SESSION_ENTRY_ERROR%: "$entry"}"
+        printf '[%s] %s (%s) — unsupported (%s)\n' "$session_type" "$label" "$entry" "$status_note"
+      fi
+    done
+  done
+
+  if [[ $found -eq 0 ]]; then
+    printf 'No session entries found in %s or %s.\n' "$xsessions_dir" "$wayland_dir"
+  fi
+}
+
 # Create ~/.config/lightxdm/.xinitrc-<id> (or .wayland-session-<id>) to edit: a copy of the
 # built-in template, or a custom X11 (from i3) or minimal Wayland template.
 init_xinitrc_template() {
   local id="$1" wayland="${2:-0}" dest="$HOME/.config/lightxdm/.xinitrc-$1"
   local from_session="${3:-}" exec_line="exec $1" current_desktop="$1"
+  local SESSION_ENTRY_NAME="" SESSION_ENTRY_EXEC_LINE="" SESSION_ENTRY_EXEC_CMD=""
+  local SESSION_ENTRY_DESKTOP="" SESSION_ENTRY_TRY_EXEC=""
+  local SESSION_ENTRY_HIDDEN=0 SESSION_ENTRY_NO_DISPLAY=0 SESSION_ENTRY_ERROR=""
   case "$id" in
     plasma | gnome | budgie) dest="$HOME/.config/lightxdm/.wayland-session-$id" ;;
   esac
@@ -467,77 +685,14 @@ init_xinitrc_template() {
       ;;
   esac
   if [[ -n "$from_session" ]]; then
-    if [[ ! -f "$from_session" || ! -r "$from_session" ]]; then
-      log "Cannot read session entry: $from_session"
+    if ! parse_desktop_session_entry "$from_session"; then
+      log "$SESSION_ENTRY_ERROR"
       return 1
     fi
-    local line key value in_desktop=0 exec_seen=0 desktop_seen=0 exec_value=""
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      line="${line#"${line%%[![:space:]]*}"}"
-      line="${line%"${line##*[![:space:]]}"}"
-      case "$line" in
-        '' | \#*) continue ;;
-        '[Desktop Entry]') in_desktop=1; continue ;;
-        \[*\]) in_desktop=0; continue ;;
-      esac
-      [[ $in_desktop -eq 1 && "$line" == *=* ]] || continue
-      key="${line%%=*}"
-      key="${key%"${key##*[![:space:]]}"}"
-      value="${line#*=}"
-      value="${value#"${value%%[![:space:]]*}"}"
-      case "$key" in
-        Exec)
-          if [[ $exec_seen -eq 1 ]]; then
-            log "Duplicate Exec in [Desktop Entry]: $from_session"
-            return 1
-          fi
-          exec_seen=1
-          exec_value="$value"
-          ;;
-        DesktopNames)
-          if [[ $desktop_seen -eq 1 || -z "${value%%;*}" ]]; then
-            log "Invalid DesktopNames in [Desktop Entry]: $from_session"
-            return 1
-          fi
-          desktop_seen=1
-          current_desktop="${value%%;*}"
-          ;;
-      esac
-    done <"$from_session"
-    # This deliberately supports only literal words and whole double-quoted words.
-    # Never interpret desktop entries as shell code or expand desktop field codes.
-    if [[ $exec_seen -eq 0 || "$exec_value" == *%* || "$exec_value" == *\\* ]]; then
-      log "Missing or unsupported Exec in [Desktop Entry] (field codes and backslash escapes are refused): $from_session"
-      return 1
+    exec_line="$SESSION_ENTRY_EXEC_LINE"
+    if [[ -n "$SESSION_ENTRY_DESKTOP" ]]; then
+      current_desktop="$SESSION_ENTRY_DESKTOP"
     fi
-    local remaining="$exec_value" word quoted_word='^"([^"]*)"([[:space:]]|$)'
-    local exec_args=()
-    while :; do
-      remaining="${remaining#"${remaining%%[![:space:]]*}"}"
-      [[ -n "$remaining" ]] || break
-      if [[ "$remaining" == \"* ]]; then
-        if [[ ! "$remaining" =~ $quoted_word ]]; then
-          log "Unsupported quoting in Exec: $from_session"
-          return 1
-        fi
-        word="${BASH_REMATCH[1]}"
-        remaining="${remaining:${#BASH_REMATCH[0]}}"
-      else
-        word="${remaining%%[[:space:]]*}"
-        remaining="${remaining:${#word}}"
-        if [[ "$word" == *\"* || "$word" == *"'"* ]]; then
-          log "Unsupported quoting in Exec: $from_session"
-          return 1
-        fi
-      fi
-      exec_args+=("$word")
-    done
-    if [[ ${#exec_args[@]} -eq 0 || -z "${exec_args[0]}" ]]; then
-      log "Empty Exec in [Desktop Entry]: $from_session"
-      return 1
-    fi
-    printf -v exec_line '%q ' "${exec_args[@]}"
-    exec_line="exec ${exec_line% }"
   fi
   mkdir -p "$HOME/.config/lightxdm"
   case "$id" in
@@ -2070,11 +2225,12 @@ main() {
   local autologin=0
   local update=0
   local status_only=0
+  local list_sessions=0
   local init_template=0
   local wayland=0
   local from_session=""
   local pam_only=0
-  local usage="Usage: bash $0 [-h|--help] [--status] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
+  local usage="Usage: bash $0 [-h|--help] [--status] [--list-sessions] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -2119,6 +2275,8 @@ Options:
                     (with --no-keyring, only GNOME's block)
   --status          show the current lightXDM configuration, dotfile state, PAM state, disabled display
                     managers and TTY1 autologin status without sudo or changes (use alone)
+  --list-sessions   scan installed X11 and Wayland session entries, check executables, and suggest
+                    --init-template --from-session commands without sudo or changes (use alone)
 
 uninstall.sh reverts these changes; installed packages stay.
 EOF
@@ -2126,6 +2284,10 @@ EOF
         ;;
       --list-packages)
         list_only=1
+        shift
+        ;;
+      --list-sessions)
+        list_sessions=1
         shift
         ;;
       --dry-run)
@@ -2230,10 +2392,10 @@ EOF
   done
 
   if [[ $status_only -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 ||
-      $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
-      $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 ||
-      $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || $dry_run -eq 1 ||
+      $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
+      -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 ||
+      $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
       log "--status cannot be combined with any other option."
       echo "$usage" >&2
       exit 1
@@ -2242,10 +2404,24 @@ EOF
     return 0
   fi
 
+  if [[ $list_sessions -eq 1 ]]; then
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 ||
+      $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
+      $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $status_only -eq 1 ||
+      $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
+      log "--list-sessions cannot be combined with any other option."
+      echo "$usage" >&2
+      exit 1
+    fi
+    list_desktop_sessions
+    return 0
+  fi
+
   if [[ $update -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
-      -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
-      $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 ]]; then
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || $no_packages -eq 1 ||
+      $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 ||
+      $autologin -eq 1 || $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" ||
+      $pam_only -eq 1 || $status_only -eq 1 ]]; then
       log "--update reuses the saved choices and takes only --dry-run and --non-interactive; to change a choice, run $(script_cmd install.sh) with its options."
       exit 1
     fi

@@ -12503,4 +12503,191 @@ else
   fail "uninstall.sh --dry-run:$dry_un_report"
 fi
 
+# install.sh --list-sessions discovers X11 and Wayland freedesktop entries without root or side effects
+ls_dir="$TMP_DIR/list_sessions"
+rm -rf "$ls_dir"
+mkdir -p "$ls_dir/home" "$ls_dir/bin" "$ls_dir/empty_x" "$ls_dir/empty_w" \
+  "$ls_dir/root/usr/bin" "$ls_dir/root/usr/share/xsessions" "$ls_dir/root/usr/share/wayland-sessions"
+cat >"$ls_dir/bin/openbox" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$ls_dir/bin/hyprland" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$ls_dir/bin/gnome-session" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cp "$ls_dir/bin/openbox" "$ls_dir/root/usr/bin/i3"
+chmod +x "$ls_dir/bin/openbox" "$ls_dir/bin/hyprland" "$ls_dir/bin/gnome-session" "$ls_dir/root/usr/bin/i3"
+
+ls_report=""
+
+# 1) --help mentions --list-sessions and empty dirs exit 0 cleanly with no sudo
+help_ls_out="$(bash "$REPO_ROOT/install.sh" --help)"
+if [[ "$help_ls_out" != *"--list-sessions"* ]]; then
+  ls_report+=" [missing from --help]"
+fi
+: >"$STUB_LOG"
+set +e
+empty_ls_out="$(HOME="$ls_dir/home" XSESSIONS_DIR="$ls_dir/missing_x" WAYLAND_SESSIONS_DIR="$ls_dir/empty_w" bash "$REPO_ROOT/install.sh" --list-sessions 2>&1)"
+empty_ls_rc=$?
+set -e
+if [[ $empty_ls_rc -ne 0 || "$empty_ls_out" != *"No session entries found in $ls_dir/missing_x or $ls_dir/empty_w."* || -s "$STUB_LOG" || -e "$ls_dir/home/.config" ]]; then
+  ls_report+=" [empty dirs: rc=$empty_ls_rc, out=$empty_ls_out]"
+fi
+
+# 2) Real discovery across SESSION_ROOT with ready, built-in collision, TryExec, missing cmd, Hidden, NoDisplay, unsupported Exec, and spaced name
+cat >"$ls_dir/root/usr/share/xsessions/openbox.desktop" <<'EOF'
+[Desktop Entry]
+Name=Openbox
+Exec=openbox --startup "hello world"
+DesktopNames=OPENBOX;LXDE
+EOF
+cat >"$ls_dir/root/usr/share/xsessions/I3.desktop" <<'EOF'
+[Desktop Entry]
+Name=i3
+Exec=/usr/bin/i3
+EOF
+cat >"$ls_dir/root/usr/share/xsessions/tryfail.desktop" <<'EOF'
+[Desktop Entry]
+Name=Missing Try
+TryExec=missing-tryexec-bin
+Exec=openbox
+EOF
+cat >"$ls_dir/root/usr/share/xsessions/badfield.desktop" <<'EOF'
+[Desktop Entry]
+Name=Bad Field
+Exec=openbox %U
+EOF
+cat >"$ls_dir/root/usr/share/xsessions/hidden.desktop" <<'EOF'
+[Desktop Entry]
+Name=Hidden Session
+Hidden=true
+Exec=openbox %U
+EOF
+cat >"$ls_dir/root/usr/share/xsessions/nodisplay.desktop" <<'EOF'
+[Desktop Entry]
+Name=No Display Session
+NoDisplay=true
+Exec=openbox
+EOF
+cat >"$ls_dir/root/usr/share/wayland-sessions/-My Hypr.desktop" <<'EOF'
+[Desktop Entry]
+Name=Hypr Custom
+TryExec=hyprland
+Exec=hyprland
+DesktopNames=Hyprland
+EOF
+cat >"$ls_dir/root/usr/share/wayland-sessions/gnome.desktop" <<'EOF'
+[Desktop Entry]
+Name=GNOME
+Exec=gnome-session
+DesktopNames=GNOME
+EOF
+cat >"$ls_dir/root/usr/share/wayland-sessions/missingcmd.desktop" <<'EOF'
+[Desktop Entry]
+Name=Missing Cmd
+Exec=missing-wayland-wm-bin
+EOF
+
+: >"$STUB_LOG"
+set +e
+full_ls_out="$(HOME="$ls_dir/home" PATH="$ls_dir/bin:$STUB_BIN:$PATH" SESSION_ROOT="$ls_dir/root" XSESSIONS_DIR="" WAYLAND_SESSIONS_DIR="" LC_ALL=C bash "$REPO_ROOT/install.sh" --list-sessions 2>&1)"
+full_ls_rc=$?
+set -e
+if [[ $full_ls_rc -ne 0 || -s "$STUB_LOG" || -e "$ls_dir/home/.config" ]] ||
+  [[ "$full_ls_out" != *"[x11] Openbox ($ls_dir/root/usr/share/xsessions/openbox.desktop) — ready; desktop: OPENBOX"* ||
+    "$full_ls_out" != *"--init-template --de openbox --from-session $ls_dir/root/usr/share/xsessions/openbox.desktop"* ||
+    "$full_ls_out" != *"[x11] i3 ($ls_dir/root/usr/share/xsessions/I3.desktop) — ready; built-in: --de i3"* ||
+    "$full_ls_out" != *"--init-template --de i3-custom --from-session $ls_dir/root/usr/share/xsessions/I3.desktop"* ||
+    "$full_ls_out" != *"[x11] Missing Try ($ls_dir/root/usr/share/xsessions/tryfail.desktop) — unavailable (missing TryExec: missing-tryexec-bin)"* ||
+    "$full_ls_out" != *"[x11] Bad Field ($ls_dir/root/usr/share/xsessions/badfield.desktop) — unsupported (Missing or unsupported Exec"* ||
+    "$full_ls_out" == *"Hidden Session"* ||
+    "$full_ls_out" == *"No Display Session"* ||
+    "$full_ls_out" != *"[wayland] Hypr Custom ($ls_dir/root/usr/share/wayland-sessions/-My Hypr.desktop) — ready; desktop: Hyprland"* ||
+    "$full_ls_out" != *"--init-template --wayland --de my-hypr --from-session "* ||
+    "$full_ls_out" != *"[wayland] GNOME ($ls_dir/root/usr/share/wayland-sessions/gnome.desktop) — ready; built-in: --de gnome; desktop: GNOME"* ||
+    "$full_ls_out" != *"--init-template --wayland --de gnome-custom --from-session $ls_dir/root/usr/share/wayland-sessions/gnome.desktop"* ||
+    "$full_ls_out" != *"[wayland] Missing Cmd ($ls_dir/root/usr/share/wayland-sessions/missingcmd.desktop) — unavailable (missing command: missing-wayland-wm-bin)"* ]]; then
+  ls_report+=" [discovery mismatch: rc=$full_ls_rc, out=$full_ls_out]"
+fi
+
+# Verify no init line is emitted for unavailable/unsupported entries
+if grep -A1 -E 'Missing Try|Bad Field|Missing Cmd' <<<"$full_ls_out" | grep -q '^[[:space:]]*init:'; then
+  ls_report+=" [unexpected init line on non-ready entry]"
+fi
+
+# 3) Round-trip suggested init commands for Openbox X11 and spaced Wayland entry, then verify template exists note
+openbox_init_cmd="$(printf '%s\n' "$full_ls_out" | grep -F -- "--de openbox --from-session" | head -n1 | sed 's/^  init: //')"
+hypr_init_cmd="$(printf '%s\n' "$full_ls_out" | grep -F -- "--de my-hypr --from-session" | head -n1 | sed 's/^  init: //')"
+if [[ -z "$openbox_init_cmd" || -z "$hypr_init_cmd" ]]; then
+  ls_report+=" [missing suggested init commands]"
+else
+  set +e
+  HOME="$ls_dir/home" bash -c "$openbox_init_cmd" >/dev/null 2>&1
+  ob_init_rc=$?
+  HOME="$ls_dir/home" bash -c "$hypr_init_cmd" >/dev/null 2>&1
+  hy_init_rc=$?
+  set -e
+  if [[ $ob_init_rc -ne 0 || $hy_init_rc -ne 0 ]] ||
+    ! grep -Fq 'exec openbox --startup hello\ world' "$ls_dir/home/.config/lightxdm/.xinitrc-openbox" ||
+    ! grep -Fq 'export XDG_CURRENT_DESKTOP=OPENBOX' "$ls_dir/home/.config/lightxdm/.xinitrc-openbox" ||
+    ! grep -Fq 'export XDG_CURRENT_DESKTOP=Hyprland' "$ls_dir/home/.config/lightxdm/.wayland-session-my-hypr" ||
+    ! grep -Fq 'exec hyprland' "$ls_dir/home/.config/lightxdm/.wayland-session-my-hypr"; then
+    ls_report+=" [roundtrip init failed: ob=$ob_init_rc hy=$hy_init_rc]"
+  fi
+  after_ls_out="$(HOME="$ls_dir/home" PATH="$ls_dir/bin:$STUB_BIN:$PATH" SESSION_ROOT="$ls_dir/root" XSESSIONS_DIR="" WAYLAND_SESSIONS_DIR="" bash "$REPO_ROOT/install.sh" --list-sessions 2>&1)"
+  if [[ "$after_ls_out" != *"; template exists: $ls_dir/home/.config/lightxdm/.xinitrc-openbox"* ||
+    "$after_ls_out" != *"; template exists: $ls_dir/home/.config/lightxdm/.wayland-session-my-hypr"* ]]; then
+    ls_report+=" [template exists note missing after init: $after_ls_out]"
+  fi
+fi
+
+# 4) bin/lightxdm-install wrapper forwarding and tr_TR locale safety on uppercase I3
+tr_ls_out="$(HOME="$ls_dir/home" PATH="$ls_dir/bin:$STUB_BIN:$PATH" SESSION_ROOT="$ls_dir/root" XSESSIONS_DIR="" WAYLAND_SESSIONS_DIR="" LIGHTXDM_DIR="$REPO_ROOT" LANG=tr_TR.UTF-8 LC_ALL=tr_TR.UTF-8 "$REPO_ROOT/bin/lightxdm-install" --list-sessions 2>&1)"
+if [[ "$tr_ls_out" != *"--init-template --de i3-custom --from-session "* ||
+  "$tr_ls_out" != *"; built-in: --de i3"* ]]; then
+  ls_report+=" [wrapper/tr_TR mismatch: $tr_ls_out]"
+fi
+
+# 5) Unreadable session directory/file fails softly when non-root
+if [[ $EUID -ne 0 ]]; then
+  mkdir -p "$ls_dir/priv_x" "$ls_dir/perm_w"
+  printf '[Desktop Entry]\nName=Secret\nExec=openbox\n' >"$ls_dir/perm_w/unreadable.desktop"
+  chmod 000 "$ls_dir/priv_x" "$ls_dir/perm_w/unreadable.desktop"
+  set +e
+  priv_ls_out="$(HOME="$ls_dir/home" PATH="$ls_dir/bin:$STUB_BIN:$PATH" XSESSIONS_DIR="$ls_dir/priv_x" WAYLAND_SESSIONS_DIR="$ls_dir/perm_w" bash "$REPO_ROOT/install.sh" --list-sessions 2>&1)"
+  priv_ls_rc=$?
+  set -e
+  chmod 755 "$ls_dir/priv_x"
+  chmod 644 "$ls_dir/perm_w/unreadable.desktop"
+  if [[ $priv_ls_rc -ne 0 || "$priv_ls_out" == *"Permission denied"* ||
+    "$priv_ls_out" != *"Note: cannot read session directory $ls_dir/priv_x."* ||
+    "$priv_ls_out" != *"unsupported (Cannot read session entry)"* ]]; then
+    ls_report+=" [unreadable handling: rc=$priv_ls_rc, out=$priv_ls_out]"
+  fi
+fi
+
+# 6) Conflicting flag combinations exit 1 without side effects
+for bad_ls_args in "--list-sessions --de i3" "--list-sessions --status" "--status --list-sessions" "--list-sessions --dry-run"; do
+  read -r -a bad_ls_argv <<<"$bad_ls_args"
+  : >"$STUB_LOG"
+  set +e
+  bad_ls_out="$(HOME="$ls_dir/home" bash "$REPO_ROOT/install.sh" "${bad_ls_argv[@]}" 2>&1)"
+  bad_ls_rc=$?
+  set -e
+  if [[ $bad_ls_rc -ne 1 || -s "$STUB_LOG" || "$bad_ls_out" != *"cannot be combined with any other option"* ]]; then
+    ls_report+=" [bad combo '$bad_ls_args': rc=$bad_ls_rc, out=$bad_ls_out]"
+  fi
+done
+
+if [[ -z "$ls_report" ]]; then
+  pass "install.sh --list-sessions discovers X11/Wayland desktop entries safely and round-trips --init-template"
+else
+  fail "install.sh --list-sessions:$ls_report"
+fi
+
 finish_harness

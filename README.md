@@ -42,6 +42,7 @@ You need Arch Linux (or a derivative) with systemd, and a user in the `wheel` gr
 
 - `--de <id>`: configure this desktop (`plasma`, `gnome`, `budgie`, `xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, `i3`, or a custom id with `--no-packages`)
 - `--status`: inspect the current lightXDM configuration, dotfile state, PAM lines, disabled display managers, and TTY1 autologin state without sudo or changes
+- `--list-sessions`: scan installed X11 and Wayland freedesktop session entries, check executable availability, and print ready `--init-template --from-session` commands without sudo or changes
 - `--list-packages --de <id>`: print the packages it would install, change nothing
 - `--dry-run --de <id>`: preview every change the install would make (dotfiles, packages, PAM, display managers), change nothing
 - `--non-interactive --de <id>`: for unattended installs, fail instead of prompting for sudo
@@ -82,7 +83,7 @@ Wayland desktops do not install `xorg-server` or `xorg-xinit`. See [GNOME sessio
 > **Important:**
 > - **Do NOT run `install.sh` as root or with `sudo`.** Run it as your regular user. The script will use `sudo` internally when needed.
 > - Your user **must be in the `wheel` group** and have working `sudo` privileges. If not, see the error messages for instructions on how to add your user to the `wheel` group and configure `sudo`.
-> - If you run `sudo bash install.sh` or run as root, the script will exit with an error (only `--help`, `--status`, `--list-packages` and `--dry-run` work as root, since they change nothing; run `--status` and `--dry-run` as your regular user to inspect your own files).
+> - If you run `sudo bash install.sh` or run as root, the script will exit with an error (only `--help`, `--status`, `--list-sessions`, `--list-packages` and `--dry-run` work as root, since they change nothing; run `--status` and `--dry-run` as your regular user to inspect your own files).
 
 What the installer changes outside your home, so nothing comes as a surprise:
 
