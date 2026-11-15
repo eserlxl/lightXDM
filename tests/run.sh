@@ -12471,6 +12471,61 @@ if [[ $EUID -ne 0 ]]; then
     "$dry_priv_out" != *"Disabled display managers ($dry_un_dir/priv_files/disabled-display-managers): unknown (needs root)."* ]]; then
     dry_un_report+=" [priv: rc=$dry_priv_rc, out=$dry_priv_out]"
   fi
+
+  # Symlinked LOGIN_FILE pointing to unreadable target or into unsearchable dir must report unknown, while dangling symlink restores.
+  mkdir -p "$dry_un_dir/sym_priv" "$dry_un_dir/sym_dir_priv" "$dry_un_dir/sym_dangling"
+  cp "$dry_un_dir/login.lightxdm.bak" "$dry_un_dir/sym_priv/login.lightxdm.bak"
+  ln -s "$dry_un_dir/priv_files/login" "$dry_un_dir/sym_priv/login"
+  cp "$dry_un_dir/login" "$dry_un_dir/priv_dir/login"
+  cp "$dry_un_dir/login.lightxdm.bak" "$dry_un_dir/sym_dir_priv/login.lightxdm.bak"
+  ln -s "$dry_un_dir/priv_dir/login" "$dry_un_dir/sym_dir_priv/login"
+  chmod 000 "$dry_un_dir/priv_files/login" "$dry_un_dir/priv_dir"
+  set +e
+  dry_sym_file_out="$(
+    env -u SUDO_USER HOME="$dry_un_dir/past_home" TARGET_HOME="$dry_un_dir/past_home" PATH="$dry_un_dir/bin:$STUB_BIN:$PATH" \
+      LOGIN_FILE="$dry_un_dir/sym_priv/login" \
+      GNOME_SESSION_TYPE_DEST="$dry_un_dir/missing" PAM_KEYRING_STATE="$dry_un_dir/missing" \
+      PAM_LOGIN_BASE_STATE="$dry_un_dir/missing" DM_STATE_FILE="$dry_un_dir/missing" \
+      OVERRIDE_DIR="$dry_un_dir/missing-getty" POLKIT_RULE="$dry_un_dir/missing" \
+      bash "$REPO_ROOT/uninstall.sh" --dry-run 2>&1
+  )"
+  dry_sym_file_rc=$?
+  dry_sym_dir_out="$(
+    env -u SUDO_USER HOME="$dry_un_dir/past_home" TARGET_HOME="$dry_un_dir/past_home" PATH="$dry_un_dir/bin:$STUB_BIN:$PATH" \
+      LOGIN_FILE="$dry_un_dir/sym_dir_priv/login" \
+      GNOME_SESSION_TYPE_DEST="$dry_un_dir/missing" PAM_KEYRING_STATE="$dry_un_dir/missing" \
+      PAM_LOGIN_BASE_STATE="$dry_un_dir/missing" DM_STATE_FILE="$dry_un_dir/missing" \
+      OVERRIDE_DIR="$dry_un_dir/missing-getty" POLKIT_RULE="$dry_un_dir/missing" \
+      bash "$REPO_ROOT/uninstall.sh" --dry-run 2>&1
+  )"
+  dry_sym_dir_rc=$?
+  set -e
+  chmod 755 "$dry_un_dir/priv_dir"
+  chmod 600 "$dry_un_dir/priv_files/login"
+  if [[ $dry_sym_file_rc -ne 0 || "$dry_sym_file_out" == *"Permission denied"* ||
+    "$dry_sym_file_out" != *"PAM ($dry_un_dir/sym_priv/login): unknown (needs root"* ||
+    "$dry_sym_file_out" == *"lightXDM PAM line"* || "$dry_sym_file_out" == *"Would restore $dry_un_dir/sym_priv/login"* ]]; then
+    dry_un_report+=" [sym-file-priv: rc=$dry_sym_file_rc, out=$dry_sym_file_out]"
+  fi
+  if [[ $dry_sym_dir_rc -ne 0 || "$dry_sym_dir_out" == *"Permission denied"* ||
+    "$dry_sym_dir_out" != *"PAM ($dry_un_dir/sym_dir_priv/login): unknown (needs root"* ||
+    "$dry_sym_dir_out" == *"Would restore $dry_un_dir/sym_dir_priv/login"* ]]; then
+    dry_un_report+=" [sym-dir-priv: rc=$dry_sym_dir_rc, out=$dry_sym_dir_out]"
+  fi
+
+  cp "$dry_un_dir/login.lightxdm.bak" "$dry_un_dir/sym_dangling/login.lightxdm.bak"
+  ln -s "$dry_un_dir/sym_dangling/missing_target" "$dry_un_dir/sym_dangling/login"
+  dry_sym_dang_out="$(
+    env -u SUDO_USER HOME="$dry_un_dir/past_home" TARGET_HOME="$dry_un_dir/past_home" PATH="$dry_un_dir/bin:$STUB_BIN:$PATH" \
+      LOGIN_FILE="$dry_un_dir/sym_dangling/login" \
+      GNOME_SESSION_TYPE_DEST="$dry_un_dir/missing" PAM_KEYRING_STATE="$dry_un_dir/missing" \
+      PAM_LOGIN_BASE_STATE="$dry_un_dir/missing" DM_STATE_FILE="$dry_un_dir/missing" \
+      OVERRIDE_DIR="$dry_un_dir/missing-getty" POLKIT_RULE="$dry_un_dir/missing" \
+      bash "$REPO_ROOT/uninstall.sh" --dry-run 2>&1
+  )"
+  if [[ "$dry_sym_dang_out" != *"Would restore $dry_un_dir/sym_dangling/login from backup"* ]]; then
+    dry_un_report+=" [sym-dangling: out=$dry_sym_dang_out]"
+  fi
 fi
 
 # 4) Reject duplicate/invalid flag combinations, symlinked TARGET_HOME, and document --dry-run in --help.

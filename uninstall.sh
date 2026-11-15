@@ -36,20 +36,30 @@ files_match() {
   [[ "$(sha256sum < "$1")" == "$(sha256sum < "$2")" ]]
 }
 
-# True when $1 needs root access to inspect (unreadable entry or unsearchable parent directory).
+# True when $1 needs root access to inspect (unreadable entry or unsearchable parent directory;
+# pass $2=1 to inspect symlinked targets rather than ignoring symlinks).
 path_needs_sudo() {
-  local path="$1" dir
+  local path="$1" follow_symlink="${2:-0}" dir target
   [[ $EUID -ne 0 ]] || return 1
   if [[ -L "$path" ]]; then
-    return 1
-  fi
-  if [[ -e "$path" ]]; then
+    if [[ $follow_symlink -eq 0 ]]; then
+      return 1
+    fi
+    if [[ -e "$path" ]]; then
+      [[ ! -r "$path" ]] && return 0
+      return 1
+    fi
+    target="$(readlink -m -- "$path" 2>/dev/null || true)"
+    [[ -n "$target" ]] || return 1
+    dir="$target"
+  elif [[ -e "$path" ]]; then
     if [[ ! -r "$path" ]]; then
       return 0
     fi
     return 1
+  else
+    dir="$path"
   fi
-  dir="$path"
   while [[ "$dir" == */* ]]; do
     dir="${dir%/*}"
     [[ -n "$dir" ]] || dir="/"
@@ -411,7 +421,7 @@ preview_uninstall() {
   echo "Dry run: no files or systemd units will be modified."
 
   local pam_unknown=0
-  if path_needs_sudo "$LOGIN_FILE" || path_needs_sudo "$backup_file"; then
+  if path_needs_sudo "$LOGIN_FILE" 1 || path_needs_sudo "$backup_file"; then
     pam_unknown=1
     echo "PAM ($LOGIN_FILE): unknown (needs root — rerun with sudo --dry-run to inspect)."
   fi
@@ -454,7 +464,7 @@ preview_uninstall() {
     if [[ -f "$backup_file" && ! -L "$backup_file" && -r "$backup_file" ]]; then
       if [[ ! -e "$LOGIN_FILE" ]]; then
         echo "Would restore $LOGIN_FILE from backup ($backup_file) and remove backup."
-      else
+      elif [[ -f "$LOGIN_FILE" && -r "$LOGIN_FILE" ]]; then
         local pam_sed=() pam_line pam_re hits keyring_hits=0
         for pam_line in "${LIGHTXDM_KEYRING_LINES[@]}"; do
           pam_re="^${pam_line//./\\.}\$"
