@@ -1306,6 +1306,15 @@ pam_lines_to_remove() {
   done
 }
 
+# Print the fixed keyring backend for a built-in desktop id, returning 1 for custom ids.
+builtin_de_keyring_backend() {
+  case "${1:-}" in
+    plasma) printf 'kwallet\n' ;;
+    gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) printf 'gnome\n' ;;
+    *) return 1 ;;
+  esac
+}
+
 # Format `--pam-only --de <id> [--keyring <backend>]` for remediation hints, keeping built-ins
 # free of --keyring while preserving the backend for custom desktop ids.
 pam_restore_hint() {
@@ -1320,11 +1329,8 @@ pam_restore_hint() {
     target_de="<id>"
   fi
   hint="--pam-only --de $target_de"
-  if [[ -n "$de" && -n "$backend" ]]; then
-    case "$de" in
-      plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
-      *) hint+=" --keyring $backend" ;;
-    esac
+  if [[ -n "$de" && -n "$backend" ]] && ! builtin_de_keyring_backend "$de" >/dev/null 2>&1; then
+    hint+=" --keyring $backend"
   fi
   printf '%s\n' "$hint"
 }
@@ -1355,11 +1361,10 @@ configure_pam() {
     fi
     return 1
   fi
-  local module auth_line session_line backend
-  case "$de" in
-    plasma) keyring=kwallet ;;
-    gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) keyring=gnome ;;
-  esac
+  local module auth_line session_line backend builtin_keyring=""
+  if builtin_keyring="$(builtin_de_keyring_backend "$de" 2>/dev/null)"; then
+    keyring="$builtin_keyring"
+  fi
   case "$keyring" in
     kwallet)
       module="pam_kwallet5.so"
@@ -2033,29 +2038,37 @@ saved_install_args() {
   fi
   # The record tells keyring lines a .pacnew merge dropped from lines removed with uninstall.sh
   # --keyring-only; installs from before the record fall back to the lines themselves.
-  local record="" backend="" module auth_line session_line
+  local record="" backend="" module auth_line session_line builtin_backend=""
+  builtin_backend="$(builtin_de_keyring_backend "$de" 2>/dev/null || true)"
   record="$(read_pam_state_file "$PAM_KEYRING_STATE" "$preview" 2>/dev/null)" || record=""
   case "$record" in
-    gnome | kwallet) backend="$record" ;;
-    *)
-      record=""
-      case "$de" in
-        plasma)
-          [[ $has_kwallet -eq 1 ]] && backend=kwallet
-          ;;
-        gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3)
-          [[ $has_gnome -eq 1 ]] && backend=gnome
-          ;;
-        *)
-          if [[ $has_gnome -eq 1 ]]; then
-            backend=gnome
-          elif [[ $has_kwallet -eq 1 ]]; then
-            backend=kwallet
-          fi
-          ;;
-      esac
+    gnome | kwallet)
+      if [[ -n "$builtin_backend" && "$record" != "$builtin_backend" ]]; then
+        log "Warning: $PAM_KEYRING_STATE records $record, which does not match built-in desktop $de ($builtin_backend); ignoring mismatched keyring record."
+        record=""
+      else
+        backend="$record"
+      fi
       ;;
   esac
+  if [[ -z "$backend" ]]; then
+    record=""
+    case "$builtin_backend" in
+      kwallet)
+        [[ $has_kwallet -eq 1 ]] && backend=kwallet
+        ;;
+      gnome)
+        [[ $has_gnome -eq 1 ]] && backend=gnome
+        ;;
+      *)
+        if [[ $has_gnome -eq 1 ]]; then
+          backend=gnome
+        elif [[ $has_kwallet -eq 1 ]]; then
+          backend=kwallet
+        fi
+        ;;
+    esac
+  fi
   if [[ -z "$backend" ]]; then
     if [[ $login_readable -eq 1 || $login_absent -eq 1 ]] ||
       { [[ -n "$recorded_packages" && " $recorded_packages " != *" gnome-keyring "* && " $recorded_packages " != *" kwallet-pam "* ]] &&
@@ -2081,10 +2094,9 @@ saved_install_args() {
     fi
     log "lightXDM's $backend keyring lines are missing from $LOGIN_FILE, which a .pacnew merge replaced with the version its package ships; adding them back."
   fi
-  case "$de" in
-    plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
-    *) printf '%s\n' --keyring "$backend" ;;
-  esac
+  if [[ -z "$builtin_backend" ]]; then
+    printf '%s\n' --keyring "$backend"
+  fi
 }
 
 # Escape $1 for a double-quoted JSON string value (without surrounding quotes).
@@ -3075,10 +3087,21 @@ run_doctor() {
     warnings=$((warnings + 1))
   fi
 
-  local pam_record="" pam_expected="" keyring_configured=0
+  local pam_record="" pam_expected="" pam_mismatch=0 keyring_configured=0 builtin_backend=""
+  builtin_backend="$(builtin_de_keyring_backend "$de" 2>/dev/null || true)"
   if pam_record="$(read_pam_state_file "$PAM_KEYRING_STATE" 1 2>/dev/null)"; then
     case "$pam_record" in
-      gnome | kwallet) pam_expected="$pam_record" ;;
+      gnome | kwallet)
+        if [[ -n "$builtin_backend" && "$pam_record" != "$builtin_backend" ]]; then
+          printf 'PAM keyring state: WARN (%s records %s, expected %s for de=%s — repair with: %s %s)\n' \
+            "$PAM_KEYRING_STATE" "$pam_record" "$builtin_backend" "$de" "$install_cmd" "$(pam_restore_hint "$de" "$builtin_backend")"
+          warnings=$((warnings + 1))
+          pam_mismatch=1
+          pam_expected="$builtin_backend"
+        else
+          pam_expected="$pam_record"
+        fi
+        ;;
       *)
         printf 'PAM keyring state: WARN (%s has unexpected value %s)\n' "$PAM_KEYRING_STATE" "${pam_record:-empty}"
         warnings=$((warnings + 1))
@@ -3116,13 +3139,28 @@ run_doctor() {
 
     local keyring_issue=0
     if [[ "$pam_expected" == gnome && -n "$missing_gnome" ]]; then
-      printf 'PAM keyring: FAIL (recorded gnome keyring lines missing from %s — restore with: %s %s)\n' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" gnome)"
+      if [[ $pam_mismatch -eq 1 ]]; then
+        printf 'PAM keyring: FAIL (expected gnome keyring lines for de=%s missing from %s — restore with: %s %s)\n' "$de" "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" gnome)"
+      else
+        printf 'PAM keyring: FAIL (recorded gnome keyring lines missing from %s — restore with: %s %s)\n' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" gnome)"
+      fi
       issues=$((issues + 1))
       keyring_issue=1
     elif [[ "$pam_expected" == kwallet && -n "$missing_kwallet" ]]; then
-      printf 'PAM keyring: FAIL (recorded kwallet5 lines missing from %s — restore with: %s %s)\n' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" kwallet)"
+      if [[ $pam_mismatch -eq 1 ]]; then
+        printf 'PAM keyring: FAIL (expected kwallet5 lines for de=%s missing from %s — restore with: %s %s)\n' "$de" "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" kwallet)"
+      else
+        printf 'PAM keyring: FAIL (recorded kwallet5 lines missing from %s — restore with: %s %s)\n' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" kwallet)"
+      fi
       issues=$((issues + 1))
       keyring_issue=1
+    elif [[ -n "$builtin_backend" ]]; then
+      if { [[ "$builtin_backend" == gnome && $has_gnome_line -eq 1 && -n "$missing_gnome" ]]; } ||
+        { [[ "$builtin_backend" == kwallet && $has_kwallet_line -eq 1 && -n "$missing_kwallet" ]]; }; then
+        printf 'PAM keyring: FAIL (partial keyring PAM lines in %s — missing auth or session line; restore with: %s %s)\n' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" "$builtin_backend")"
+        issues=$((issues + 1))
+        keyring_issue=1
+      fi
     elif { [[ $has_gnome_line -eq 1 && -n "$missing_gnome" ]]; } || { [[ $has_kwallet_line -eq 1 && -n "$missing_kwallet" ]]; }; then
       local partial_backend="$pam_expected"
       if [[ -z "$partial_backend" ]]; then
@@ -3135,6 +3173,19 @@ run_doctor() {
       printf 'PAM keyring: FAIL (partial keyring PAM lines in %s — missing auth or session line; restore with: %s %s)\n' "$LOGIN_FILE" "$install_cmd" "$(pam_restore_hint "$de" "$partial_backend")"
       issues=$((issues + 1))
       keyring_issue=1
+    fi
+
+    if [[ -n "$builtin_backend" ]]; then
+      if [[ "$builtin_backend" != gnome && $has_gnome_line -eq 1 && -n "$missing_gnome" ]]; then
+        printf 'PAM foreign keyring: WARN (partial gnome PAM lines in %s do not belong to de=%s (%s) — remove or complete them manually if unneeded)\n' \
+          "$LOGIN_FILE" "$de" "$builtin_backend"
+        warnings=$((warnings + 1))
+      fi
+      if [[ "$builtin_backend" != kwallet && $has_kwallet_line -eq 1 && -n "$missing_kwallet" ]]; then
+        printf 'PAM foreign keyring: WARN (partial kwallet PAM lines in %s do not belong to de=%s (%s) — remove or complete them manually if unneeded)\n' \
+          "$LOGIN_FILE" "$de" "$builtin_backend"
+        warnings=$((warnings + 1))
+      fi
     fi
 
     if [[ -z "$missing_gnome" ]]; then
@@ -3463,10 +3514,18 @@ inspect_fix_pam_state() {
     return 1
   fi
 
-  local pam_record="" pam_expected=""
+  local pam_record="" pam_expected="" pam_mismatch=0 builtin_backend=""
+  builtin_backend="$(builtin_de_keyring_backend "$target_de" 2>/dev/null || true)"
   if pam_record="$(read_pam_state_file "$PAM_KEYRING_STATE" "$probe_preview" 2>/dev/null)"; then
     case "$pam_record" in
-      gnome | kwallet) pam_expected="$pam_record" ;;
+      gnome | kwallet)
+        if [[ -n "$builtin_backend" && "$pam_record" != "$builtin_backend" ]]; then
+          pam_mismatch=1
+          pam_expected="$builtin_backend"
+        else
+          pam_expected="$pam_record"
+        fi
+        ;;
     esac
   elif [[ $probe_preview -eq 1 ]] && pam_path_needs_sudo "$PAM_KEYRING_STATE" 1; then
     FIX_NEED_PAM_PROBE=1
@@ -3479,7 +3538,14 @@ inspect_fix_pam_state() {
     missing_kwallet="$(pam_lines_to_add "pam_kwallet5.so" "$PAM_KWALLET_AUTH" "$PAM_KWALLET_SESSION" "" "$probe_preview" || true)"
     grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_gnome_keyring\.so' <<<"$login_content" && has_gnome_line=1
     grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_kwallet5\.so' <<<"$login_content" && has_kwallet_line=1
-    if [[ "$pam_expected" == gnome && -n "$missing_gnome" ]]; then
+    if [[ -n "$builtin_backend" ]]; then
+      if [[ $pam_mismatch -eq 1 ]] ||
+        { [[ "$builtin_backend" == gnome ]] && { [[ "$pam_expected" == gnome && -n "$missing_gnome" ]] || [[ $has_gnome_line -eq 1 && -n "$missing_gnome" ]]; }; } ||
+        { [[ "$builtin_backend" == kwallet ]] && { [[ "$pam_expected" == kwallet && -n "$missing_kwallet" ]] || [[ $has_kwallet_line -eq 1 && -n "$missing_kwallet" ]]; }; }; then
+        FIX_NEED_PAM_KEYRING=1
+        FIX_PAM_BACKEND="$builtin_backend"
+      fi
+    elif [[ "$pam_expected" == gnome && -n "$missing_gnome" ]]; then
       FIX_NEED_PAM_KEYRING=1
       FIX_PAM_BACKEND="gnome"
     elif [[ "$pam_expected" == kwallet && -n "$missing_kwallet" ]]; then

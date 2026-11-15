@@ -11401,6 +11401,48 @@ if [[ $norec_rc -ne 0 || "$norec_out" != *"Updating with the saved choices: --de
   norec_report+=" [xfce no gnome with foreign kwallet: rc=$norec_rc, out=$norec_out]"
 fi
 
+# 4. Built-in plasma ignores mismatched pam-keyring=gnome, detects canonical partial kwallet, and custom --keyring stays intact.
+printf 'de=plasma\nno_packages=1\n' >"$norec_case/home/.local/state/lightxdm/install-choices"
+printf 'gnome\n' >"$norec_case/mismatch-pam-keyring"
+printf '%s\n' '#%PAM-1.0' "$PAM_GNOME_KEYRING_AUTH" "$PAM_GNOME_KEYRING_SESSION" >"$norec_login"
+set +e
+norec_out="$(env -u SHELLOPTS -u SUDO_USER HOME="$norec_case/home" LOGIN_FILE="$norec_login" \
+  PAM_KEYRING_STATE="$norec_case/mismatch-pam-keyring" PAM_LOGIN_BASE_STATE="$norec_base" \
+  bash "$REPO_ROOT/install.sh" --update --dry-run 2>&1)"
+norec_rc=$?
+set -e
+if [[ $norec_rc -ne 0 || "$norec_out" != *"Updating with the saved choices: --de plasma --no-packages --no-keyring --dry-run"* ||
+  "$norec_out" != *"ignoring mismatched keyring record"* ||
+  "$norec_out" == *"gnome keyring lines are not in"* ]]; then
+  norec_report+=" [plasma mismatch gnome record with foreign lines: rc=$norec_rc, out=$norec_out]"
+fi
+
+printf '%s\n' '#%PAM-1.0' "$PAM_KWALLET_AUTH" >"$norec_login"
+set +e
+norec_out="$(env -u SHELLOPTS -u SUDO_USER HOME="$norec_case/home" LOGIN_FILE="$norec_login" \
+  PAM_KEYRING_STATE="$norec_case/mismatch-pam-keyring" PAM_LOGIN_BASE_STATE="$norec_base" \
+  bash "$REPO_ROOT/install.sh" --update --dry-run 2>&1)"
+norec_rc=$?
+set -e
+if [[ $norec_rc -ne 0 || "$norec_out" != *"Updating with the saved choices: --de plasma --no-packages --no-keyring --dry-run"* ||
+  "$norec_out" != *"lightXDM's kwallet keyring lines are not in"* ||
+  "$norec_out" != *"--pam-only --de plasma"* ]]; then
+  norec_report+=" [plasma mismatch gnome record with partial kwallet: rc=$norec_rc, out=$norec_out]"
+fi
+
+printf 'de=custom\nno_packages=1\n' >"$norec_case/home/.local/state/lightxdm/install-choices"
+printf 'kwallet\n' >"$norec_case/mismatch-pam-keyring"
+printf '%s\n' '#%PAM-1.0' "$PAM_KWALLET_AUTH" "$PAM_KWALLET_SESSION" >"$norec_login"
+set +e
+norec_out="$(env -u SHELLOPTS -u SUDO_USER HOME="$norec_case/home" LOGIN_FILE="$norec_login" \
+  PAM_KEYRING_STATE="$norec_case/mismatch-pam-keyring" PAM_LOGIN_BASE_STATE="$norec_base" \
+  bash "$REPO_ROOT/install.sh" --update --dry-run 2>&1)"
+norec_rc=$?
+set -e
+if [[ $norec_rc -ne 0 || "$norec_out" != *"Updating with the saved choices: --de custom --no-packages --keyring kwallet --dry-run"* ]]; then
+  norec_report+=" [custom preserves kwallet on --update: rc=$norec_rc, out=$norec_out]"
+fi
+
 if [[ -z "$norec_report" ]]; then
   pass "saved_install_args without pam-keyring detects auth-line edits and scopes built-in desktops to their own backend"
 else
@@ -14143,6 +14185,86 @@ if [[ $doc_rc -ne 1 || "$doc_out" != *"symlink to a non-regular file"* || "$doc_
   doctor_diag_report+=" dir-xi-symlink rc=$doc_rc out=[$doc_out];"
 fi
 
+# 5) Built-in desktops with mismatched pam-keyring or partial foreign PAM lines warn accurately without contradictory --pam-only hints
+reset_doctor_gnome_fixture
+rm -f "$doctor_home/.wayland-session" "$doctor_etc/lightxdm/gnome-session-type.conf"
+printf 'de=plasma\nno_packages=1\n' >"$doctor_state/lightxdm/install-choices"
+cp "$REPO_ROOT/dotfiles/.wayland-session-plasma" "$doctor_home/.wayland-session"
+chmod 755 "$doctor_home/.wayland-session"
+mkdir -p "$doctor_root/usr/lib"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$doctor_root/usr/lib/plasma-dbus-run-session-if-needed"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$doctor_root/usr/bin/startplasma-wayland"
+chmod +x "$doctor_root/usr/lib/plasma-dbus-run-session-if-needed" "$doctor_root/usr/bin/startplasma-wayland"
+: >"$doctor_root/usr/lib/security/pam_kwallet5.so"
+printf 'gnome\n' >"$doctor_etc/lightxdm/pam-keyring"
+cat >"$doctor_etc/pam.d/login" <<'EOF'
+#%PAM-1.0
+auth       include      system-local-login
+session    include      system-local-login
+EOF
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"PAM keyring state: WARN"* ||
+  "$doc_out" != *"PAM keyring: FAIL (expected kwallet5 lines for de=plasma missing"* ||
+  "$doc_out" != *"--pam-only --de plasma)"* ||
+  "$doc_out" == *"recorded gnome keyring lines missing"* ||
+  "$doc_out" == *"--keyring"* ]]; then
+  doctor_diag_ok=0
+  doctor_diag_report+=" plasma-mismatch-missing-kwallet rc=$doc_rc out=[$doc_out];"
+fi
+
+cat >"$doctor_etc/pam.d/login" <<EOF
+#%PAM-1.0
+auth       include      system-local-login
+$PAM_KWALLET_AUTH
+session    include      system-local-login
+$PAM_KWALLET_SESSION
+EOF
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"PAM keyring state: WARN"* ||
+  "$doc_out" != *"PAM keyring: ok"* ||
+  "$doc_out" == *"PAM keyring: FAIL"* ]]; then
+  doctor_diag_ok=0
+  doctor_diag_report+=" plasma-mismatch-has-kwallet rc=$doc_rc out=[$doc_out];"
+fi
+
+rm -f "$doctor_etc/lightxdm/pam-keyring"
+cat >"$doctor_etc/pam.d/login" <<EOF
+#%PAM-1.0
+auth       include      system-local-login
+$PAM_GNOME_KEYRING_AUTH
+session    include      system-local-login
+EOF
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"PAM foreign keyring: WARN (partial gnome PAM lines"* ||
+  "$doc_out" == *"PAM keyring: FAIL"* || "$doc_out" == *"--pam-only"* ]]; then
+  doctor_diag_ok=0
+  doctor_diag_report+=" plasma-partial-foreign-gnome rc=$doc_rc out=[$doc_out];"
+fi
+
+reset_doctor_gnome_fixture
+rm -f "$doctor_home/.wayland-session" "$doctor_etc/lightxdm/gnome-session-type.conf"
+printf 'de=xfce\nno_packages=1\n' >"$doctor_state/lightxdm/install-choices"
+cp "$REPO_ROOT/dotfiles/.xinitrc-xfce" "$doctor_home/.xinitrc"
+printf 'kwallet\n' >"$doctor_etc/lightxdm/pam-keyring"
+cat >"$doctor_etc/pam.d/login" <<'EOF'
+#%PAM-1.0
+auth       include      system-local-login
+session    include      system-local-login
+EOF
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"PAM keyring state: WARN"* ||
+  "$doc_out" != *"PAM keyring: FAIL (expected gnome keyring lines for de=xfce missing"* ||
+  "$doc_out" != *"--pam-only --de xfce)"* ||
+  "$doc_out" == *"recorded kwallet5 lines missing"* ||
+  "$doc_out" == *"--keyring"* ]]; then
+  doctor_diag_ok=0
+  doctor_diag_report+=" xfce-mismatch-missing-gnome rc=$doc_rc out=[$doc_out];"
+fi
+
 if [[ $doctor_diag_ok -eq 1 ]]; then
   pass "install.sh --doctor preserves --keyring kwallet hints for custom sessions and diagnoses X11/directory symlink launchers cleanly"
 else
@@ -15398,6 +15520,102 @@ done
 if [[ -s "$fix_sudo_log" ]]; then
   fix_ok=0
   fix_report+=" bad-touched-sudo;"
+fi
+
+# 6. Built-in desktops with mismatched pam-keyring or partial foreign PAM lines preview and apply their canonical backend
+mkdir -p "$fix_root/usr/lib"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$fix_root/usr/lib/plasma-dbus-run-session-if-needed"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$fix_root/usr/bin/startplasma-wayland"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$fix_bin/startxfce4"
+chmod +x "$fix_root/usr/lib/plasma-dbus-run-session-if-needed" "$fix_root/usr/bin/startplasma-wayland" "$fix_bin/startxfce4"
+
+# 6a. plasma with mismatched pam-keyring=gnome and stock login previews and applies kwallet
+reset_fix_fixture plasma
+printf 'gnome\n' >"$fix_etc/lightxdm/pam-keyring"
+printf '#%%PAM-1.0\nauth include system-local-login\nsession include system-local-login\n' >"$fix_etc/pam.d/login"
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || -s "$fix_sudo_log" ||
+  "$fx_out" != *"pam_kwallet5.so"* ||
+  "$fx_out" != *"record: $fix_etc/lightxdm/pam-keyring (kwallet)"* ||
+  "$fx_out" == *"pam_gnome_keyring.so"* ||
+  "$fx_out" == *"pam-keyring (gnome)"* ]]; then
+  fix_ok=0
+  fix_report+=" plasma-mismatch-dry rc=$fx_rc out=[$fx_out];"
+fi
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --non-interactive 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || "$fx_out" != *"Doctor: PASS"* ||
+  "$(cat "$fix_etc/lightxdm/pam-keyring" 2>/dev/null)" != "kwallet" ]] ||
+  ! grep -Fq 'pam_kwallet5.so' "$fix_etc/pam.d/login"; then
+  fix_ok=0
+  fix_report+=" plasma-mismatch-live rc=$fx_rc kr=$(cat "$fix_etc/lightxdm/pam-keyring" 2>/dev/null) out=[$fx_out];"
+fi
+
+# 6b. plasma with mismatched pam-keyring=gnome and existing kwallet lines still updates pam-keyring to kwallet
+printf 'gnome\n' >"$fix_etc/lightxdm/pam-keyring"
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || "$fx_out" != *"record: $fix_etc/lightxdm/pam-keyring (kwallet)"* ]]; then
+  fix_ok=0
+  fix_report+=" plasma-mismatch-record-dry rc=$fx_rc out=[$fx_out];"
+fi
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --non-interactive 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || "$fx_out" != *"Doctor: PASS"* ||
+  "$(cat "$fix_etc/lightxdm/pam-keyring" 2>/dev/null)" != "kwallet" ]]; then
+  fix_ok=0
+  fix_report+=" plasma-mismatch-record-live rc=$fx_rc out=[$fx_out];"
+fi
+
+# 6c. plasma with only partial foreign pam_gnome_keyring.so (no pam-keyring, no kwallet) is a --fix no-op; adding partial kwallet repairs kwallet (never gnome)
+reset_fix_fixture plasma
+rm -f "$fix_etc/lightxdm/pam-keyring"
+printf '#%%PAM-1.0\nauth include system-local-login\n%s\nsession include system-local-login\n' "$PAM_GNOME_KEYRING_AUTH" >"$fix_etc/pam.d/login"
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || "$fx_out" != *"Nothing to fix"* ]]; then
+  fix_ok=0
+  fix_report+=" plasma-foreign-only-dry rc=$fx_rc out=[$fx_out];"
+fi
+printf '%s\n' "$PAM_KWALLET_AUTH" >>"$fix_etc/pam.d/login"
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || "$fx_out" != *"pam_kwallet5.so"* ||
+  "$fx_out" != *"record: $fix_etc/lightxdm/pam-keyring (kwallet)"* ||
+  "$fx_out" == *"pam-keyring (gnome)"* ||
+  "$fx_out" == *"pam_gnome_keyring.so auto_start"* ]]; then
+  fix_ok=0
+  fix_report+=" plasma-both-partial-dry rc=$fx_rc out=[$fx_out];"
+fi
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --non-interactive 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || "$fx_out" != *"Doctor: PASS"* ||
+  "$(cat "$fix_etc/lightxdm/pam-keyring" 2>/dev/null)" != "kwallet" ]] ||
+  ! grep -Fq "$PAM_KWALLET_SESSION" "$fix_etc/pam.d/login"; then
+  fix_ok=0
+  fix_report+=" plasma-both-partial-live rc=$fx_rc out=[$fx_out];"
+fi
+
+# 6d. xfce with mismatched pam-keyring=kwallet previews and applies gnome
+reset_fix_fixture xfce
+printf 'kwallet\n' >"$fix_etc/lightxdm/pam-keyring"
+printf '#%%PAM-1.0\nauth include system-local-login\nsession include system-local-login\n' >"$fix_etc/pam.d/login"
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || "$fx_out" != *"pam_gnome_keyring.so"* ||
+  "$fx_out" != *"record: $fix_etc/lightxdm/pam-keyring (gnome)"* ||
+  "$fx_out" == *"pam_kwallet5.so"* ]]; then
+  fix_ok=0
+  fix_report+=" xfce-mismatch-dry rc=$fx_rc out=[$fx_out];"
+fi
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --non-interactive 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || "$fx_out" != *"Doctor: PASS"* ||
+  "$(cat "$fix_etc/lightxdm/pam-keyring" 2>/dev/null)" != "gnome" ]] ||
+  ! grep -Fq 'pam_gnome_keyring.so' "$fix_etc/pam.d/login"; then
+  fix_ok=0
+  fix_report+=" xfce-mismatch-live rc=$fx_rc out=[$fx_out];"
 fi
 
 if [[ $fix_ok -eq 1 ]]; then
