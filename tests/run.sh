@@ -13923,4 +13923,93 @@ else
   fail "install.sh --doctor custom kwallet/symlink diagnostics:$doctor_diag_report"
 fi
 
+# ---------------------------------------------------------------------------
+# preserve_dotfile / dotfile_unchanged unreadable-file safety and run_recover parent-symlink guards
+# ---------------------------------------------------------------------------
+dot_guard_ok=1
+dot_guard_report=""
+
+if [[ $EUID -ne 0 ]]; then
+  # 1) Unreadable dotfile in --recover fails cleanly with actionable message and leaves target intact
+  reset_doctor_gnome_fixture
+  printf '# secret bash_profile\n' >"$doctor_home/.bash_profile"
+  chmod 000 "$doctor_home/.bash_profile"
+  rec_rc=0
+  rec_out="$(run_doctor_cmd --recover 2>&1)" || rec_rc=$?
+  chmod 644 "$doctor_home/.bash_profile"
+  if [[ $rec_rc -ne 1 || "$rec_out" != *"Cannot read $doctor_home/.bash_profile to preserve it"* ||
+    "$(cat "$doctor_home/.bash_profile")" != "# secret bash_profile" ]]; then
+    dot_guard_ok=0
+    dot_guard_report+=" unreadable-target rc=$rec_rc out=[$rec_out];"
+  fi
+
+  # 2) Unreadable .lightxdm.bak does not crash preserve_dotfile; user edit is saved to .lightxdm-edited
+  reset_doctor_gnome_fixture
+  printf '# original backup\n' >"$doctor_home/.wayland-session.lightxdm.bak"
+  chmod 000 "$doctor_home/.wayland-session.lightxdm.bak"
+  printf '#!/bin/bash\n# edited launcher\n' >"$doctor_home/.wayland-session"
+  chmod 755 "$doctor_home/.wayland-session"
+  rec_rc=0
+  rec_out="$(run_doctor_cmd --recover 2>&1)" || rec_rc=$?
+  chmod 644 "$doctor_home/.wayland-session.lightxdm.bak"
+  if [[ $rec_rc -ne 0 || ! -e "$doctor_home/.wayland-session.lightxdm-edited" ||
+    "$(cat "$doctor_home/.wayland-session.lightxdm.bak")" != "# original backup" ]]; then
+    dot_guard_ok=0
+    dot_guard_report+=" unreadable-backup rc=$rec_rc out=[$rec_out];"
+  fi
+
+  # 3) dotfile_unchanged treats unreadable dotfile as modified without leaking Permission denied stderr
+  unr_upd_home="$doctor_dir/unreadable_upd_home"
+  mkdir -p "$unr_upd_home"
+  printf '#!/bin/bash\n# locked\n' >"$unr_upd_home/.wayland-session"
+  chmod 000 "$unr_upd_home/.wayland-session"
+  unr_err="$doctor_dir/unreadable_upd.err"
+  unr_rc=0
+  env \
+    HOME="$unr_upd_home" \
+    XDG_STATE_HOME="$doctor_dir/unreadable_state" \
+    UPDATE_RUN=1 \
+    bash -s "$REPO_ROOT" "$unr_upd_home" >/dev/null 2>"$unr_err" <<'EOF' || unr_rc=$?
+      set -euo pipefail
+      # shellcheck source=/dev/null
+      source "$1/install.sh"
+      copy_dotfile 0 755 "$1/dotfiles/.wayland-session-gnome" "$2/.wayland-session"
+EOF
+  chmod 644 "$unr_upd_home/.wayland-session"
+  unr_err_text="$(cat "$unr_err" 2>/dev/null || true)"
+  if [[ $unr_rc -ne 0 || "$unr_err_text" == *"Permission denied"* || "$unr_err_text" != *"has your own edits"* || ! -f "$unr_upd_home/.wayland-session.lightxdm-new" ]]; then
+    dot_guard_ok=0
+    dot_guard_report+=" dotfile-unchanged-unreadable rc=$unr_rc err=$unr_err_text;"
+  fi
+fi
+
+# 4) run_recover refuses symlinked ~/.config and default ~/.local/state parent paths
+rec_sym_home="$doctor_dir/rec_sym_home"
+rec_outside="$doctor_dir/rec_outside"
+mkdir -p "$rec_sym_home/.config_target/autostart" "$rec_sym_home/.local_target/state/lightxdm" "$rec_outside"
+ln -s "$rec_outside" "$rec_sym_home/.config"
+mkdir -p "$rec_outside/autostart"
+: >"$rec_outside/autostart/lightxdm-gpg-agent-tty.desktop.lightxdm-new"
+ln -s "$rec_sym_home/.local_target" "$rec_sym_home/.local"
+printf '100\n' >"$rec_sym_home/.local_target/state/lightxdm/startx-attempts"
+rec_rc=0
+rec_out="$(
+  env -u SUDO_USER -u XDG_STATE_HOME HOME="$rec_sym_home" PATH="$doctor_bin:/usr/bin:/bin" \
+    bash "$REPO_ROOT/install.sh" --recover --de xfce 2>&1
+)" || rec_rc=$?
+if [[ $rec_rc -ne 0 ||
+  ! -e "$rec_outside/autostart/lightxdm-gpg-agent-tty.desktop.lightxdm-new" ||
+  ! -e "$rec_sym_home/.local_target/state/lightxdm/startx-attempts" ||
+  "$rec_out" != *"Refusing to modify $rec_sym_home/.config/autostart/lightxdm-gpg-agent-tty.desktop.lightxdm-new"* ||
+  "$rec_out" != *"Refusing to clear $rec_sym_home/.local/state/lightxdm/startx-attempts"* ]]; then
+  dot_guard_ok=0
+  dot_guard_report+=" recover-parent-symlinks rc=$rec_rc out=[$rec_out];"
+fi
+
+if [[ $dot_guard_ok -eq 1 ]]; then
+  pass "preserve_dotfile, dotfile_unchanged, and --recover guard unreadable files and symlinked parent directories cleanly"
+else
+  fail "dotfile readability and recover symlink guards:$dot_guard_report"
+fi
+
 finish_harness

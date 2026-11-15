@@ -336,19 +336,23 @@ preserve_dotfile() {
   if [[ ! -e "$target" && ! -L "$target" ]]; then
     if [[ ! -e "$backup" && ! -L "$backup" && ! -e "$absent" && ! -L "$absent" ]]; then
       if [[ "$absent" == */* && ! -d "${absent%/*}" ]]; then
-        mkdir -p -- "${absent%/*}"
+        mkdir -p -- "${absent%/*}" || return 1
       fi
-      : > "$absent"
+      : > "$absent" || return 1
     fi
     return 0
   fi
 
   local tmpl target_sum="" recorded_sum=""
   if [[ -f "$target" && ! -L "$target" ]]; then
-    target_sum="$(sha256sum < "$target")"
+    if [[ ! -r "$target" ]]; then
+      log "Cannot read $target to preserve it; fix permissions on $target and re-run."
+      return 1
+    fi
+    target_sum="$(sha256sum < "$target")" || return 1
     for tmpl in "$@"; do
       [[ "$tmpl" -ef "$target" ]] && continue
-      if [[ -f "$tmpl" && "$target_sum" == "$(sha256sum < "$tmpl")" ]]; then
+      if [[ -f "$tmpl" && -r "$tmpl" && "$target_sum" == "$(sha256sum < "$tmpl")" ]]; then
         return 0
       fi
     done
@@ -366,7 +370,7 @@ preserve_dotfile() {
   if [[ ! -e "$absent" && ! -L "$absent" ]]; then
     if [[ ! -e "$backup" && ! -L "$backup" ]]; then
       log "Backing up $target to $backup"
-      cp -P "$target" "$backup"
+      cp -P "$target" "$backup" || return 1
       return 0
     fi
 
@@ -374,7 +378,7 @@ preserve_dotfile() {
       if [[ "$(readlink "$target")" == "$(readlink "$backup")" ]]; then
         return 0
       fi
-    elif [[ -f "$target" && ! -L "$target" && -f "$backup" && ! -L "$backup" ]]; then
+    elif [[ -f "$target" && ! -L "$target" && -f "$backup" && ! -L "$backup" && -r "$backup" ]]; then
       if [[ "$target_sum" == "$(sha256sum < "$backup")" ]]; then
         return 0
       fi
@@ -389,7 +393,7 @@ preserve_dotfile() {
     edited="${edited}.${n}"
   fi
   log "Saving edited $target to $edited"
-  cp -P "$target" "$edited"
+  cp -P "$target" "$edited" || return 1
 }
 
 # Print the session template path for a session id
@@ -914,7 +918,7 @@ dotfile_installed_before() {
 # template it would write now ($2), or a template an older lightXDM bundled.
 dotfile_unchanged() {
   local target="$1" source="$2" sum
-  [[ -f "$target" && ! -L "$target" ]] || return 1
+  [[ -f "$target" && ! -L "$target" && -r "$target" && -f "$source" && -r "$source" ]] || return 1
   sum="$(sha256sum <"$target")"
   [[ "${sum%% *}" == "$(recorded_dotfile_sum "$target")" || "$sum" == "$(sha256sum <"$source")" ]] ||
     is_past_lightxdm_template "$target" "${target#"$HOME"/}"
@@ -940,7 +944,7 @@ update_dotfile() {
       return 0
     fi
     if [[ ! -e "$target" ]]; then
-      preserve_dotfile "$target" "$source"
+      preserve_dotfile "$target" "$source" || return
     fi
     install -TDm"$mode" "$source" "$target" || return
     record_dotfile "$target" || log "WARNING: Could not record $target in $(dotfile_record_file)."
@@ -968,9 +972,9 @@ copy_dotfile() {
     return 0
   fi
   if [[ $# -eq 0 ]]; then
-    preserve_dotfile "$target" "$source"
+    preserve_dotfile "$target" "$source" || return
   else
-    preserve_dotfile "$target" "$@"
+    preserve_dotfile "$target" "$@" || return
   fi
   install -TDm"$mode" "$source" "$target" || return
   record_dotfile "$target" || log "WARNING: Could not record $target in $(dotfile_record_file); --update will treat it as edited."
@@ -986,18 +990,18 @@ copy_dotfiles() {
   if [[ $preview -eq 0 ]]; then
     log "Copying dotfiles to $user_home..."
   fi
-  copy_dotfile "$preview" 644 "$SCRIPT_DIR/dotfiles/.bash_profile" "$user_home/.bash_profile"
+  copy_dotfile "$preview" 644 "$SCRIPT_DIR/dotfiles/.bash_profile" "$user_home/.bash_profile" || return
 
   if [[ "$de" == "plasma" ]]; then
-    copy_dotfile "$preview" 744 "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome" "$user_home/.gpg-agent-kwallet"
+    copy_dotfile "$preview" 744 "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome" "$user_home/.gpg-agent-kwallet" || return
   else
-    copy_dotfile "$preview" 744 "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome" "$user_home/.gpg-agent-gnome"
+    copy_dotfile "$preview" 744 "$SCRIPT_DIR/dotfiles/.gpg-agent-gnome" "$user_home/.gpg-agent-gnome" || return
   fi
   # The helper runs before a Wayland compositor starts; this re-runs its refresh inside the session.
-  copy_dotfile "$preview" 644 "$SCRIPT_DIR/dotfiles/lightxdm-gpg-agent-tty.desktop" "$user_home/.config/autostart/lightxdm-gpg-agent-tty.desktop"
+  copy_dotfile "$preview" 644 "$SCRIPT_DIR/dotfiles/lightxdm-gpg-agent-tty.desktop" "$user_home/.config/autostart/lightxdm-gpg-agent-tty.desktop" || return
 
   local template base
-  template="$(xinitrc_template "$de")"
+  template="$(xinitrc_template "$de")" || return
   base="${template##*/}"
   if [[ -f "$template" ]]; then
     if [[ $preview -eq 0 && "$template" == "$user_home/.config/lightxdm/"* ]]; then
@@ -1009,14 +1013,14 @@ copy_dotfiles() {
         -e "$user_home/.wayland-session.lightxdm.absent" || -L "$user_home/.wayland-session.lightxdm.absent" ]]; then
         wayland_templates=("$user_home"/.config/lightxdm/.wayland-session-* "${wayland_templates[@]}")
       fi
-      copy_dotfile "$preview" 755 "$template" "$user_home/.wayland-session" "${wayland_templates[@]}"
+      copy_dotfile "$preview" 755 "$template" "$user_home/.wayland-session" "${wayland_templates[@]}" || return
     else
       local xinitrc_templates=("$SCRIPT_DIR"/dotfiles/.xinitrc-*)
       if [[ -e "$user_home/.xinitrc.lightxdm.bak" || -L "$user_home/.xinitrc.lightxdm.bak" ||
         -e "$user_home/.xinitrc.lightxdm.absent" || -L "$user_home/.xinitrc.lightxdm.absent" ]]; then
         xinitrc_templates=("$HOME"/.config/lightxdm/.xinitrc-* "${xinitrc_templates[@]}")
       fi
-      copy_dotfile "$preview" 755 "$template" "$user_home/.xinitrc" "${xinitrc_templates[@]}"
+      copy_dotfile "$preview" 755 "$template" "$user_home/.xinitrc" "${xinitrc_templates[@]}" || return
 
       local wl_session="$user_home/.wayland-session"
       # An executable ~/.wayland-session would start instead of startx, so move it aside like
@@ -1037,7 +1041,7 @@ copy_dotfiles() {
         elif [[ $preview -eq 1 ]]; then
           printf 'Remove dotfile (preserving existing content): %s\n' "$wl_session"
         else
-          preserve_dotfile "$wl_session" "${wl_templates[@]}"
+          preserve_dotfile "$wl_session" "${wl_templates[@]}" || return
           rm -f -- "$wl_session"
           log "Removed $wl_session so $de can start on TTY1 (originals: ${wl_session}.lightxdm.bak; saved edits: ${wl_session}.lightxdm-edited*)."
         fi
@@ -3187,7 +3191,8 @@ run_recover() {
     "$HOME/.config/autostart/lightxdm-gpg-agent-tty.desktop"; do
     if [[ -e "${candidate_dot}.lightxdm-new" || -L "${candidate_dot}.lightxdm-new" ]]; then
       candidate_parent="${candidate_dot%/*}"
-      if [[ -L "$candidate_parent" ]]; then
+      if [[ -L "$candidate_parent" ]] ||
+        { [[ "$candidate_dot" == "$HOME/.config/"* ]] && [[ -L "$HOME/.config" ]]; }; then
         log "WARNING: Refusing to modify ${candidate_dot}.lightxdm-new inside symlinked directory $candidate_parent."
         continue
       fi
@@ -3213,7 +3218,8 @@ run_recover() {
 
   local attempts_file="${XDG_STATE_HOME:-$HOME/.local/state}/lightxdm/startx-attempts"
   if [[ -e "$attempts_file" || -L "$attempts_file" ]]; then
-    if [[ -L "${attempts_file%/*}" ]]; then
+    if [[ -L "${attempts_file%/*}" ]] ||
+      { [[ "$attempts_file" == "$HOME/.local/state/"* ]] && [[ -L "$HOME/.local" || -L "$HOME/.local/state" ]]; }; then
       log "WARNING: Refusing to clear $attempts_file inside a symlinked state directory."
     elif [[ $preview -eq 1 ]]; then
       printf 'Clear crash-loop attempt counter: %s\n' "$attempts_file"
