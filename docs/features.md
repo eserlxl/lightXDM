@@ -31,6 +31,9 @@ lightXDM supports built-in and custom X11/Wayland desktop sessions, non-bash log
 - **Dotfiles:** `.bash_profile` and the session template for your DE (`~/.xinitrc` for X11, or `~/.wayland-session` for Plasma, GNOME, and Budgie) are copied for session start on TTY1. Installing an X11 desktop moves any `~/.wayland-session` aside and removes it so `startx` can run; see [session files and backups](installation.md#session-files-and-backups).
 - **Wayland packages:** Plasma, GNOME, and Budgie do not install `xorg-server` or `xorg-xinit`.
 
+### Interactive Guided Setup
+- **First-Run Wizard (`--guided [--dry-run]`):** Runs `--preflight` before asking for `sudo`, lets you pick from detected built-in desktops, ready custom X11/Wayland `.desktop` sessions, or all 9 built-in desktops (re-confirming GNOME's screen-lock limitation), chooses password+keyring (including GNOME Keyring or KWallet for custom sessions) vs `--no-keyring` vs `--no-keyring --autologin`, offers missing zsh/fish `--setup-shell` integration, prints the exact reproducible non-guided CLI command plus live `--dry-run` preview, and waits for explicit confirmation before modifying anything.
+
 ### Custom X11 & Wayland Sessions
 - **Session Discovery:** `--list-sessions [--json]` inspects installed X11 and Wayland `.desktop` session entries across system (`/usr/share`) and user (`~/.local/share` / `$XDG_DATA_HOME`) directories safely on the host, reporting validation details alongside ready `init:` (`--init-template`) and `install:` (`--install-session` / built-in `--de`) commands.
 - **Editable Templates:** `--init-template [--wayland] [--from-session <path>] --de <custom-id>` creates `~/.config/lightxdm/.xinitrc-<id>` (or `.wayland-session-<id>` when `--wayland` is passed or `<path>` is a Wayland entry) for manual customization before installing with `--no-packages --de <custom-id>`.

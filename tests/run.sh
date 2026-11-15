@@ -18286,6 +18286,194 @@ else
   fail "onboarding preflight/list-sessions checks:$onb_report"
 fi
 
+guided_case="$TMP_DIR/guided_onboarding"
+mkdir -p "$guided_case/bin" "$guided_case/home/.config" "$guided_case/sess/usr/share/wayland-sessions" \
+  "$guided_case/sess/usr/share/xsessions" "$guided_case/sess/usr/bin" "$guided_case/dm"
+: >"$guided_case/sudo.log"
+cat >"$guided_case/bin/id" <<'EOF'
+#!/bin/bash
+case "${1:-}" in
+  -u) echo 1000 ;;
+  -un) echo testuser ;;
+  -nG) echo "testuser wheel" ;;
+  *) echo 1000 ;;
+esac
+EOF
+cat >"$guided_case/bin/getent" <<'EOF'
+#!/bin/bash
+printf '%s:x:1000:1000::%s:%s\n' "${2:-testuser}" "$HOME" "${GUIDED_SHELL:-/bin/bash}"
+EOF
+cat >"$guided_case/bin/sudo" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >>"$guided_case/sudo.log"
+exit 99
+EOF
+cat >"$guided_case/bin/pacman" <<'EOF'
+#!/bin/bash
+if [[ "${1:-}" == "-Qq" && -n "${GUIDED_PKGS:-}" && " ${GUIDED_PKGS} " == *" ${2:-} "* ]]; then
+  exit 0
+fi
+exit 1
+EOF
+cat >"$guided_case/bin/systemctl" <<'EOF'
+#!/bin/bash
+case "${1:-}" in
+  is-enabled)
+    case "${2:-}" in
+      getty@tty1.service)
+        echo "${GUIDED_GETTY:-enabled}"
+        [[ "${GUIDED_GETTY:-enabled}" == "enabled" ]]
+        ;;
+      *)
+        echo disabled
+        exit 1
+        ;;
+    esac
+    ;;
+  list-unit-files) ;;
+esac
+EOF
+chmod +x "$guided_case/bin"/{id,getent,sudo,pacman,systemctl}
+printf '#!/bin/bash\nexit 0\n' >"$guided_case/sess/usr/bin/fake-hyprland"
+chmod +x "$guided_case/sess/usr/bin/fake-hyprland"
+cat >"$guided_case/sess/usr/share/wayland-sessions/hyprland.desktop" <<'EOF'
+[Desktop Entry]
+Name=Hyprland
+Exec=/usr/bin/fake-hyprland
+TryExec=/usr/bin/fake-hyprland
+DesktopNames=Hyprland
+EOF
+
+guided_ok=1
+guided_report=""
+set +e
+for bad_args in \
+  "--guided --de xfce" \
+  "--guided --json" \
+  "--guided --guided" \
+  "--guided --autologin" \
+  "--status --guided" \
+  "--preflight --guided" \
+  "--dry-run --guided --non-interactive"; do
+  # shellcheck disable=SC2086 # intentional word splitting for flag pairs
+  bad_out="$(env HOME="$guided_case/home" USER=testuser PATH="$guided_case/bin:$PATH" \
+    bash "$REPO_ROOT/install.sh" $bad_args </dev/null 2>&1)"
+  bad_rc=$?
+  if [[ $bad_rc -ne 1 ]]; then
+    guided_ok=0
+    guided_report+=" [bad combo '$bad_args' rc=$bad_rc out=$bad_out]"
+  fi
+done
+
+guided_blk_out="$(env HOME="$guided_case/home" USER=testuser PATH="$guided_case/bin:$PATH" \
+  GUIDED_GETTY=masked GUIDED_PKGS="" SESSION_ROOT="$guided_case/empty_sess" \
+  DISPLAY_MANAGER_LINK="$guided_case/dm/display-manager.service" \
+  bash "$REPO_ROOT/install.sh" --guided --dry-run </dev/null 2>&1)"
+guided_blk_rc=$?
+if [[ $guided_blk_rc -ne 1 || "$guided_blk_out" != *"getty@tty1.service: FAIL (masked"* || -s "$guided_case/sudo.log" ]]; then
+  guided_ok=0
+  guided_report+=" [blocker rc=$guided_blk_rc out=$guided_blk_out]"
+fi
+
+guided_custom_out="$(printf '1\n2\n\n' | env HOME="$guided_case/home" USER=testuser PATH="$guided_case/bin:$PATH" \
+  GUIDED_SHELL=/usr/bin/zsh GUIDED_PKGS="" SESSION_ROOT="$guided_case/sess" \
+  DISPLAY_MANAGER_LINK="$guided_case/dm/display-manager.service" \
+  bash "$REPO_ROOT/install.sh" --dry-run --guided 2>&1)"
+guided_custom_rc=$?
+if [[ $guided_custom_rc -ne 0 ||
+  "$guided_custom_out" != *"Equivalent command:"*"--install-session "*"hyprland.desktop --wayland --keyring kwallet --setup-shell zsh"* ||
+  "$guided_custom_out" != *"Session entry: $guided_case/sess/usr/share/wayland-sessions/hyprland.desktop (de=hyprland, mode=wayland"* ||
+  "$guided_custom_out" != *"Shell hook (zsh): would create $guided_case/home/.zprofile"* ||
+  "$guided_custom_out" != *"Guided dry run complete; no changes were made."* ||
+  -s "$guided_case/sudo.log" || -e "$guided_case/home/.config/lightxdm/.wayland-session-hyprland" ]]; then
+  guided_ok=0
+  guided_report+=" [custom wayland+kwallet+zsh rc=$guided_custom_rc out=$guided_custom_out]"
+fi
+
+guided_gnome_out="$(printf '1\nn\n2\n4\n3\n' | env HOME="$guided_case/home" USER=testuser PATH="$guided_case/bin:$PATH" \
+  GUIDED_SHELL=/bin/bash GUIDED_PKGS=gnome-shell SESSION_ROOT="$guided_case/empty_sess" \
+  DISPLAY_MANAGER_LINK="$guided_case/dm/display-manager.service" \
+  bash "$REPO_ROOT/install.sh" --guided --dry-run 2>&1)"
+guided_gnome_rc=$?
+if [[ $guided_gnome_rc -ne 0 ||
+  "$guided_gnome_out" != *"Note: GNOME cannot lock the screen without GDM"* ||
+  "$guided_gnome_out" != *"Equivalent command:"*"--de xfce --no-keyring --autologin"* ||
+  "$guided_gnome_out" != *"TTY1 autologin:"* ||
+  -s "$guided_case/sudo.log" ]]; then
+  guided_ok=0
+  guided_report+=" [gnome decline->xfce autologin rc=$guided_gnome_rc out=$guided_gnome_out]"
+fi
+
+guided_quit_out="$(printf 'q\n' | env HOME="$guided_case/home" USER=testuser PATH="$guided_case/bin:$PATH" \
+  GUIDED_SHELL=/bin/bash GUIDED_PKGS="" SESSION_ROOT="$guided_case/empty_sess" \
+  DISPLAY_MANAGER_LINK="$guided_case/dm/display-manager.service" \
+  bash "$REPO_ROOT/install.sh" --guided 2>&1)"
+guided_quit_rc=$?
+guided_decline_out="$(printf '4\n1\nn\n' | env HOME="$guided_case/home" USER=testuser PATH="$guided_case/bin:$PATH" \
+  GUIDED_SHELL=/bin/bash GUIDED_PKGS="" SESSION_ROOT="$guided_case/empty_sess" \
+  DISPLAY_MANAGER_LINK="$guided_case/dm/display-manager.service" \
+  bash "$REPO_ROOT/install.sh" --guided 2>&1)"
+guided_decline_rc=$?
+guided_eof_out="$(printf '4\n' | env HOME="$guided_case/home" USER=testuser PATH="$guided_case/bin:$PATH" \
+  GUIDED_SHELL=/bin/bash GUIDED_PKGS="" SESSION_ROOT="$guided_case/empty_sess" \
+  DISPLAY_MANAGER_LINK="$guided_case/dm/display-manager.service" \
+  bash "$REPO_ROOT/install.sh" --guided 2>&1)"
+guided_eof_rc=$?
+if [[ $guided_quit_rc -ne 0 || "$guided_quit_out" != *"Cancelled by user; no changes were made."* ||
+  $guided_decline_rc -ne 0 || "$guided_decline_out" != *"Equivalent command:"*"--de xfce"* ||
+  "$guided_decline_out" != *"Cancelled by user; no changes were made."* ||
+  $guided_eof_rc -ne 1 || "$guided_eof_out" != *"Input closed (EOF)"* ||
+  -s "$guided_case/sudo.log" ]]; then
+  guided_ok=0
+  guided_report+=" [cancel/eof quit=$guided_quit_rc:$guided_quit_out decline=$guided_decline_rc:$guided_decline_out eof=$guided_eof_rc:$guided_eof_out]"
+fi
+
+guided_live_log="$guided_case/live.log"
+cat >"$guided_case/run_live.sh" <<'EOF'
+#!/bin/bash
+source "$1/install.sh"
+check_root() { :; }
+authenticate_sudo() { printf 'sudo:%s\n' "${2:-}" >>"$GUIDED_LOG"; }
+check_template_syntax() { :; }
+check_tty1_getty() { :; }
+check_template_not_self() { :; }
+install_packages() { printf 'pkg:%s\n' "$1" >>"$GUIDED_LOG"; }
+check_session_commands() { :; }
+copy_dotfiles() { printf 'copy:%s\n' "$1" >>"$GUIDED_LOG"; }
+apply_shell_hook() {
+  if [[ "${2:-0}" == 1 ]]; then
+    printf 'Would install lightXDM shell hook (%s)\n' "$1"
+  else
+    printf 'hook:%s:%s\n' "$1" "$2" >>"$GUIDED_LOG"
+  fi
+}
+configure_pam() { printf 'pam:%s\n' "$1" >>"$GUIDED_LOG"; }
+configure_gnome_session_type() { :; }
+disable_display_managers() { :; }
+save_install_choices() { printf 'save:%s\n' "$1" >>"$GUIDED_LOG"; }
+main --guided
+EOF
+guided_live_out="$(printf '4\n1\ny\ny\n' | env HOME="$guided_case/home" USER=testuser PATH="$guided_case/bin:$PATH" \
+  GUIDED_SHELL=/usr/bin/fish GUIDED_PKGS="" SESSION_ROOT="$guided_case/empty_sess" \
+  DISPLAY_MANAGER_LINK="$guided_case/dm/display-manager.service" \
+  GUIDED_LOG="$guided_live_log" \
+  bash "$guided_case/run_live.sh" "$REPO_ROOT" 2>&1)"
+guided_live_rc=$?
+set -e
+guided_live_steps="$(cat "$guided_live_log" 2>/dev/null || true)"
+if [[ $guided_live_rc -ne 0 || "$guided_live_out" != *"Running:"*"--de xfce --setup-shell fish"* ||
+  "$guided_live_out" != *"lightXDM install complete!"* ||
+  "$guided_live_steps" != *$'sudo:testuser\npkg:xfce\ncopy:xfce\nhook:fish:0\npam:xfce\nsave:xfce'* ]]; then
+  guided_ok=0
+  guided_report+=" [live confirm rc=$guided_live_rc steps=$guided_live_steps out=$guided_live_out]"
+fi
+
+if [[ $guided_ok -eq 1 ]]; then
+  pass "install.sh --guided interactive onboarding (preflight gate, custom/built-in menus, GNOME confirm, shell hook, preview, cancel/EOF, live confirm)"
+else
+  fail "install.sh --guided onboarding checks:$guided_report"
+fi
+
 if ! command -v python3 >/dev/null 2>&1; then
   skip "Python VM driver unit tests (python3 unavailable)"
 else

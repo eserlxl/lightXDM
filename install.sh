@@ -3503,6 +3503,54 @@ shell_has_tty1_hook() {
   [[ -f "$target" && -r "$target" ]] && grep -Eq '\.wayland-session|startx' "$target" 2>/dev/null
 }
 
+# Collect ready non-builtin custom .desktop sessions into _CUSTOM_SESSION_{ENTRIES,TYPES,NAMES,LABELS}.
+collect_ready_custom_sessions() {
+  local LC_ALL=C
+  local _SESSION_XSESSIONS_DIR="" _SESSION_WAYLAND_DIR="" _SESSION_USER_XSESSIONS_DIR="" _SESSION_USER_WAYLAND_DIR=""
+  local _SESSION_SCAN_TYPES=() _SESSION_SCAN_SCOPES=() _SESSION_SCAN_DIRS=()
+  local _SESSION_MISSING_CMD="" _SESSION_MISSING_REASON=""
+  local s_idx=0 s_type="" s_dir="" s_entry="" s_stem="" s_label=""
+  local SESSION_ENTRY_NAME="" SESSION_ENTRY_EXEC_LINE="" SESSION_ENTRY_EXEC_CMD=""
+  local SESSION_ENTRY_DESKTOP="" SESSION_ENTRY_TRY_EXEC=""
+  local SESSION_ENTRY_HIDDEN=0 SESSION_ENTRY_NO_DISPLAY=0 SESSION_ENTRY_ERROR=""
+
+  _CUSTOM_SESSION_ENTRIES=()
+  _CUSTOM_SESSION_TYPES=()
+  _CUSTOM_SESSION_NAMES=()
+  _CUSTOM_SESSION_LABELS=()
+
+  resolve_session_scan_dirs
+  for ((s_idx = 0; s_idx < ${#_SESSION_SCAN_DIRS[@]}; s_idx++)); do
+    s_type="${_SESSION_SCAN_TYPES[$s_idx]}"
+    s_dir="${_SESSION_SCAN_DIRS[$s_idx]}"
+    [[ -d "$s_dir" && -r "$s_dir" && -x "$s_dir" ]] || continue
+    for s_entry in "${s_dir%/}"/*.desktop; do
+      [[ -e "$s_entry" || -L "$s_entry" ]] || continue
+      SESSION_ENTRY_NAME=""
+      SESSION_ENTRY_EXEC_LINE=""
+      SESSION_ENTRY_EXEC_CMD=""
+      SESSION_ENTRY_DESKTOP=""
+      SESSION_ENTRY_TRY_EXEC=""
+      SESSION_ENTRY_HIDDEN=0
+      SESSION_ENTRY_NO_DISPLAY=0
+      SESSION_ENTRY_ERROR=""
+      s_stem="${s_entry##*/}"
+      s_stem="${s_stem%.desktop}"
+      s_stem="${s_stem,,}"
+      if parse_desktop_session_entry "$s_entry"; then
+        [[ $SESSION_ENTRY_HIDDEN -eq 0 && $SESSION_ENTRY_NO_DISPLAY -eq 0 ]] || continue
+        is_builtin_de_id "$s_stem" && continue
+        desktop_session_missing_reason || continue
+        s_label="${SESSION_ENTRY_NAME:-${s_entry##*/}}"
+        _CUSTOM_SESSION_ENTRIES+=("$s_entry")
+        _CUSTOM_SESSION_TYPES+=("$s_type")
+        _CUSTOM_SESSION_NAMES+=("$s_label")
+        _CUSTOM_SESSION_LABELS+=("$s_label ($s_entry)")
+      fi
+    done
+  done
+}
+
 # Run pre-install onboarding readiness checks cleanly without sudo or side effects
 run_preflight() {
   local json_mode=0
@@ -3651,45 +3699,15 @@ run_preflight() {
     diag_record_check "$json_mode" "Existing setup" "info" "$diag_msg" "$diag_msg"
   fi
 
-  local _SESSION_XSESSIONS_DIR="" _SESSION_WAYLAND_DIR="" _SESSION_USER_XSESSIONS_DIR="" _SESSION_USER_WAYLAND_DIR=""
-  local _SESSION_SCAN_TYPES=() _SESSION_SCAN_SCOPES=() _SESSION_SCAN_DIRS=()
-  local _SESSION_MISSING_CMD="" _SESSION_MISSING_REASON=""
+  local _CUSTOM_SESSION_ENTRIES=() _CUSTOM_SESSION_TYPES=() _CUSTOM_SESSION_NAMES=() _CUSTOM_SESSION_LABELS=()
+  collect_ready_custom_sessions
   local custom_session_entries=() custom_session_labels=() first_custom_type="" first_custom_entry=""
-  local s_idx=0 s_type="" s_dir="" s_entry="" s_stem="" s_label=""
-  local SESSION_ENTRY_NAME="" SESSION_ENTRY_EXEC_LINE="" SESSION_ENTRY_EXEC_CMD=""
-  local SESSION_ENTRY_DESKTOP="" SESSION_ENTRY_TRY_EXEC=""
-  local SESSION_ENTRY_HIDDEN=0 SESSION_ENTRY_NO_DISPLAY=0 SESSION_ENTRY_ERROR=""
-  resolve_session_scan_dirs
-  for ((s_idx = 0; s_idx < ${#_SESSION_SCAN_DIRS[@]}; s_idx++)); do
-    s_type="${_SESSION_SCAN_TYPES[$s_idx]}"
-    s_dir="${_SESSION_SCAN_DIRS[$s_idx]}"
-    [[ -d "$s_dir" && -r "$s_dir" && -x "$s_dir" ]] || continue
-    for s_entry in "${s_dir%/}"/*.desktop; do
-      [[ -e "$s_entry" || -L "$s_entry" ]] || continue
-      SESSION_ENTRY_NAME=""
-      SESSION_ENTRY_EXEC_LINE=""
-      SESSION_ENTRY_EXEC_CMD=""
-      SESSION_ENTRY_DESKTOP=""
-      SESSION_ENTRY_TRY_EXEC=""
-      SESSION_ENTRY_HIDDEN=0
-      SESSION_ENTRY_NO_DISPLAY=0
-      SESSION_ENTRY_ERROR=""
-      s_stem="${s_entry##*/}"
-      s_stem="$(lowercase_ascii "${s_stem%.desktop}")"
-      if parse_desktop_session_entry "$s_entry"; then
-        [[ $SESSION_ENTRY_HIDDEN -eq 0 && $SESSION_ENTRY_NO_DISPLAY -eq 0 ]] || continue
-        is_builtin_de_id "$s_stem" && continue
-        desktop_session_missing_reason || continue
-        s_label="${SESSION_ENTRY_NAME:-${s_entry##*/}}"
-        custom_session_entries+=("$s_entry")
-        custom_session_labels+=("$s_label ($s_entry)")
-        if [[ -z "$first_custom_entry" ]]; then
-          first_custom_entry="$s_entry"
-          first_custom_type="$s_type"
-        fi
-      fi
-    done
-  done
+  if [[ ${#_CUSTOM_SESSION_ENTRIES[@]} -gt 0 ]]; then
+    custom_session_entries=("${_CUSTOM_SESSION_ENTRIES[@]}")
+    custom_session_labels=("${_CUSTOM_SESSION_LABELS[@]}")
+    first_custom_entry="${_CUSTOM_SESSION_ENTRIES[0]}"
+    first_custom_type="${_CUSTOM_SESSION_TYPES[0]}"
+  fi
 
   local custom_summary="" ci=0
   for ((ci = 0; ci < ${#custom_session_labels[@]}; ci++)); do
@@ -3796,6 +3814,339 @@ run_preflight() {
     printf '%s\n' "$summary_msg"
   fi
   [[ $blockers -eq 0 ]]
+}
+
+# Interactive first-run guided onboarding wizard: preflight -> desktop/custom session -> keyring/autologin -> shell hook -> dry-run preview -> confirm.
+run_guided_wizard() {
+  local dry_run="${1:-0}"
+  local preflight_rc=0
+  run_preflight || preflight_rc=$?
+  if [[ $preflight_rc -ne 0 ]]; then
+    log "Preflight checks failed; resolve the blocker(s) above before running --guided."
+    return 1
+  fi
+
+  local choices_file="" choices_line="" existing_de=""
+  choices_file="$(install_choices_file)"
+  if install_choices_readable "$choices_file"; then
+    while IFS= read -r choices_line || [[ -n "$choices_line" ]]; do
+      case "$choices_line" in
+        de=*) existing_de="${choices_line#de=}" ;;
+      esac
+    done <"$choices_file"
+  fi
+
+  local detected_raw="" detected_des=() cand=""
+  detected_raw="$(detect_de 2>/dev/null || true)"
+  if [[ -n "$detected_raw" && "$detected_raw" != "unknown" ]]; then
+    while IFS= read -r cand || [[ -n "$cand" ]]; do
+      [[ -n "$cand" && "$cand" != "unknown" ]] || continue
+      detected_des+=("$cand")
+    done <<<"$detected_raw"
+  fi
+
+  local _CUSTOM_SESSION_ENTRIES=() _CUSTOM_SESSION_TYPES=() _CUSTOM_SESSION_NAMES=() _CUSTOM_SESSION_LABELS=()
+  collect_ready_custom_sessions
+
+  local -a builtin_ids=(plasma gnome budgie xfce lxqt lxde mate cinnamon i3)
+  local -a builtin_descs=(
+    "plasma (Wayland)"
+    "gnome (Wayland — note: cannot lock screen without GDM)"
+    "budgie (Wayland)"
+    "xfce (X11)"
+    "lxqt (X11)"
+    "lxde (X11)"
+    "mate (X11)"
+    "cinnamon (X11)"
+    "i3 (X11)"
+  )
+
+  printf '\n--- lightXDM Guided Onboarding ---\n'
+  if [[ -n "$existing_de" ]]; then
+    log "Note: existing lightXDM setup detected for $existing_de (press 'q' to quit if you meant --update)."
+  fi
+
+  local chosen_kind="" chosen_de="" chosen_entry="" chosen_type=""
+  local -a menu_kinds=() menu_values=() menu_types=() menu_labels=()
+  local idx=0
+
+  for ((idx = 0; idx < ${#detected_des[@]}; idx++)); do
+    cand="${detected_des[$idx]}"
+    menu_kinds+=(builtin)
+    menu_values+=("$cand")
+    menu_types+=("")
+    if [[ "$cand" == gnome ]]; then
+      menu_labels+=("$cand (detected built-in desktop; note: cannot lock screen without GDM)")
+    else
+      menu_labels+=("$cand (detected built-in desktop)")
+    fi
+  done
+
+  for ((idx = 0; idx < ${#_CUSTOM_SESSION_ENTRIES[@]}; idx++)); do
+    menu_kinds+=(custom)
+    menu_values+=("${_CUSTOM_SESSION_ENTRIES[$idx]}")
+    menu_types+=("${_CUSTOM_SESSION_TYPES[$idx]}")
+    menu_labels+=("${_CUSTOM_SESSION_NAMES[$idx]} (${_CUSTOM_SESSION_ENTRIES[$idx]} — ready custom ${_CUSTOM_SESSION_TYPES[$idx]} session)")
+  done
+
+  local has_discovered=0
+  if [[ ${#menu_kinds[@]} -gt 0 ]]; then
+    has_discovered=1
+    menu_kinds+=(choose-builtin)
+    menu_values+=("")
+    menu_types+=("")
+    menu_labels+=("Choose another built-in desktop to install packages for")
+  else
+    for ((idx = 0; idx < ${#builtin_ids[@]}; idx++)); do
+      menu_kinds+=(builtin)
+      menu_values+=("${builtin_ids[$idx]}")
+      menu_types+=("")
+      menu_labels+=("${builtin_descs[$idx]}")
+    done
+  fi
+
+  local reply="" pick_idx=0 gnome_confirm=""
+  while true; do
+    printf '\nStep 1 — Select a desktop or custom session:\n'
+    for ((idx = 0; idx < ${#menu_labels[@]}; idx++)); do
+      printf '  %d) %s\n' "$((idx + 1))" "${menu_labels[$idx]}"
+    done
+    printf '  q) Quit\n'
+    printf 'Choice [1-%d, or q]: ' "${#menu_labels[@]}"
+    if ! IFS= read -r reply; then
+      log "Input closed (EOF) during guided setup; no changes were made."
+      return 1
+    fi
+    case "$reply" in
+      q | Q | quit | QUIT)
+        log "Cancelled by user; no changes were made."
+        return 0
+        ;;
+      "" | *[!0123456789]*)
+        printf 'Invalid selection (%s); enter 1-%d or q.\n' "$reply" "${#menu_labels[@]}"
+        continue
+        ;;
+    esac
+    pick_idx=$((10#$reply))
+    if ((pick_idx < 1 || pick_idx > ${#menu_labels[@]})); then
+      printf 'Selection out of range (%s); enter 1-%d or q.\n' "$reply" "${#menu_labels[@]}"
+      continue
+    fi
+    pick_idx=$((pick_idx - 1))
+    chosen_kind="${menu_kinds[$pick_idx]}"
+    if [[ "$chosen_kind" == choose-builtin ]]; then
+      local bi_picked=0
+      while true; do
+        printf '\nBuilt-in desktops:\n'
+        for ((idx = 0; idx < ${#builtin_ids[@]}; idx++)); do
+          printf '  %d) %s\n' "$((idx + 1))" "${builtin_descs[$idx]}"
+        done
+        [[ $has_discovered -eq 1 ]] && printf '  b) Back\n'
+        printf '  q) Quit\n'
+        printf 'Choice [1-%d%s]: ' "${#builtin_ids[@]}" "$([[ $has_discovered -eq 1 ]] && printf ', b, q' || printf ', q')"
+        if ! IFS= read -r reply; then
+          log "Input closed (EOF) during guided setup; no changes were made."
+          return 1
+        fi
+        case "$reply" in
+          q | Q | quit | QUIT)
+            log "Cancelled by user; no changes were made."
+            return 0
+            ;;
+          b | B | back | BACK)
+            if [[ $has_discovered -eq 1 ]]; then
+              bi_picked=2
+              break
+            fi
+            ;;
+          "" | *[!0123456789]*)
+            printf 'Invalid selection (%s); enter 1-%d or q.\n' "$reply" "${#builtin_ids[@]}"
+            continue
+            ;;
+          *)
+            local bi_idx=$((10#$reply))
+            if ((bi_idx >= 1 && bi_idx <= ${#builtin_ids[@]})); then
+              chosen_kind="builtin"
+              chosen_de="${builtin_ids[$((bi_idx - 1))]}"
+              chosen_entry=""
+              chosen_type=""
+              bi_picked=1
+              break
+            fi
+            printf 'Selection out of range (%s); enter 1-%d or q.\n' "$reply" "${#builtin_ids[@]}"
+            continue
+            ;;
+        esac
+      done
+      [[ $bi_picked -eq 2 ]] && continue
+    elif [[ "$chosen_kind" == builtin ]]; then
+      chosen_de="${menu_values[$pick_idx]}"
+      chosen_entry=""
+      chosen_type=""
+    else
+      chosen_entry="${menu_values[$pick_idx]}"
+      chosen_type="${menu_types[$pick_idx]}"
+      chosen_de=""
+    fi
+
+    if [[ "$chosen_kind" == builtin && "$chosen_de" == gnome ]]; then
+      printf '\nNote: GNOME cannot lock the screen without GDM (see docs/installation.md).\n'
+      while true; do
+        printf 'Continue with gnome? [Y/n]: '
+        if ! IFS= read -r gnome_confirm; then
+          log "Input closed (EOF) during guided setup; no changes were made."
+          return 1
+        fi
+        case "$gnome_confirm" in
+          "" | y | Y | yes | YES) break ;;
+          n | N | no | NO) chosen_kind=""; break ;;
+          q | Q | quit | QUIT)
+            log "Cancelled by user; no changes were made."
+            return 0
+            ;;
+          *) printf 'Please enter y or n.\n' ;;
+        esac
+      done
+      [[ -n "$chosen_kind" ]] || continue
+    fi
+    break
+  done
+
+  local chosen_keyring="" chosen_no_keyring=0 chosen_autologin=0
+  if [[ "$chosen_kind" == custom ]]; then
+    while true; do
+      printf '\nStep 2 — Login and keyring unlock for %s:\n' "$chosen_entry"
+      printf '  1) Password login at TTY1 + GNOME Keyring auto-unlock (default)\n'
+      printf '  2) Password login at TTY1 + KWallet auto-unlock (--keyring kwallet)\n'
+      printf '  3) Password login at TTY1 without keyring PAM setup (--no-keyring)\n'
+      printf '  4) Passwordless TTY1 autologin (--no-keyring --autologin; keyring cannot auto-unlock)\n'
+      printf 'Choice [1-4, default 1, q to quit]: '
+      if ! IFS= read -r reply; then
+        log "Input closed (EOF) during guided setup; no changes were made."
+        return 1
+      fi
+      case "$reply" in
+        "" | 1) chosen_keyring=""; chosen_no_keyring=0; chosen_autologin=0; break ;;
+        2) chosen_keyring="kwallet"; chosen_no_keyring=0; chosen_autologin=0; break ;;
+        3) chosen_keyring=""; chosen_no_keyring=1; chosen_autologin=0; break ;;
+        4) chosen_keyring=""; chosen_no_keyring=1; chosen_autologin=1; break ;;
+        q | Q | quit | QUIT)
+          log "Cancelled by user; no changes were made."
+          return 0
+          ;;
+        *) printf 'Invalid choice (%s); enter 1-4 or q.\n' "$reply" ;;
+      esac
+    done
+  else
+    local unlock_label="GNOME Keyring"
+    [[ "$chosen_de" == plasma ]] && unlock_label="KWallet"
+    while true; do
+      printf '\nStep 2 — Login and keyring unlock for %s:\n' "$chosen_de"
+      printf '  1) Password login at TTY1 + %s auto-unlock (recommended)\n' "$unlock_label"
+      printf '  2) Password login at TTY1 without keyring PAM setup (--no-keyring)\n'
+      printf '  3) Passwordless TTY1 autologin (--no-keyring --autologin; keyring cannot auto-unlock)\n'
+      printf 'Choice [1-3, default 1, q to quit]: '
+      if ! IFS= read -r reply; then
+        log "Input closed (EOF) during guided setup; no changes were made."
+        return 1
+      fi
+      case "$reply" in
+        "" | 1) chosen_no_keyring=0; chosen_autologin=0; break ;;
+        2) chosen_no_keyring=1; chosen_autologin=0; break ;;
+        3) chosen_no_keyring=1; chosen_autologin=1; break ;;
+        q | Q | quit | QUIT)
+          log "Cancelled by user; no changes were made."
+          return 0
+          ;;
+        *) printf 'Invalid choice (%s); enter 1-3 or q.\n' "$reply" ;;
+      esac
+    done
+  fi
+
+  local chosen_setup_shell="" current_user="" login_shell="" hook_kind="" hook_display=""
+  current_user="${SUDO_USER:-${USER:-}}"
+  [[ -n "$current_user" ]] || current_user="$(id -un 2>/dev/null || true)"
+  if [[ -n "$current_user" ]] && command -v getent >/dev/null 2>&1; then
+    login_shell="$(getent passwd "$current_user" | cut -d: -f7 || true)"
+  fi
+  case "$login_shell" in
+    *zsh) hook_kind="zsh" ;;
+    *fish) hook_kind="fish" ;;
+  esac
+  if [[ -n "$hook_kind" ]]; then
+    if ! shell_hook_relpath "$hook_kind" 0 >/dev/null; then
+      printf '\nNote: %s uses an out-of-home config directory; add TTY1 snippet manually with %s --shell-snippet %s\n' \
+        "$login_shell" "$(script_cmd install.sh)" "$hook_kind"
+    elif ! shell_has_tty1_hook "$hook_kind"; then
+      hook_display="$(shell_hook_display_path "$hook_kind")"
+      printf '\nStep 3 — Login shell TTY1 hook (%s):\n' "$login_shell"
+      while true; do
+        printf 'Configure auto-start hook in %s (--setup-shell %s)? [Y/n]: ' "$hook_display" "$hook_kind"
+        if ! IFS= read -r reply; then
+          log "Input closed (EOF) during guided setup; no changes were made."
+          return 1
+        fi
+        case "$reply" in
+          "" | y | Y | yes | YES) chosen_setup_shell="$hook_kind"; break ;;
+          n | N | no | NO) chosen_setup_shell=""; break ;;
+          q | Q | quit | QUIT)
+            log "Cancelled by user; no changes were made."
+            return 0
+            ;;
+          *) printf 'Please enter y or n.\n' ;;
+        esac
+      done
+    else
+      hook_display="$(shell_hook_display_path "$hook_kind")"
+      printf '\nLogin shell TTY1 hook already present in %s.\n' "$hook_display"
+    fi
+  fi
+
+  local -a guided_args=()
+  if [[ "$chosen_kind" == custom ]]; then
+    guided_args+=(--install-session "$chosen_entry")
+    [[ "$chosen_type" == wayland ]] && guided_args+=(--wayland)
+    [[ -n "$chosen_keyring" ]] && guided_args+=(--keyring "$chosen_keyring")
+  else
+    guided_args+=(--de "$chosen_de")
+  fi
+  [[ $chosen_no_keyring -eq 1 ]] && guided_args+=(--no-keyring)
+  [[ $chosen_autologin -eq 1 ]] && guided_args+=(--autologin)
+  [[ -n "$chosen_setup_shell" ]] && guided_args+=(--setup-shell "$chosen_setup_shell")
+
+  local cmd_preview="" arg=""
+  cmd_preview="$(script_cmd install.sh)"
+  for arg in "${guided_args[@]}"; do
+    printf -v cmd_preview '%s %q' "$cmd_preview" "$arg"
+  done
+
+  printf '\n--- Review & Preview ---\n'
+  printf 'Equivalent command: %s\n\n' "$cmd_preview"
+  local preview_rc=0
+  main "${guided_args[@]}" --dry-run || preview_rc=$?
+  [[ $preview_rc -eq 0 ]] || return "$preview_rc"
+
+  if [[ $dry_run -eq 1 ]]; then
+    log "Guided dry run complete; no changes were made."
+    return 0
+  fi
+
+  printf '\nApply these changes now? [y/N]: '
+  if ! IFS= read -r reply; then
+    log "Cancelled by user; no changes were made."
+    return 0
+  fi
+  case "$reply" in
+    y | Y | yes | YES)
+      log "Running: $cmd_preview"
+      main "${guided_args[@]}"
+      return $?
+      ;;
+    *)
+      log "Cancelled by user; no changes were made."
+      return 0
+      ;;
+  esac
 }
 
 # Verify post-install session, shell trigger, PAM, and systemd boot-recovery health without sudo or changes.
@@ -5339,6 +5690,7 @@ main() {
   local shell_snippet=""
   local setup_shell=""
   local preflight_only=0
+  local guided=0
   local doctor_only=0
   local recover=0
   local fix_mode=0
@@ -5350,7 +5702,7 @@ main() {
   local install_session_dest=""
   local install_session_template_exists=0
   local pam_only=0
-  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions [--json]] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--preflight [--json]] [--doctor [--json]] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--fix [--dry-run] [--non-interactive] [--de <id>]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet> [--json]] [--no-keyring] [--autologin] [--update] [--pam-only]"
+  local usage="Usage: bash $0 [-h|--help] [--guided [--dry-run]] [--status [--json]] [--list-sessions [--json]] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--preflight [--json]] [--doctor [--json]] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--fix [--dry-run] [--non-interactive] [--de <id>]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet> [--json]] [--no-keyring] [--autologin] [--update] [--pam-only]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -5408,6 +5760,9 @@ Options:
                     (standalone with optional --dry-run, or combined with install / --recover)
   --preflight       check user/sudo, pacman/systemctl, getty@tty1.service, display managers, login shell,
                     and installed desktops without sudo or changes, then suggest the next command (use alone, or with --json)
+  --guided          interactive first-run onboarding wizard: runs --preflight first, helps pick a detected or custom
+                    .desktop session or built-in desktop, keyring/autologin mode, and zsh/fish shell hook, prints the
+                    equivalent command and --dry-run preview, and asks confirmation before sudo/changes (optional --dry-run)
   --doctor          verify post-install session launcher, shell hooks, PAM keyring/GNOME rules, .pacnew drift,
                     and systemd boot health without sudo or changes, with fix commands (use alone, or with --json)
   --recover         restore broken or paused home session dotfiles from validated templates without sudo or
@@ -5433,6 +5788,10 @@ EOF
         ;;
       --preflight)
         preflight_only=1
+        shift
+        ;;
+      --guided)
+        guided=1
         shift
         ;;
       --doctor)
@@ -5599,7 +5958,7 @@ EOF
 
   if [[ $status_only -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || $dry_run -eq 1 ||
+      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || $dry_run -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 ||
       -n "$from_session" || $pam_only -eq 1 ]]; then
@@ -5617,7 +5976,7 @@ EOF
 
   if [[ $list_sessions -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 ||
+      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 ||
       $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
       $update -eq 1 || $status_only -eq 1 || $init_template -eq 1 ||
@@ -5646,7 +6005,7 @@ EOF
 
   if [[ $preflight_only -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || $dry_run -eq 1 ||
+      -n "$install_session" || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || $dry_run -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $status_only -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
@@ -5665,7 +6024,7 @@ EOF
 
   if [[ $doctor_only -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $preflight_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || $dry_run -eq 1 ||
+      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || $dry_run -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $status_only -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
@@ -5684,7 +6043,7 @@ EOF
 
   if [[ $recover -eq 1 ]]; then
     if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$install_session" || $preflight_only -eq 1 ||
-      $doctor_only -eq 1 || $fix_mode -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
+      $guided -eq 1 || $doctor_only -eq 1 || $fix_mode -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
       $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" ||
       $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
@@ -5708,7 +6067,7 @@ EOF
 
   if [[ $fix_mode -eq 1 ]]; then
     if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 ||
+      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 ||
       $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
@@ -5732,7 +6091,7 @@ EOF
 
   if [[ $update -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || -n "$install_session" ||
-      $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
+      $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
       -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 ||
       $json_output -eq 1 ]]; then
@@ -5782,6 +6141,17 @@ EOF
       check_keyring_unlocked "$check_keyring" || check_status=$?
     fi
     exit "$check_status"
+  fi
+
+  if [[ $guided -eq 1 ]]; then
+    if [[ $argument_count -ne $((1 + dry_run)) ]]; then
+      log "--guided takes only optional --dry-run."
+      echo "$usage" >&2
+      exit 1
+    fi
+    local guided_status=0
+    run_guided_wizard "$dry_run" || guided_status=$?
+    return "$guided_status"
   fi
 
   if [[ -n "$from_session" ]]; then

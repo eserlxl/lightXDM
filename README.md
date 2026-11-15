@@ -38,8 +38,9 @@ Reboot (log out only works when no display manager was running), log in on TTY1,
 
 ## Install
 
-You need Arch Linux (or a derivative) with systemd, and a user in the `wheel` group with working `sudo`. Without options, the installer detects your desktop (or asks which one to install). The common options:
+You need Arch Linux (or a derivative) with systemd, and a user in the `wheel` group with working `sudo`. Without options, the installer detects your desktop (or asks which one to install); for an interactive first-run walkthrough that checks readiness before asking for `sudo`, run `bash install.sh --guided` (or `lightxdm-install --guided`). The common options:
 
+- `--guided` (optional `--dry-run`): run `--preflight` before `sudo`, interactively choose from detected desktops, discovered custom X11/Wayland `.desktop` sessions, or all 9 built-in desktops, choose keyring vs passwordless autologin and optional `--setup-shell` integration, preview the equivalent CLI command and `--dry-run` plan, and ask confirmation before applying changes
 - `--de <id>`: configure this desktop (`plasma`, `gnome`, `budgie`, `xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, `i3`, or a custom id with `--no-packages`)
 - `--status` (optional `--json`): inspect the current lightXDM configuration, login-shell hook state, dotfile state, PAM lines, disabled display managers, and TTY1 autologin state without sudo or changes (`--json` emits machine-readable JSON on stdout)
 - `--list-sessions` (optional `--json`): scan installed X11 and Wayland freedesktop session entries across system `/usr/share` and user `~/.local/share` (`$XDG_DATA_HOME`) directories, check executable availability, and print ready `--init-template --from-session` and `--install-session` commands without sudo or changes (`--json` emits machine-readable JSON on stdout)
