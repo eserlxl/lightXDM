@@ -7775,6 +7775,28 @@ if [[ $EUID -ne 0 ]]; then
   else
     fail "--dry-run with unreadable inputs (status=$dr_private_status, output=$dr_private_out)"
   fi
+
+  mkdir -p "$dr_case/dm_priv"
+  printf 'lightdm.service\n' >"$dr_case/dm_priv/dm-state"
+  chmod 000 "$dr_case/dm_priv"
+  : >"$STUB_LOG"
+  set +e
+  dr_dir_private_out="$(env HOME="$dr_preview_home" USER=testuser PATH="$dr_bin:$PATH" \
+    LOGIN_FILE="$dr_case/preview-system/login" DM_STATE_FILE="$dr_case/dm_priv/dm-state" \
+    DISPLAY_MANAGER_LINK="$dr_case/preview-system/display-manager.service" \
+    GNOME_SESSION_TYPE_DEST="$dr_case/preview-system/gnome-session-type.conf" \
+    bash "$REPO_ROOT/install.sh" --dry-run --de xfce 2>&1)"
+  dr_dir_private_status=$?
+  set -e
+  chmod 755 "$dr_case/dm_priv"
+  rm -rf "$dr_case/dm_priv"
+  if [[ $dr_dir_private_status -eq 0 && "$dr_dir_private_out" == *'existing records: unknown (needs root)'* ]] &&
+    ! grep -Eq '^(sudo |pacman |systemctl (disable|enable|daemon-reload))' "$STUB_LOG" &&
+    diff -r "$dr_case/system-before" "$dr_case/preview-system" >/dev/null; then
+    pass "--dry-run reports display-manager records in unsearchable parent dir as unknown without sudo"
+  else
+    fail "--dry-run with unsearchable DM_STATE_FILE dir (status=$dr_dir_private_status, output=$dr_dir_private_out)"
+  fi
 fi
 
 # Case 74: multi-desktop detection lists all matches and offers Wayland and X11 desktops together
@@ -13423,7 +13445,7 @@ run_doctor_cmd() {
     GNOME_SESSION_TYPE_DEST="$doctor_etc/lightxdm/gnome-session-type.conf" \
     PAM_KEYRING_STATE="$doctor_etc/lightxdm/pam-keyring" \
     PAM_LOGIN_BASE_STATE="$doctor_etc/lightxdm/pam-login-base" \
-    DM_STATE_FILE="$doctor_etc/lightxdm/disabled-display-managers" \
+    DM_STATE_FILE="${DOCTOR_DM_STATE_FILE:-$doctor_etc/lightxdm/disabled-display-managers}" \
     DISPLAY_MANAGER_LINK="$doctor_etc/systemd/system/display-manager.service" \
     AUTOLOGIN_DROPIN_DIR="$doctor_etc/getty@tty1.service.d" \
     DOCTOR_SUDO_LOG="$doctor_dir/sudo.log" \
@@ -13668,6 +13690,7 @@ if [[ $EUID -ne 0 ]]; then
   chmod 755 "$doctor_etc/lightxdm"
   if [[ $doc_rc -ne 0 ||
     "$doc_out" != *"PAM GNOME session type: WARN (block present ($doctor_etc/lightxdm/gnome-session-type.conf: unknown, needs root))"* ||
+    "$doc_out" != *"Display managers: WARN ($doctor_etc/lightxdm/disabled-display-managers: unknown (needs root))"* ||
     "$doc_out" != *"Doctor: PASS (0 issue(s),"* || "$doc_out" == *"Permission denied"* ]]; then
     doctor_ok=0
     doctor_report+=" block-present-needs-root rc=$doc_rc out=[$doc_out];"
@@ -13722,6 +13745,22 @@ EOF
     "$doc_out" == *"Autologin: ok"* || "$doc_out" == *"Permission denied"* ]]; then
     doctor_ok=0
     doctor_report+=" unreadable-foreign-autologin rc=$doc_rc out=[$doc_out];"
+  fi
+
+  # Isolated unsearchable DM_STATE_FILE parent directory warns instead of reporting ok (none enabled)
+  reset_doctor_gnome_fixture
+  mkdir -p "$doctor_etc/dm_priv"
+  printf 'custom-dm.service\n' >"$doctor_etc/dm_priv/disabled-display-managers"
+  chmod 000 "$doctor_etc/dm_priv"
+  doc_rc=0
+  doc_out="$(DOCTOR_DM_STATE_FILE="$doctor_etc/dm_priv/disabled-display-managers" run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+  chmod 755 "$doctor_etc/dm_priv"
+  if [[ $doc_rc -ne 0 ||
+    "$doc_out" != *"Display managers: WARN ($doctor_etc/dm_priv/disabled-display-managers: unknown (needs root))"* ||
+    "$doc_out" != *"Doctor: PASS (0 issue(s), 1 warning(s))"* ||
+    "$doc_out" == *"Display managers: ok"* || "$doc_out" == *"Permission denied"* ]]; then
+    doctor_ok=0
+    doctor_report+=" unreadable-dm-state-dir rc=$doc_rc out=[$doc_out];"
   fi
 fi
 
@@ -15058,13 +15097,13 @@ run_fix_cmd() {
     GNOME_SESSION_TYPE_DEST="$fix_etc/lightxdm/gnome-session-type.conf" \
     PAM_KEYRING_STATE="$fix_etc/lightxdm/pam-keyring" \
     PAM_LOGIN_BASE_STATE="$fix_etc/lightxdm/pam-login-base" \
-    DM_STATE_FILE="$fix_etc/lightxdm/disabled-display-managers" \
+    DM_STATE_FILE="${FIX_DM_STATE_FILE:-$fix_etc/lightxdm/disabled-display-managers}" \
     DISPLAY_MANAGER_LINK="$fix_etc/systemd/system/display-manager.service" \
     AUTOLOGIN_DROPIN_DIR="$fix_etc/getty@tty1.service.d" \
     FIX_SUDO_LOG="$fix_sudo_log" \
     FIX_GETTY_FILE="$fix_getty_file" \
     FIX_SDDM_FILE="$fix_sddm_file" \
-    PATH="$fix_bin:/usr/bin:/bin" \
+    PATH="${FIX_PATH_PREFIX:+$FIX_PATH_PREFIX:}$fix_bin:/usr/bin:/bin" \
     bash "$REPO_ROOT/install.sh" "$@"
 }
 
@@ -15178,6 +15217,65 @@ if [[ $EUID -ne 0 ]]; then
   if [[ $fx_rc -ne 0 || -s "$fix_sudo_log" || "$fx_out" != *"PAM probe: unknown (needs root"* ]]; then
     fix_ok=0
     fix_report+=" unreadable-pam-dry rc=$fx_rc out=[$fx_out];"
+  fi
+
+  # Unsearchable DM_STATE_FILE parent dir still triggers dry-run probe notice and live sudo probing/disabling
+  reset_fix_fixture i3
+  mkdir -p "$fix_etc/dm_priv"
+  printf 'custom-dm.service\n' >"$fix_etc/dm_priv/disabled-display-managers"
+  chmod 000 "$fix_etc/dm_priv"
+  fx_rc=0
+  fx_out="$(FIX_DM_STATE_FILE="$fix_etc/dm_priv/disabled-display-managers" run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+  chmod 755 "$fix_etc/dm_priv"
+  if [[ $fx_rc -ne 0 || -s "$fix_sudo_log" || "$fx_out" == *"Nothing to fix"* ||
+    "$fx_out" != *"Display-manager state: unknown (needs root — sudo required during live --fix to inspect $fix_etc/dm_priv/disabled-display-managers)"* ]]; then
+    fix_ok=0
+    fix_report+=" unreadable-dm-dir-dry rc=$fx_rc out=[$fx_out];"
+  fi
+
+  fix_priv_bin="$fix_dir/priv_bin"
+  rm -rf "$fix_priv_bin"
+  mkdir -p "$fix_priv_bin"
+  printf 'enabled\n' >"$fix_etc/custom_dm_enabled"
+  cat >"$fix_priv_bin/systemctl" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "is-enabled" && "\${2:-}" == "custom-dm.service" ]]; then
+  if [[ -e "$fix_etc/custom_dm_enabled" ]]; then
+    printf 'enabled\n'
+    exit 0
+  fi
+  printf 'disabled\n'
+  exit 1
+elif [[ "\${1:-}" == "disable" && "\${2:-}" == "custom-dm.service" ]]; then
+  rm -f "$fix_etc/custom_dm_enabled"
+  exit 0
+fi
+exec "$fix_bin/systemctl" "\$@"
+EOF
+  cat >"$fix_priv_bin/sudo" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$fix_sudo_log"
+if [[ "\${1:-}" == "-n" ]]; then
+  shift
+fi
+if [[ "\${1:-}" == "-v" ]]; then
+  chmod 755 "$fix_etc/dm_priv"
+  exit 0
+fi
+exec "\$@"
+EOF
+  chmod +x "$fix_priv_bin/systemctl" "$fix_priv_bin/sudo"
+  : >"$fix_sudo_log"
+  chmod 000 "$fix_etc/dm_priv"
+  fx_rc=0
+  fx_out="$(FIX_DM_STATE_FILE="$fix_etc/dm_priv/disabled-display-managers" FIX_PATH_PREFIX="$fix_priv_bin" \
+    run_fix_cmd --fix --non-interactive 2>&1)" || fx_rc=$?
+  chmod 755 "$fix_etc/dm_priv"
+  rm -rf "$fix_priv_bin"
+  if [[ $fx_rc -ne 0 || -e "$fix_etc/custom_dm_enabled" || "$fx_out" != *"Doctor: PASS"* ]] ||
+    ! grep -Fq -- "cat -- $fix_etc/dm_priv/disabled-display-managers" "$fix_sudo_log"; then
+    fix_ok=0
+    fix_report+=" unreadable-dm-dir-live rc=$fx_rc out=[$fx_out];"
   fi
 fi
 

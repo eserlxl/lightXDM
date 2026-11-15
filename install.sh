@@ -1790,7 +1790,8 @@ disable_display_managers() {
     fi
     if [[ "${UPDATE_RUN:-0}" != 1 ]]; then
       printf 'Display-manager state file: %s\n' "$DM_STATE_FILE"
-      if [[ -e "$DM_STATE_FILE" && ! -r "$DM_STATE_FILE" ]]; then
+      if [[ -e "$DM_STATE_FILE" && ! -r "$DM_STATE_FILE" ]] ||
+        { [[ ! -L "$(dirname -- "$DM_STATE_FILE")" && ! -L "$DM_STATE_FILE" ]] && pam_path_needs_sudo "$DM_STATE_FILE" 1; }; then
         printf '  existing records: unknown (needs root)\n'
       fi
     fi
@@ -3229,22 +3230,29 @@ run_doctor() {
         ;;
     esac
 
-    local enabled_dms=() dm_unit dm_state_content
+    local enabled_dms=() dm_unit dm_state_content dm_state_unreadable=0
     mapfile -t enabled_dms < <(detect_enabled_dms)
-    if [[ ! -L "$DM_STATE_FILE" && -f "$DM_STATE_FILE" && -r "$DM_STATE_FILE" ]]; then
-      dm_state_content="$(cat -- "$DM_STATE_FILE")"
-      while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
-        [[ -n "$dm_unit" ]] || continue
-        local dm_short="${dm_unit%.service}"
-        if [[ " ${enabled_dms[*]} " != *" $dm_short "* ]] &&
-          [[ "$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)" == "enabled" ]]; then
-          enabled_dms+=("$dm_short")
-        fi
-      done <<<"$dm_state_content"
+    if [[ ! -L "$(dirname -- "$DM_STATE_FILE")" && ! -L "$DM_STATE_FILE" ]]; then
+      if [[ -f "$DM_STATE_FILE" && -r "$DM_STATE_FILE" ]]; then
+        dm_state_content="$(cat -- "$DM_STATE_FILE")"
+        while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
+          [[ -n "$dm_unit" ]] || continue
+          local dm_short="${dm_unit%.service}"
+          if [[ " ${enabled_dms[*]} " != *" $dm_short "* ]] &&
+            [[ "$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)" == "enabled" ]]; then
+            enabled_dms+=("$dm_short")
+          fi
+        done <<<"$dm_state_content"
+      elif pam_path_needs_sudo "$DM_STATE_FILE" 1; then
+        dm_state_unreadable=1
+      fi
     fi
     if [[ ${#enabled_dms[@]} -gt 0 ]]; then
       printf 'Display managers: FAIL (%s enabled — disable with: sudo systemctl disable %s.service)\n' "${enabled_dms[*]}" "${enabled_dms[0]}"
       issues=$((issues + 1))
+    elif [[ $dm_state_unreadable -eq 1 ]]; then
+      printf 'Display managers: WARN (%s: unknown (needs root))\n' "$DM_STATE_FILE"
+      warnings=$((warnings + 1))
     else
       printf 'Display managers: ok (none enabled)\n'
     fi
@@ -3632,20 +3640,18 @@ run_fix() {
       log "ERROR: $DM_STATE_FILE or its directory is a symlink; lightXDM ignores symlinks."
       return 1
     fi
-    if [[ -f "$DM_STATE_FILE" ]]; then
-      if [[ -r "$DM_STATE_FILE" ]]; then
-        dm_state_content="$(cat -- "$DM_STATE_FILE")"
-        while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
-          [[ -n "$dm_unit" ]] || continue
-          local dm_short="${dm_unit%.service}"
-          if [[ " ${enabled_dms[*]} " != *" $dm_short "* ]] &&
-            [[ "$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)" == "enabled" ]]; then
-            extra_dm_units+=("$dm_unit")
-          fi
-        done <<<"$dm_state_content"
-      elif pam_path_needs_sudo "$DM_STATE_FILE" 1; then
-        need_dm_state_probe=1
-      fi
+    if [[ -f "$DM_STATE_FILE" && -r "$DM_STATE_FILE" ]]; then
+      dm_state_content="$(cat -- "$DM_STATE_FILE")"
+      while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
+        [[ -n "$dm_unit" ]] || continue
+        local dm_short="${dm_unit%.service}"
+        if [[ " ${enabled_dms[*]} " != *" $dm_short "* ]] &&
+          [[ "$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)" == "enabled" ]]; then
+          extra_dm_units+=("$dm_unit")
+        fi
+      done <<<"$dm_state_content"
+    elif { [[ ! -e "$DM_STATE_FILE" || -f "$DM_STATE_FILE" ]] && pam_path_needs_sudo "$DM_STATE_FILE" 1; }; then
+      need_dm_state_probe=1
     fi
     if [[ ${#extra_dm_units[@]} -gt 0 ]]; then
       need_disable_dms=1
