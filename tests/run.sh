@@ -13746,4 +13746,80 @@ else
   fail "install.sh --recover:$recover_report"
 fi
 
+# ---------------------------------------------------------------------------
+# install.sh --doctor directs broken/missing session dotfiles to --recover
+# ---------------------------------------------------------------------------
+doctor_hints_ok=1
+doctor_hints_report=""
+
+# Missing ~/.wayland-session (Wayland de=gnome)
+reset_doctor_gnome_fixture
+rm -f "$doctor_home/.wayland-session"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Session launcher: FAIL"* || "$doc_out" != *"--recover"* || "$doc_out" == *"--update"* || "$doc_out" == *"lightxdm-update"* ]]; then
+  doctor_hints_ok=0
+  doctor_hints_report+=" missing-wl rc=$doc_rc out=[$doc_out];"
+fi
+
+# Broken symlink ~/.wayland-session
+reset_doctor_gnome_fixture
+rm -f "$doctor_home/.wayland-session"
+ln -s /nonexistent "$doctor_home/.wayland-session"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"broken symlink"* || "$doc_out" != *"--recover"* || "$doc_out" == *"--update"* || "$doc_out" == *"lightxdm-update"* ]]; then
+  doctor_hints_ok=0
+  doctor_hints_report+=" broken-wl-symlink rc=$doc_rc out=[$doc_out];"
+fi
+
+# Broken symlink and missing ~/.xinitrc (X11 de=xfce)
+reset_doctor_gnome_fixture
+rm -f "$doctor_home/.wayland-session" "$doctor_etc/lightxdm/pam-keyring" "$doctor_etc/lightxdm/gnome-session-type.conf"
+cat >"$doctor_etc/pam.d/login" <<'EOF'
+#%PAM-1.0
+auth       include      system-local-login
+session    include      system-local-login
+EOF
+printf 'de=xfce\nno_packages=1\n' >"$doctor_state/lightxdm/install-choices"
+ln -s /nonexistent "$doctor_home/.xinitrc"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"broken symlink"* || "$doc_out" != *"--recover"* || "$doc_out" == *"--update"* || "$doc_out" == *"lightxdm-update"* ]]; then
+  doctor_hints_ok=0
+  doctor_hints_report+=" broken-xi-symlink rc=$doc_rc out=[$doc_out];"
+fi
+
+rm -f "$doctor_home/.xinitrc"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"missing"* || "$doc_out" != *"de=xfce"* || "$doc_out" != *"--recover"* || "$doc_out" == *"--update"* || "$doc_out" == *"lightxdm-update"* ]]; then
+  doctor_hints_ok=0
+  doctor_hints_report+=" missing-xi rc=$doc_rc out=[$doc_out];"
+fi
+
+# Stripped and missing ~/.bash_profile
+reset_doctor_gnome_fixture
+printf '# empty\n' >"$doctor_home/.bash_profile"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Login shell auto-start: FAIL"* || "$doc_out" != *"--recover"* || "$doc_out" == *"--update"* || "$doc_out" == *"lightxdm-update"* ]]; then
+  doctor_hints_ok=0
+  doctor_hints_report+=" stripped-bash-profile rc=$doc_rc out=[$doc_out];"
+fi
+
+rm -f "$doctor_home/.bash_profile"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Login shell auto-start: FAIL"* || "$doc_out" != *"--recover"* || "$doc_out" == *"--update"* || "$doc_out" == *"lightxdm-update"* ]]; then
+  doctor_hints_ok=0
+  doctor_hints_report+=" missing-bash-profile rc=$doc_rc out=[$doc_out];"
+fi
+
+if [[ $doctor_hints_ok -eq 1 ]]; then
+  pass "install.sh --doctor directs broken/missing session dotfiles and stripped ~/.bash_profile to --recover"
+else
+  fail "install.sh --doctor repair hints:$doctor_hints_report"
+fi
+
 finish_harness

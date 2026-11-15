@@ -2624,13 +2624,14 @@ run_preflight() {
 # Verify post-install session, shell trigger, PAM, and systemd boot-recovery health without sudo or changes.
 run_doctor() {
   local LC_ALL=C issues=0 warnings=0
-  local install_cmd update_cmd
+  local install_cmd update_cmd recover_cmd
   install_cmd="$(script_cmd install.sh)"
   if command -v lightxdm-update >/dev/null 2>&1; then
     update_cmd="lightxdm-update"
   else
     update_cmd="$install_cmd --update"
   fi
+  recover_cmd="$install_cmd --recover"
 
   local real_user="${SUDO_USER:-${USER:-}}"
   if [[ -z "$real_user" ]]; then
@@ -2699,7 +2700,7 @@ run_doctor() {
   if [[ "$expected_mode" == wayland ]]; then
     if [[ -L "$wl" ]]; then
       if [[ ! -e "$wl" ]]; then
-        printf 'Session launcher: FAIL (broken symlink %s — restore with: %s)\n' "$wl" "$update_cmd"
+        printf 'Session launcher: FAIL (broken symlink %s — restore with: %s)\n' "$wl" "$recover_cmd"
         issues=$((issues + 1))
       elif [[ ! -x "$wl" ]]; then
         printf 'Session launcher: FAIL (%s is not executable — fix with: chmod +x ~/.wayland-session)\n' "$wl"
@@ -2710,7 +2711,7 @@ run_doctor() {
         active_launcher="$wl"
       fi
     elif [[ ! -f "$wl" ]]; then
-      printf 'Session launcher: FAIL (missing %s for de=%s — restore with: %s)\n' "$wl" "$de" "$update_cmd"
+      printf 'Session launcher: FAIL (missing %s for de=%s — restore with: %s)\n' "$wl" "$de" "$recover_cmd"
       issues=$((issues + 1))
     elif [[ ! -x "$wl" ]]; then
       printf 'Session launcher: FAIL (%s exists but is not executable — fix with: chmod +x ~/.wayland-session)\n' "$wl"
@@ -2726,7 +2727,7 @@ run_doctor() {
     fi
     if [[ -L "$xi" ]]; then
       if [[ ! -e "$xi" ]]; then
-        printf 'Session launcher: FAIL (broken symlink %s — restore with: %s)\n' "$xi" "$update_cmd"
+        printf 'Session launcher: FAIL (broken symlink %s — restore with: %s)\n' "$xi" "$recover_cmd"
         issues=$((issues + 1))
       else
         printf 'Session launcher: WARN (%s is a symlink; --update ignores symlinks)\n' "$xi"
@@ -2734,7 +2735,7 @@ run_doctor() {
         active_launcher="$xi"
       fi
     elif [[ ! -f "$xi" ]]; then
-      printf 'Session launcher: FAIL (missing %s for de=%s — restore with: %s)\n' "$xi" "$de" "$update_cmd"
+      printf 'Session launcher: FAIL (missing %s for de=%s — restore with: %s)\n' "$xi" "$de" "$recover_cmd"
       issues=$((issues + 1))
     else
       active_launcher="$xi"
@@ -2812,7 +2813,7 @@ run_doctor() {
           grep -Eq '\.wayland-session|startx' "$HOME/.bash_profile"; then
           printf 'Login shell auto-start: ok (%s via ~/.bash_profile)\n' "$login_shell"
         else
-          printf 'Login shell auto-start: FAIL (~/.bash_profile is missing or lacks TTY1 auto-start trigger — restore with: %s)\n' "$update_cmd"
+          printf 'Login shell auto-start: FAIL (~/.bash_profile is missing or lacks TTY1 auto-start trigger — restore with: %s)\n' "$recover_cmd"
           issues=$((issues + 1))
         fi
         ;;

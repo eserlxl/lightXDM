@@ -86,7 +86,7 @@ Wayland desktops do not install `xorg-server` or `xorg-xinit`. See [GNOME sessio
 > **Important:**
 > - **Do NOT run `install.sh` as root or with `sudo`.** Run it as your regular user. The script will use `sudo` internally when needed.
 > - Your user **must be in the `wheel` group** and have working `sudo` privileges. If not, see the error messages for instructions on how to add your user to the `wheel` group and configure `sudo`.
-> - If you run `sudo bash install.sh` or run as root, the script will exit with an error (only `--help`, `--status`, `--list-sessions`, `--list-packages`, `--preflight`, `--doctor`, `--recover --dry-run`, `--shell-snippet`, and `--dry-run` work as root, since they change nothing; run `--status`, `--preflight`, `--doctor`, `--recover`, and `--dry-run` as your regular user for your own home directory).
+> - If you run `sudo bash install.sh` or run as root, the script will exit with an error (only `--help`, `--status`, `--list-sessions`, `--list-packages`, `--recover --dry-run`, `--shell-snippet`, and `--dry-run` work without the root check, while `--preflight` and `--doctor` inspect your regular user's setup and must be run as your regular user; also run `--status`, `--recover`, and `--dry-run` as your regular user for your own home directory).
 
 What the installer changes outside your home, so nothing comes as a surprise:
 
