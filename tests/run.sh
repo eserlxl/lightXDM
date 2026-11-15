@@ -12056,4 +12056,209 @@ else
   fail "disable_display_managers list-unit-files matching:$dm_exact_report"
 fi
 
+# install.sh --status reports full installation, dotfile, PAM, pacnew, DM, and autologin state without sudo or edits
+status_cmd_dir="$TMP_DIR/install_status"
+rm -rf "$status_cmd_dir"
+mkdir -p "$status_cmd_dir/bin" "$status_cmd_dir/fresh_home" "$status_cmd_dir/active_home/.config/lightxdm" \
+  "$status_cmd_dir/active_home/.local/state/lightxdm" "$status_cmd_dir/getty.d" "$status_cmd_dir/state"
+status_sudo_log="$status_cmd_dir/sudo.log"
+cat >"$status_cmd_dir/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf 'sudo %s\n' "$*" >>"$STATUS_SUDO_LOG"
+exit 1
+EOF
+cat >"$status_cmd_dir/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  is-enabled)
+    case "${2:-}" in
+      getty@tty1.service)
+        echo "${STATUS_GETTY_STATE:-enabled}"
+        [[ "${STATUS_GETTY_STATE:-enabled}" == enabled ]]
+        ;;
+      lightdm.service)
+        echo "${STATUS_DM_STATE:-disabled}"
+        [[ "${STATUS_DM_STATE:-disabled}" == enabled ]]
+        ;;
+      *)
+        echo "disabled"
+        exit 1
+        ;;
+    esac
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOF
+chmod +x "$status_cmd_dir/bin/sudo" "$status_cmd_dir/bin/systemctl"
+
+# 1) Fresh / uninstalled state.
+printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$status_cmd_dir/fresh_login"
+: >"$status_sudo_log"
+set +e
+status_fresh_out="$(
+  env -u XDG_STATE_HOME -u STATUS_GETTY_STATE -u STATUS_DM_STATE \
+    HOME="$status_cmd_dir/fresh_home" \
+    USER=statususer \
+    PATH="$status_cmd_dir/bin:$STUB_BIN:$PATH" \
+    STATUS_SUDO_LOG="$status_sudo_log" \
+    LOGIN_FILE="$status_cmd_dir/fresh_login" \
+    GNOME_SESSION_TYPE_DEST="$status_cmd_dir/missing-gnome.conf" \
+    PAM_KEYRING_STATE="$status_cmd_dir/missing-pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$status_cmd_dir/missing-pam-login-base" \
+    DM_STATE_FILE="$status_cmd_dir/missing-dm-state" \
+    AUTOLOGIN_DROPIN_DIR="$status_cmd_dir/missing-getty.d" \
+    bash "$REPO_ROOT/install.sh" --status 2>&1
+)"
+status_fresh_rc=$?
+set -e
+status_cmd_report=""
+if [[ $status_fresh_rc -ne 0 || -s "$status_sudo_log" ||
+  "$status_fresh_out" != *"Install choices: not recorded"* ||
+  "$status_fresh_out" != *"TTY1 auto-start: active"* ||
+  "$status_fresh_out" != *"Session journal: disabled"* ||
+  "$status_fresh_out" != *"$status_cmd_dir/fresh_home/.bash_profile: missing"* ||
+  "$status_fresh_out" != *"PAM keyring record: none"* ||
+  "$status_fresh_out" != *"PAM keyring ($status_cmd_dir/fresh_login): none"* ||
+  "$status_fresh_out" != *"PAM GNOME session type: not configured"* ||
+  "$status_fresh_out" != *"getty@tty1.service: enabled"* ||
+  "$status_fresh_out" != *"Disabled display managers: none recorded"* ||
+  "$status_fresh_out" != *"TTY1 autologin: disabled"* ]]; then
+  status_cmd_report+=" [fresh: rc=$status_fresh_rc, sudo=$(cat "$status_sudo_log"), out=$status_fresh_out]"
+fi
+
+# 2) Active GNOME install with user template, pause/journal/attempts, modified dotfile + .lightxdm-new, pacnew, masked getty, re-enabled DM, autologin.
+printf '%s\n' 'de=gnome' 'no_packages=1' >"$status_cmd_dir/active_home/.local/state/lightxdm/install-choices"
+cp "$REPO_ROOT/dotfiles/.wayland-session-gnome" "$status_cmd_dir/active_home/.config/lightxdm/.wayland-session-gnome"
+cp "$REPO_ROOT/dotfiles/.bash_profile" "$status_cmd_dir/active_home/.bash_profile"
+cp "$REPO_ROOT/dotfiles/.gpg-agent-gnome" "$status_cmd_dir/active_home/.gpg-agent-gnome"
+mkdir -p "$status_cmd_dir/active_home/.config/autostart"
+cp "$REPO_ROOT/dotfiles/lightxdm-gpg-agent-tty.desktop" "$status_cmd_dir/active_home/.config/autostart/lightxdm-gpg-agent-tty.desktop"
+printf '#!/bin/bash\n# edited\nexec /usr/bin/gnome-session\n' >"$status_cmd_dir/active_home/.wayland-session"
+chmod +x "$status_cmd_dir/active_home/.wayland-session"
+cp "$REPO_ROOT/dotfiles/.wayland-session-gnome" "$status_cmd_dir/active_home/.wayland-session.lightxdm-new"
+: >"$status_cmd_dir/active_home/.config/lightxdm/no-autostart"
+: >"$status_cmd_dir/active_home/.config/lightxdm/session-journal"
+printf -v status_now '%(%s)T' -1
+printf '%s\n%s\n' "$((status_now - 5))" "$status_now" >"$status_cmd_dir/active_home/.local/state/lightxdm/startx-attempts"
+cat >"$status_cmd_dir/active_login" <<EOF
+#%PAM-1.0
+auth       include      system-local-login
+auth       optional   pam_gnome_keyring.so
+# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)
+session    [success=2 default=ignore] pam_succeed_if.so quiet tty notin tty1:/dev/tty1
+session    [success=1 default=ignore] pam_succeed_if.so quiet user != statususer
+session    optional   pam_env.so readenv=0 user_readenv=0 conffile=$status_cmd_dir/state/gnome-session-type.conf
+session    include      system-local-login
+session    optional   pam_gnome_keyring.so auto_start
+EOF
+: >"${status_cmd_dir}/active_login.pacnew"
+printf 'XDG_SESSION_TYPE DEFAULT=wayland\n' >"$status_cmd_dir/state/gnome-session-type.conf"
+printf 'gnome\n' >"$status_cmd_dir/state/pam-keyring"
+printf 'lightdm.service\n' >"$status_cmd_dir/state/disabled-display-managers"
+cat >"$status_cmd_dir/getty.d/lightxdm-autologin.conf" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/usr/bin/agetty --autologin statususer --noclear %I $TERM
+EOF
+
+: >"$status_sudo_log"
+set +e
+status_active_out="$(
+  env -u XDG_STATE_HOME \
+    HOME="$status_cmd_dir/active_home" \
+    USER=statususer \
+    PATH="$status_cmd_dir/bin:$STUB_BIN:$PATH" \
+    STATUS_SUDO_LOG="$status_sudo_log" \
+    STATUS_GETTY_STATE=masked \
+    STATUS_DM_STATE=enabled \
+    LOGIN_FILE="$status_cmd_dir/active_login" \
+    GNOME_SESSION_TYPE_DEST="$status_cmd_dir/state/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$status_cmd_dir/state/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$status_cmd_dir/state/pam-login-base" \
+    DM_STATE_FILE="$status_cmd_dir/state/disabled-display-managers" \
+    AUTOLOGIN_DROPIN_DIR="$status_cmd_dir/getty.d" \
+    LIGHTXDM_DIR="$REPO_ROOT" \
+    bash "$REPO_ROOT/bin/lightxdm-install" --status 2>&1
+)"
+status_active_rc=$?
+set -e
+if [[ $status_active_rc -ne 0 || -s "$status_sudo_log" ||
+  "$status_active_out" != *"Install choices: de=gnome, --no-packages"* ||
+  "$status_active_out" != *"Session template: $status_cmd_dir/active_home/.config/lightxdm/.wayland-session-gnome (user template)"* ||
+  "$status_active_out" != *"TTY1 launcher: $status_cmd_dir/active_home/.wayland-session (Wayland)"* ||
+  "$status_active_out" != *"TTY1 auto-start: paused"* ||
+  "$status_active_out" != *"Session journal: enabled"* ||
+  "$status_active_out" != *"Recent TTY1 launch attempts (30s): 2"* ||
+  "$status_active_out" != *"$status_cmd_dir/active_home/.bash_profile: up-to-date"* ||
+  "$status_active_out" != *"$status_cmd_dir/active_home/.wayland-session: modified (pending update: $status_cmd_dir/active_home/.wayland-session.lightxdm-new)"* ||
+  "$status_active_out" != *"PAM keyring record: gnome"* ||
+  "$status_active_out" != *"PAM keyring ($status_cmd_dir/active_login): configured (gnome)"* ||
+  "$status_active_out" != *"PAM GNOME session type: configured ($status_cmd_dir/state/gnome-session-type.conf)"* ||
+  "$status_active_out" != *"PAM pacnew: $status_cmd_dir/active_login.pacnew waiting"* ||
+  "$status_active_out" != *"getty@tty1.service: masked"* ||
+  "$status_active_out" != *"Disabled display managers: lightdm.service (re-enabled)"* ||
+  "$status_active_out" != *"TTY1 autologin: enabled for statususer"* ]]; then
+  status_cmd_report+=" [active: rc=$status_active_rc, sudo=$(cat "$status_sudo_log"), out=$status_active_out]"
+fi
+
+# 3) Unreadable PAM and state files stay read-only without sudo or Permission denied.
+if [[ $EUID -ne 0 ]]; then
+  mkdir -p "$status_cmd_dir/priv"
+  printf 'gnome\n' >"$status_cmd_dir/priv/pam-keyring"
+  printf 'sddm.service\n' >"$status_cmd_dir/priv/disabled-display-managers"
+  cp "$status_cmd_dir/active_login" "$status_cmd_dir/priv/login"
+  chmod 000 "$status_cmd_dir/priv/pam-keyring" "$status_cmd_dir/priv/disabled-display-managers" "$status_cmd_dir/priv/login"
+  : >"$status_sudo_log"
+  set +e
+  status_priv_out="$(
+    env -u XDG_STATE_HOME -u STATUS_GETTY_STATE -u STATUS_DM_STATE \
+      HOME="$status_cmd_dir/fresh_home" \
+      USER=statususer \
+      PATH="$status_cmd_dir/bin:$STUB_BIN:$PATH" \
+      STATUS_SUDO_LOG="$status_sudo_log" \
+      LOGIN_FILE="$status_cmd_dir/priv/login" \
+      GNOME_SESSION_TYPE_DEST="$status_cmd_dir/state/gnome-session-type.conf" \
+      PAM_KEYRING_STATE="$status_cmd_dir/priv/pam-keyring" \
+      PAM_LOGIN_BASE_STATE="$status_cmd_dir/missing-pam-login-base" \
+      DM_STATE_FILE="$status_cmd_dir/priv/disabled-display-managers" \
+      AUTOLOGIN_DROPIN_DIR="$status_cmd_dir/missing-getty.d" \
+      bash "$REPO_ROOT/install.sh" --status 2>&1
+  )"
+  status_priv_rc=$?
+  set -e
+  chmod 600 "$status_cmd_dir/priv/pam-keyring" "$status_cmd_dir/priv/disabled-display-managers" "$status_cmd_dir/priv/login"
+  if [[ $status_priv_rc -ne 0 || -s "$status_sudo_log" ||
+    "$status_priv_out" == *"Permission denied"* ||
+    "$status_priv_out" != *"PAM keyring record: unknown (needs root)"* ||
+    "$status_priv_out" != *"PAM keyring ($status_cmd_dir/priv/login): unknown (needs root)"* ||
+    "$status_priv_out" != *"PAM GNOME session type: unknown (needs root)"* ||
+    "$status_priv_out" != *"Disabled display managers: unknown (needs root)"* ]]; then
+    status_cmd_report+=" [unreadable: rc=$status_priv_rc, sudo=$(cat "$status_sudo_log"), out=$status_priv_out]"
+  fi
+fi
+
+# 4) Reject incompatible combinations and document --status in --help.
+for bad_status_args in "--status --de i3" "--status --update" "--update --status" "--status --dry-run"; do
+  set +e
+  read -r -a bad_status_argv <<<"$bad_status_args"
+  bad_status_out="$(HOME="$status_cmd_dir/fresh_home" bash "$REPO_ROOT/install.sh" "${bad_status_argv[@]}" 2>&1)"
+  bad_status_rc=$?
+  set -e
+  if [[ $bad_status_rc -ne 1 || "$bad_status_out" != *"--status cannot be combined with any other option."* ]]; then
+    status_cmd_report+=" [bad combo '$bad_status_args': rc=$bad_status_rc, out=$bad_status_out]"
+  fi
+done
+help_status_out="$(HOME="$status_cmd_dir/fresh_home" bash "$REPO_ROOT/install.sh" --help 2>&1)"
+if [[ "$help_status_out" != *"--status"* ]]; then
+  status_cmd_report+=" [help missing --status]"
+fi
+
+if [[ -z "$status_cmd_report" ]]; then
+  pass "install.sh --status reports full state read-only without sudo and rejects combined flags"
+else
+  fail "install.sh --status:$status_cmd_report"
+fi
+
 finish_harness
