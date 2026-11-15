@@ -267,10 +267,92 @@ matches_lightxdm_template() {
   is_past_lightxdm_template "$path" "$dotfile"
 }
 
+SHELL_HOOK_BEGIN="# >>> lightXDM TTY1 auto-start >>>"
+SHELL_HOOK_END="# <<< lightXDM TTY1 auto-start <<<"
+
+cleanup_shell_hooks() {
+  local dry_run="${1:-0}" home rc rel target marker_info bc ec bl el tmp
+  home="$(normalize_home_path "${TARGET_HOME:-}")"
+  target_home_is_safe "$home" || return $?
+
+  for rel in .zprofile .config/fish/config.fish; do
+    rc=0
+    home_parent_is_safe "$rel" || rc=$?
+    if [[ $rc -eq 2 ]]; then
+      echo "Warning: Refusing symlinked directory along $home/$rel." >&2
+      continue
+    elif [[ $rc -ne 0 ]]; then
+      continue
+    fi
+    target="$home/$rel"
+    if [[ -L "$target" ]]; then
+      echo "Warning: Refusing symlinked shell config $target." >&2
+      continue
+    fi
+    [[ -f "$target" ]] || continue
+    if [[ ! -r "$target" ]]; then
+      echo "Warning: Cannot read $target; skipping shell hook cleanup." >&2
+      continue
+    fi
+
+    marker_info="$(awk -v b="$SHELL_HOOK_BEGIN" -v e="$SHELL_HOOK_END" '
+      $0 == b { bc++; if (!bl) bl = NR }
+      $0 == e { ec++; if (!el) el = NR }
+      END { printf "%d %d %d %d\n", bc+0, ec+0, bl+0, el+0 }
+    ' "$target")"
+    read -r bc ec bl el <<<"$marker_info"
+    if [[ $bc -eq 0 && $ec -eq 0 ]]; then
+      continue
+    fi
+    if [[ $bc -ne 1 || $ec -ne 1 || $bl -ge $el ]]; then
+      echo "Warning: Malformed lightXDM hook markers in $target; leaving untouched." >&2
+      continue
+    fi
+
+    if [[ $dry_run -eq 1 ]]; then
+      echo "Would remove managed lightXDM TTY1 auto-start hook from $target"
+      continue
+    fi
+
+    tmp="$(mktemp "${target%/*}/.${target##*/}.lightxdm.XXXXXX")" || {
+      echo "Warning: Failed to create temp file for $target; leaving untouched." >&2
+      continue
+    }
+    if ! awk -v b="$SHELL_HOOK_BEGIN" -v e="$SHELL_HOOK_END" '
+      $0 == b { skip = 1; next }
+      $0 == e { skip = 0; next }
+      !skip { print }
+    ' "$target" >"$tmp"; then
+      rm -f -- "$tmp"
+      echo "Warning: Failed stripping managed hook from $target." >&2
+      continue
+    fi
+
+    if [[ ! -s "$tmp" ]]; then
+      rm -f -- "$tmp" "$target"
+      echo "Removed managed lightXDM shell hook file $target."
+    else
+      if [[ $EUID -eq 0 ]]; then
+        if ! chown --reference="$target" -- "$tmp"; then
+          rm -f -- "$tmp"
+          continue
+        fi
+      fi
+      if ! { chmod --reference="$target" -- "$tmp" && mv -Tf -- "$tmp" "$target"; }; then
+        rm -f -- "$tmp"
+        echo "Warning: Failed updating $target; leaving untouched." >&2
+        continue
+      fi
+      echo "Removed managed lightXDM TTY1 auto-start hook from $target."
+    fi
+  done
+}
+
 cleanup_home_dotfiles() {
   local dry_run="${1:-0}" home dotfile past_backup rc
   home="$(normalize_home_path "${TARGET_HOME:-}")"
   target_home_is_safe "$home" || return $?
+  cleanup_shell_hooks "${1:-0}"
   for dotfile in .bash_profile .xinitrc .wayland-session .gpg-agent-kwallet .gpg-agent-gnome .config/autostart/lightxdm-gpg-agent-tty.desktop; do
     rc=0
     home_parent_is_safe "$dotfile" || rc=$?

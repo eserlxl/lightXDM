@@ -51,7 +51,8 @@ You need Arch Linux (or a derivative) with systemd, and a user in the `wheel` gr
 - `--no-packages`, `--no-keyring`: skip packages or PAM keyring setup
 - `--no-keyring --autologin`: log in on TTY1 without a password, in the same run
 - `--update`: apply a newer lightXDM to the last install with its saved choices, changing only what lightXDM installed and you left as it was (home files you edited stay, with the new template beside them as `*.lightxdm-new`; packages you removed stay removed and display managers you enabled again stay enabled; PAM lines you removed or commented out stay that way, while lines a `.pacnew` merge removed come back; autologin stays as it is)
-- `--recover` (optional `--dry-run`, `--de <id>`): restore broken or paused home session dotfiles (`~/.bash_profile`, `~/.xinitrc` / `~/.wayland-session`, GPG helper) from validated templates without sudo or package/PAM/systemd changes, saving any edits as `*.lightxdm-edited*` and clearing `~/.config/lightxdm/no-autostart`
+- `--recover` (optional `--dry-run`, `--de <id>`, `--setup-shell <zsh|fish|auto>`): restore broken or paused home session dotfiles (`~/.bash_profile`, `~/.xinitrc` / `~/.wayland-session`, GPG helper) from validated templates without sudo or package/PAM/systemd changes, saving any edits as `*.lightxdm-edited*` and clearing `~/.config/lightxdm/no-autostart`
+- `--setup-shell <zsh|fish|auto>`: idempotently install or update the managed `# >>> lightXDM TTY1 auto-start >>>` block in `~/.zprofile` or `~/.config/fish/config.fish` (standalone with optional `--dry-run`, or combined with install / `--recover`; `uninstall.sh` removes only lightXDM's fenced block)
 - `--pam-only --de <id>`: add only lightXDM's lines to `/etc/pam.d/login` (keyring unlock, and GNOME's session-type block), touching nothing else
 - `--init-template --de <id>`: create `~/.config/lightxdm/.xinitrc-<id>` (or `.wayland-session-<id>` for Plasma, GNOME, and Budgie) to edit first (no sudo)
 - `--init-template --wayland --de sway`: create `~/.config/lightxdm/.wayland-session-sway` for a custom Wayland compositor; edit it, then install with `--no-packages --de sway`. `--wayland` requires `--init-template` and a custom id; keep only one X11 or Wayland template per custom id.
@@ -86,7 +87,7 @@ Wayland desktops do not install `xorg-server` or `xorg-xinit`. See [GNOME sessio
 > **Important:**
 > - **Do NOT run `install.sh` as root or with `sudo`.** Run it as your regular user. The script will use `sudo` internally when needed.
 > - Your user **must be in the `wheel` group** and have working `sudo` privileges. If not, see the error messages for instructions on how to add your user to the `wheel` group and configure `sudo`.
-> - If you run `sudo bash install.sh` or run as root, the script will exit with an error (only `--help`, `--status`, `--list-sessions`, `--list-packages`, `--recover --dry-run`, `--shell-snippet`, and `--dry-run` work without the root check, while `--preflight` and `--doctor` inspect your regular user's setup and must be run as your regular user; also run `--status`, `--recover`, and `--dry-run` as your regular user for your own home directory).
+> - If you run `sudo bash install.sh` or run as root, the script will exit with an error (only `--help`, `--status`, `--list-sessions`, `--list-packages`, `--recover --dry-run`, `--setup-shell <...> --dry-run`, `--shell-snippet`, and `--dry-run` work without the root check, while `--preflight` and `--doctor` inspect your regular user's setup and must be run as your regular user; also run `--status`, `--recover`, `--setup-shell`, and `--dry-run` as your regular user for your own home directory).
 
 What the installer changes outside your home, so nothing comes as a surprise:
 

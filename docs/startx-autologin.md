@@ -17,7 +17,11 @@ GNOME also needs the installer's [session-type PAM block](installation.md#gnome-
 - **Choosing autologin without keyring unlock:** on a new install, `bash install.sh --no-keyring --autologin` skips the keyring setup and enables autologin in the same run. On an existing default install, `sudo bash uninstall.sh --keyring-only` removes only the keyring lines lightXDM added to `/etc/pam.d/login`, keeping GNOME's session-type block and config; then run `sudo bash enable-autologin.sh YOURUSER`.
 
 ## zsh and fish users
-The installer only writes `~/.bash_profile`. If your login shell is zsh or fish, add the equivalent block yourself (the installer warns you when this applies). These snippets honor the `~/.config/lightxdm/no-autostart` marker (see Recovery below), but only the Bash profile pauses auto-start on its own after repeated crashes and honors `~/.config/lightxdm/session-journal`.
+The installer writes `~/.bash_profile` by default. If your login shell is zsh or fish, either manage the fenced block automatically:
+```sh
+bash install.sh --setup-shell auto   # or pass zsh / fish explicitly (supports --dry-run and --recover)
+```
+or add the equivalent block yourself (`--setup-shell` manages `# >>> lightXDM TTY1 auto-start >>>` .. `# <<< lightXDM TTY1 auto-start <<<` markers safely and `uninstall.sh` cleans up only that fenced block). These snippets honor the `~/.config/lightxdm/no-autostart` marker (see Recovery below), but only the Bash profile pauses auto-start on its own after repeated crashes and honors `~/.config/lightxdm/session-journal`.
 
 You can also print either snippet directly to stdout without opening this file (for example under a package install with `lightxdm-install`):
 ```sh

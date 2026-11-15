@@ -14072,4 +14072,399 @@ else
   fail "install.sh --doctor empty-de launcher checks:$doc_node_report"
 fi
 
+# --- install.sh --setup-shell and uninstall.sh hook cleanup ---
+setup_shell_dir="$TMP_DIR/setup_shell_test"
+setup_shell_home="$setup_shell_dir/home"
+setup_shell_state="$setup_shell_dir/state"
+setup_shell_etc="$setup_shell_dir/etc"
+setup_shell_bin="$setup_shell_dir/bin"
+setup_shell_sudo_log="$setup_shell_dir/sudo.log"
+mkdir -p "$setup_shell_home" "$setup_shell_state" "$setup_shell_etc/pam.d" "$setup_shell_etc/lightxdm" "$setup_shell_etc/systemd/system" "$setup_shell_etc/getty@tty1.service.d" "$setup_shell_bin"
+
+cat >"$setup_shell_bin/id" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  -un) printf 'testuser\n' ;;
+  -nG) printf 'testuser wheel\n' ;;
+  *) printf '1000\n' ;;
+esac
+EOF
+cat >"$setup_shell_bin/getent" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == passwd ]]; then
+  if [[ "${FAKE_SHELL:-}" == "__UNKNOWN__" ]]; then
+    exit 2
+  fi
+  printf '%s:x:1000:1000::%s:%s\n' "${2:-testuser}" "${HOME:-/tmp}" "${FAKE_SHELL:-/bin/bash}"
+  exit 0
+fi
+exit 2
+EOF
+cat >"$setup_shell_bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${SETUP_SHELL_SUDO_LOG:?}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -v | -k | -K | -n | -S) shift ;;
+    -p) shift 2 ;;
+    --)
+      shift
+      break
+      ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+if [[ $# -eq 0 ]]; then
+  exit 0
+fi
+"$@"
+EOF
+cat >"$setup_shell_bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  is-enabled)
+    if [[ "${2:-}" == "getty@tty1.service" ]]; then
+      printf 'enabled\n'
+      exit 0
+    fi
+    printf 'disabled\n'
+    exit 1
+    ;;
+  list-unit-files)
+    printf 'getty@tty1.service enabled\n'
+    ;;
+  is-active)
+    exit 1
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOF
+cat >"$setup_shell_bin/pacman" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+cat >"$setup_shell_bin/startx" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$setup_shell_bin/i3" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$setup_shell_bin/"{id,getent,sudo,systemctl,pacman,startx,i3}
+
+run_setup_shell_cmd() {
+  env -u SUDO_USER -u DISPLAY -u WAYLAND_DISPLAY \
+    HOME="$setup_shell_home" \
+    USER="testuser" \
+    XDG_STATE_HOME="$setup_shell_state" \
+    LOGIN_FILE="$setup_shell_etc/pam.d/login" \
+    GNOME_SESSION_TYPE_DEST="$setup_shell_etc/lightxdm/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$setup_shell_etc/lightxdm/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$setup_shell_etc/lightxdm/pam-login-base" \
+    DM_STATE_FILE="$setup_shell_etc/lightxdm/disabled-display-managers" \
+    DISPLAY_MANAGER_LINK="$setup_shell_etc/systemd/system/display-manager.service" \
+    AUTOLOGIN_DROPIN_DIR="$setup_shell_etc/getty@tty1.service.d" \
+    SETUP_SHELL_SUDO_LOG="$setup_shell_sudo_log" \
+    PATH="$setup_shell_bin:/usr/bin:/bin" \
+    bash "$REPO_ROOT/install.sh" "$@"
+}
+
+reset_setup_shell_fixture() {
+  rm -rf "$setup_shell_home" "$setup_shell_state" "$setup_shell_etc"
+  mkdir -p "$setup_shell_home" "$setup_shell_state" "$setup_shell_etc/pam.d" "$setup_shell_etc/lightxdm" "$setup_shell_etc/systemd/system" "$setup_shell_etc/getty@tty1.service.d"
+  printf '#%%PAM-1.0\nauth include system-local-login\n' >"$setup_shell_etc/pam.d/login"
+  : >"$setup_shell_sudo_log"
+}
+
+ss_ok=1
+ss_report=""
+
+# 1. Dry-run and standalone create / idempotent / update / trailing-newline / mode preservation for zsh
+reset_setup_shell_fixture
+ss_rc=0
+ss_out="$(run_setup_shell_cmd --setup-shell zsh --dry-run 2>&1)" || ss_rc=$?
+if [[ $ss_rc -ne 0 || -e "$setup_shell_home/.zprofile" || -s "$setup_shell_sudo_log" || "$ss_out" != *"would create"*".zprofile"* ]]; then
+  ss_ok=0
+  ss_report+=" zsh-dry-create rc=$ss_rc out=[$ss_out];"
+fi
+
+ss_rc=0
+ss_out="$(run_setup_shell_cmd --setup-shell zsh 2>&1)" || ss_rc=$?
+zsh_snip="$(bash "$REPO_ROOT/install.sh" --shell-snippet zsh)"
+zprof_mode="$(stat -c '%a' "$setup_shell_home/.zprofile" 2>/dev/null || true)"
+if [[ $ss_rc -ne 0 || ! -f "$setup_shell_home/.zprofile" || -s "$setup_shell_sudo_log" || "$zprof_mode" != "644" ]] ||
+  ! grep -Fxq "# >>> lightXDM TTY1 auto-start >>>" "$setup_shell_home/.zprofile" ||
+  ! grep -Fxq "# <<< lightXDM TTY1 auto-start <<<" "$setup_shell_home/.zprofile" ||
+  [[ "$(cat "$setup_shell_home/.zprofile")" != *"$zsh_snip"* ]]; then
+  ss_ok=0
+  ss_report+=" zsh-create rc=$ss_rc mode=$zprof_mode out=[$ss_out];"
+fi
+
+# Idempotent rerun
+zprof_before="$(cat "$setup_shell_home/.zprofile")"
+ss_rc=0
+ss_out="$(run_setup_shell_cmd --setup-shell zsh 2>&1)" || ss_rc=$?
+if [[ $ss_rc -ne 0 || "$ss_out" != *"already up to date"* || "$(cat "$setup_shell_home/.zprofile")" != "$zprof_before" ]]; then
+  ss_ok=0
+  ss_report+=" zsh-idem rc=$ss_rc out=[$ss_out];"
+fi
+
+# Append to file without trailing newline while preserving mode and surrounding lines
+printf 'export CUSTOM_VAR=1' >"$setup_shell_home/.zprofile"
+chmod 600 "$setup_shell_home/.zprofile"
+ss_rc=0
+ss_out="$(run_setup_shell_cmd --setup-shell zsh 2>&1)" || ss_rc=$?
+zprof_mode="$(stat -c '%a' "$setup_shell_home/.zprofile" 2>/dev/null || true)"
+if [[ $ss_rc -ne 0 || "$zprof_mode" != "600" ]] ||
+  [[ "$(head -n 1 "$setup_shell_home/.zprofile")" != "export CUSTOM_VAR=1" ]] ||
+  [[ "$(sed -n '2p' "$setup_shell_home/.zprofile")" != "# >>> lightXDM TTY1 auto-start >>>" ]]; then
+  ss_ok=0
+  ss_report+=" zsh-no-nl rc=$ss_rc mode=$zprof_mode content=[$(cat "$setup_shell_home/.zprofile")];"
+fi
+
+# Outdated fenced block is updated cleanly without dropping surrounding user lines
+cat >"$setup_shell_home/.zprofile" <<'EOF'
+# top comment
+# >>> lightXDM TTY1 auto-start >>>
+echo old hook
+# <<< lightXDM TTY1 auto-start <<<
+# bottom comment
+EOF
+chmod 640 "$setup_shell_home/.zprofile"
+ss_rc=0
+ss_out="$(run_setup_shell_cmd --setup-shell zsh --dry-run 2>&1)" || ss_rc=$?
+if [[ $ss_rc -ne 0 || "$ss_out" != *"would update managed block"* ]] || ! grep -Fq "echo old hook" "$setup_shell_home/.zprofile"; then
+  ss_ok=0
+  ss_report+=" zsh-update-dry rc=$ss_rc out=[$ss_out];"
+fi
+ss_rc=0
+ss_out="$(run_setup_shell_cmd --setup-shell zsh 2>&1)" || ss_rc=$?
+zprof_mode="$(stat -c '%a' "$setup_shell_home/.zprofile" 2>/dev/null || true)"
+if [[ $ss_rc -ne 0 || "$zprof_mode" != "640" ]] ||
+  grep -Fq "echo old hook" "$setup_shell_home/.zprofile" ||
+  ! grep -Fxq "# top comment" "$setup_shell_home/.zprofile" ||
+  ! grep -Fxq "# bottom comment" "$setup_shell_home/.zprofile" ||
+  [[ "$(cat "$setup_shell_home/.zprofile")" != *"$zsh_snip"* ]]; then
+  ss_ok=0
+  ss_report+=" zsh-update rc=$ss_rc mode=$zprof_mode out=[$ss_out];"
+fi
+
+# Existing unfenced snippet stays untouched (no duplicate block)
+cat >"$setup_shell_home/.zprofile" <<'EOF'
+# manual snippet
+exec startx
+EOF
+zprof_manual_before="$(cat "$setup_shell_home/.zprofile")"
+ss_rc=0
+ss_out="$(run_setup_shell_cmd --setup-shell zsh 2>&1)" || ss_rc=$?
+if [[ $ss_rc -ne 0 || "$ss_out" != *"leaving untouched"* || "$(cat "$setup_shell_home/.zprofile")" != "$zprof_manual_before" ]]; then
+  ss_ok=0
+  ss_report+=" zsh-unmanaged rc=$ss_rc out=[$ss_out];"
+fi
+
+# 2. Fish hook create + auto resolution (zsh, fish, bash no-op, unknown fail)
+reset_setup_shell_fixture
+ss_rc=0
+ss_out="$(FAKE_SHELL=/usr/bin/fish run_setup_shell_cmd --setup-shell auto 2>&1)" || ss_rc=$?
+fish_snip="$(bash "$REPO_ROOT/install.sh" --shell-snippet fish)"
+if [[ $ss_rc -ne 0 || ! -f "$setup_shell_home/.config/fish/config.fish" || -s "$setup_shell_sudo_log" ]] ||
+  ! grep -Fxq "# >>> lightXDM TTY1 auto-start >>>" "$setup_shell_home/.config/fish/config.fish" ||
+  [[ "$(cat "$setup_shell_home/.config/fish/config.fish")" != *"$fish_snip"* ]]; then
+  ss_ok=0
+  ss_report+=" fish-auto rc=$ss_rc out=[$ss_out];"
+fi
+
+reset_setup_shell_fixture
+ss_rc=0
+ss_out="$(FAKE_SHELL=/usr/bin/bash run_setup_shell_cmd --setup-shell auto 2>&1)" || ss_rc=$?
+if [[ $ss_rc -ne 0 || -e "$setup_shell_home/.zprofile" || -e "$setup_shell_home/.config" ]]; then
+  ss_ok=0
+  ss_report+=" bash-auto rc=$ss_rc out=[$ss_out];"
+fi
+
+ss_rc=0
+ss_out="$(FAKE_SHELL=__UNKNOWN__ run_setup_shell_cmd --setup-shell auto 2>&1)" || ss_rc=$?
+if [[ $ss_rc -eq 0 ]]; then
+  ss_ok=0
+  ss_report+=" unknown-auto unexpectedly passed out=[$ss_out];"
+fi
+
+# 3. Symlink safety, malformed markers, bad arguments & disallowed combos
+reset_setup_shell_fixture
+ln -s "$setup_shell_dir/elsewhere" "$setup_shell_home/.zprofile"
+ss_rc=0
+ss_out="$(run_setup_shell_cmd --setup-shell zsh 2>&1)" || ss_rc=$?
+if [[ $ss_rc -eq 0 || -e "$setup_shell_dir/elsewhere" || "$ss_out" != *"Refusing symlinked"* ]]; then
+  ss_ok=0
+  ss_report+=" sym-zprofile rc=$ss_rc out=[$ss_out];"
+fi
+
+reset_setup_shell_fixture
+mkdir -p "$setup_shell_dir/real_fish_dir"
+ln -s "$setup_shell_dir/real_fish_dir" "$setup_shell_home/.config"
+ss_rc=0
+ss_out="$(run_setup_shell_cmd --setup-shell fish 2>&1)" || ss_rc=$?
+if [[ $ss_rc -eq 0 || -e "$setup_shell_dir/real_fish_dir/fish" || "$ss_out" != *"Refusing symlinked"* ]]; then
+  ss_ok=0
+  ss_report+=" sym-dotconfig rc=$ss_rc out=[$ss_out];"
+fi
+
+reset_setup_shell_fixture
+printf '# >>> lightXDM TTY1 auto-start >>>\n' >"$setup_shell_home/.zprofile"
+ss_rc=0
+ss_out="$(run_setup_shell_cmd --setup-shell zsh 2>&1)" || ss_rc=$?
+if [[ $ss_rc -eq 0 || "$ss_out" != *"incomplete lightXDM hook markers"* ]]; then
+  ss_ok=0
+  ss_report+=" malformed-markers rc=$ss_rc out=[$ss_out];"
+fi
+
+for bad_ss in \
+  "--setup-shell" \
+  "--setup-shell bash" \
+  "--status --setup-shell zsh" \
+  "--list-sessions --setup-shell zsh" \
+  "--shell-snippet zsh --setup-shell zsh" \
+  "--preflight --setup-shell zsh" \
+  "--doctor --setup-shell zsh" \
+  "--update --setup-shell zsh" \
+  "--init-template --de i3 --setup-shell zsh" \
+  "--pam-only --de i3 --setup-shell zsh" \
+  "--list-packages --de i3 --setup-shell zsh" \
+  "--setup-shell zsh --no-packages"; do
+  ss_rc=0
+  read -r -a ss_bad_args <<<"$bad_ss"
+  run_setup_shell_cmd "${ss_bad_args[@]}" >/dev/null 2>&1 || ss_rc=$?
+  if [[ $ss_rc -ne 1 ]]; then
+    ss_ok=0
+    ss_report+=" bad-combo($bad_ss) rc=$ss_rc;"
+  fi
+done
+
+if [[ $can_unshare -eq 1 ]]; then
+  ss_rc=0
+  HOME="$setup_shell_home" PATH="$setup_shell_bin:/usr/bin:/bin" unshare -r bash "$REPO_ROOT/install.sh" --setup-shell zsh >/dev/null 2>&1 || ss_rc=$?
+  if [[ $ss_rc -ne 1 || -e "$setup_shell_home/.zprofile" ]]; then
+    ss_ok=0
+    ss_report+=" root-standalone rc=$ss_rc;"
+  fi
+fi
+
+# 4. Composed --dry-run, live install (--setup-shell auto), and --recover --setup-shell
+reset_setup_shell_fixture
+ss_rc=0
+ss_out="$(FAKE_SHELL=/usr/bin/zsh run_setup_shell_cmd --de i3 --no-packages --setup-shell auto --dry-run 2>&1)" || ss_rc=$?
+if [[ $ss_rc -ne 0 || -s "$setup_shell_sudo_log" || -e "$setup_shell_home/.zprofile" || "$ss_out" != *"Desktop: i3"* || "$ss_out" != *"would create"*".zprofile"* ]]; then
+  ss_ok=0
+  ss_report+=" install-dry rc=$ss_rc out=[$ss_out];"
+fi
+
+ss_rc=0
+ss_out="$(FAKE_SHELL=/usr/bin/zsh run_setup_shell_cmd --de i3 --no-packages --setup-shell auto 2>&1)" || ss_rc=$?
+if [[ $ss_rc -ne 0 || ! -f "$setup_shell_home/.zprofile" || "$ss_out" == *"WARNING: Login shell"* || "$ss_out" != *"- i3 will auto-start on TTY1 for testuser"* ]]; then
+  ss_ok=0
+  ss_report+=" install-live-zsh rc=$ss_rc out=[$ss_out];"
+fi
+
+# Recover + --setup-shell
+rm -f "$setup_shell_home/.zprofile" "$setup_shell_home/.xinitrc"
+mkdir -p "$setup_shell_home/.config/lightxdm"
+: >"$setup_shell_home/.config/lightxdm/no-autostart"
+: >"$setup_shell_sudo_log"
+ss_rc=0
+ss_out="$(FAKE_SHELL=/usr/bin/zsh run_setup_shell_cmd --recover --setup-shell auto 2>&1)" || ss_rc=$?
+if [[ $ss_rc -ne 0 || -s "$setup_shell_sudo_log" || -e "$setup_shell_home/.config/lightxdm/no-autostart" || ! -f "$setup_shell_home/.xinitrc" || ! -f "$setup_shell_home/.zprofile" || "$ss_out" == *"Note: Login shell"* ]]; then
+  ss_ok=0
+  ss_report+=" recover-auto rc=$ss_rc out=[$ss_out];"
+fi
+
+# 5. uninstall.sh --dry-run and real uninstall clean ONLY managed hook blocks
+cat >"$setup_shell_home/.zprofile" <<'EOF'
+# keep line 1
+# >>> lightXDM TTY1 auto-start >>>
+if true; then echo lightxdm; fi
+# <<< lightXDM TTY1 auto-start <<<
+# keep line 2
+EOF
+chmod 600 "$setup_shell_home/.zprofile"
+mkdir -p "$setup_shell_home/.config/fish"
+run_setup_shell_cmd --setup-shell fish >/dev/null
+
+un_dry_rc=0
+un_dry_out="$(env \
+  TARGET_HOME="$setup_shell_home" \
+  LOGIN_FILE="$setup_shell_etc/pam.d/login" \
+  GNOME_SESSION_TYPE_DEST="$setup_shell_etc/lightxdm/gnome-session-type.conf" \
+  PAM_KEYRING_STATE="$setup_shell_etc/lightxdm/pam-keyring" \
+  PAM_LOGIN_BASE_STATE="$setup_shell_etc/lightxdm/pam-login-base" \
+  DM_STATE_FILE="$setup_shell_etc/lightxdm/disabled-display-managers" \
+  OVERRIDE_DIR="$setup_shell_etc/getty@tty1.service.d" \
+  POLKIT_RULE="$setup_shell_etc/49-nopasswd.rules" \
+  bash "$REPO_ROOT/uninstall.sh" --dry-run 2>&1)" || un_dry_rc=$?
+if [[ $un_dry_rc -ne 0 || "$un_dry_out" != *"Would remove managed lightXDM TTY1 auto-start hook from $setup_shell_home/.zprofile"* ]] ||
+  ! grep -Fxq "# >>> lightXDM TTY1 auto-start >>>" "$setup_shell_home/.zprofile" ||
+  [[ ! -f "$setup_shell_home/.config/fish/config.fish" ]]; then
+  ss_ok=0
+  ss_report+=" uninstall-dry rc=$un_dry_rc out=[$un_dry_out];"
+fi
+
+un_rc=0
+if [[ $can_unshare -eq 1 ]]; then
+  un_out="$(env \
+    TARGET_HOME="$setup_shell_home" \
+    LOGIN_FILE="$setup_shell_etc/pam.d/login" \
+    GNOME_SESSION_TYPE_DEST="$setup_shell_etc/lightxdm/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$setup_shell_etc/lightxdm/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$setup_shell_etc/lightxdm/pam-login-base" \
+    DM_STATE_FILE="$setup_shell_etc/lightxdm/disabled-display-managers" \
+    OVERRIDE_DIR="$setup_shell_etc/getty@tty1.service.d" \
+    POLKIT_RULE="$setup_shell_etc/49-nopasswd.rules" \
+    PATH="$setup_shell_bin:/usr/bin:/bin" \
+    unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)" || un_rc=$?
+else
+  # shellcheck disable=SC2016 # $1 is intentionally evaluated by the inner bash -c process
+  un_out="$(env \
+    TARGET_HOME="$setup_shell_home" \
+    bash -c 'source "$1/uninstall.sh" && cleanup_home_dotfiles' _ "$REPO_ROOT" 2>&1)" || un_rc=$?
+fi
+zprof_mode_after="$(stat -c '%a' "$setup_shell_home/.zprofile" 2>/dev/null || true)"
+if [[ $un_rc -ne 0 || -e "$setup_shell_home/.config/fish/config.fish" || ! -f "$setup_shell_home/.zprofile" || "$zprof_mode_after" != "600" ]] ||
+  grep -Fq "lightXDM TTY1 auto-start" "$setup_shell_home/.zprofile" ||
+  ! grep -Fxq "# keep line 1" "$setup_shell_home/.zprofile" ||
+  ! grep -Fxq "# keep line 2" "$setup_shell_home/.zprofile"; then
+  ss_ok=0
+  ss_report+=" uninstall-live rc=$un_rc mode=$zprof_mode_after out=[$un_out];"
+fi
+
+# Unmanaged manual trigger and symlinked rc targets stay untouched on uninstall.sh
+printf 'exec startx\n' >"$setup_shell_home/.zprofile"
+ln -sf "$setup_shell_dir/outside_fish" "$setup_shell_home/.config/fish/config.fish"
+printf 'keep me\n' >"$setup_shell_dir/outside_fish"
+un_safe_out="$(env \
+  TARGET_HOME="$setup_shell_home" \
+  LOGIN_FILE="$setup_shell_etc/pam.d/login" \
+  GNOME_SESSION_TYPE_DEST="$setup_shell_etc/lightxdm/gnome-session-type.conf" \
+  PAM_KEYRING_STATE="$setup_shell_etc/lightxdm/pam-keyring" \
+  PAM_LOGIN_BASE_STATE="$setup_shell_etc/lightxdm/pam-login-base" \
+  DM_STATE_FILE="$setup_shell_etc/lightxdm/disabled-display-managers" \
+  OVERRIDE_DIR="$setup_shell_etc/getty@tty1.service.d" \
+  POLKIT_RULE="$setup_shell_etc/49-nopasswd.rules" \
+  bash "$REPO_ROOT/uninstall.sh" --dry-run 2>&1)" || true
+if [[ "$un_safe_out" == *"Would remove managed lightXDM"* ]] ||
+  [[ "$un_safe_out" != *"Refusing symlinked shell config"* ]] ||
+  [[ "$(cat "$setup_shell_home/.zprofile")" != "exec startx" ]] ||
+  [[ "$(cat "$setup_shell_dir/outside_fish")" != "keep me" ]]; then
+  ss_ok=0
+  ss_report+=" uninstall-safe out=[$un_safe_out];"
+fi
+
+if [[ $ss_ok -eq 1 ]]; then
+  pass "install.sh --setup-shell and uninstall.sh manage and clean non-bash TTY1 hooks safely and idempotently"
+else
+  fail "install.sh --setup-shell / uninstall hook cleanup:$ss_report"
+fi
+
 finish_harness

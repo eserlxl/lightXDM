@@ -3165,7 +3165,7 @@ run_doctor() {
 
 # Recover user session dotfiles and clear boot-loop pauses cleanly without sudo or package changes.
 run_recover() {
-  local LC_ALL=C target_de="$1" preview="${2:-0}"
+  local LC_ALL=C target_de="$1" preview="${2:-0}" setup_shell="${3:-}" resolved_setup_shell=""
   if [[ -z "$target_de" ]]; then
     target_de="$(saved_install_de)" || return 1
   fi
@@ -3189,6 +3189,10 @@ run_recover() {
   check_template_syntax "$template" || return 1
   check_template_not_self "$target_de" "$template" || return 1
   check_session_commands "$template" || return 1
+  if [[ -n "$setup_shell" ]]; then
+    validate_setup_shell "$setup_shell" || return 1
+    resolved_setup_shell="$(resolve_setup_shell "$setup_shell")" || return 1
+  fi
 
   # Force fresh preservation/restoration semantics in copy_dotfile rather than --update skipping edits.
   local UPDATE_RUN=0
@@ -3243,6 +3247,10 @@ run_recover() {
     fi
   fi
 
+  if [[ -n "$setup_shell" ]]; then
+    apply_shell_hook "$setup_shell" "$preview" || return 1
+  fi
+
   local real_user="${SUDO_USER:-${USER:-}}" login_shell=""
   [[ -n "$real_user" ]] || real_user="$(id -un 2>/dev/null || true)"
   if [[ -n "$real_user" ]] && command -v getent >/dev/null 2>&1; then
@@ -3250,12 +3258,14 @@ run_recover() {
   fi
   case "$login_shell" in
     *zsh)
-      if [[ ! -f "$HOME/.zprofile" ]] || ! grep -Eq '\.wayland-session|startx' "$HOME/.zprofile" 2>/dev/null; then
+      if [[ "$resolved_setup_shell" != "zsh" ]] &&
+        { [[ ! -f "$HOME/.zprofile" ]] || ! grep -Eq '\.wayland-session|startx' "$HOME/.zprofile" 2>/dev/null; }; then
         log "Note: Login shell is $login_shell without a TTY1 trigger in ~/.zprofile; run: $(script_cmd install.sh) --shell-snippet zsh >> ~/.zprofile"
       fi
       ;;
     *fish)
-      if [[ ! -f "$HOME/.config/fish/config.fish" ]] || ! grep -Eq '\.wayland-session|startx' "$HOME/.config/fish/config.fish" 2>/dev/null; then
+      if [[ "$resolved_setup_shell" != "fish" ]] &&
+        { [[ ! -f "$HOME/.config/fish/config.fish" ]] || ! grep -Eq '\.wayland-session|startx' "$HOME/.config/fish/config.fish" 2>/dev/null; }; then
         log "Note: Login shell is $login_shell without a TTY1 trigger in ~/.config/fish/config.fish; run: $(script_cmd install.sh) --shell-snippet fish >> ~/.config/fish/config.fish"
       fi
       ;;
@@ -3300,6 +3310,281 @@ EOF
   esac
 }
 
+SHELL_HOOK_BEGIN="# >>> lightXDM TTY1 auto-start >>>"
+SHELL_HOOK_END="# <<< lightXDM TTY1 auto-start <<<"
+
+resolve_setup_shell() {
+  local spec="$1" real_user login_shell=""
+  case "$spec" in
+    zsh | fish)
+      printf '%s\n' "$spec"
+      return 0
+      ;;
+    auto)
+      real_user="${SUDO_USER:-${USER:-}}"
+      [[ -n "$real_user" ]] || real_user="$(id -un 2>/dev/null || true)"
+      if [[ -n "$real_user" ]] && command -v getent >/dev/null 2>&1; then
+        login_shell="$(getent passwd "$real_user" | cut -d: -f7 || true)"
+      fi
+      case "$login_shell" in
+        *zsh)
+          printf 'zsh\n'
+          return 0
+          ;;
+        *fish)
+          printf 'fish\n'
+          return 0
+          ;;
+        *bash)
+          printf 'bash\n'
+          return 0
+          ;;
+        *)
+          log "Unsupported or unknown login shell${login_shell:+ ($login_shell)} for --setup-shell auto (pass zsh or fish explicitly)."
+          return 1
+          ;;
+      esac
+      ;;
+    *)
+      log "Invalid shell for --setup-shell: $spec (valid shells: zsh fish auto)"
+      return 1
+      ;;
+  esac
+}
+
+shell_hook_relpath() {
+  case "$1" in
+    zsh) printf '.zprofile\n' ;;
+    fish) printf '.config/fish/config.fish\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+check_shell_hook_path_safe() {
+  local home="${HOME%/}" rel="$1" preview="${2:-0}" target parent="" seg segs=()
+  if [[ -z "${HOME:-}" ]]; then
+    log "HOME is unset; cannot locate shell configuration file."
+    return 1
+  fi
+  [[ -n "$home" ]] || home="/"
+  if [[ -L "$home" || ! -d "$home" ]]; then
+    log "Refusing unsafe home directory for shell hook: $HOME"
+    return 1
+  fi
+  if [[ "$rel" == */* ]]; then
+    IFS=/ read -ra segs <<<"${rel%/*}"
+    for seg in "${segs[@]}"; do
+      [[ -n "$seg" ]] || continue
+      parent+="/$seg"
+      if [[ -L "${home}${parent}" ]]; then
+        log "Refusing symlinked directory for shell hook: ${home}${parent}"
+        return 1
+      fi
+      if [[ -e "${home}${parent}" && ! -d "${home}${parent}" ]]; then
+        log "Refusing non-directory path for shell hook: ${home}${parent}"
+        return 1
+      fi
+    done
+  fi
+  target="${home}/${rel}"
+  if [[ -L "$target" ]]; then
+    log "Refusing symlinked shell configuration file: $target"
+    return 1
+  fi
+  if [[ -e "$target" && ! -f "$target" ]]; then
+    log "Refusing non-regular shell configuration file: $target"
+    return 1
+  fi
+  if [[ -f "$target" && ! -r "$target" ]]; then
+    log "Cannot read existing shell configuration file: $target"
+    return 1
+  fi
+  if [[ $preview -eq 0 && -f "$target" && ! -w "$target" ]]; then
+    log "Cannot write shell configuration file: $target"
+    return 1
+  fi
+  return 0
+}
+
+check_shell_hook_markers() {
+  local target="$1" marker_info bc ec bl el
+  marker_info="$(awk -v b="$SHELL_HOOK_BEGIN" -v e="$SHELL_HOOK_END" '
+    $0 == b { bc++; if (!bl) bl = NR }
+    $0 == e { ec++; if (!el) el = NR }
+    END { printf "%d %d %d %d\n", bc+0, ec+0, bl+0, el+0 }
+  ' "$target")"
+  read -r bc ec bl el <<<"$marker_info"
+  if [[ $bc -eq 0 && $ec -eq 0 ]]; then
+    return 0
+  fi
+  if [[ $bc -ne 1 || $ec -ne 1 || $bl -ge $el ]]; then
+    log "Found incomplete lightXDM hook markers in $target; remove them before rerunning --setup-shell."
+    return 1
+  fi
+  return 2
+}
+
+validate_setup_shell() {
+  local spec="$1" preview="${2:-0}" resolved rel target home="${HOME%/}"
+  resolved="$(resolve_setup_shell "$spec")" || return 1
+  if [[ "$resolved" == "bash" ]]; then
+    return 0
+  fi
+  [[ -n "$home" ]] || home="/"
+  rel="$(shell_hook_relpath "$resolved")" || return 1
+  check_shell_hook_path_safe "$rel" "$preview" || return 1
+  target="${home}/${rel}"
+  if [[ -f "$target" ]]; then
+    local marker_rc=0
+    check_shell_hook_markers "$target" || marker_rc=$?
+    if [[ $marker_rc -eq 1 ]]; then
+      return 1
+    fi
+  fi
+  return 0
+}
+
+apply_shell_hook() {
+  local spec="$1" preview="${2:-0}" resolved rel target home="${HOME%/}"
+  resolved="$(resolve_setup_shell "$spec")" || return 1
+  if [[ "$resolved" == "bash" ]]; then
+    if [[ $preview -eq 1 ]]; then
+      printf 'Shell hook (auto): login shell is bash; ~/.bash_profile handles TTY1 auto-start (no extra hook needed)\n'
+    else
+      log "Login shell is bash; ~/.bash_profile already handles TTY1 auto-start (no extra shell hook needed)."
+    fi
+    return 0
+  fi
+
+  [[ -n "$home" ]] || home="/"
+  rel="$(shell_hook_relpath "$resolved")" || return 1
+  check_shell_hook_path_safe "$rel" "$preview" || return 1
+  target="${home}/${rel}"
+
+  local block_file tmp="" dest_tmp=""
+  block_file="$(mktemp)" || return 1
+  {
+    printf '%s\n' "$SHELL_HOOK_BEGIN"
+    print_shell_snippet "$resolved"
+    printf '%s\n' "$SHELL_HOOK_END"
+  } >"$block_file"
+
+  if [[ -f "$target" ]]; then
+    local marker_rc=0
+    check_shell_hook_markers "$target" || marker_rc=$?
+    if [[ $marker_rc -eq 1 ]]; then
+      rm -f -- "$block_file"
+      return 1
+    fi
+    if [[ $marker_rc -eq 2 ]]; then
+      tmp="$(mktemp)" || {
+        rm -f -- "$block_file"
+        return 1
+      }
+      if ! awk -v b="$SHELL_HOOK_BEGIN" -v e="$SHELL_HOOK_END" -v bf="$block_file" '
+        $0 == b {
+          while ((getline line < bf) > 0) print line
+          close(bf)
+          skip = 1
+          next
+        }
+        $0 == e { skip = 0; next }
+        !skip { print }
+      ' "$target" >"$tmp"; then
+        rm -f -- "$block_file" "$tmp"
+        log "Failed updating shell hook in $target."
+        return 1
+      fi
+      if cmp -s "$tmp" "$target"; then
+        rm -f -- "$block_file" "$tmp"
+        if [[ $preview -eq 1 ]]; then
+          printf 'Shell hook (%s): already up to date in %s\n' "$resolved" "$target"
+        else
+          log "Shell hook ($resolved) is already up to date in $target."
+        fi
+        return 0
+      fi
+      if [[ $preview -eq 1 ]]; then
+        rm -f -- "$block_file" "$tmp"
+        printf 'Shell hook (%s): would update managed block in %s\n' "$resolved" "$target"
+        return 0
+      fi
+      dest_tmp="$(mktemp "${target%/*}/.${target##*/}.lightxdm.XXXXXX")" || {
+        rm -f -- "$block_file" "$tmp"
+        return 1
+      }
+      if ! { cat "$tmp" >"$dest_tmp" && chmod --reference="$target" -- "$dest_tmp" && mv -Tf -- "$dest_tmp" "$target"; }; then
+        rm -f -- "$block_file" "$tmp" "$dest_tmp"
+        log "Failed writing updated shell hook to $target."
+        return 1
+      fi
+      rm -f -- "$block_file" "$tmp"
+      log "Updated lightXDM shell hook ($resolved) in $target."
+      return 0
+    fi
+
+    if grep -Eq '\.wayland-session|startx' "$target"; then
+      rm -f -- "$block_file"
+      if [[ $preview -eq 1 ]]; then
+        printf 'Shell hook (%s): existing TTY1 trigger found in %s (leaving untouched)\n' "$resolved" "$target"
+      else
+        log "Existing TTY1 auto-start trigger already present in $target; leaving untouched."
+      fi
+      return 0
+    fi
+
+    if [[ $preview -eq 1 ]]; then
+      rm -f -- "$block_file"
+      printf 'Shell hook (%s): would append managed block to %s\n' "$resolved" "$target"
+      return 0
+    fi
+
+    dest_tmp="$(mktemp "${target%/*}/.${target##*/}.lightxdm.XXXXXX")" || {
+      rm -f -- "$block_file"
+      return 1
+    }
+    if ! {
+      cat "$target" >"$dest_tmp"
+      if [[ -s "$target" && "$(tail -c 1 "$target" | wc -l)" -eq 0 ]]; then
+        printf '\n' >>"$dest_tmp"
+      fi
+      cat "$block_file" >>"$dest_tmp"
+      chmod --reference="$target" -- "$dest_tmp"
+      mv -Tf -- "$dest_tmp" "$target"
+    }; then
+      rm -f -- "$block_file" "$dest_tmp"
+      log "Failed writing shell hook to $target."
+      return 1
+    fi
+    rm -f -- "$block_file"
+    log "Installed lightXDM shell hook ($resolved) in $target."
+    return 0
+  fi
+
+  if [[ $preview -eq 1 ]]; then
+    rm -f -- "$block_file"
+    printf 'Shell hook (%s): would create %s with managed TTY1 auto-start block\n' "$resolved" "$target"
+    return 0
+  fi
+
+  mkdir -p -- "${target%/*}" || {
+    rm -f -- "$block_file"
+    return 1
+  }
+  dest_tmp="$(mktemp "${target%/*}/.${target##*/}.lightxdm.XXXXXX")" || {
+    rm -f -- "$block_file"
+    return 1
+  }
+  if ! { cat "$block_file" >"$dest_tmp" && chmod 644 -- "$dest_tmp" && mv -Tf -- "$dest_tmp" "$target"; }; then
+    rm -f -- "$block_file" "$dest_tmp"
+    log "Failed writing shell hook to $target."
+    return 1
+  fi
+  rm -f -- "$block_file"
+  log "Installed lightXDM shell hook ($resolved) in $target."
+  return 0
+}
+
 # --- Main ---
 
 main() {
@@ -3322,6 +3607,7 @@ main() {
   local json_output=0
   local list_sessions=0
   local shell_snippet=""
+  local setup_shell=""
   local preflight_only=0
   local doctor_only=0
   local recover=0
@@ -3329,7 +3615,7 @@ main() {
   local wayland=0
   local from_session=""
   local pam_only=0
-  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions] [--shell-snippet <zsh|fish>] [--preflight] [--doctor] [--recover [--dry-run] [--de <id>]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
+  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--preflight] [--doctor] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -3379,13 +3665,15 @@ Options:
                     --init-template --from-session commands without sudo or changes (use alone)
   --shell-snippet <zsh|fish> print the non-bash TTY1 auto-start block for ~/.zprofile or ~/.config/fish/config.fish
                     without sudo or changes (use alone)
+  --setup-shell <zsh|fish|auto> install or update the managed TTY1 auto-start hook in ~/.zprofile or
+                    ~/.config/fish/config.fish (standalone with optional --dry-run, or combined with install / --recover)
   --preflight       check user/sudo, pacman/systemctl, getty@tty1.service, display managers, login shell,
                     and installed desktops without sudo or changes, then suggest the next command (use alone)
   --doctor          verify post-install session launcher, shell hooks, PAM keyring/GNOME rules, .pacnew drift,
                     and systemd boot health without sudo or changes, with fix commands (use alone)
   --recover         restore broken or paused home session dotfiles from validated templates without sudo or
                     package/PAM/systemd changes, saving any edits as *.lightxdm-edited* and clearing
-                    ~/.config/lightxdm/no-autostart (optional --dry-run and --de <id>)
+                    ~/.config/lightxdm/no-autostart (optional --dry-run, --de <id>, and --setup-shell <zsh|fish|auto>)
 
 uninstall.sh reverts these changes; installed packages stay.
 EOF
@@ -3417,6 +3705,21 @@ EOF
           zsh | fish) shell_snippet="$2" ;;
           *)
             log "Invalid shell for --shell-snippet: $2 (valid shells: zsh fish)"
+            exit 1
+            ;;
+        esac
+        shift 2
+        ;;
+      --setup-shell)
+        if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then
+          log "Missing argument for --setup-shell (valid shells: zsh fish auto)"
+          echo "$usage" >&2
+          exit 1
+        fi
+        case "$2" in
+          zsh | fish | auto) setup_shell="$2" ;;
+          *)
+            log "Invalid shell for --setup-shell: $2 (valid shells: zsh fish auto)"
             exit 1
             ;;
         esac
@@ -3538,7 +3841,7 @@ EOF
   fi
 
   if [[ $status_only -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" ||
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
       $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 ||
       $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 ||
       $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 ||
@@ -3556,7 +3859,7 @@ EOF
   fi
 
   if [[ $list_sessions -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || -n "$shell_snippet" || $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 ||
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 ||
       $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
       $update -eq 1 || $status_only -eq 1 || $json_output -eq 1 || $init_template -eq 1 ||
@@ -3607,7 +3910,7 @@ EOF
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
       $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" ||
       $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
-      log "--recover takes only optional --dry-run and --de <id>."
+      log "--recover takes only optional --dry-run, --de <id>, and --setup-shell <zsh|fish|auto>."
       echo "$usage" >&2
       exit 1
     fi
@@ -3621,12 +3924,12 @@ EOF
       exit 1
     fi
     local recover_status=0
-    run_recover "$de" "$dry_run" || recover_status=$?
+    run_recover "$de" "$dry_run" "$setup_shell" || recover_status=$?
     return "$recover_status"
   fi
 
   if [[ $update -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" ||
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
       $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
       -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 ||
@@ -3702,8 +4005,8 @@ EOF
   fi
 
   if [[ $pam_only -eq 1 ]]; then
-    if [[ $autologin -eq 1 || $list_only -eq 1 || $init_template -eq 1 ]]; then
-      log "--pam-only changes only $LOGIN_FILE and cannot be combined with --autologin, --list-packages or --init-template."
+    if [[ $autologin -eq 1 || $list_only -eq 1 || $init_template -eq 1 || -n "$setup_shell" ]]; then
+      log "--pam-only changes only $LOGIN_FILE and cannot be combined with --autologin, --list-packages, --init-template or --setup-shell."
       echo "$usage" >&2
       exit 1
     fi
@@ -3717,7 +4020,7 @@ EOF
   fi
 
   if [[ $init_template -eq 1 ]]; then
-    if [[ $list_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ]]; then
+    if [[ $list_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || -n "$setup_shell" ]]; then
       log "--init-template takes only --de <id> and optional --wayland and --from-session <path> for custom ids; it creates the template and exits without installing."
       echo "$usage" >&2
       exit 1
@@ -3763,6 +4066,21 @@ EOF
     log "--no-polkit-rule is no longer needed: lightXDM does not install a Polkit rule."
   fi
 
+  if [[ -n "$setup_shell" && $de_specified -eq 0 ]]; then
+    if [[ $list_only -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || $no_polkit_rule -eq 1 ]]; then
+      log "Standalone --setup-shell takes only optional --dry-run (or combine with --recover or --de <id>)."
+      echo "$usage" >&2
+      exit 1
+    fi
+    if [[ $EUID -eq 0 && $dry_run -eq 0 ]]; then
+      log "Do not run --setup-shell standalone as root or with sudo; run it as the user who logs in."
+      exit 1
+    fi
+    local setup_shell_status=0
+    apply_shell_hook "$setup_shell" "$dry_run" || setup_shell_status=$?
+    return "$setup_shell_status"
+  fi
+
   if [[ $dry_run -eq 1 ]]; then
     if [[ $de_specified -eq 0 ]]; then
       log "--dry-run requires --de <id>"
@@ -3776,6 +4094,11 @@ EOF
   fi
 
   if [[ $list_only -eq 1 ]]; then
+    if [[ -n "$setup_shell" ]]; then
+      log "--list-packages cannot be combined with --setup-shell."
+      echo "$usage" >&2
+      exit 1
+    fi
     if [[ $de_specified -eq 0 ]]; then
       log "--list-packages requires --de <id> (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
       echo "$usage" >&2
@@ -3825,9 +4148,16 @@ EOF
     if [[ $pam_only -eq 1 ]]; then
       preview_pam_only "$de" "$no_keyring" "$keyring"
     else
-      preview_install "$de" "$no_packages" "$no_keyring" "$autologin" "$keyring"
+      preview_install "$de" "$no_packages" "$no_keyring" "$autologin" "$keyring" || return $?
+      if [[ -n "$setup_shell" ]]; then
+        apply_shell_hook "$setup_shell" 1 || return $?
+      fi
     fi
     return $?
+  fi
+
+  if [[ -n "$setup_shell" ]]; then
+    validate_setup_shell "$setup_shell" || exit 1
   fi
 
   local real_user
@@ -3953,24 +4283,41 @@ EOF
   install_step="copy_dotfiles"
   copy_dotfiles "$de"
   completed_steps+=("$install_step")
-  local login_shell shell_profile="" shell_hint="docs/startx-autologin.md"
+  local resolved_setup_shell=""
+  if [[ -n "$setup_shell" ]]; then
+    install_step="apply_shell_hook"
+    apply_shell_hook "$setup_shell" 0 || exit 1
+    resolved_setup_shell="$(resolve_setup_shell "$setup_shell")" || exit 1
+    completed_steps+=("$install_step")
+  fi
+  local login_shell shell_profile="" shell_hint="docs/startx-autologin.md" shell_hook_configured=0
   login_shell="$(getent passwd "$real_user" | cut -d: -f7 || true)"
   if [[ -n "$login_shell" && "$login_shell" != *bash ]]; then
     case "$login_shell" in
       *zsh)
-        shell_profile=".zprofile"
-        shell_hint="run '$(script_cmd install.sh) --shell-snippet zsh' or see docs/startx-autologin.md"
+        if [[ "$resolved_setup_shell" == "zsh" ]]; then
+          shell_hook_configured=1
+        else
+          shell_profile=".zprofile"
+          shell_hint="run '$(script_cmd install.sh) --setup-shell zsh' or '$(script_cmd install.sh) --shell-snippet zsh' (see docs/startx-autologin.md)"
+        fi
         ;;
       *fish)
-        shell_profile=".config/fish/config.fish"
-        shell_hint="run '$(script_cmd install.sh) --shell-snippet fish' or see docs/startx-autologin.md"
+        if [[ "$resolved_setup_shell" == "fish" ]]; then
+          shell_hook_configured=1
+        else
+          shell_profile=".config/fish/config.fish"
+          shell_hint="run '$(script_cmd install.sh) --setup-shell fish' or '$(script_cmd install.sh) --shell-snippet fish' (see docs/startx-autologin.md)"
+        fi
         ;;
       *)
         shell_profile=".profile"
         shell_hint="see docs/startx-autologin.md"
         ;;
     esac
-    log "WARNING: Login shell for $real_user is $login_shell, which does not read ~/.bash_profile. Add the TTY1 auto-start block to ~/$shell_profile ($shell_hint)."
+    if [[ $shell_hook_configured -eq 0 ]]; then
+      log "WARNING: Login shell for $real_user is $login_shell, which does not read ~/.bash_profile. Add the TTY1 auto-start block to ~/$shell_profile ($shell_hint)."
+    fi
   fi
   if [[ $no_keyring -eq 1 ]]; then
     log "Skipping keyring PAM configuration (--no-keyring)."
