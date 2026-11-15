@@ -2777,6 +2777,12 @@ run_doctor() {
     if [[ -L "$wl" && ! -e "$wl" ]]; then
       printf 'Session launcher: FAIL (broken symlink %s — remove or run: %s --de <id>)\n' "$wl" "$install_cmd"
       issues=$((issues + 1))
+    elif [[ -L "$wl" && ! -f "$wl" ]]; then
+      printf 'Session launcher: FAIL (%s is a symlink to a non-regular file — remove or run: %s --de <id>)\n' "$wl" "$install_cmd"
+      issues=$((issues + 1))
+    elif [[ -e "$wl" && ! -f "$wl" ]]; then
+      printf 'Session launcher: FAIL (%s is not a regular file — remove or run: %s --de <id>)\n' "$wl" "$install_cmd"
+      issues=$((issues + 1))
     elif [[ -f "$wl" && -x "$wl" ]]; then
       if [[ -L "$wl" ]]; then
         printf 'Session launcher: WARN (%s is a symlink; --update ignores symlinks)\n' "$wl"
@@ -2791,6 +2797,12 @@ run_doctor() {
     elif [[ -L "$xi" && ! -e "$xi" ]]; then
       printf 'Session launcher: FAIL (broken symlink %s — restore with: %s --de <id>)\n' "$xi" "$install_cmd"
       issues=$((issues + 1))
+    elif [[ -L "$xi" && ! -f "$xi" ]]; then
+      printf 'Session launcher: FAIL (%s is a symlink to a non-regular file — restore with: %s --de <id>)\n' "$xi" "$install_cmd"
+      issues=$((issues + 1))
+    elif [[ -e "$xi" && ! -f "$xi" ]]; then
+      printf 'Session launcher: FAIL (%s is not a regular file — restore with: %s --de <id>)\n' "$xi" "$install_cmd"
+      issues=$((issues + 1))
     elif [[ -f "$xi" ]]; then
       if ! command -v startx >/dev/null 2>&1; then
         printf 'X11 starter: FAIL (startx not found on PATH — install xorg-xinit)\n'
@@ -2804,6 +2816,9 @@ run_doctor() {
         fi
         active_launcher="$xi"
       fi
+    else
+      printf 'Session launcher: FAIL (missing %s or %s — re-run %s --de <id>)\n' "$wl" "$xi" "$install_cmd"
+      issues=$((issues + 1))
     fi
   fi
 

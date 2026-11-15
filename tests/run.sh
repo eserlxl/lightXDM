@@ -14012,4 +14012,64 @@ else
   fail "dotfile readability and recover symlink guards:$dot_guard_report"
 fi
 
+# ---------------------------------------------------------------------------
+# install.sh --doctor reports non-regular and missing launchers when install-choices lacks de
+# ---------------------------------------------------------------------------
+doc_node_ok=1
+doc_node_report=""
+
+# 1) Missing install-choices + ~/.wayland-session symlink to a directory fails loudly
+reset_doctor_gnome_fixture
+rm -f "$doctor_state/lightxdm/install-choices" "$doctor_home/.wayland-session" "$doctor_etc/lightxdm/pam-keyring" "$doctor_etc/lightxdm/gnome-session-type.conf"
+cat >"$doctor_etc/pam.d/login" <<'EOF'
+#%PAM-1.0
+auth       include      system-local-login
+session    include      system-local-login
+EOF
+mkdir -p "$doctor_home/dir-launcher"
+ln -s "$doctor_home/dir-launcher" "$doctor_home/.wayland-session"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Session launcher: FAIL"* || "$doc_out" != *"symlink to a non-regular file"* || "$doc_out" == *"Doctor: PASS"* ]]; then
+  doc_node_ok=0
+  doc_node_report+=" dir-wl-symlink-node rc=$doc_rc out=[$doc_out];"
+fi
+
+# 2) Missing install-choices + ~/.xinitrc directory fails as non-regular file
+rm -rf "$doctor_home/.wayland-session" "$doctor_home/.xinitrc"
+mkdir -p "$doctor_home/.xinitrc"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+rmdir "$doctor_home/.xinitrc"
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Session launcher: FAIL"* || "$doc_out" != *"is not a regular file"* || "$doc_out" == *"Doctor: PASS"* ]]; then
+  doc_node_ok=0
+  doc_node_report+=" dir-xi-node rc=$doc_rc out=[$doc_out];"
+fi
+
+# 3) install-choices without de= and no launchers reports missing launcher FAIL
+printf 'no_packages=1\n' >"$doctor_state/lightxdm/install-choices"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Install choices: WARN"* || "$doc_out" != *"Session launcher: FAIL (missing"* ]]; then
+  doc_node_ok=0
+  doc_node_report+=" empty-de-missing-launchers rc=$doc_rc out=[$doc_out];"
+fi
+
+# 4) Missing install-choices + valid ~/.xinitrc still passes cleanly
+rm -f "$doctor_state/lightxdm/install-choices"
+cp "$REPO_ROOT/dotfiles/.xinitrc-xfce" "$doctor_home/.xinitrc"
+chmod 755 "$doctor_home/.xinitrc"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"Session launcher: ok ($doctor_home/.xinitrc via startx)"* || "$doc_out" != *"Doctor: PASS"* ]]; then
+  doc_node_ok=0
+  doc_node_report+=" valid-xi-node rc=$doc_rc out=[$doc_out];"
+fi
+
+if [[ $doc_node_ok -eq 1 ]]; then
+  pass "install.sh --doctor detects non-regular and missing session launchers even when install-choices lacks de"
+else
+  fail "install.sh --doctor empty-de launcher checks:$doc_node_report"
+fi
+
 finish_harness
