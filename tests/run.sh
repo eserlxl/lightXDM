@@ -15164,6 +15164,65 @@ if [[ -s "$preflight_log" || -n "$(ls -A "$preflight_home")" ]]; then
   preflight_report+=" [preflight json modified state]"
 fi
 
+# Outdated, malformed, and symlinked non-bash hooks must warn/block in --preflight instead of passing ok
+preflight_adv_home="$preflight_dir/adv_hook_home"
+mkdir -p "$preflight_adv_home"
+cat >"$preflight_adv_home/.zprofile" <<'EOF'
+# >>> lightXDM TTY1 auto-start >>>
+exec startx
+# <<< lightXDM TTY1 auto-start <<<
+EOF
+set +e
+pf_zsh_stale="$(env -i HOME="$preflight_adv_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_stale.err")"
+pf_zsh_stale_rc=$?
+set -e
+if [[ $pf_zsh_stale_rc -ne 0 || -s "$preflight_dir/js_stale.err" ]] ||
+  ! JSON_OUT="$pf_zsh_stale" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+checks = {c["name"]: c for c in d["checks"]}
+assert d["warnings"] == 1, d
+assert checks["Login shell"]["status"] == "warn", checks
+assert "outdated" in checks["Login shell"]["detail"], checks
+assert "--setup-shell zsh" in (d["next_step"] or ""), d
+PY
+then
+  preflight_ok=0
+  preflight_report+=" [zsh stale hook rc=$pf_zsh_stale_rc err=$(<"$preflight_dir/js_stale.err") out=$pf_zsh_stale]"
+fi
+
+cat >"$preflight_adv_home/.zprofile" <<'EOF'
+# >>> lightXDM TTY1 auto-start >>>
+exec startx
+EOF
+set +e
+pf_zsh_malformed="$(env -i HOME="$preflight_adv_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_zsh_malformed_rc=$?
+set -e
+rm -f "$preflight_adv_home/.zprofile"
+printf 'exec startx\n' >"$preflight_dir/sym_zprofile_target"
+ln -s "$preflight_dir/sym_zprofile_target" "$preflight_adv_home/.zprofile"
+set +e
+pf_zsh_sym="$(env -i HOME="$preflight_adv_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_zsh_sym_rc=$?
+set -e
+if [[ $pf_zsh_malformed_rc -ne 0 || "$pf_zsh_malformed" != *"Login shell: WARN"* ||
+  "$pf_zsh_malformed" != *"cannot be auto-configured (malformed)"* ||
+  $pf_zsh_sym_rc -ne 0 || "$pf_zsh_sym" != *"Login shell: WARN"* ||
+  "$pf_zsh_sym" != *"cannot be auto-configured (symlink)"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [zsh malformed/symlink rc=$pf_zsh_malformed_rc/$pf_zsh_sym_rc out=$pf_zsh_malformed | $pf_zsh_sym]"
+fi
+
 if [[ $preflight_ok -eq 1 ]]; then
   pass "install.sh --preflight validates host readiness, shell hints, and next steps cleanly without sudo or side effects"
 else
@@ -15838,6 +15897,118 @@ then
   doctor_ok=0
   doctor_report+=" doc-json-dual-mod rc=$doc_rc err=$(cat "$doctor_dir/doc_js_mods.err") out=[$doc_js_mods];"
 fi
+
+# Shell-hook parity (managed current vs outdated vs malformed vs symlink) + helper dotfiles / PAM backup / dotfile record
+reset_doctor_gnome_fixture
+{
+  printf '# >>> lightXDM TTY1 auto-start >>>\n'
+  bash "$REPO_ROOT/install.sh" --shell-snippet zsh
+  printf '# <<< lightXDM TTY1 auto-start <<<\n'
+} >"$doctor_home/.zprofile"
+doc_rc=0
+doc_out="$(FAKE_SHELL=/usr/bin/zsh run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"Doctor: PASS"* || "$doc_out" == *"warning(s)"* || "$doc_out" == *"WARN"* ]]; then
+  doctor_ok=0
+  doctor_report+=" doc-managed-current-zsh rc=$doc_rc out=[$doc_out];"
+fi
+
+cat >"$doctor_home/.zprofile" <<'EOF'
+# >>> lightXDM TTY1 auto-start >>>
+exec startx
+# <<< lightXDM TTY1 auto-start <<<
+EOF
+doc_rc=0
+doc_js_stale="$(FAKE_SHELL=/usr/bin/zsh run_doctor_cmd --doctor --json 2>"$doctor_dir/doc_js_stale.err")" || doc_rc=$?
+if [[ $doc_rc -ne 0 || -s "$doctor_dir/doc_js_stale.err" ]] ||
+  ! JSON_OUT="$doc_js_stale" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+names = [c["name"] for c in d["checks"]]
+assert len(names) == len(set(names)), names
+checks = {c["name"]: c for c in d["checks"]}
+assert d["warnings"] == 1 and d["issues"] == 0, d
+assert checks["Login shell auto-start"]["status"] == "warn", checks
+assert "outdated" in checks["Login shell auto-start"]["detail"], checks
+PY
+then
+  doctor_ok=0
+  doctor_report+=" doc-managed-stale-zsh rc=$doc_rc err=$(cat "$doctor_dir/doc_js_stale.err") out=[$doc_js_stale];"
+fi
+
+cat >"$doctor_home/.zprofile" <<'EOF'
+# >>> lightXDM TTY1 auto-start >>>
+exec startx
+EOF
+doc_rc=0
+doc_out="$(FAKE_SHELL=/usr/bin/zsh run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Login shell auto-start: FAIL"* || "$doc_out" != *"incomplete or malformed"* ]]; then
+  doctor_ok=0
+  doctor_report+=" doc-malformed-zsh rc=$doc_rc out=[$doc_out];"
+fi
+
+rm -f "$doctor_home/.zprofile"
+printf 'exec startx\n' >"$doctor_dir/zprofile_sym_target"
+ln -s "$doctor_dir/zprofile_sym_target" "$doctor_home/.zprofile"
+doc_rc=0
+doc_out="$(FAKE_SHELL=/usr/bin/zsh run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Login shell auto-start: FAIL"* || "$doc_out" != *"(symlink)"* ]]; then
+  doctor_ok=0
+  doctor_report+=" doc-symlink-zsh rc=$doc_rc out=[$doc_out];"
+fi
+
+reset_doctor_gnome_fixture
+rm -f "$doctor_home/.bash_profile"
+printf 'exec ~/.wayland-session\n' >"$doctor_dir/bp_sym_target"
+ln -s "$doctor_dir/bp_sym_target" "$doctor_home/.bash_profile"
+doc_rc=0
+doc_out="$(FAKE_SHELL=/usr/bin/bash run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Login shell auto-start: FAIL"* ]]; then
+  doctor_ok=0
+  doctor_report+=" doc-symlink-bash rc=$doc_rc out=[$doc_out];"
+fi
+
+reset_doctor_gnome_fixture
+mkdir -p "$doctor_home/.config/autostart"
+printf 'kept helper\n' >"$doctor_dir/real_gpg_helper"
+rm -f "$doctor_home/.gpg-agent-gnome" "$doctor_home/.config/autostart/lightxdm-gpg-agent-tty.desktop" \
+  "$doctor_state/lightxdm/installed-dotfiles" "$doctor_etc/pam.d/login.lightxdm.bak"
+ln -s "$doctor_dir/real_gpg_helper" "$doctor_home/.gpg-agent-gnome"
+ln -s "$doctor_dir/missing_desktop_entry" "$doctor_home/.config/autostart/lightxdm-gpg-agent-tty.desktop"
+ln -s "$doctor_dir/missing_record_file" "$doctor_state/lightxdm/installed-dotfiles"
+ln -s "$doctor_etc/real_pam_bak" "$doctor_etc/pam.d/login.lightxdm.bak"
+doc_rc=0
+doc_js_integrity="$(run_doctor_cmd --doctor --json 2>"$doctor_dir/doc_js_integrity.err")" || doc_rc=$?
+if [[ $doc_rc -ne 1 || -s "$doctor_dir/doc_js_integrity.err" ]] ||
+  ! JSON_OUT="$doc_js_integrity" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+names = [c["name"] for c in d["checks"]]
+assert len(names) == len(set(names)), names
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["Helper dotfiles"]["status"] == "fail", checks
+assert "broken symlink" in checks["Helper dotfiles"]["detail"], checks
+assert "symlink" in checks["Helper dotfiles"]["detail"], checks
+assert checks["Dotfile record"]["status"] == "fail", checks
+assert checks["PAM backup"]["status"] == "fail", checks
+PY
+then
+  doctor_ok=0
+  doctor_report+=" doc-integrity-fail rc=$doc_rc err=$(cat "$doctor_dir/doc_js_integrity.err") out=[$doc_js_integrity];"
+fi
+
+if [[ $EUID -ne 0 ]]; then
+  reset_doctor_gnome_fixture
+  printf '%s\n' '#%PAM-1.0' >"$doctor_etc/pam.d/login.lightxdm.bak"
+  chmod 000 "$doctor_etc/pam.d/login.lightxdm.bak"
+  doc_rc=0
+  doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+  chmod 644 "$doctor_etc/pam.d/login.lightxdm.bak"
+  if [[ $doc_rc -ne 0 || "$doc_out" != *"PAM backup: WARN"* || "$doc_out" != *"unknown (needs root)"* ]]; then
+    doctor_ok=0
+    doctor_report+=" doc-pam-bak-unreadable rc=$doc_rc out=[$doc_out];"
+  fi
+fi
+
 reset_doctor_gnome_fixture
 
 if [[ -e "$doctor_dir/sudo.log" ]]; then
@@ -17953,6 +18124,62 @@ fx_out="$(run_fix_cmd --fix --non-interactive 2>&1)" || fx_rc=$?
 if [[ $fx_rc -eq 0 || "$fx_out" != *"not a regular file"* ]]; then
   fix_ok=0
   fix_report+=" sym-dir-target-live rc=$fx_rc out=[$fx_out];"
+fi
+
+# 8. Outdated managed zsh hook refreshes cleanly via --fix without sudo; malformed/symlinked/outside-home hooks fail before sudo
+reset_fix_fixture i3
+cat >"$fix_home/.zprofile" <<'EOF'
+# user zprofile before
+# >>> lightXDM TTY1 auto-start >>>
+exec startx
+# <<< lightXDM TTY1 auto-start <<<
+# user zprofile after
+EOF
+: >"$fix_sudo_log"
+fx_rc=0
+fx_out="$(FAKE_SHELL=/usr/bin/zsh run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || -s "$fix_sudo_log" || "$fx_out" != *"would update managed block in $fix_home/.zprofile"* ]]; then
+  fix_ok=0
+  fix_report+=" zsh-stale-dry rc=$fx_rc out=[$fx_out];"
+fi
+fx_rc=0
+fx_out="$(FAKE_SHELL=/usr/bin/zsh run_fix_cmd --fix 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || -s "$fix_sudo_log" || "$fx_out" != *"Doctor: PASS"* || "$fx_out" == *"warning(s)"* || "$fx_out" == *"WARN"* ]] ||
+  ! grep -Fxq '# user zprofile before' "$fix_home/.zprofile" ||
+  ! grep -Fxq '# user zprofile after' "$fix_home/.zprofile" ||
+  ! grep -Fq 'startx-attempts' "$fix_home/.zprofile" ||
+  ! grep -Fq 'session-journal' "$fix_home/.zprofile"; then
+  fix_ok=0
+  fix_report+=" zsh-stale-live rc=$fx_rc sudo=$(wc -l <"$fix_sudo_log") out=[$fx_out];"
+fi
+
+cat >"$fix_home/.zprofile" <<'EOF'
+# >>> lightXDM TTY1 auto-start >>>
+exec startx
+EOF
+: >"$fix_sudo_log"
+fx_rc=0
+fx_out="$(FAKE_SHELL=/usr/bin/zsh run_fix_cmd --fix 2>&1)" || fx_rc=$?
+if [[ $fx_rc -eq 0 || -s "$fix_sudo_log" || "$fx_out" != *"incomplete lightXDM hook markers"* ]]; then
+  fix_ok=0
+  fix_report+=" zsh-malformed-fix rc=$fx_rc out=[$fx_out];"
+fi
+
+rm -f "$fix_home/.zprofile"
+printf 'exec startx\n' >"$fix_dir/sym_zprofile_fix"
+ln -s "$fix_dir/sym_zprofile_fix" "$fix_home/.zprofile"
+fx_rc=0
+fx_out="$(FAKE_SHELL=/usr/bin/zsh run_fix_cmd --fix 2>&1)" || fx_rc=$?
+if [[ $fx_rc -eq 0 || -s "$fix_sudo_log" || "$fx_out" != *"Refusing symlinked shell configuration file"* ]]; then
+  fix_ok=0
+  fix_report+=" zsh-symlink-fix rc=$fx_rc out=[$fx_out];"
+fi
+
+fx_rc=0
+fx_out="$(ZDOTDIR=/tmp/outside_home_zdotdir FAKE_SHELL=/usr/bin/zsh run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+if [[ $fx_rc -eq 0 || -s "$fix_sudo_log" || "$fx_out" != *"outside HOME"* ]]; then
+  fix_ok=0
+  fix_report+=" zsh-outside-home-fix rc=$fx_rc out=[$fx_out];"
 fi
 
 if [[ $fix_ok -eq 1 ]]; then

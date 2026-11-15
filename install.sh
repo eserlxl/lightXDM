@@ -2948,6 +2948,24 @@ inspect_shell_hook_status() {
   fi
 }
 
+# Return 0 when managed shell hook file $2 contains the current snippet for shell $1 (zsh|fish).
+managed_shell_hook_is_current() {
+  local shell_kind="$1" target="$2" expected="" actual="" line="" inside=0 found=0
+  [[ -f "$target" && ! -L "$target" && -r "$target" ]] || return 1
+  expected="$(print_shell_snippet "$shell_kind" 2>/dev/null; printf .)" || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$SHELL_HOOK_BEGIN" ]]; then
+      inside=1
+      found=1
+    elif [[ "$line" == "$SHELL_HOOK_END" ]]; then
+      break
+    elif [[ $inside -eq 1 ]]; then
+      actual+="${line}"$'\n'
+    fi
+  done <"$target" || return 1
+  [[ $found -eq 1 && "${actual}." == "$expected" ]]
+}
+
 # Report the current lightXDM installation state without modifying files or invoking sudo.
 show_install_status() {
   local LC_ALL=C json_mode=0
@@ -3628,53 +3646,69 @@ run_preflight() {
     diag_record_check "$json_mode" "Current session" "info" "TTY/non-graphical" "TTY/non-graphical"
   fi
 
-  local login_shell="" missing_hook_kind=""
-  if [[ -n "$current_user" ]] && command -v getent >/dev/null 2>&1; then
-    login_shell="$(getent passwd "$current_user" | cut -d: -f7 || true)"
-  fi
-  local hook_kind="" hook_env_name="" hook_env_val="" hook_display=""
-  case "$login_shell" in
-    "")
+  local SHELL_HOOK_STATUS_LOGIN_SHELL="" SHELL_HOOK_STATUS_KIND="" SHELL_HOOK_STATUS_PATH=""
+  local SHELL_HOOK_STATUS_DISPLAY="" SHELL_HOOK_STATUS_STATE="" SHELL_HOOK_STATUS_TEXT=""
+  inspect_shell_hook_status
+  local login_shell="$SHELL_HOOK_STATUS_LOGIN_SHELL" missing_hook_kind=""
+  local hook_kind="$SHELL_HOOK_STATUS_KIND" hook_display="$SHELL_HOOK_STATUS_DISPLAY"
+  case "$hook_kind" in
+    unknown)
       printf -v diag_msg 'non-bash users see: %s --setup-shell <zsh|fish> (or: %s --shell-snippet <zsh|fish>)' "$install_cmd" "$install_cmd"
       diag_record_check "$json_mode" "Login shell" "unknown" "$diag_msg"
       ;;
-    *bash)
+    bash)
       printf -v diag_msg '%s — reads ~/.bash_profile' "$login_shell"
       diag_record_check "$json_mode" "Login shell" "ok" "$diag_msg"
       ;;
-    *zsh | *fish)
-      if [[ "$login_shell" == *zsh ]]; then
-        hook_kind="zsh"
-        hook_env_name="ZDOTDIR"
-        hook_env_val="${ZDOTDIR:-}"
-      else
-        hook_kind="fish"
+    zsh | fish)
+      local hook_env_name="ZDOTDIR" hook_env_val="${ZDOTDIR:-}"
+      if [[ "$hook_kind" == "fish" ]]; then
         hook_env_name="XDG_CONFIG_HOME"
         hook_env_val="${XDG_CONFIG_HOME:-}"
       fi
-      if ! shell_hook_relpath "$hook_kind" 0 >/dev/null; then
-        printf -v diag_msg '%s uses %s (%s) outside HOME — move %s inside HOME to manage or detect automatically' "$login_shell" "$hook_env_name" "$hook_env_val" "$hook_env_name"
-        diag_record_check "$json_mode" "Login shell" "warn" "$diag_msg"
-        warnings=$((warnings + 1))
-      elif shell_has_tty1_hook "$hook_kind"; then
-        hook_display="$(shell_hook_display_path "$hook_kind")"
-        printf -v diag_msg '%s — TTY1 hook present in %s' "$login_shell" "$hook_display"
-        diag_record_check "$json_mode" "Login shell" "ok" "$diag_msg"
-      else
-        hook_display="$(shell_hook_display_path "$hook_kind")"
-        if validate_setup_shell "$hook_kind" 1 >/dev/null 2>&1; then
-          printf -v diag_msg '%s does not read ~/.bash_profile — run: %s --setup-shell %s (or: %s --shell-snippet %s >> %s)' \
-            "$login_shell" "$install_cmd" "$hook_kind" "$install_cmd" "$hook_kind" "$hook_display"
-          missing_hook_kind="$hook_kind"
-        else
-          printf -v diag_msg '%s does not read ~/.bash_profile and %s cannot be auto-configured (symlink, permissions, or incomplete markers) — inspect %s and add snippet via: %s --shell-snippet %s' \
-            "$login_shell" "$hook_display" "$hook_display" "$install_cmd" "$hook_kind"
-        fi
-        diag_record_check "$json_mode" "Login shell" "warn" "$diag_msg"
-        warnings=$((warnings + 1))
-      fi
+      case "$SHELL_HOOK_STATUS_STATE" in
+        outside-home)
+          printf -v diag_msg '%s uses %s (%s) outside HOME — move %s inside HOME to manage or detect automatically' "$login_shell" "$hook_env_name" "$hook_env_val" "$hook_env_name"
+          diag_record_check "$json_mode" "Login shell" "warn" "$diag_msg"
+          warnings=$((warnings + 1))
+          ;;
+        custom)
+          printf -v diag_msg '%s — TTY1 hook present in %s' "$login_shell" "$hook_display"
+          diag_record_check "$json_mode" "Login shell" "ok" "$diag_msg"
+          ;;
+        managed)
+          if managed_shell_hook_is_current "$hook_kind" "$SHELL_HOOK_STATUS_PATH"; then
+            printf -v diag_msg '%s — TTY1 hook present in %s' "$login_shell" "$hook_display"
+            diag_record_check "$json_mode" "Login shell" "ok" "$diag_msg"
+          else
+            printf -v diag_msg '%s — managed TTY1 hook in %s is outdated — update with: %s --setup-shell %s' \
+              "$login_shell" "$hook_display" "$install_cmd" "$hook_kind"
+            missing_hook_kind="$hook_kind"
+            diag_record_check "$json_mode" "Login shell" "warn" "$diag_msg"
+            warnings=$((warnings + 1))
+          fi
+          ;;
+        missing | missing-trigger)
+          if validate_setup_shell "$hook_kind" 1 >/dev/null 2>&1; then
+            printf -v diag_msg '%s does not read ~/.bash_profile — run: %s --setup-shell %s (or: %s --shell-snippet %s >> %s)' \
+              "$login_shell" "$install_cmd" "$hook_kind" "$install_cmd" "$hook_kind" "$hook_display"
+            missing_hook_kind="$hook_kind"
+          else
+            printf -v diag_msg '%s does not read ~/.bash_profile and %s cannot be auto-configured (symlink, permissions, or incomplete markers) — inspect %s and add snippet via: %s --shell-snippet %s' \
+              "$login_shell" "$hook_display" "$hook_display" "$install_cmd" "$hook_kind"
+          fi
+          diag_record_check "$json_mode" "Login shell" "warn" "$diag_msg"
+          warnings=$((warnings + 1))
+          ;;
+        *)
+          printf -v diag_msg '%s does not read ~/.bash_profile and %s cannot be auto-configured (%s) — inspect %s and add snippet via: %s --shell-snippet %s' \
+            "$login_shell" "$hook_display" "$SHELL_HOOK_STATUS_STATE" "$hook_display" "$install_cmd" "$hook_kind"
+          diag_record_check "$json_mode" "Login shell" "warn" "$diag_msg"
+          warnings=$((warnings + 1))
+          ;;
+      esac
       ;;
-    *)
+    unsupported)
       printf -v diag_msg '%s does not read ~/.bash_profile — add TTY1 auto-start block per docs/startx-autologin.md' "$login_shell"
       diag_record_check "$json_mode" "Login shell" "warn" "$diag_msg"
       warnings=$((warnings + 1))
@@ -4411,59 +4445,94 @@ run_doctor() {
     fi
   fi
 
-  local login_shell=""
-  if [[ -n "$real_user" ]] && command -v getent >/dev/null 2>&1; then
-    login_shell="$(getent passwd "$real_user" | cut -d: -f7 || true)"
-  fi
+  local SHELL_HOOK_STATUS_LOGIN_SHELL="" SHELL_HOOK_STATUS_KIND="" SHELL_HOOK_STATUS_PATH=""
+  local SHELL_HOOK_STATUS_DISPLAY="" SHELL_HOOK_STATUS_STATE="" SHELL_HOOK_STATUS_TEXT=""
+  inspect_shell_hook_status
+  local login_shell="$SHELL_HOOK_STATUS_LOGIN_SHELL"
   if [[ $installed_any -eq 1 ]]; then
-    local doc_hook_kind="" doc_env_name="" doc_env_val="" doc_hook_display=""
-    case "$login_shell" in
-      *bash)
-        if shell_has_tty1_hook bash; then
-          printf -v diag_msg '%s via ~/.bash_profile' "$login_shell"
-          diag_record_check "$json_mode" "Login shell auto-start" "ok" "$diag_msg"
-        else
-          # shellcheck disable=SC2088 # literal home-relative display path for user instructions
-          printf -v diag_msg '~/.bash_profile is missing or lacks TTY1 auto-start trigger — restore with: %s' "$recover_cmd"
-          diag_record_check "$json_mode" "Login shell auto-start" "fail" "$diag_msg"
-          issues=$((issues + 1))
-        fi
+    local doc_hook_kind="$SHELL_HOOK_STATUS_KIND" doc_env_name="" doc_env_val="" doc_hook_display="$SHELL_HOOK_STATUS_DISPLAY"
+    case "$doc_hook_kind" in
+      bash)
+        case "$SHELL_HOOK_STATUS_STATE" in
+          configured)
+            printf -v diag_msg '%s via ~/.bash_profile' "$login_shell"
+            diag_record_check "$json_mode" "Login shell auto-start" "ok" "$diag_msg"
+            ;;
+          missing | missing-trigger)
+            # shellcheck disable=SC2088 # literal home-relative display path for user instructions
+            printf -v diag_msg '~/.bash_profile is missing or lacks TTY1 auto-start trigger — restore with: %s' "$recover_cmd"
+            diag_record_check "$json_mode" "Login shell auto-start" "fail" "$diag_msg"
+            issues=$((issues + 1))
+            ;;
+          *)
+            printf -v diag_msg '%s (%s) — inspect ~/.bash_profile or restore with: %s' "$SHELL_HOOK_STATUS_TEXT" "$SHELL_HOOK_STATUS_STATE" "$recover_cmd"
+            diag_record_check "$json_mode" "Login shell auto-start" "fail" "$diag_msg"
+            issues=$((issues + 1))
+            ;;
+        esac
         ;;
-      *zsh | *fish)
-        if [[ "$login_shell" == *zsh ]]; then
-          doc_hook_kind="zsh"
+      zsh | fish)
+        if [[ "$doc_hook_kind" == "zsh" ]]; then
           doc_env_name="ZDOTDIR"
           doc_env_val="${ZDOTDIR:-}"
         else
-          doc_hook_kind="fish"
           doc_env_name="XDG_CONFIG_HOME"
           doc_env_val="${XDG_CONFIG_HOME:-}"
         fi
-        if ! shell_hook_relpath "$doc_hook_kind" 0 >/dev/null; then
-          printf -v diag_msg '%s uses %s (%s) outside HOME — move %s inside HOME to manage or detect automatically' "$doc_hook_kind" "$doc_env_name" "$doc_env_val" "$doc_env_name"
-          diag_record_check "$json_mode" "Login shell auto-start" "fail" "$diag_msg"
-          issues=$((issues + 1))
-        elif shell_has_tty1_hook "$doc_hook_kind"; then
-          doc_hook_display="$(shell_hook_display_path "$doc_hook_kind")"
-          printf -v diag_msg '%s via %s' "$login_shell" "$doc_hook_display"
-          diag_record_check "$json_mode" "Login shell auto-start" "ok" "$diag_msg"
-        else
-          doc_hook_display="$(shell_hook_display_path "$doc_hook_kind")"
-          printf -v diag_msg '%s login shell lacks TTY1 auto-start block in %s — run: %s --shell-snippet %s >> %s' "$doc_hook_kind" "$doc_hook_display" "$install_cmd" "$doc_hook_kind" "$doc_hook_display"
-          diag_record_check "$json_mode" "Login shell auto-start" "fail" "$diag_msg"
-          issues=$((issues + 1))
-        fi
+        case "$SHELL_HOOK_STATUS_STATE" in
+          outside-home)
+            printf -v diag_msg '%s uses %s (%s) outside HOME — move %s inside HOME to manage or detect automatically' "$doc_hook_kind" "$doc_env_name" "$doc_env_val" "$doc_env_name"
+            diag_record_check "$json_mode" "Login shell auto-start" "fail" "$diag_msg"
+            issues=$((issues + 1))
+            ;;
+          managed)
+            if managed_shell_hook_is_current "$doc_hook_kind" "$SHELL_HOOK_STATUS_PATH"; then
+              printf -v diag_msg '%s via %s' "$login_shell" "$doc_hook_display"
+              diag_record_check "$json_mode" "Login shell auto-start" "ok" "$diag_msg"
+            else
+              printf -v diag_msg '%s TTY1 auto-start block in %s is outdated — refresh with: %s --fix (or: %s --setup-shell %s)' \
+                "$doc_hook_kind" "$doc_hook_display" "$install_cmd" "$install_cmd" "$doc_hook_kind"
+              diag_record_check "$json_mode" "Login shell auto-start" "warn" "$diag_msg"
+              warnings=$((warnings + 1))
+            fi
+            ;;
+          custom)
+            printf -v diag_msg '%s via %s' "$login_shell" "$doc_hook_display"
+            diag_record_check "$json_mode" "Login shell auto-start" "ok" "$diag_msg"
+            ;;
+          malformed)
+            printf -v diag_msg '%s TTY1 auto-start markers in %s are incomplete or malformed — remove broken markers in %s before running: %s --setup-shell %s' \
+              "$doc_hook_kind" "$doc_hook_display" "$doc_hook_display" "$install_cmd" "$doc_hook_kind"
+            diag_record_check "$json_mode" "Login shell auto-start" "fail" "$diag_msg"
+            issues=$((issues + 1))
+            ;;
+          symlink | not-regular | unreadable | unsearchable | refused-symlink-dir)
+            printf -v diag_msg '%s shell hook at %s cannot be trusted or read (%s) — inspect %s and configure with: %s --setup-shell %s' \
+              "$doc_hook_kind" "$doc_hook_display" "$SHELL_HOOK_STATUS_STATE" "$doc_hook_display" "$install_cmd" "$doc_hook_kind"
+            diag_record_check "$json_mode" "Login shell auto-start" "fail" "$diag_msg"
+            issues=$((issues + 1))
+            ;;
+          *)
+            printf -v diag_msg '%s login shell lacks TTY1 auto-start block in %s — run: %s --shell-snippet %s >> %s' "$doc_hook_kind" "$doc_hook_display" "$install_cmd" "$doc_hook_kind" "$doc_hook_display"
+            diag_record_check "$json_mode" "Login shell auto-start" "fail" "$diag_msg"
+            issues=$((issues + 1))
+            ;;
+        esac
         ;;
-      "")
-        if shell_has_tty1_hook bash; then
+      unknown)
+        if [[ ! -L "$HOME/.bash_profile" ]] && shell_has_tty1_hook bash; then
           # shellcheck disable=SC2088 # literal home-relative display path for user instructions
           diag_record_check "$json_mode" "Login shell auto-start" "ok" "~/.bash_profile present"
+        elif [[ -L "$HOME/.bash_profile" ]]; then
+          # shellcheck disable=SC2088 # literal home-relative display path for user instructions
+          diag_record_check "$json_mode" "Login shell auto-start" "warn" "~/.bash_profile is a symlink; could not verify non-symlinked hook"
+          warnings=$((warnings + 1))
         else
           diag_record_check "$json_mode" "Login shell auto-start" "warn" "login shell unknown; could not verify TTY1 shell auto-start hook"
           warnings=$((warnings + 1))
         fi
         ;;
-      *)
+      unsupported)
         printf -v diag_msg '%s does not read ~/.bash_profile — verify TTY1 auto-start block per docs/startx-autologin.md' "$login_shell"
         diag_record_check "$json_mode" "Login shell auto-start" "warn" "$diag_msg"
         warnings=$((warnings + 1))
@@ -4511,6 +4580,79 @@ run_doctor() {
     printf -v diag_msg '%s — review diff and merge' "${pending_files[*]}"
     diag_record_check "$json_mode" "Pending dotfile updates" "warn" "$diag_msg"
     warnings=$((warnings + 1))
+  fi
+
+  local helper_dot helper_issues=() helper_warns=() helper_bad_dir=0
+  if [[ $installed_any -eq 1 ]]; then
+    if [[ -L "$HOME/.config" || ( -e "$HOME/.config" && ! -d "$HOME/.config" ) ]]; then
+      helper_bad_dir=1
+      helper_warns+=("$HOME/.config is not a real directory; lightXDM skips symlinks there")
+    elif [[ -d "$HOME/.config" && ! -x "$HOME/.config" ]]; then
+      helper_bad_dir=1
+      helper_issues+=("$HOME/.config is unsearchable")
+    elif [[ -L "$HOME/.config/autostart" || ( -e "$HOME/.config/autostart" && ! -d "$HOME/.config/autostart" ) ]]; then
+      helper_bad_dir=1
+      helper_warns+=("$HOME/.config/autostart is not a real directory; lightXDM skips symlinks there")
+    elif [[ -d "$HOME/.config/autostart" && ! -x "$HOME/.config/autostart" ]]; then
+      helper_bad_dir=1
+      helper_issues+=("$HOME/.config/autostart is unsearchable")
+    fi
+  fi
+  for helper_dot in \
+    "$HOME/.gpg-agent-gnome" "$HOME/.gpg-agent-kwallet" \
+    "$HOME/.config/autostart/lightxdm-gpg-agent-tty.desktop"; do
+    if [[ "$helper_dot" == "$HOME/.config/"* && $helper_bad_dir -eq 1 ]]; then
+      continue
+    fi
+    if [[ -L "$helper_dot" ]]; then
+      if [[ ! -e "$helper_dot" ]]; then
+        helper_issues+=("$helper_dot is a broken symlink")
+      else
+        helper_warns+=("$helper_dot is a symlink; lightXDM skips symlinks")
+      fi
+    elif [[ -e "$helper_dot" && ! -f "$helper_dot" ]]; then
+      helper_issues+=("$helper_dot is not a regular file")
+    elif [[ -f "$helper_dot" && ! -r "$helper_dot" ]]; then
+      helper_issues+=("$helper_dot is unreadable")
+    fi
+  done
+  if [[ ${#helper_issues[@]} -gt 0 ]]; then
+    local helper_joined=""
+    printf -v helper_joined '%s; ' "${helper_issues[@]}" "${helper_warns[@]}"
+    printf -v diag_msg '%s — inspect or restore with: %s' "${helper_joined%; }" "$recover_cmd"
+    diag_record_check "$json_mode" "Helper dotfiles" "fail" "$diag_msg"
+    issues=$((issues + 1))
+  elif [[ ${#helper_warns[@]} -gt 0 ]]; then
+    local helper_joined=""
+    printf -v helper_joined '%s; ' "${helper_warns[@]}"
+    printf -v diag_msg '%s — inspect or restore with: %s' "${helper_joined%; }" "$recover_cmd"
+    diag_record_check "$json_mode" "Helper dotfiles" "warn" "$diag_msg"
+    warnings=$((warnings + 1))
+  fi
+
+  local record_file="" record_dir=""
+  record_file="$(dotfile_record_file)"
+  record_dir="${record_file%/*}"
+  if [[ -L "$record_dir" || -L "$record_file" ]]; then
+    printf -v diag_msg '%s or its directory is a symlink; lightXDM ignores symlinks' "$record_file"
+    diag_record_check "$json_mode" "Dotfile record" "fail" "$diag_msg"
+    issues=$((issues + 1))
+  elif [[ -e "$record_dir" && ! -d "$record_dir" ]]; then
+    printf -v diag_msg '%s is not a directory' "$record_dir"
+    diag_record_check "$json_mode" "Dotfile record" "fail" "$diag_msg"
+    issues=$((issues + 1))
+  elif [[ -d "$record_dir" && ! -x "$record_dir" ]]; then
+    printf -v diag_msg '%s is unsearchable — --update/--recover cannot inspect recorded dotfile hashes' "$record_dir"
+    diag_record_check "$json_mode" "Dotfile record" "fail" "$diag_msg"
+    issues=$((issues + 1))
+  elif [[ -e "$record_file" && ! -f "$record_file" ]]; then
+    printf -v diag_msg '%s is not a regular file' "$record_file"
+    diag_record_check "$json_mode" "Dotfile record" "fail" "$diag_msg"
+    issues=$((issues + 1))
+  elif [[ -f "$record_file" && ! -r "$record_file" ]]; then
+    printf -v diag_msg '%s is unreadable' "$record_file"
+    diag_record_check "$json_mode" "Dotfile record" "fail" "$diag_msg"
+    issues=$((issues + 1))
   fi
 
   local pam_record="" pam_expected="" pam_mismatch=0 keyring_configured=0 builtin_backend=""
@@ -4701,6 +4843,25 @@ run_doctor() {
         fi
         ;;
     esac
+
+    local pam_backup="${LOGIN_FILE}.lightxdm.bak"
+    if [[ -L "$pam_backup" ]]; then
+      if [[ ! -e "$pam_backup" ]]; then
+        printf -v diag_msg '%s is a broken symlink; lightXDM ignores symlinks' "$pam_backup"
+      else
+        printf -v diag_msg '%s is a symlink; lightXDM refuses symlinked PAM backups' "$pam_backup"
+      fi
+      diag_record_check "$json_mode" "PAM backup" "fail" "$diag_msg"
+      issues=$((issues + 1))
+    elif pam_path_needs_sudo "$pam_backup" 2; then
+      printf -v diag_msg '%s: unknown (needs root) — inspect separately with sudo' "$pam_backup"
+      diag_record_check "$json_mode" "PAM backup" "warn" "$diag_msg"
+      warnings=$((warnings + 1))
+    elif [[ -e "$pam_backup" && ! -f "$pam_backup" ]]; then
+      printf -v diag_msg '%s is not a regular file' "$pam_backup"
+      diag_record_check "$json_mode" "PAM backup" "fail" "$diag_msg"
+      issues=$((issues + 1))
+    fi
   elif [[ "$LOGIN_PATH_STATE" == "invalid" ]]; then
     printf -v diag_msg '%s — restore pambase or re-run %s %s' "$LOGIN_PATH_REASON" "$install_cmd" "$(pam_restore_hint "$de" "$pam_expected")"
     diag_record_check "$json_mode" "PAM login" "fail" "$diag_msg"
@@ -5149,11 +5310,8 @@ run_fix() {
     expected_mode="wayland"
   fi
 
-  local real_user="${SUDO_USER:-${USER:-}}" login_shell=""
+  local real_user="${SUDO_USER:-${USER:-}}"
   [[ -n "$real_user" ]] || real_user="$(id -un 2>/dev/null || true)"
-  if [[ -n "$real_user" ]] && command -v getent >/dev/null 2>&1; then
-    login_shell="$(getent passwd "$real_user" | cut -d: -f7 || true)"
-  fi
 
   local need_home_recover=0 need_shell_hook=""
   local wl="$HOME/.wayland-session" xi="$HOME/.xinitrc"
@@ -5173,21 +5331,32 @@ run_fix() {
     fi
   fi
 
-  case "$login_shell" in
-    *bash | "")
-      if ! shell_has_tty1_hook bash; then
+  local SHELL_HOOK_STATUS_LOGIN_SHELL="" SHELL_HOOK_STATUS_KIND="" SHELL_HOOK_STATUS_PATH=""
+  local SHELL_HOOK_STATUS_DISPLAY="" SHELL_HOOK_STATUS_STATE="" SHELL_HOOK_STATUS_TEXT=""
+  inspect_shell_hook_status
+  case "$SHELL_HOOK_STATUS_KIND" in
+    bash | unknown)
+      if [[ "$SHELL_HOOK_STATUS_STATE" != "configured" ]] &&
+        { [[ "$SHELL_HOOK_STATUS_KIND" == "bash" ]] || [[ -L "$HOME/.bash_profile" ]] || ! shell_has_tty1_hook bash; }; then
         need_home_recover=1
       fi
       ;;
-    *zsh)
-      if ! shell_has_tty1_hook zsh; then
-        need_shell_hook="zsh"
-      fi
-      ;;
-    *fish)
-      if ! shell_has_tty1_hook fish; then
-        need_shell_hook="fish"
-      fi
+    zsh | fish)
+      case "$SHELL_HOOK_STATUS_STATE" in
+        outside-home)
+          log "ERROR: $SHELL_HOOK_STATUS_TEXT; move $SHELL_HOOK_STATUS_DISPLAY inside HOME or configure manually before running --fix."
+          return 1
+          ;;
+        managed)
+          if ! managed_shell_hook_is_current "$SHELL_HOOK_STATUS_KIND" "$SHELL_HOOK_STATUS_PATH"; then
+            need_shell_hook="$SHELL_HOOK_STATUS_KIND"
+          fi
+          ;;
+        custom) ;;
+        *)
+          need_shell_hook="$SHELL_HOOK_STATUS_KIND"
+          ;;
+      esac
       ;;
   esac
 
@@ -5364,9 +5533,10 @@ run_fix() {
 
 # Emit the canonical non-bash TTY1 auto-start block cleanly on stdout
 print_shell_snippet() {
+  local snippet=""
   case "$1" in
     zsh)
-      cat <<'EOF'
+      IFS= read -r -d '' snippet <<'EOF' || true
 if [[ -o interactive && -z ${DISPLAY:-} && -z ${WAYLAND_DISPLAY:-} && $(tty) == /dev/tty1 && ! -e $HOME/.config/lightxdm/no-autostart ]]; then
   export PATH="$HOME/.local/bin:$PATH"
   _lightxdm_launcher=""
@@ -5412,9 +5582,10 @@ if [[ -o interactive && -z ${DISPLAY:-} && -z ${WAYLAND_DISPLAY:-} && $(tty) == 
   fi
 fi
 EOF
+      printf '%s' "$snippet"
       ;;
     fish)
-      cat <<'EOF'
+      IFS= read -r -d '' snippet <<'EOF' || true
 if status is-login; and status is-interactive; and test -z "$DISPLAY"; and test -z "$WAYLAND_DISPLAY"; and test (tty) = /dev/tty1; and not test -e "$HOME/.config/lightxdm/no-autostart"
   set -gx PATH $HOME/.local/bin $PATH
   set -l _lightxdm_launcher ""
@@ -5459,6 +5630,7 @@ if status is-login; and status is-interactive; and test -z "$DISPLAY"; and test 
   end
 end
 EOF
+      printf '%s' "$snippet"
       ;;
     *)
       log "Invalid shell for --shell-snippet: $1 (valid shells: zsh fish)"
