@@ -118,3 +118,27 @@ rm ~/.config/lightxdm/no-autostart
 ```
 
 To keep the session's output, create `~/.config/lightxdm/session-journal` with `mkdir -p ~/.config/lightxdm && touch ~/.config/lightxdm/session-journal`. From the next TTY1 login, the session's stdout and stderr go to the journal; read them with `journalctl -b -t lightxdm` (or `journalctl -b -1 -t lightxdm` after a reboot). This needs `systemd-cat` (part of systemd). Plasma and GNOME start most of their components as systemd user services, which log under their own names (`journalctl --user -b`); the `lightxdm` identifier holds only what the session launcher itself prints, which on a working Plasma session can be nothing. Remove the file to send the output to the terminal again.
+
+### Automated Diagnostics and Repair
+
+Instead of editing files by hand, run these workflows as your regular user (previewing changes with `--dry-run` on `--recover` or `--fix`):
+
+- **Diagnose without changing anything (`--doctor`)**:
+  ```sh
+  bash install.sh --doctor
+  ```
+  Runs read-only without `sudo` and exits `0` when healthy or `1` when issues remain. Checks the active TTY1 launcher (`~/.wayland-session` vs `startx`/`~/.xinitrc`), template syntax and commands, `bash`/`zsh`/`fish` login-shell hooks, `~/.config/lightxdm/no-autostart`, `startx-attempts`, `*.lightxdm-new` update files, PAM keyring/GNOME session-type rules and `.so` modules (including `.pacnew` state), `getty@tty1.service`, re-enabled display managers, and TTY1 autologin conflicts.
+
+- **Restore home session dotfiles (`--recover`)**:
+  ```sh
+  bash install.sh --recover --dry-run
+  bash install.sh --recover
+  ```
+  Runs without `sudo` using your saved `install-choices` (or `--de <id>`), optional `--dry-run`, and optional `--setup-shell <zsh|fish|auto>`. It validates template syntax and commands first, backs up your edited dotfiles as `*.lightxdm-edited*`, restores fresh home dotfiles (`~/.bash_profile`, `~/.xinitrc` or `~/.wayland-session`, GPG helper, autostart desktop entry), removes any X11-shadowing `~/.wayland-session` and stale `*.lightxdm-new` files, clears `~/.config/lightxdm/no-autostart` and `startx-attempts`, and optionally updates managed `zsh`/`fish` hooks. Packages, `/etc/pam.d/login`, and systemd units stay untouched.
+
+- **Repair home and system state (`--fix`)**:
+  ```sh
+  bash install.sh --fix --dry-run
+  bash install.sh --fix
+  ```
+  Accepts `--dry-run`, `--non-interactive`, and `--de <id>`. It validates templates first, preserves valid user-edited session dotfiles when only system state needs repair (delegating broken, missing, shadowed, or paused home setups to home recovery), installs missing managed `zsh`/`fish` hooks, uses `sudo` only when PAM or systemd/display-manager state requires inspection or repair (restoring missing, partial, or `.pacnew`-dropped PAM keyring and GNOME session-type rules, unmasking/enabling `getty@tty1.service`, and disabling re-enabled display managers), and finishes by re-running `--doctor`. See [installation.md](installation.md) for the full CLI reference.
