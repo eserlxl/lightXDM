@@ -12245,6 +12245,13 @@ if [[ $EUID -ne 0 ]]; then
 
   mkdir -p "$status_cmd_dir/priv_gnome_dir"
   printf '%s\n' '#%PAM-1.0' 'session include system-local-login' >"$status_cmd_dir/readable_no_block_login"
+  printf '%s\n' \
+    '#%PAM-1.0' \
+    '# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)' \
+    'session    [success=2 default=ignore] pam_succeed_if.so quiet tty notin tty1:/dev/tty1' \
+    'session    [success=1 default=ignore] pam_succeed_if.so quiet user != statususer' \
+    "session    optional   pam_env.so readenv=0 user_readenv=0 conffile=$status_cmd_dir/priv_gnome_dir/gnome-session-type.conf" \
+    'session    include      system-local-login' >"$status_cmd_dir/readable_with_block_login"
   printf 'XDG_SESSION_TYPE DEFAULT=wayland\n' >"$status_cmd_dir/priv_gnome_dir/gnome-session-type.conf"
   chmod 000 "$status_cmd_dir/priv_gnome_dir"
   set +e
@@ -12258,10 +12265,24 @@ if [[ $EUID -ne 0 ]]; then
       bash "$REPO_ROOT/install.sh" --status 2>&1
   )"
   status_gnome_dir_priv_rc=$?
+  status_gnome_block_priv_out="$(
+    env -u XDG_STATE_HOME -u STATUS_GETTY_STATE -u STATUS_DM_STATE \
+      HOME="$status_cmd_dir/fresh_home" USER=statususer PATH="$status_cmd_dir/bin:$STUB_BIN:$PATH" \
+      STATUS_SUDO_LOG="$status_sudo_log" LOGIN_FILE="$status_cmd_dir/readable_with_block_login" \
+      GNOME_SESSION_TYPE_DEST="$status_cmd_dir/priv_gnome_dir/gnome-session-type.conf" \
+      PAM_KEYRING_STATE="$status_cmd_dir/missing" PAM_LOGIN_BASE_STATE="$status_cmd_dir/missing" \
+      DM_STATE_FILE="$status_cmd_dir/missing" AUTOLOGIN_DROPIN_DIR="$status_cmd_dir/missing-getty.d" \
+      bash "$REPO_ROOT/install.sh" --status 2>&1
+  )"
+  status_gnome_block_priv_rc=$?
   set -e
   chmod 755 "$status_cmd_dir/priv_gnome_dir"
   if [[ $status_gnome_dir_priv_rc -ne 0 || "$status_gnome_dir_priv_out" != *"PAM GNOME session type: unknown (needs root)"* ]]; then
     status_cmd_report+=" [unreadable gnome dir: rc=$status_gnome_dir_priv_rc, out=$status_gnome_dir_priv_out]"
+  fi
+  if [[ $status_gnome_block_priv_rc -ne 0 || "$status_gnome_block_priv_out" == *"Permission denied"* ||
+    "$status_gnome_block_priv_out" != *"PAM GNOME session type: block present ($status_cmd_dir/priv_gnome_dir/gnome-session-type.conf: unknown, needs root)"* ]]; then
+    status_cmd_report+=" [block-present-needs-root: rc=$status_gnome_block_priv_rc, out=$status_gnome_block_priv_out]"
   fi
 fi
 
@@ -13011,6 +13032,13 @@ PY
 
   mkdir -p "$js_dir/priv_gnome_only" "$js_dir/priv_dropin_dir"
   printf '%s\n' '#%PAM-1.0' 'session include system-local-login' >"$js_dir/readable_login_noblock"
+  printf '%s\n' \
+    '#%PAM-1.0' \
+    '# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)' \
+    'session    [success=2 default=ignore] pam_succeed_if.so quiet tty notin tty1:/dev/tty1' \
+    'session    [success=1 default=ignore] pam_succeed_if.so quiet user != testuser' \
+    "session    optional   pam_env.so readenv=0 user_readenv=0 conffile=$js_dir/priv_gnome_only/gnome-session-type.conf" \
+    'session    include      system-local-login' >"$js_dir/readable_login_block"
   printf 'XDG_SESSION_TYPE DEFAULT=wayland\n' >"$js_dir/priv_gnome_only/gnome-session-type.conf"
   printf '[Service]\nExecStart=-/usr/bin/agetty --autologin alice --noclear %%I %s\n' "\$TERM" >"$js_dir/priv_dropin_dir/lightxdm-autologin.conf"
   chmod 000 "$js_dir/priv_gnome_only" "$js_dir/priv_dropin_dir/lightxdm-autologin.conf"
@@ -13023,6 +13051,14 @@ PY
       AUTOLOGIN_DROPIN_DIR="$js_dir/priv_dropin_dir" bash "$REPO_ROOT/install.sh" --status --json 2>"$js_dir/priv_gnome.err"
   )"
   priv_gnome_js_rc=$?
+  priv_gnome_block_js_out="$(
+    env \
+      HOME="$js_dir/home_empty" USER=testuser XDG_STATE_HOME="$js_dir/home_empty/.local/state" PATH="$js_dir/bin:$STUB_BIN:$PATH" \
+      LOGIN_FILE="$js_dir/readable_login_block" PAM_KEYRING_STATE="$js_dir/empty_etc/pam-keyring" \
+      GNOME_SESSION_TYPE_DEST="$js_dir/priv_gnome_only/gnome-session-type.conf" DM_STATE_FILE="$js_dir/empty_etc/disabled-display-managers" \
+      AUTOLOGIN_DROPIN_DIR="$js_dir/priv_dropin_dir" bash "$REPO_ROOT/install.sh" --status --json 2>"$js_dir/priv_gnome_block.err"
+  )"
+  priv_gnome_block_js_rc=$?
   set -e
   chmod 755 "$js_dir/priv_gnome_only"
   chmod 644 "$js_dir/priv_dropin_dir/lightxdm-autologin.conf"
@@ -13035,6 +13071,16 @@ assert d["autologin"]["state"] == "unknown-needs-root"
 PY
   then
     js_report+=" [unreadable gnome-dir/dropin: rc=$priv_gnome_js_rc err=$(cat "$js_dir/priv_gnome.err") out=$priv_gnome_js_out]"
+  fi
+  if [[ $priv_gnome_block_js_rc -ne 0 || -s "$js_dir/priv_gnome_block.err" ]] ||
+    ! JSON_OUT="$priv_gnome_block_js_out" python3 - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["pam"]["gnome_session_type"] == "block-present-needs-root"
+assert d["autologin"]["state"] == "unknown-needs-root"
+PY
+  then
+    js_report+=" [block-present-needs-root: rc=$priv_gnome_block_js_rc err=$(cat "$js_dir/priv_gnome_block.err") out=$priv_gnome_block_js_out]"
   fi
 fi
 
@@ -13568,6 +13614,18 @@ if [[ $EUID -ne 0 ]]; then
   if [[ $doc_rc -ne 0 || "$doc_out" != *"unknown (needs root)"* || "$doc_out" == *"Permission denied"* ]]; then
     doctor_ok=0
     doctor_report+=" unreadable-root-soft rc=$doc_rc out=[$doc_out];"
+  fi
+
+  reset_doctor_gnome_fixture
+  chmod 000 "$doctor_etc/lightxdm"
+  doc_rc=0
+  doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+  chmod 755 "$doctor_etc/lightxdm"
+  if [[ $doc_rc -ne 0 ||
+    "$doc_out" != *"PAM GNOME session type: WARN (block present ($doctor_etc/lightxdm/gnome-session-type.conf: unknown, needs root))"* ||
+    "$doc_out" != *"Doctor: PASS (0 issue(s),"* || "$doc_out" == *"Permission denied"* ]]; then
+    doctor_ok=0
+    doctor_report+=" block-present-needs-root rc=$doc_rc out=[$doc_out];"
   fi
 fi
 
