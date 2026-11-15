@@ -4200,6 +4200,193 @@ EOF
   done
 done
 
+if zsh_path="$(command -v zsh)"; then
+  zsh_snippet="$TMP_DIR/snippet_zsh/snippet"
+  zsh_suite="$TMP_DIR/zsh_crash_journal"
+  zsh_bin="$zsh_suite/bin"
+  zsh_home="$zsh_suite/home"
+  mkdir -p "$zsh_bin" "$zsh_home/.local/bin"
+  cat >"$zsh_bin/tty" <<'EOF'
+#!/bin/sh
+echo /dev/tty1
+EOF
+  cat >"$zsh_bin/startx" <<'EOF'
+#!/bin/sh
+printf 'startx|%s\n' "$PATH" >>"$HOME/zsh.log"
+EOF
+  cat >"$zsh_bin/systemd-cat" <<'EOF'
+#!/bin/sh
+printf 'systemd-cat|%s\n' "$*" >>"$HOME/zsh.log"
+if [ "${1:-}" = "-t" ]; then
+  shift 2
+fi
+exec "$@"
+EOF
+  chmod +x "$zsh_bin/tty" "$zsh_bin/startx" "$zsh_bin/systemd-cat"
+
+  run_zsh_tty1() {
+    local custom_state="${1:-}" run_path="${2:-$zsh_bin:/usr/bin:/bin}"
+    local err_file="$zsh_home/zsh.err"
+    : >"$zsh_home/zsh.log"
+    rm -f "$err_file" "$zsh_home/after-source"
+    zsh_status=0
+    if [[ -n "$custom_state" ]]; then
+      # shellcheck disable=SC2016  # expand inside child zsh
+      zsh_out="$(timeout 20 env -i HOME="$zsh_home" PATH="$run_path" TERM=dumb XDG_STATE_HOME="$custom_state" \
+        "$zsh_path" -f -o interactive -o NO_UNSET -o NO_CLOBBER -o SH_WORD_SPLIT +m \
+        -c 'exec 2>|"$HOME/zsh.err"; source "$1"; print -r -- "after|${(j:,:)${(k)parameters[(I)_lightxdm_*]}}"' zsh "$zsh_snippet" </dev/null)" || zsh_status=$?
+    else
+      # shellcheck disable=SC2016  # expand inside child zsh
+      zsh_out="$(timeout 20 env -i HOME="$zsh_home" PATH="$run_path" TERM=dumb \
+        "$zsh_path" -f -o interactive -o NO_UNSET -o NO_CLOBBER -o SH_WORD_SPLIT +m \
+        -c 'exec 2>|"$HOME/zsh.err"; source "$1"; print -r -- "after|${(j:,:)${(k)parameters[(I)_lightxdm_*]}}"' zsh "$zsh_snippet" </dev/null)" || zsh_status=$?
+    fi
+    zsh_log="$(cat "$zsh_home/zsh.log")"
+    zsh_err="$(cat "$err_file" 2>/dev/null || true)"
+  }
+
+  zsh_attempts="$zsh_home/.local/state/lightxdm/startx-attempts"
+  mkdir -p "${zsh_attempts%/*}"
+  printf -v zsh_now '%(%s)T' -1
+  printf '%s\n' "$((zsh_now - 25))" "$((zsh_now - 10))" "$((zsh_now - 1))" >"$zsh_attempts"
+  run_zsh_tty1
+  if [[ $zsh_status -eq 0 && -z "$zsh_log" && -z "$zsh_err" ]] &&
+    [[ -f "$zsh_home/.config/lightxdm/no-autostart" && ! -s "$zsh_attempts" ]] &&
+    [[ "$zsh_out" == *"TTY1 auto-start paused: the session was started 3 times within 30s; run 'rm ~/.config/lightxdm/no-autostart' to resume."* ]] &&
+    [[ "$zsh_out" == *$'\n'"after|" ]]; then
+    pass "zsh TTY1 snippet pauses after three recent attempts, clears attempts, and unsets helpers"
+  else
+    fail "zsh TTY1 snippet pause on three recent attempts (status=$zsh_status, log=$zsh_log, out=$zsh_out, err=$zsh_err)"
+  fi
+
+  rm -f "$zsh_home/.config/lightxdm/no-autostart" "$zsh_attempts"
+  zsh_rapid_ok=1
+  for attempt_num in 1 2 3; do
+    run_zsh_tty1
+    zsh_lines=()
+    if [[ -f "$zsh_attempts" ]]; then
+      mapfile -t zsh_lines <"$zsh_attempts"
+    fi
+    if [[ $zsh_status -ne 0 || "$zsh_log" != "startx|"* || -n "$zsh_out" || -n "$zsh_err" ||
+      -e "$zsh_home/.config/lightxdm/no-autostart" || ${#zsh_lines[@]} -ne $attempt_num ]]; then
+      zsh_rapid_ok=0
+    fi
+  done
+  run_zsh_tty1
+  if [[ $zsh_rapid_ok -eq 1 && $zsh_status -eq 0 && -z "$zsh_log" && -z "$zsh_err" ]] &&
+    [[ -f "$zsh_home/.config/lightxdm/no-autostart" && ! -s "$zsh_attempts" && "$zsh_out" == *$'\n'"after|" ]]; then
+    pass "zsh TTY1 snippet launches startx three times then pauses on the fourth login"
+  else
+    fail "zsh TTY1 snippet four rapid logins (rapid_ok=$zsh_rapid_ok, status=$zsh_status, log=$zsh_log, out=$zsh_out, err=$zsh_err)"
+  fi
+
+  rm -f "$zsh_home/.config/lightxdm/no-autostart"
+  printf -v zsh_now '%(%s)T' -1
+  printf '%s\n' "abc" "99999999999999999999999999" "$((zsh_now - 60))" "$((zsh_now + 600))" "$((zsh_now - 4))" >"$zsh_attempts"
+  run_zsh_tty1
+  zsh_lines=()
+  if [[ -f "$zsh_attempts" ]]; then
+    mapfile -t zsh_lines <"$zsh_attempts"
+  fi
+  if [[ $zsh_status -eq 0 && "$zsh_log" == "startx|"* && -z "$zsh_out" && -z "$zsh_err" ]] &&
+    [[ ! -e "$zsh_home/.config/lightxdm/no-autostart" && ${#zsh_lines[@]} -eq 2 ]]; then
+    pass "zsh TTY1 snippet ignores corrupt, overflow, stale, and future attempt entries"
+  else
+    fail "zsh TTY1 snippet attempt pruning (status=$zsh_status, log=$zsh_log, count=${#zsh_lines[@]}, out=$zsh_out, err=$zsh_err)"
+  fi
+
+  zsh_xdg_state="$zsh_suite/xdg_state"
+  mkdir -p "$zsh_xdg_state/lightxdm"
+  rm -rf "$zsh_home/.local/state" "$zsh_home/.config/lightxdm/no-autostart"
+  printf -v zsh_now '%(%s)T' -1
+  printf '%s\n' "$((zsh_now - 5))" "$((zsh_now - 2))" "$((zsh_now - 1))" >"$zsh_xdg_state/lightxdm/startx-attempts"
+  run_zsh_tty1 "$zsh_xdg_state"
+  if [[ $zsh_status -eq 0 && -z "$zsh_log" && -z "$zsh_err" && -f "$zsh_home/.config/lightxdm/no-autostart" &&
+    ! -s "$zsh_xdg_state/lightxdm/startx-attempts" && ! -e "$zsh_home/.local/state" ]]; then
+    pass "zsh TTY1 snippet honors XDG_STATE_HOME under NO_CLOBBER/NO_UNSET/SH_WORD_SPLIT"
+  else
+    fail "zsh TTY1 snippet XDG_STATE_HOME (status=$zsh_status, log=$zsh_log, out=$zsh_out, err=$zsh_err)"
+  fi
+
+  zsh_ro_state="$zsh_suite/ro_state"
+  rm -f "$zsh_home/.config/lightxdm/no-autostart"
+  mkdir -p "$zsh_ro_state/lightxdm"
+  chmod 555 "$zsh_ro_state" "$zsh_ro_state/lightxdm"
+  if [[ -w "$zsh_ro_state/lightxdm" ]]; then
+    chmod 755 "$zsh_ro_state" "$zsh_ro_state/lightxdm"
+    skip "zsh TTY1 snippet stays quiet when state dir is unwritable (dir remains writable)"
+  else
+    run_zsh_tty1 "$zsh_ro_state"
+    chmod 755 "$zsh_ro_state" "$zsh_ro_state/lightxdm"
+    if [[ $zsh_status -eq 0 && "$zsh_log" == "startx|"* && -z "$zsh_out" && -z "$zsh_err" ]]; then
+      pass "zsh TTY1 snippet stays quiet and starts X when state directory is unwritable"
+    else
+      fail "zsh TTY1 snippet unwritable state directory (status=$zsh_status, log=$zsh_log, out=$zsh_out, err=$zsh_err)"
+    fi
+  fi
+
+  mkdir -p "$zsh_home/.config/lightxdm"
+  : >"$zsh_home/.config/lightxdm/session-journal"
+  rm -f "$zsh_home/.config/lightxdm/no-autostart" "$zsh_attempts"
+  run_zsh_tty1
+  if [[ $zsh_status -eq 0 && "$zsh_log" == "systemd-cat|-t lightxdm startx"$'\n'"startx|"* &&
+    -z "$zsh_out" && -z "$zsh_err" ]]; then
+    pass "zsh TTY1 snippet wraps startx with systemd-cat when session-journal exists"
+  else
+    fail "zsh TTY1 snippet startx session-journal (status=$zsh_status, log=$zsh_log, out=$zsh_out, err=$zsh_err)"
+  fi
+
+  cat >"$zsh_home/.wayland-session" <<'EOF'
+#!/bin/sh
+printf 'wayland-session|%s\n' "$PATH" >>"$HOME/zsh.log"
+EOF
+  chmod 755 "$zsh_home/.wayland-session"
+  rm -f "$zsh_home/.config/lightxdm/no-autostart" "$zsh_attempts"
+  run_zsh_tty1
+  if [[ $zsh_status -eq 0 && "$zsh_log" == "systemd-cat|-t lightxdm $zsh_home/.wayland-session"$'\n'"wayland-session|"* &&
+    -z "$zsh_out" && -z "$zsh_err" ]]; then
+    pass "zsh TTY1 snippet wraps ~/.wayland-session with systemd-cat when session-journal exists"
+  else
+    fail "zsh TTY1 snippet wayland-session journal (status=$zsh_status, log=$zsh_log, out=$zsh_out, err=$zsh_err)"
+  fi
+
+  zsh_nocat_bin="$zsh_suite/bin_nocat"
+  mkdir -p "$zsh_nocat_bin"
+  ln -sf "$zsh_bin/tty" "$zsh_bin/startx" "$zsh_nocat_bin/"
+  ln -sf "$(command -v mkdir)" "$(command -v date)" "$zsh_nocat_bin/"
+  rm -f "$zsh_home/.config/lightxdm/no-autostart" "$zsh_attempts" "$zsh_home/.wayland-session"
+  run_zsh_tty1 "" "$zsh_nocat_bin"
+  rm -f "$zsh_home/.config/lightxdm/session-journal"
+  if [[ $zsh_status -eq 0 && "$zsh_log" == "startx|"* && -z "$zsh_out" && -z "$zsh_err" ]]; then
+    pass "zsh TTY1 snippet falls back cleanly when systemd-cat is missing"
+  else
+    fail "zsh TTY1 snippet systemd-cat fallback (status=$zsh_status, log=$zsh_log, out=$zsh_out, err=$zsh_err)"
+  fi
+fi
+
+fish_snippet_check="$TMP_DIR/fish_snippet_check"
+bash "$REPO_ROOT/install.sh" --shell-snippet fish >"$fish_snippet_check"
+if grep -Fq 'startx-attempts' "$fish_snippet_check" &&
+  grep -Fq 'no-autostart' "$fish_snippet_check" &&
+  grep -Fq 'session-journal' "$fish_snippet_check" &&
+  grep -Fq 'systemd-cat -t lightxdm' "$fish_snippet_check" &&
+  grep -Fq 'XDG_STATE_HOME' "$fish_snippet_check" &&
+  grep -Fq 'set -l _lightxdm_launcher' "$fish_snippet_check" &&
+  grep -Fq 'set -l _lightxdm_attempts' "$fish_snippet_check"; then
+  pass "fish TTY1 snippet includes crash-loop auto-pause and session-journal wiring"
+else
+  fail "fish TTY1 snippet crash-loop/session-journal contract"
+fi
+if fish_path="$(command -v fish)"; then
+  if "$fish_path" --no-config -n "$fish_snippet_check"; then
+    pass "fish TTY1 snippet passes fish -n syntax check"
+  else
+    fail "fish TTY1 snippet passes fish -n syntax check"
+  fi
+else
+  skip "fish TTY1 snippet live crash-loop/session-journal execution (fish missing)"
+fi
+
 for summary_shell in bash zsh fish; do
   summary_stub_dir="$TMP_DIR/getent_$summary_shell"
   for summary_dm in 0 1; do

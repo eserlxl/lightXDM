@@ -5367,24 +5367,95 @@ print_shell_snippet() {
   case "$1" in
     zsh)
       cat <<'EOF'
-if [[ -o interactive && -z $DISPLAY && -z $WAYLAND_DISPLAY && $(tty) == /dev/tty1 && ! -e ~/.config/lightxdm/no-autostart ]]; then
+if [[ -o interactive && -z ${DISPLAY:-} && -z ${WAYLAND_DISPLAY:-} && $(tty) == /dev/tty1 && ! -e $HOME/.config/lightxdm/no-autostart ]]; then
   export PATH="$HOME/.local/bin:$PATH"
-  if [[ -f ~/.wayland-session && -x ~/.wayland-session ]]; then
-    exec ~/.wayland-session
+  _lightxdm_launcher=""
+  if [[ -f $HOME/.wayland-session && -x $HOME/.wayland-session ]]; then
+    _lightxdm_launcher="$HOME/.wayland-session"
   elif command -v startx >/dev/null 2>&1; then
-    exec startx
+    _lightxdm_launcher="startx"
+  fi
+  if [[ -n $_lightxdm_launcher ]]; then
+    _lightxdm_attempts="${XDG_STATE_HOME:-$HOME/.local/state}/lightxdm/startx-attempts"
+    zmodload -F zsh/datetime p:EPOCHSECONDS 2>/dev/null || :
+    _lightxdm_now=${EPOCHSECONDS:-$(date +%s 2>/dev/null || printf '0')}
+    _lightxdm_lines=()
+    _lightxdm_recent=()
+    if [[ -f $_lightxdm_attempts && -r $_lightxdm_attempts ]]; then
+      _lightxdm_lines=("${(@f)$(<"$_lightxdm_attempts" 2>/dev/null)}")
+    fi
+    for _lightxdm_ts in "${_lightxdm_lines[@]}"; do
+      if [[ -n $_lightxdm_ts && ${#_lightxdm_ts} -le 18 && $_lightxdm_ts != *[!0123456789]* ]] &&
+        (( _lightxdm_now - 10#$_lightxdm_ts >= 0 && _lightxdm_now - 10#$_lightxdm_ts <= 30 )); then
+        _lightxdm_recent+=("$_lightxdm_ts")
+      fi
+    done
+    if (( ${#_lightxdm_recent[@]} >= 3 )); then
+      if mkdir -p "$HOME/.config/lightxdm" 2>/dev/null &&
+        : 2>/dev/null >| "$HOME/.config/lightxdm/no-autostart"; then
+        : 2>/dev/null >| "$_lightxdm_attempts" || :
+      fi
+      printf '%s\n' "TTY1 auto-start paused: the session was started 3 times within 30s; run 'rm ~/.config/lightxdm/no-autostart' to resume."
+      unset _lightxdm_launcher _lightxdm_attempts _lightxdm_now _lightxdm_lines _lightxdm_recent _lightxdm_ts
+    else
+      if mkdir -p "${_lightxdm_attempts:h}" 2>/dev/null; then
+        { printf '%s\n' "${_lightxdm_recent[@]}" "$_lightxdm_now" >| "$_lightxdm_attempts"; } 2>/dev/null || :
+      fi
+      unset _lightxdm_attempts _lightxdm_now _lightxdm_lines _lightxdm_recent _lightxdm_ts
+      if [[ -e $HOME/.config/lightxdm/session-journal ]] && command -v systemd-cat >/dev/null 2>&1; then
+        exec systemd-cat -t lightxdm "$_lightxdm_launcher"
+      fi
+      exec "$_lightxdm_launcher"
+    fi
+  else
+    unset _lightxdm_launcher
   fi
 fi
 EOF
       ;;
     fish)
       cat <<'EOF'
-if status is-login; and status is-interactive; and test -z "$DISPLAY"; and test -z "$WAYLAND_DISPLAY"; and test (tty) = /dev/tty1; and not test -e ~/.config/lightxdm/no-autostart
+if status is-login; and status is-interactive; and test -z "$DISPLAY"; and test -z "$WAYLAND_DISPLAY"; and test (tty) = /dev/tty1; and not test -e "$HOME/.config/lightxdm/no-autostart"
   set -gx PATH $HOME/.local/bin $PATH
-  if test -f ~/.wayland-session; and test -x ~/.wayland-session
-    exec ~/.wayland-session
+  set -l _lightxdm_launcher ""
+  if test -f "$HOME/.wayland-session"; and test -x "$HOME/.wayland-session"
+    set _lightxdm_launcher "$HOME/.wayland-session"
   else if command -q startx
-    exec startx
+    set _lightxdm_launcher startx
+  end
+  if test -n "$_lightxdm_launcher"
+    set -l _lightxdm_state_dir "$HOME/.local/state"
+    if set -q XDG_STATE_HOME; and test -n "$XDG_STATE_HOME"
+      set _lightxdm_state_dir "$XDG_STATE_HOME"
+    end
+    set -l _lightxdm_attempts "$_lightxdm_state_dir/lightxdm/startx-attempts"
+    set -l _lightxdm_now (date +%s 2>/dev/null; or echo 0)
+    set -l _lightxdm_recent
+    if test -f "$_lightxdm_attempts"; and test -r "$_lightxdm_attempts"
+      for _lightxdm_ts in (command cat -- "$_lightxdm_attempts" 2>/dev/null)
+        if string match -rq '^[0-9]{1,15}$' -- "$_lightxdm_ts"
+          set -l _lightxdm_ts_clean (string replace -r '^0+(.)' '$1' -- "$_lightxdm_ts")
+          set -l _lightxdm_age (math "$_lightxdm_now - $_lightxdm_ts_clean" 2>/dev/null; or echo -1)
+          if test "$_lightxdm_age" -ge 0 2>/dev/null; and test "$_lightxdm_age" -le 30 2>/dev/null
+            set -a _lightxdm_recent $_lightxdm_ts
+          end
+        end
+      end
+    end
+    if test (count $_lightxdm_recent) -ge 3
+      if mkdir -p "$HOME/.config/lightxdm" >/dev/null 2>&1; and begin; printf '' > "$HOME/.config/lightxdm/no-autostart"; end 2>/dev/null
+        begin; printf '' > "$_lightxdm_attempts"; end 2>/dev/null; or true
+      end
+      echo "TTY1 auto-start paused: the session was started 3 times within 30s; run 'rm ~/.config/lightxdm/no-autostart' to resume."
+    else
+      if mkdir -p (dirname -- "$_lightxdm_attempts") >/dev/null 2>&1
+        begin; printf '%s\n' $_lightxdm_recent $_lightxdm_now > "$_lightxdm_attempts"; end 2>/dev/null; or true
+      end
+      if test -e "$HOME/.config/lightxdm/session-journal"; and command -q systemd-cat
+        exec systemd-cat -t lightxdm "$_lightxdm_launcher"
+      end
+      exec "$_lightxdm_launcher"
+    end
   end
 end
 EOF

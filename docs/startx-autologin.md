@@ -21,7 +21,7 @@ The installer writes `~/.bash_profile` by default. If your login shell is zsh or
 ```sh
 bash install.sh --setup-shell auto   # or pass zsh / fish explicitly (supports --dry-run and --recover)
 ```
-or add the equivalent block yourself (`--setup-shell` honors in-home `$ZDOTDIR/.zprofile` and `$XDG_CONFIG_HOME/fish/config.fish` automatically, manages `# >>> lightXDM TTY1 auto-start >>>` .. `# <<< lightXDM TTY1 auto-start <<<` markers safely, and records custom hook paths in `${XDG_STATE_HOME:-~/.local/state}/lightxdm/installed-shell-hooks` so `uninstall.sh` cleans up only that fenced block). These snippets honor the `~/.config/lightxdm/no-autostart` marker (see Recovery below), but only the Bash profile pauses auto-start on its own after repeated crashes and honors `~/.config/lightxdm/session-journal`.
+or add the equivalent block yourself (`--setup-shell` honors in-home `$ZDOTDIR/.zprofile` and `$XDG_CONFIG_HOME/fish/config.fish` automatically, manages `# >>> lightXDM TTY1 auto-start >>>` .. `# <<< lightXDM TTY1 auto-start <<<` markers safely, and records custom hook paths in `${XDG_STATE_HOME:-~/.local/state}/lightxdm/installed-shell-hooks` so `uninstall.sh` cleans up only that fenced block). These snippets match `~/.bash_profile` in honoring `~/.config/lightxdm/no-autostart`, pausing TTY1 auto-start after 3 launches within 30 seconds, and wrapping launches in `systemd-cat -t lightxdm` when `~/.config/lightxdm/session-journal` exists (rerun `--setup-shell <zsh|fish|auto>` to upgrade an older managed block in place).
 
 You can also print either snippet directly to stdout without opening this file (for example under a package install with `lightxdm-install`):
 ```sh
@@ -31,24 +31,95 @@ mkdir -p ~/.config/fish && bash install.sh --shell-snippet fish >> ~/.config/fis
 
 zsh, in `~/.zprofile`:
 ```zsh
-if [[ -o interactive && -z $DISPLAY && -z $WAYLAND_DISPLAY && $(tty) == /dev/tty1 && ! -e ~/.config/lightxdm/no-autostart ]]; then
+if [[ -o interactive && -z ${DISPLAY:-} && -z ${WAYLAND_DISPLAY:-} && $(tty) == /dev/tty1 && ! -e $HOME/.config/lightxdm/no-autostart ]]; then
   export PATH="$HOME/.local/bin:$PATH"
-  if [[ -f ~/.wayland-session && -x ~/.wayland-session ]]; then
-    exec ~/.wayland-session
+  _lightxdm_launcher=""
+  if [[ -f $HOME/.wayland-session && -x $HOME/.wayland-session ]]; then
+    _lightxdm_launcher="$HOME/.wayland-session"
   elif command -v startx >/dev/null 2>&1; then
-    exec startx
+    _lightxdm_launcher="startx"
+  fi
+  if [[ -n $_lightxdm_launcher ]]; then
+    _lightxdm_attempts="${XDG_STATE_HOME:-$HOME/.local/state}/lightxdm/startx-attempts"
+    zmodload -F zsh/datetime p:EPOCHSECONDS 2>/dev/null || :
+    _lightxdm_now=${EPOCHSECONDS:-$(date +%s 2>/dev/null || printf '0')}
+    _lightxdm_lines=()
+    _lightxdm_recent=()
+    if [[ -f $_lightxdm_attempts && -r $_lightxdm_attempts ]]; then
+      _lightxdm_lines=("${(@f)$(<"$_lightxdm_attempts" 2>/dev/null)}")
+    fi
+    for _lightxdm_ts in "${_lightxdm_lines[@]}"; do
+      if [[ -n $_lightxdm_ts && ${#_lightxdm_ts} -le 18 && $_lightxdm_ts != *[!0123456789]* ]] &&
+        (( _lightxdm_now - 10#$_lightxdm_ts >= 0 && _lightxdm_now - 10#$_lightxdm_ts <= 30 )); then
+        _lightxdm_recent+=("$_lightxdm_ts")
+      fi
+    done
+    if (( ${#_lightxdm_recent[@]} >= 3 )); then
+      if mkdir -p "$HOME/.config/lightxdm" 2>/dev/null &&
+        : 2>/dev/null >| "$HOME/.config/lightxdm/no-autostart"; then
+        : 2>/dev/null >| "$_lightxdm_attempts" || :
+      fi
+      printf '%s\n' "TTY1 auto-start paused: the session was started 3 times within 30s; run 'rm ~/.config/lightxdm/no-autostart' to resume."
+      unset _lightxdm_launcher _lightxdm_attempts _lightxdm_now _lightxdm_lines _lightxdm_recent _lightxdm_ts
+    else
+      if mkdir -p "${_lightxdm_attempts:h}" 2>/dev/null; then
+        { printf '%s\n' "${_lightxdm_recent[@]}" "$_lightxdm_now" >| "$_lightxdm_attempts"; } 2>/dev/null || :
+      fi
+      unset _lightxdm_attempts _lightxdm_now _lightxdm_lines _lightxdm_recent _lightxdm_ts
+      if [[ -e $HOME/.config/lightxdm/session-journal ]] && command -v systemd-cat >/dev/null 2>&1; then
+        exec systemd-cat -t lightxdm "$_lightxdm_launcher"
+      fi
+      exec "$_lightxdm_launcher"
+    fi
+  else
+    unset _lightxdm_launcher
   fi
 fi
 ```
 
 fish, in `~/.config/fish/config.fish`:
 ```fish
-if status is-login; and status is-interactive; and test -z "$DISPLAY"; and test -z "$WAYLAND_DISPLAY"; and test (tty) = /dev/tty1; and not test -e ~/.config/lightxdm/no-autostart
+if status is-login; and status is-interactive; and test -z "$DISPLAY"; and test -z "$WAYLAND_DISPLAY"; and test (tty) = /dev/tty1; and not test -e "$HOME/.config/lightxdm/no-autostart"
   set -gx PATH $HOME/.local/bin $PATH
-  if test -f ~/.wayland-session; and test -x ~/.wayland-session
-    exec ~/.wayland-session
+  set -l _lightxdm_launcher ""
+  if test -f "$HOME/.wayland-session"; and test -x "$HOME/.wayland-session"
+    set _lightxdm_launcher "$HOME/.wayland-session"
   else if command -q startx
-    exec startx
+    set _lightxdm_launcher startx
+  end
+  if test -n "$_lightxdm_launcher"
+    set -l _lightxdm_state_dir "$HOME/.local/state"
+    if set -q XDG_STATE_HOME; and test -n "$XDG_STATE_HOME"
+      set _lightxdm_state_dir "$XDG_STATE_HOME"
+    end
+    set -l _lightxdm_attempts "$_lightxdm_state_dir/lightxdm/startx-attempts"
+    set -l _lightxdm_now (date +%s 2>/dev/null; or echo 0)
+    set -l _lightxdm_recent
+    if test -f "$_lightxdm_attempts"; and test -r "$_lightxdm_attempts"
+      for _lightxdm_ts in (command cat -- "$_lightxdm_attempts" 2>/dev/null)
+        if string match -rq '^[0-9]{1,15}$' -- "$_lightxdm_ts"
+          set -l _lightxdm_ts_clean (string replace -r '^0+(.)' '$1' -- "$_lightxdm_ts")
+          set -l _lightxdm_age (math "$_lightxdm_now - $_lightxdm_ts_clean" 2>/dev/null; or echo -1)
+          if test "$_lightxdm_age" -ge 0 2>/dev/null; and test "$_lightxdm_age" -le 30 2>/dev/null
+            set -a _lightxdm_recent $_lightxdm_ts
+          end
+        end
+      end
+    end
+    if test (count $_lightxdm_recent) -ge 3
+      if mkdir -p "$HOME/.config/lightxdm" >/dev/null 2>&1; and begin; printf '' > "$HOME/.config/lightxdm/no-autostart"; end 2>/dev/null
+        begin; printf '' > "$_lightxdm_attempts"; end 2>/dev/null; or true
+      end
+      echo "TTY1 auto-start paused: the session was started 3 times within 30s; run 'rm ~/.config/lightxdm/no-autostart' to resume."
+    else
+      if mkdir -p (dirname -- "$_lightxdm_attempts") >/dev/null 2>&1
+        begin; printf '%s\n' $_lightxdm_recent $_lightxdm_now > "$_lightxdm_attempts"; end 2>/dev/null; or true
+      end
+      if test -e "$HOME/.config/lightxdm/session-journal"; and command -q systemd-cat
+        exec systemd-cat -t lightxdm "$_lightxdm_launcher"
+      end
+      exec "$_lightxdm_launcher"
+    end
   end
 end
 ```
@@ -104,14 +175,14 @@ This prints `enabled for <user> (<file>)` for the lightXDM drop-in (or an accept
 
 ## Recovery
 
-If the desktop (`~/.wayland-session` or `startx`) was launched on TTY1 three times within the 30 seconds before a TTY1 login (a desktop that keeps crashing right after it starts), that login automatically pauses auto-start: `.bash_profile` creates `~/.config/lightxdm/no-autostart`, clears `${XDG_STATE_HOME:-~/.local/state}/lightxdm/startx-attempts`, prints a one-line notice explaining how to resume, and loads `~/.bashrc` instead of starting the desktop. (Recent launch timestamps are kept in `${XDG_STATE_HOME:-~/.local/state}/lightxdm/startx-attempts`, dropping entries older than 30 seconds; `uninstall.sh` removes this file from the default `~/.local/state` location, but not a copy under a custom `XDG_STATE_HOME`.)
+If the desktop (`~/.wayland-session` or `startx`) was launched on TTY1 three times within the 30 seconds before a TTY1 login (a desktop that keeps crashing right after it starts), that login automatically pauses auto-start: `.bash_profile` (and the `zsh`/`fish` TTY1 hooks from `--setup-shell` / `--shell-snippet`) creates `~/.config/lightxdm/no-autostart`, clears `${XDG_STATE_HOME:-~/.local/state}/lightxdm/startx-attempts`, prints a one-line notice explaining how to resume, and continues to an interactive shell instead of starting the desktop. (Recent launch timestamps are kept in `${XDG_STATE_HOME:-~/.local/state}/lightxdm/startx-attempts`, dropping entries older than 30 seconds; `uninstall.sh` removes this file from the default `~/.local/state` location, but not a copy under a custom `XDG_STATE_HOME`.)
 
 You can also create the marker manually as your user from another TTY or SSH:
 ```sh
 mkdir -p ~/.config/lightxdm
 touch ~/.config/lightxdm/no-autostart
 ```
-While the marker exists, the installed `.bash_profile` skips the desktop launch and loads `~/.bashrc`, giving you an interactive shell on the next TTY1 login. Other TTYs are unchanged, and no edit to `~/.bash_profile` is needed.
+While the marker exists, the installed `.bash_profile` (and `zsh`/`fish` TTY1 snippets) skips the desktop launch and opens your interactive shell on the next TTY1 login. Other TTYs are unchanged, and no edit to `~/.bash_profile` is needed.
 
 To restore desktop auto-start at the next TTY1 login:
 ```sh
