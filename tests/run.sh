@@ -13272,13 +13272,13 @@ else
   fail "install.sh --preflight:$preflight_report"
 fi
 
-doctor_dir="$(mktemp -d)"
-tmp_dirs+=("$doctor_dir")
+doctor_dir="$TMP_DIR/doctor_test"
 doctor_home="$doctor_dir/home"
 doctor_state="$doctor_dir/state"
 doctor_bin="$doctor_dir/bin"
 doctor_etc="$doctor_dir/etc"
 doctor_root="$doctor_dir/sysroot"
+rm -rf "$doctor_dir"
 mkdir -p "$doctor_home/.config/lightxdm" "$doctor_state" "$doctor_bin" "$doctor_etc/pam.d" "$doctor_etc/lightxdm" "$doctor_etc/systemd/system" "$doctor_etc/getty@tty1.service.d" "$doctor_root/usr/bin" "$doctor_root/usr/lib/security"
 
 cat >"$doctor_bin/sudo" <<'EOF'
