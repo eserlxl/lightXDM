@@ -55,8 +55,10 @@ check_root() {
 
 # Read the existing collection without activating the secret service or prompting.
 check_keyring_unlocked() {
-  local collection output status=0
-  case "$1" in
+  local backend="$1" collection output reason="" state="unavailable" unlocked_json="null" locked_json="null"
+  local json_mode=0 status=0 result=2
+  [[ "${2:-}" == "--json" ]] && json_mode=1
+  case "$backend" in
     gnome) collection="login" ;;
     kwallet) collection="kdewallet" ;;
   esac
@@ -65,17 +67,48 @@ check_keyring_unlocked() {
   if [[ $status -eq 0 ]]; then
     case "$output" in
       'b false')
-        echo "Keyring collection '$collection' is unlocked."
-        return 0
+        state="unlocked"
+        unlocked_json="true"
+        locked_json="false"
+        result=0
         ;;
       'b true')
-        echo "Keyring collection '$collection' is locked."
-        return 1
+        state="locked"
+        unlocked_json="false"
+        locked_json="true"
+        result=1
         ;;
     esac
   fi
-  log "Keyring collection '$collection' is unavailable: ${output:-busctl returned no output (status $status)}"
-  return 2
+  if [[ "$state" == "unavailable" ]]; then
+    reason="${output:-busctl returned no output (status $status)}"
+  fi
+  if [[ $json_mode -eq 1 ]]; then
+    local LC_ALL=C
+    printf '{\n'
+    printf '  "mode": "check-keyring",\n'
+    printf '  "backend": %s,\n' "$(json_str "$backend")"
+    printf '  "collection": %s,\n' "$(json_str "$collection")"
+    printf '  "state": %s,\n' "$(json_str "$state")"
+    printf '  "unlocked": %s,\n' "$unlocked_json"
+    printf '  "locked": %s,\n' "$locked_json"
+    printf '  "reason": %s,\n' "$(json_str_or_null "$reason")"
+    printf '  "bus_exit_code": %d\n' "$status"
+    printf '}\n'
+    return "$result"
+  fi
+  case "$state" in
+    unlocked)
+      echo "Keyring collection '$collection' is unlocked."
+      ;;
+    locked)
+      echo "Keyring collection '$collection' is locked."
+      ;;
+    *)
+      log "Keyring collection '$collection' is unavailable: $reason"
+      ;;
+  esac
+  return "$result"
 }
 
 # Detect the installed desktop environment
@@ -4877,7 +4910,7 @@ main() {
   local install_session_dest=""
   local install_session_template_exists=0
   local pam_only=0
-  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions [--json]] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--preflight [--json]] [--doctor [--json]] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--fix [--dry-run] [--non-interactive] [--de <id>]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
+  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions [--json]] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--preflight [--json]] [--doctor [--json]] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--fix [--dry-run] [--non-interactive] [--de <id>]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet> [--json]] [--no-keyring] [--autologin] [--update] [--pam-only]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -4912,7 +4945,7 @@ Options:
   --keyring <gnome|kwallet> choose the PAM keyring backend for a custom id (requires --no-packages;
                     cannot combine with --no-keyring or --init-template)
   --check-keyring <gnome|kwallet> report the existing collection's state from your desktop session and exit
-                    (use alone, without sudo; no service activation or prompts; 0=unlocked, 1=locked, 2=unavailable)
+                    (use alone or with --json, without sudo; no service activation or prompts; 0=unlocked, 1=locked, 2=unavailable)
   --no-keyring      skip keyring packages and keyring PAM lines (use with autologin)
   --autologin       also log in on TTY1 without a password (requires --no-keyring)
   --update          apply a newer lightXDM to the last finished install with its saved choices, changing
@@ -4925,7 +4958,7 @@ Options:
                     (with --no-keyring, only GNOME's block)
   --status          show the current lightXDM configuration, dotfile state, PAM state, disabled display
                     managers and TTY1 autologin status without sudo or changes (use alone, or with --json)
-  --json            with --status, --preflight, --doctor, or --list-sessions, print the read-only result as structured JSON on stdout
+  --json            with --status, --preflight, --doctor, --list-sessions, or --check-keyring, print the read-only result as structured JSON on stdout
   --list-sessions   scan installed X11 and Wayland session entries (system /usr/share and user ~/.local/share),
                     check executables, and suggest --init-template --from-session commands without sudo or changes (use alone, or with --json)
   --shell-snippet <zsh|fish> print the non-bash TTY1 auto-start block for ~/.zprofile or ~/.config/fish/config.fish
@@ -5117,8 +5150,8 @@ EOF
     esac
   done
 
-  if [[ $json_output -eq 1 && $status_only -eq 0 && $preflight_only -eq 0 && $doctor_only -eq 0 && $list_sessions -eq 0 ]]; then
-    log "--json requires --status, --preflight, --doctor, or --list-sessions."
+  if [[ $json_output -eq 1 && $status_only -eq 0 && $preflight_only -eq 0 && $doctor_only -eq 0 && $list_sessions -eq 0 && -z "$check_keyring" ]]; then
+    log "--json requires --status, --preflight, --doctor, --list-sessions, or --check-keyring."
     echo "$usage" >&2
     exit 1
   fi
@@ -5293,7 +5326,7 @@ EOF
     return
   fi
   if [[ -n "$check_keyring" ]]; then
-    if [[ $argument_count -ne 2 ]]; then
+    if [[ $argument_count -ne $((2 + json_output)) ]]; then
       log "--check-keyring cannot be combined with any other option."
       exit 1
     fi
@@ -5302,7 +5335,11 @@ EOF
       exit 1
     fi
     local check_status=0
-    check_keyring_unlocked "$check_keyring" || check_status=$?
+    if [[ $json_output -eq 1 ]]; then
+      check_keyring_unlocked "$check_keyring" --json || check_status=$?
+    else
+      check_keyring_unlocked "$check_keyring" || check_status=$?
+    fi
     exit "$check_status"
   fi
 

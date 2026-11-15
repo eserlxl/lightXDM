@@ -45,6 +45,7 @@ You need Arch Linux (or a derivative) with systemd, and a user in the `wheel` gr
 - `--list-sessions` (optional `--json`): scan installed X11 and Wayland freedesktop session entries across system `/usr/share` and user `~/.local/share` (`$XDG_DATA_HOME`) directories, check executable availability, and print ready `--init-template --from-session` commands without sudo or changes (`--json` emits machine-readable JSON on stdout)
 - `--preflight` (optional `--json`): check user/sudo, `pacman`/`systemctl`, `getty@tty1.service`, enabled display managers, login shell, and detected desktops without sudo or changes, then print the next command (`--json` emits machine-readable JSON on stdout)
 - `--doctor` (optional `--json`): verify post-install session launchers, login-shell TTY1 hooks, PAM keyring/GNOME rules, `.pacnew` drift, and systemd boot health without sudo or changes (`0` healthy, `1` issues found with recovery commands; `--json` emits machine-readable JSON on stdout)
+- `--check-keyring <gnome|kwallet>` (optional `--json`): report the existing keyring collection state from inside your desktop session without sudo or service activation (`0` unlocked, `1` locked, `2` unavailable; `--json` emits machine-readable JSON on stdout)
 - `--list-packages --de <id>`: print the packages it would install, change nothing
 - `--dry-run --de <id>`: preview every change the install would make (dotfiles, packages, PAM, display managers), change nothing
 - `--non-interactive --de <id>`: for unattended installs, fail instead of prompting for sudo

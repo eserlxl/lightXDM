@@ -7659,10 +7659,84 @@ else
         fail "--check-keyring $ck_backend $ck_result (status=$ck_status, output=$ck_output, args=$ck_args, log=$(cat "$STUB_LOG"))"
       fi
     done
+
+    for ck_result in unlocked locked unavailable unexpected empty; do
+      case "$ck_result" in
+        unlocked) ck_expected_status=0 ;;
+        locked) ck_expected_status=1 ;;
+        *) ck_expected_status=2 ;;
+      esac
+      for ck_order in forward reversed; do
+        if [[ "$ck_order" == forward ]]; then
+          ck_json_argv=(--check-keyring "$ck_backend" --json)
+        else
+          ck_json_argv=(--json --check-keyring "$ck_backend")
+        fi
+        : >"$ck_dir/busctl.log"
+        : >"$STUB_LOG"
+        set +e
+        ck_output="$(env -u SHELLOPTS HOME="$ck_dir/home" PATH="$ck_dir/bin:$PATH" \
+          KEYRING_CHECK_LOG="$ck_dir/busctl.log" KEYRING_CHECK_RESULT="$ck_result" \
+          bash "$REPO_ROOT/install.sh" "${ck_json_argv[@]}" 2>"$ck_dir/json.err")"
+        ck_status=$?
+        set -e
+        ck_args="$(cat "$ck_dir/busctl.log")"
+        if [[ $ck_status -eq $ck_expected_status && ! -s "$ck_dir/json.err" &&
+          "$ck_args" == "--user --auto-start=no get-property org.freedesktop.secrets /org/freedesktop/secrets/collection/$ck_collection org.freedesktop.Secret.Collection Locked" &&
+          ! -s "$STUB_LOG" ]] &&
+          CK_BACKEND="$ck_backend" CK_COLLECTION="$ck_collection" CK_RESULT="$ck_result" python3 - "$ck_output" <<'PY'
+import json, os, sys
+d = json.loads(sys.argv[1])
+backend = os.environ["CK_BACKEND"]
+collection = os.environ["CK_COLLECTION"]
+result = os.environ["CK_RESULT"]
+assert d["mode"] == "check-keyring"
+assert d["backend"] == backend
+assert d["collection"] == collection
+if result == "unlocked":
+    assert d == {
+        "mode": "check-keyring",
+        "backend": backend,
+        "collection": collection,
+        "state": "unlocked",
+        "unlocked": True,
+        "locked": False,
+        "reason": None,
+        "bus_exit_code": 0,
+    }, d
+elif result == "locked":
+    assert d == {
+        "mode": "check-keyring",
+        "backend": backend,
+        "collection": collection,
+        "state": "locked",
+        "unlocked": False,
+        "locked": True,
+        "reason": None,
+        "bus_exit_code": 0,
+    }, d
+else:
+    assert d["state"] == "unavailable"
+    assert d["unlocked"] is None and d["locked"] is None
+    if result == "unavailable":
+        assert d["reason"] == "Unknown object" and d["bus_exit_code"] == 1, d
+    elif result == "unexpected":
+        assert d["reason"] == "s unexpected" and d["bus_exit_code"] == 0, d
+    else:
+        assert "busctl returned no output" in d["reason"] and d["bus_exit_code"] == 0, d
+PY
+        then
+          pass "--check-keyring $ck_backend --json ($ck_order) reports $ck_result with clean stderr"
+        else
+          fail "--check-keyring $ck_backend --json ($ck_order, $ck_result) (status=$ck_status, err=$(cat "$ck_dir/json.err"), out=$ck_output)"
+        fi
+      done
+    done
   done
 fi
 
 for ck_reject in missing flag-argument empty invalid combined combined-reversed duplicate \
+  combined-json combined-json-reversed duplicate-json json-as-arg \
   --list-packages --dry-run --non-interactive --no-packages --keyring --no-keyring --no-polkit-rule --autologin \
   --init-template --wayland --from-session; do
   ck_reject_args=(--check-keyring gnome)
@@ -7670,11 +7744,15 @@ for ck_reject in missing flag-argument empty invalid combined combined-reversed 
   case "$ck_reject" in
     missing) ck_reject_args=(--check-keyring); ck_message='Missing argument for --check-keyring' ;;
     flag-argument) ck_reject_args=(--check-keyring --de xfce); ck_message='Missing argument for --check-keyring' ;;
+    json-as-arg) ck_reject_args=(--check-keyring --json); ck_message='Missing argument for --check-keyring' ;;
     empty) ck_reject_args=(--check-keyring ''); ck_message='Invalid keyring backend:' ;;
     invalid) ck_reject_args=(--check-keyring kde); ck_message='Invalid keyring backend: kde' ;;
     combined) ck_reject_args+=(--de xfce) ;;
     combined-reversed) ck_reject_args=(--de xfce --check-keyring kwallet) ;;
+    combined-json) ck_reject_args+=(--json --de xfce) ;;
+    combined-json-reversed) ck_reject_args=(--de xfce --json --check-keyring kwallet) ;;
     duplicate) ck_reject_args+=(--check-keyring kwallet) ;;
+    duplicate-json) ck_reject_args+=(--json --json) ;;
     --keyring) ck_reject_args+=(--keyring kwallet) ;;
     --from-session) ck_reject_args+=(--from-session /usr/share/xsessions/custom.desktop) ;;
     *) ck_reject_args+=("$ck_reject") ;;
@@ -7704,7 +7782,7 @@ for ck_help_order in "--check-keyring gnome --help" "--help --check-keyring gnom
     bash "$REPO_ROOT/install.sh" "${ck_help_args[@]}" 2>&1)"
   ck_status=$?
   set -e
-  if [[ $ck_status -eq 0 && "$ck_output" == *"--check-keyring <gnome|kwallet> report"* && ! -s "$ck_dir/busctl.log" ]]; then
+  if [[ $ck_status -eq 0 && "$ck_output" == *"--check-keyring <gnome|kwallet> [--json]"* && "$ck_output" == *"--check-keyring <gnome|kwallet> report"* && ! -s "$ck_dir/busctl.log" ]]; then
     pass "--help with --check-keyring ($ck_help_order) prints usage without running the check"
   else
     fail "--help with --check-keyring ($ck_help_order) (status=$ck_status, output=$ck_output)"
@@ -13635,7 +13713,7 @@ EOF
   ls_json_ok=1
   ls_json_report=""
 
-  if [[ "$help_ls_out" != *"--list-sessions [--json]"* || "$help_ls_out" != *"or --list-sessions"* ]]; then
+  if [[ "$help_ls_out" != *"--list-sessions [--json]"* || "$help_ls_out" != *"--list-sessions, or --check-keyring"* ]]; then
     ls_json_ok=0
     ls_json_report+=" [help missing --list-sessions --json]"
   fi
@@ -14196,7 +14274,7 @@ PY
 fi
 
 # 5) Invalid --json combinations exit 1 before side effects
-for bad_js_args in "--json" "--json --de i3" "--recover --json" "--status --json --de i3" "--status --json --list-sessions" "--list-sessions --json --de i3"; do
+for bad_js_args in "--json" "--json --de i3" "--recover --json" "--status --json --de i3" "--status --json --list-sessions" "--list-sessions --json --de i3" "--check-keyring gnome --json --de i3"; do
   read -r -a bad_js_argv <<<"$bad_js_args"
   : >"$STUB_LOG"
   set +e
@@ -14204,7 +14282,7 @@ for bad_js_args in "--json" "--json --de i3" "--recover --json" "--status --json
   bad_js_rc=$?
   set -e
   if [[ $bad_js_rc -ne 1 || -s "$STUB_LOG" ]] ||
-    [[ "$bad_js_out" != *"--json requires --status, --preflight, --doctor, or --list-sessions."* && "$bad_js_out" != *"--status cannot be combined with any other option."* && "$bad_js_out" != *"--list-sessions cannot be combined with any other option (except --json)."* ]]; then
+    [[ "$bad_js_out" != *"--json requires --status, --preflight, --doctor, --list-sessions, or --check-keyring."* && "$bad_js_out" != *"--status cannot be combined with any other option."* && "$bad_js_out" != *"--list-sessions cannot be combined with any other option (except --json)."* && "$bad_js_out" != *"--check-keyring cannot be combined with any other option."* ]]; then
     js_report+=" [bad combo '$bad_js_args': rc=$bad_js_rc out=$bad_js_out]"
   fi
 done
