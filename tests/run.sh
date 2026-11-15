@@ -11674,6 +11674,47 @@ choices_dir_warn="$(env HOME="$choices_safe_dir/home2" bash -c 'source "$1/insta
 [[ "$choices_dir_warn" == *"WARNING: Could not save the install choices"* &&
   "$(cat "$choices_safe_dir/real_state/install-choices")" == $'de=plasma\nno_packages=1\npackages=oldpkg' ]] ||
   choices_safe_report+=" [symlink dir write was not refused: $choices_dir_warn]"
+mkdir -p "$choices_safe_dir/home3/.local_target/state/lightxdm" "$choices_safe_dir/home3_cfg_target/autostart" \
+  "$choices_safe_dir/xdg_target/lightxdm" "$choices_safe_dir/home4"
+ln -s "$choices_safe_dir/home3/.local_target" "$choices_safe_dir/home3/.local"
+ln -s "$choices_safe_dir/home3_cfg_target" "$choices_safe_dir/home3/.config"
+ln -s "$choices_safe_dir/xdg_target" "$choices_safe_dir/home4_xdg_sym"
+printf 'de=plasma\nno_packages=1\npackages=oldpkg\n' >"$choices_safe_dir/home3/.local_target/state/lightxdm/install-choices"
+printf '%s  .xinitrc\n' "$(sha256sum <"$REPO_ROOT/dotfiles/.xinitrc-i3" | awk '{print $1}')" >"$choices_safe_dir/home3/.local_target/state/lightxdm/installed-dotfiles"
+printf '#!/bin/sh\nexec i3\n' >"$choices_safe_dir/home3/.xinitrc"
+set +e
+# shellcheck disable=SC2016
+choices_anc_read="$(env -u XDG_STATE_HOME HOME="$choices_safe_dir/home3" LOGIN_FILE="$choices_safe_dir/no_login" PAM_KEYRING_STATE="$choices_safe_dir/no_kr" \
+  bash -c 'source "$1/install.sh" && saved_install_args' _ "$REPO_ROOT" 2>&1)"
+choices_anc_rc=$?
+# shellcheck disable=SC2016
+choices_anc_warn="$(env -u XDG_STATE_HOME HOME="$choices_safe_dir/home3" bash -c 'source "$1/install.sh" && save_install_choices i3 1' _ "$REPO_ROOT" 2>&1)"
+dot_anc_rc=0
+# shellcheck disable=SC2016
+env -u XDG_STATE_HOME HOME="$choices_safe_dir/home3" bash -c 'source "$1/install.sh" && record_dotfile "$HOME/.xinitrc"' _ "$REPO_ROOT" >/dev/null 2>&1 || dot_anc_rc=$?
+# shellcheck disable=SC2016
+xdg_sym_warn="$(env HOME="$choices_safe_dir/home4" XDG_STATE_HOME="$choices_safe_dir/home4_xdg_sym" \
+  bash -c 'source "$1/install.sh" && save_install_choices i3 1' _ "$REPO_ROOT" 2>&1)"
+# shellcheck disable=SC2016
+cfg_copy_warn="$(env -u XDG_STATE_HOME HOME="$choices_safe_dir/home3" \
+  bash -c 'source "$1/install.sh" && copy_dotfile 0 644 "$1/dotfiles/lightxdm-gpg-agent-tty.desktop" "$HOME/.config/autostart/lightxdm-gpg-agent-tty.desktop"' _ "$REPO_ROOT" 2>&1)"
+# shellcheck disable=SC2016
+cfg_upd_warn="$(env -u XDG_STATE_HOME HOME="$choices_safe_dir/home3" \
+  bash -c 'source "$1/install.sh" && UPDATE_RUN=1 copy_dotfile 0 644 "$1/dotfiles/lightxdm-gpg-agent-tty.desktop" "$HOME/.config/autostart/lightxdm-gpg-agent-tty.desktop"' _ "$REPO_ROOT" 2>&1)"
+set -e
+[[ $choices_anc_rc -eq 1 && "$choices_anc_read" == *"No saved install choices"* ]] ||
+  choices_safe_report+=" [symlink ~/.local install-choices was read: rc=$choices_anc_rc out=$choices_anc_read]"
+[[ "$choices_anc_warn" == *"WARNING: Could not save the install choices"* &&
+  "$(cat "$choices_safe_dir/home3/.local_target/state/lightxdm/install-choices")" == $'de=plasma\nno_packages=1\npackages=oldpkg' ]] ||
+  choices_safe_report+=" [symlink ~/.local write not refused: $choices_anc_warn]"
+[[ $dot_anc_rc -ne 0 ]] || choices_safe_report+=" [record_dotfile followed symlink ~/.local]"
+[[ "$xdg_sym_warn" == *"WARNING: Could not save the install choices"* && ! -e "$choices_safe_dir/xdg_target/lightxdm/install-choices" ]] ||
+  choices_safe_report+=" [symlink XDG_STATE_HOME write not refused: $xdg_sym_warn]"
+[[ "$cfg_copy_warn" == *"Refusing to modify"* && "$cfg_upd_warn" == *"Refusing to modify"* &&
+  ! -e "$choices_safe_dir/home3_cfg_target/autostart/lightxdm-gpg-agent-tty.desktop" &&
+  ! -e "$choices_safe_dir/home3_cfg_target/autostart/lightxdm-gpg-agent-tty.desktop.lightxdm.absent" &&
+  ! -e "$choices_safe_dir/home3_cfg_target/autostart/lightxdm-gpg-agent-tty.desktop.lightxdm-new" ]] ||
+  choices_safe_report+=" [copy/update_dotfile wrote through symlinked ~/.config: copy=$cfg_copy_warn upd=$cfg_upd_warn]"
 if [[ -z "$choices_safe_report" ]]; then
   pass "save_install_choices and --update helpers refuse symlinked state dirs and replace symlinked install-choices"
 else
@@ -16510,6 +16551,7 @@ rec_out="$(
     bash "$REPO_ROOT/install.sh" --recover --de xfce 2>&1
 )" || rec_rc=$?
 if [[ $rec_rc -ne 0 ||
+  -e "$rec_outside/autostart/lightxdm-gpg-agent-tty.desktop" ||
   ! -e "$rec_outside/autostart/lightxdm-gpg-agent-tty.desktop.lightxdm-new" ||
   ! -e "$rec_sym_home/.local_target/state/lightxdm/startx-attempts" ||
   "$rec_out" != *"Refusing to modify $rec_sym_home/.config/autostart/lightxdm-gpg-agent-tty.desktop.lightxdm-new"* ||
@@ -16517,6 +16559,39 @@ if [[ $rec_rc -ne 0 ||
   dot_guard_ok=0
   dot_guard_report+=" recover-parent-symlinks rc=$rec_rc out=[$rec_out];"
 fi
+
+# 5) --doctor rejects symlinked ~/.local and custom XDG_STATE_HOME ancestor dirs matching --fix
+reset_doctor_gnome_fixture
+printf 'de=xfce\nno_packages=1\n' >"$rec_sym_home/.local_target/state/lightxdm/install-choices"
+printf '%s  .xinitrc\n' "$(sha256sum <"$REPO_ROOT/dotfiles/.xinitrc-xfce" | awk '{print $1}')" >"$rec_sym_home/.local_target/state/lightxdm/installed-dotfiles"
+doc_rc=0
+doc_out="$(
+  env -u SUDO_USER -u XDG_STATE_HOME HOME="$rec_sym_home" SESSION_ROOT="$doctor_root" \
+    LOGIN_FILE="$doctor_etc/pam.d/login" GNOME_SESSION_TYPE_DEST="$doctor_etc/lightxdm/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$doctor_etc/lightxdm/pam-keyring" PAM_LOGIN_BASE_STATE="$doctor_etc/lightxdm/pam-login-base" \
+    DM_STATE_FILE="$doctor_etc/lightxdm/disabled-display-managers" DISPLAY_MANAGER_LINK="$doctor_etc/systemd/system/display-manager.service" \
+    AUTOLOGIN_DROPIN_DIR="$doctor_etc/getty@tty1.service.d" PATH="$doctor_bin:/usr/bin:/bin" \
+    bash "$REPO_ROOT/install.sh" --doctor 2>&1
+)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Install choices: FAIL"* || "$doc_out" != *"Dotfile record: FAIL"* ]]; then
+  dot_guard_ok=0
+  dot_guard_report+=" doctor-local-symlink rc=$doc_rc out=[$doc_out];"
+fi
+ln -s "$doctor_state" "$doctor_dir/xdg_state_sym"
+doc_rc=0
+doc_out="$(
+  env -u SUDO_USER HOME="$doctor_home" XDG_STATE_HOME="$doctor_dir/xdg_state_sym" SESSION_ROOT="$doctor_root" \
+    LOGIN_FILE="$doctor_etc/pam.d/login" GNOME_SESSION_TYPE_DEST="$doctor_etc/lightxdm/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$doctor_etc/lightxdm/pam-keyring" PAM_LOGIN_BASE_STATE="$doctor_etc/lightxdm/pam-login-base" \
+    DM_STATE_FILE="$doctor_etc/lightxdm/disabled-display-managers" DISPLAY_MANAGER_LINK="$doctor_etc/systemd/system/display-manager.service" \
+    AUTOLOGIN_DROPIN_DIR="$doctor_etc/getty@tty1.service.d" PATH="$doctor_bin:/usr/bin:/bin" \
+    bash "$REPO_ROOT/install.sh" --doctor 2>&1
+)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Install choices: FAIL"* || "$doc_out" != *"Dotfile record: FAIL"* ]]; then
+  dot_guard_ok=0
+  dot_guard_report+=" doctor-xdg-symlink rc=$doc_rc out=[$doc_out];"
+fi
+rm -f "$doctor_dir/xdg_state_sym"
 
 if [[ $dot_guard_ok -eq 1 ]]; then
   pass "preserve_dotfile, dotfile_unchanged, and --recover guard unreadable files and symlinked parent directories cleanly"

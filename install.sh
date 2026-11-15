@@ -360,10 +360,87 @@ is_past_lightxdm_template() {
   grep -Fqx -- "${hash%% *}  $pathspec" "$SCRIPT_DIR/dotfiles/template-history.sha256" 2>/dev/null
 }
 
+# Check parent directories of $1 top-down without following symlinks.
+# When $2 == "state", also checks dir and state_root (${dir%/*}, e.g. $XDG_STATE_HOME).
+# Returns 0 if safe, 1 if any checked parent is a symlink, 2 if any exists as a non-directory.
+_path_parent_issue() {
+  local target="$1" kind="${2:-home}" home="${HOME%/}" dir="" parent="" rel_dir="" check="" seg=""
+  [[ -n "$home" ]] || home="/"
+  if [[ "$target" == */* ]]; then
+    dir="${target%/*}"
+    while [[ "$dir" == */ && "$dir" != "/" ]]; do
+      dir="${dir%/}"
+    done
+    [[ -n "$dir" ]] || dir="/"
+  else
+    dir="."
+  fi
+  if [[ "$dir" != "$home" ]]; then
+    if [[ "$home" == "/" && "$dir" == /* ]]; then
+      rel_dir="${dir#/}"
+    elif [[ "$dir" == "$home/"* ]]; then
+      rel_dir="${dir#"$home"/}"
+    fi
+  fi
+  if [[ -n "$rel_dir" ]]; then
+    check="$home"
+    while [[ -n "$rel_dir" ]]; do
+      if [[ "$rel_dir" == */* ]]; then
+        seg="${rel_dir%%/*}"
+        rel_dir="${rel_dir#*/}"
+      else
+        seg="$rel_dir"
+        rel_dir=""
+      fi
+      [[ -n "$seg" ]] || continue
+      [[ "$check" == "/" ]] && check="/$seg" || check="$check/$seg"
+      if [[ -L "$check" ]]; then
+        return 1
+      elif [[ -e "$check" && ! -d "$check" ]]; then
+        return 2
+      fi
+    done
+  fi
+  if [[ "$kind" == "state" ]]; then
+    if [[ "$dir" == */* ]]; then
+      parent="${dir%/*}"
+      while [[ "$parent" == */ && "$parent" != "/" ]]; do
+        parent="${parent%/}"
+      done
+      [[ -n "$parent" ]] || parent="/"
+    else
+      parent="."
+    fi
+    if [[ -L "$parent" ]]; then
+      return 1
+    elif [[ -e "$parent" && ! -d "$parent" ]]; then
+      return 2
+    fi
+    if [[ -L "$dir" ]]; then
+      return 1
+    elif [[ -e "$dir" && ! -d "$dir" ]]; then
+      return 2
+    fi
+  fi
+  return 0
+}
+
+home_target_parent_is_safe() {
+  _path_parent_issue "$1" home
+}
+
+state_path_is_safe() {
+  _path_parent_issue "$1" state
+}
+
 # Back up a pre-existing dotfile once, or save post-install user edits before overwriting
 preserve_dotfile() {
   local target="$1"
   shift
+  if ! home_target_parent_is_safe "$target"; then
+    log "Refusing unsafe parent directory for $target (lightXDM skips symlinks there)."
+    return 1
+  fi
   local backup="${target}.lightxdm.bak"
   local absent="${target}.lightxdm.absent"
   if [[ ! -e "$target" && ! -L "$target" ]]; then
@@ -1305,10 +1382,9 @@ dotfile_record_file() {
 
 # Print the recorded hash of what lightXDM last wrote into home dotfile $1, if there is one.
 recorded_dotfile_sum() {
-  local rel="${1#"$HOME"/}" file dir line sum="" LC_ALL=C
+  local rel="${1#"$HOME"/}" file line sum="" LC_ALL=C
   file="$(dotfile_record_file)"
-  dir="${file%/*}"
-  [[ ! -L "$dir" && -f "$file" && ! -L "$file" && -r "$file" ]] || return 0
+  state_path_is_safe "$file" && [[ -f "$file" && ! -L "$file" && -r "$file" ]] || return 0
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "${line:66}" == "$rel" && "${line:64:2}" == "  " && "${line:0:64}" =~ ^[0-9a-f]{64}$ ]]; then
       sum="${line:0:64}"
@@ -1322,7 +1398,7 @@ record_dotfile() {
   local target="$1" file dir rel sum line kept=() tmp="" LC_ALL=C
   file="$(dotfile_record_file)"
   dir="${file%/*}"
-  [[ ! -L "$dir" ]] || return 1
+  state_path_is_safe "$file" || return 1
   rel="${target#"$HOME"/}"
   sum="$(sha256sum <"$target")" || return 1
   if [[ -f "$file" && ! -L "$file" && -r "$file" ]]; then
@@ -1331,7 +1407,7 @@ record_dotfile() {
     done <"$file"
   fi
   mkdir -p -- "$dir" || return 1
-  [[ ! -L "$dir" ]] || return 1
+  state_path_is_safe "$file" || return 1
   if ! { tmp="$(mktemp "$dir/.installed-dotfiles.XXXXXX")" &&
     printf '%s\n' "${kept[@]}" "${sum%% *}  $rel" >"$tmp" &&
     chmod 644 -- "$tmp" &&
@@ -1345,6 +1421,7 @@ record_dotfile() {
 # user's original or noted there was none (installs from before the record).
 dotfile_installed_before() {
   local target="$1"
+  home_target_parent_is_safe "$target" || return 1
   [[ -n "$(recorded_dotfile_sum "$target")" || -e "${target}.lightxdm.bak" || -L "${target}.lightxdm.bak" ||
     -e "${target}.lightxdm.absent" || -L "${target}.lightxdm.absent" ]]
 }
@@ -1353,7 +1430,7 @@ dotfile_installed_before() {
 # template it would write now ($2), or a template an older lightXDM bundled.
 dotfile_unchanged() {
   local target="$1" source="$2" sum
-  [[ -f "$target" && ! -L "$target" && -r "$target" && -f "$source" && -r "$source" ]] || return 1
+  home_target_parent_is_safe "$target" && [[ -f "$target" && ! -L "$target" && -r "$target" && -f "$source" && -r "$source" ]] || return 1
   sum="$(sha256sum <"$target")"
   [[ "${sum%% *}" == "$(recorded_dotfile_sum "$target")" || "$sum" == "$(sha256sum <"$source")" ]] ||
     is_past_lightxdm_template "$target" "${target#"$HOME"/}"
@@ -1365,6 +1442,14 @@ dotfile_unchanged() {
 update_dotfile() {
   local preview="$1" mode="$2" source="$3" target="$4"
   local new="${target}.lightxdm-new"
+  if ! home_target_parent_is_safe "$target"; then
+    if [[ "$preview" == 1 ]]; then
+      printf 'Dotfile: %s (skipped: unsafe parent directory; --update)\n' "$target"
+    else
+      log "WARNING: Refusing to modify $target inside an unsafe parent directory (lightXDM skips symlinks there)."
+    fi
+    return 0
+  fi
   if [[ ! -e "$target" && ! -L "$target" ]] && dotfile_installed_before "$target"; then
     if [[ "$preview" == 1 ]]; then
       printf 'Dotfile: %s (stays removed: --update)\n' "$target"
@@ -1401,6 +1486,14 @@ copy_dotfile() {
   if [[ "${UPDATE_RUN:-0}" == 1 ]]; then
     update_dotfile "$preview" "$mode" "$source" "$target"
     return
+  fi
+  if ! home_target_parent_is_safe "$target"; then
+    if [[ "$preview" == 1 ]]; then
+      printf 'Dotfile: %s (skipped: unsafe parent directory)\n' "$target"
+    else
+      log "WARNING: Refusing to modify $target inside an unsafe parent directory (lightXDM skips symlinks there)."
+    fi
+    return 0
   fi
   if [[ "$preview" == 1 ]]; then
     printf 'Dotfile: %s\n' "$target"
@@ -2379,8 +2472,8 @@ install_choices_file() {
   printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/lightxdm/install-choices"
 }
 install_choices_readable() {
-  local file="$1" dir="${1%/*}"
-  [[ ! -L "$dir" && -f "$file" && ! -L "$file" && -r "$file" ]]
+  local file="$1"
+  state_path_is_safe "$file" && [[ -f "$file" && ! -L "$file" && -r "$file" ]]
 }
 # Save the desktop id ($1), the --no-packages choice ($2) and the packages the run asked for (the
 # rest; --update installs only ones missing from this list) of a finished install for --update
@@ -2392,7 +2485,7 @@ save_install_choices() {
   if [[ $# -gt 2 ]]; then
     content+="packages=${*:3}"$'\n'
   fi
-  if ! { [[ ! -L "$dir" ]] && mkdir -p -- "$dir" && [[ ! -L "$dir" ]] &&
+  if ! { state_path_is_safe "$file" && mkdir -p -- "$dir" && state_path_is_safe "$file" &&
     tmp="$(mktemp "$dir/.install-choices.XXXXXX")" &&
     printf '%s' "$content" >"$tmp" && chmod 644 -- "$tmp" && mv -Tf -- "$tmp" "$file"; } 2>/dev/null; then
     [[ -z "$tmp" ]] || rm -f -- "$tmp" 2>/dev/null || true
@@ -2684,6 +2777,10 @@ inspect_dotfile_status() {
   DOTFILE_STATUS_SYMLINK_TARGET=""
   DOTFILE_STATUS_PENDING_UPDATE=""
   DOTFILE_STATUS_BACKUP=""
+  if ! home_target_parent_is_safe "$target"; then
+    DOTFILE_STATUS_STATE="unsafe-parent"
+    return 0
+  fi
   if [[ -e "${target}.lightxdm-new" || -L "${target}.lightxdm-new" ]]; then
     DOTFILE_STATUS_PENDING_UPDATE="${target}.lightxdm-new"
   fi
@@ -2733,6 +2830,7 @@ dotfile_status_line() {
   [[ -z "$DOTFILE_STATUS_PENDING_UPDATE" ]] || suffix=" (pending update: $DOTFILE_STATUS_PENDING_UPDATE)"
   [[ -z "$DOTFILE_STATUS_BACKUP" ]] || suffix+=" (backup present: $DOTFILE_STATUS_BACKUP)"
   case "$DOTFILE_STATUS_STATE" in
+    unsafe-parent) printf '  %s: unsafe parent directory (skipped)%s\n' "$target" "$suffix" ;;
     symlink) printf '  %s: symlink -> %s%s\n' "$target" "$DOTFILE_STATUS_SYMLINK_TARGET" "$suffix" ;;
     missing) printf '  %s: missing%s\n' "$target" "$suffix" ;;
     not-regular) printf '  %s: not a regular file%s\n' "$target" "$suffix" ;;
@@ -2982,7 +3080,9 @@ show_install_status() {
   inspect_shell_hook_status
 
   local choices_file line de="" no_packages="" choices_kind="not-recorded" choices_state="not recorded"
+  local choices_parent_rc=0
   choices_file="$(install_choices_file)"
+  state_path_is_safe "$choices_file" || choices_parent_rc=$?
   if install_choices_readable "$choices_file"; then
     choices_kind="readable"
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -3002,9 +3102,12 @@ show_install_status() {
     else
       choices_state="readable, no desktop recorded"
     fi
-  elif [[ -L "${choices_file%/*}" || -L "$choices_file" ]]; then
+  elif [[ $choices_parent_rc -eq 1 || -L "$choices_file" ]]; then
     choices_kind="symlink-ignored"
     choices_state="symlink ignored ($choices_file)"
+  elif [[ $choices_parent_rc -eq 2 ]]; then
+    choices_kind="unreadable"
+    choices_state="unsafe state directory (${choices_file%/*})"
   elif [[ -e "$choices_file" ]]; then
     choices_kind="unreadable"
     choices_state="unreadable ($choices_file)"
@@ -3487,13 +3590,17 @@ shell_hook_record_file() {
 }
 
 record_shell_hook() {
-  local rel="$1" file dir line seen=0 tmp="" LC_ALL=C
+  local rel="$1" file dir line seen=0 tmp="" parent_rc=0 LC_ALL=C
   local -a kept=()
   [[ "$rel" != ".zprofile" && "$rel" != ".config/fish/config.fish" ]] || return 0
   file="$(shell_hook_record_file)"
   dir="${file%/*}"
-  if [[ -L "$dir" || -L "${dir%/*}" ]]; then
+  state_path_is_safe "$file" || parent_rc=$?
+  if [[ $parent_rc -eq 1 ]]; then
     log "WARNING: Refusing symlinked state directory for shell hook record: $dir"
+    return 0
+  elif [[ $parent_rc -eq 2 ]]; then
+    log "WARNING: Refusing non-directory state path for shell hook record: $dir"
     return 0
   fi
   if [[ -f "$file" && ! -L "$file" && -r "$file" ]]; then
@@ -3504,7 +3611,7 @@ record_shell_hook() {
     done <"$file"
   fi
   [[ $seen -eq 1 ]] && return 0
-  if ! { mkdir -p -- "$dir" && [[ ! -L "$dir" && ! -L "${dir%/*}" ]] &&
+  if ! { mkdir -p -- "$dir" && state_path_is_safe "$file" &&
     tmp="$(mktemp "$dir/.installed-shell-hooks.XXXXXX")" &&
     { if [[ ${#kept[@]} -gt 0 ]]; then printf '%s\n' "${kept[@]}" "$rel"; else printf '%s\n' "$rel"; fi; } >"$tmp" &&
     chmod 644 -- "$tmp" && mv -Tf -- "$tmp" "$file"; } 2>/dev/null; then
@@ -4233,8 +4340,9 @@ run_doctor() {
     real_user="$(id -un 2>/dev/null || true)"
   fi
 
-  local choices_file line de="" no_packages="" choices_kind="not-recorded"
+  local choices_file line de="" no_packages="" choices_kind="not-recorded" choices_parent_rc=0
   choices_file="$(install_choices_file)"
+  state_path_is_safe "$choices_file" || choices_parent_rc=$?
   if install_choices_readable "$choices_file"; then
     choices_kind="readable"
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -4244,9 +4352,19 @@ run_doctor() {
         no_packages=0) no_packages=0 ;;
       esac
     done <"$choices_file"
-  elif [[ -L "${choices_file%/*}" || -L "$choices_file" ]]; then
+  elif [[ $choices_parent_rc -eq 1 || -L "$choices_file" ]]; then
     choices_kind="symlink-ignored"
     printf -v diag_msg '%s or its directory is a symlink; re-run %s --de <id>' "$choices_file" "$install_cmd"
+    diag_record_check "$json_mode" "Install choices" "fail" "$diag_msg"
+    issues=$((issues + 1))
+  elif [[ $choices_parent_rc -eq 2 ]]; then
+    choices_kind="not-dir"
+    printf -v diag_msg '%s is not a directory; re-run %s --de <id>' "${choices_file%/*}" "$install_cmd"
+    diag_record_check "$json_mode" "Install choices" "fail" "$diag_msg"
+    issues=$((issues + 1))
+  elif [[ -e "$choices_file" && ! -f "$choices_file" ]]; then
+    choices_kind="not-regular"
+    printf -v diag_msg '%s is not a regular file; re-run %s --de <id>' "$choices_file" "$install_cmd"
     diag_record_check "$json_mode" "Install choices" "fail" "$diag_msg"
     issues=$((issues + 1))
   elif [[ -e "$choices_file" ]]; then
@@ -4554,7 +4672,7 @@ run_doctor() {
   else
     local attempts_file="${XDG_STATE_HOME:-$HOME/.local/state}/lightxdm/startx-attempts"
     local recent_count=0
-    if [[ -f "$attempts_file" && ! -L "$attempts_file" && -r "$attempts_file" ]]; then
+    if state_path_is_safe "$attempts_file" && [[ -f "$attempts_file" && ! -L "$attempts_file" && -r "$attempts_file" ]]; then
       local now attempt_lines=() attempt_ts
       printf -v now '%(%s)T' -1
       mapfile -t attempt_lines 2>/dev/null <"$attempts_file" || :
@@ -4579,6 +4697,7 @@ run_doctor() {
     "$HOME/.bash_profile" "$HOME/.wayland-session" "$HOME/.xinitrc" \
     "$HOME/.gpg-agent-gnome" "$HOME/.gpg-agent-kwallet" \
     "$HOME/.config/autostart/lightxdm-gpg-agent-tty.desktop"; do
+    home_target_parent_is_safe "$candidate_dot" || continue
     if [[ -e "${candidate_dot}.lightxdm-new" || -L "${candidate_dot}.lightxdm-new" ]]; then
       pending_files+=("${candidate_dot}.lightxdm-new")
     fi
@@ -4637,14 +4756,15 @@ run_doctor() {
     warnings=$((warnings + 1))
   fi
 
-  local record_file="" record_dir=""
+  local record_file="" record_dir="" record_parent_rc=0
   record_file="$(dotfile_record_file)"
   record_dir="${record_file%/*}"
-  if [[ -L "$record_dir" || -L "$record_file" ]]; then
+  state_path_is_safe "$record_file" || record_parent_rc=$?
+  if [[ $record_parent_rc -eq 1 || -L "$record_file" ]]; then
     printf -v diag_msg '%s or its directory is a symlink; lightXDM ignores symlinks' "$record_file"
     diag_record_check "$json_mode" "Dotfile record" "fail" "$diag_msg"
     issues=$((issues + 1))
-  elif [[ -e "$record_dir" && ! -d "$record_dir" ]]; then
+  elif [[ $record_parent_rc -eq 2 || ( -e "$record_dir" && ! -d "$record_dir" ) ]]; then
     printf -v diag_msg '%s is not a directory' "$record_dir"
     diag_record_check "$json_mode" "Dotfile record" "fail" "$diag_msg"
     issues=$((issues + 1))
@@ -5138,11 +5258,13 @@ run_recover() {
     fi
   fi
 
-  local attempts_file="${XDG_STATE_HOME:-$HOME/.local/state}/lightxdm/startx-attempts"
+  local attempts_file="${XDG_STATE_HOME:-$HOME/.local/state}/lightxdm/startx-attempts" attempts_parent_rc=0
   if [[ -e "$attempts_file" || -L "$attempts_file" ]]; then
-    if [[ -L "${attempts_file%/*}" ]] ||
-      { [[ "$attempts_file" == "$HOME/.local/state/"* ]] && [[ -L "$HOME/.local" || -L "$HOME/.local/state" ]]; }; then
+    state_path_is_safe "$attempts_file" || attempts_parent_rc=$?
+    if [[ $attempts_parent_rc -eq 1 ]]; then
       log "WARNING: Refusing to clear $attempts_file inside a symlinked state directory."
+    elif [[ $attempts_parent_rc -eq 2 ]]; then
+      log "WARNING: Refusing to clear $attempts_file inside a non-directory state path."
     elif [[ $preview -eq 1 ]]; then
       printf 'Clear crash-loop attempt counter: %s\n' "$attempts_file"
     else
@@ -5392,14 +5514,14 @@ run_fix() {
     fi
   done
 
-  local fix_record="" fix_record_dir=""
+  local fix_record="" fix_record_dir="" fix_record_parent_rc=0
   fix_record="$(dotfile_record_file)"
   fix_record_dir="${fix_record%/*}"
-  if [[ -L "$fix_record_dir" || -L "$fix_record" ]] ||
-    { [[ "$fix_record" == "$HOME/.local/state/"* ]] && [[ -L "$HOME/.local" || -L "$HOME/.local/state" ]]; }; then
+  state_path_is_safe "$fix_record" || fix_record_parent_rc=$?
+  if [[ $fix_record_parent_rc -eq 1 || -L "$fix_record" ]]; then
     log "ERROR: $fix_record or its directory is a symlink; lightXDM ignores symlinks."
     return 1
-  elif [[ -e "$fix_record_dir" && ! -d "$fix_record_dir" ]]; then
+  elif [[ $fix_record_parent_rc -eq 2 || ( -e "$fix_record_dir" && ! -d "$fix_record_dir" ) ]]; then
     log "ERROR: $fix_record_dir is not a directory."
     return 1
   elif [[ -d "$fix_record_dir" && ! -x "$fix_record_dir" ]]; then
@@ -5987,12 +6109,13 @@ refresh_managed_shell_hooks_on_update() {
     _add_update_hook_candidate "$env_rel" "fish" "$is_act"
   fi
 
-  local rec_file="" rec_dir="" rec_parent="" rec_line=""
+  local rec_file="" rec_parent_rc=0 rec_line=""
   rec_file="$(shell_hook_record_file)"
-  rec_dir="${rec_file%/*}"
-  rec_parent="${rec_dir%/*}"
-  if [[ -L "$rec_parent" || -L "$rec_dir" || -L "$rec_file" ]]; then
+  state_path_is_safe "$rec_file" || rec_parent_rc=$?
+  if [[ $rec_parent_rc -eq 1 || -L "$rec_file" ]]; then
     log "WARNING: Refusing symlinked shell hook record $rec_file; skipping custom shell hook update lookup."
+  elif [[ $rec_parent_rc -eq 2 ]]; then
+    log "WARNING: Refusing non-directory state path for shell hook record $rec_file; skipping custom shell hook update lookup."
   elif [[ -f "$rec_file" ]]; then
     if [[ ! -r "$rec_file" ]]; then
       log "WARNING: Cannot read $rec_file; skipping custom shell hook update lookup."
