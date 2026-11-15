@@ -16069,6 +16069,250 @@ else
   fail "install.sh --fix:$fix_report"
 fi
 
+# PAM preview/status/--update/backup alignment with inspect_login_pam_path and symlinked/unsearchable PAM dirs.
+pam_parity_case="$TMP_DIR/pam_parity"
+mkdir -p "$pam_parity_case/bin" "$pam_parity_case/real_pamd" "$pam_parity_case/etc_sym" \
+  "$pam_parity_case/home/.local/state/lightxdm" "$pam_parity_case/getty.d" "$pam_parity_case/lightxdm"
+ln -s "$pam_parity_case/real_pamd" "$pam_parity_case/etc_sym/pam.d"
+cat >"$pam_parity_case/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+umask 077
+if [[ -n "${PAM_PARITY_PRIV:-}" && -d "$PAM_PARITY_PRIV" ]]; then
+  chmod 755 -- "$PAM_PARITY_PRIV"
+  "$@"
+  rc=$?
+  chmod 000 -- "$PAM_PARITY_PRIV"
+  exit "$rc"
+fi
+"$@"
+EOF
+chmod +x "$pam_parity_case/bin/sudo"
+pam_parity_ok=1
+pam_parity_report=""
+
+# 1) Symlinked PAM dir supports login_file_replaced_by_package (.pacnew detection) and backup-based removals.
+printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$pam_parity_case/stock_login"
+printf '%s\n' '#%PAM-1.0' '# modified backup' 'auth       include      system-local-login' 'session    include      system-local-login' >"$pam_parity_case/real_pamd/login.lightxdm.bak"
+cp "$pam_parity_case/stock_login" "$pam_parity_case/real_pamd/login"
+# shellcheck disable=SC2016
+if ! env PATH="$pam_parity_case/bin:$STUB_BIN:$PATH" STUB_PACMAN_OWNER=pambase STUB_PACMAN_STOCK="$pam_parity_case/stock_login" \
+  LOGIN_FILE="$pam_parity_case/etc_sym/pam.d/login" \
+  PAM_LOGIN_BASE_STATE="$pam_parity_case/lightxdm/pam-login-base" \
+  bash -c 'source "$1/install.sh" && login_file_replaced_by_package 1' _ "$REPO_ROOT"; then
+  pam_parity_ok=0
+  pam_parity_report+=" [login_file_replaced_by_package rejected symlinked pam.d]"
+fi
+
+# 2) Invalid/missing LOGIN_FILE across --status, --status --json, configure_pam preview, configure_gnome_session_type preview, and --update --dry-run.
+mkdir -p "$pam_parity_case/bad_dir/login"
+ln -s "$pam_parity_case/bad_dir/missing_target" "$pam_parity_case/bad_dir/broken_login"
+for bad_login in "$pam_parity_case/bad_dir/login" "$pam_parity_case/bad_dir/broken_login"; do
+  bad_tag="${bad_login##*/}"
+  set +e
+  bad_status_txt="$(env HOME="$pam_parity_case/home" USER=testuser PATH="$STUB_BIN:$PATH" \
+    LOGIN_FILE="$bad_login" PAM_KEYRING_STATE="$pam_parity_case/lightxdm/pam-keyring" \
+    GNOME_SESSION_TYPE_DEST="$pam_parity_case/lightxdm/gnome-session-type.conf" \
+    DM_STATE_FILE="$pam_parity_case/lightxdm/disabled-display-managers" \
+    AUTOLOGIN_DROPIN_DIR="$pam_parity_case/getty.d" \
+    bash "$REPO_ROOT/install.sh" --status 2>&1)"
+  bad_status_json="$(env HOME="$pam_parity_case/home" USER=testuser PATH="$STUB_BIN:$PATH" \
+    LOGIN_FILE="$bad_login" PAM_KEYRING_STATE="$pam_parity_case/lightxdm/pam-keyring" \
+    GNOME_SESSION_TYPE_DEST="$pam_parity_case/lightxdm/gnome-session-type.conf" \
+    DM_STATE_FILE="$pam_parity_case/lightxdm/disabled-display-managers" \
+    AUTOLOGIN_DROPIN_DIR="$pam_parity_case/getty.d" \
+    bash "$REPO_ROOT/install.sh" --status --json 2>&1)"
+  # shellcheck disable=SC2016
+  bad_pam_prev="$(env HOME="$pam_parity_case/home" USER=testuser PATH="$STUB_BIN:$PATH" LOGIN_FILE="$bad_login" \
+    bash -c 'source "$1/install.sh" && configure_pam gnome 1' _ "$REPO_ROOT" 2>&1)"
+  bad_pam_rc=$?
+  # shellcheck disable=SC2016
+  bad_gnome_prev="$(env HOME="$pam_parity_case/home" USER=testuser PATH="$STUB_BIN:$PATH" LOGIN_FILE="$bad_login" \
+    GNOME_SESSION_TYPE_DEST="$pam_parity_case/lightxdm/gnome-session-type.conf" \
+    bash -c 'source "$1/install.sh" && configure_gnome_session_type gnome testuser 1 1' _ "$REPO_ROOT" 2>&1)"
+  bad_gnome_rc=$?
+  set -e
+  if [[ "$bad_status_txt" != *"invalid ("* ]] || ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["pam"]["keyring_status"] == "invalid-login-file", d
+assert d["pam"]["gnome_session_type"] == "invalid-login-file", d
+' "$bad_status_json"; then
+    pam_parity_ok=0
+    pam_parity_report+=" [$bad_tag status/json mismatch: txt=$bad_status_txt json=$bad_status_json]"
+  fi
+  if [[ $bad_pam_rc -eq 0 || "$bad_pam_prev" != *"lightXDM will not create it"* ]]; then
+    pam_parity_ok=0
+    pam_parity_report+=" [$bad_tag configure_pam preview rc=$bad_pam_rc out=$bad_pam_prev]"
+  fi
+  if [[ $bad_gnome_rc -eq 0 || "$bad_gnome_prev" != *"lightXDM will not create it"* ]]; then
+    pam_parity_ok=0
+    pam_parity_report+=" [$bad_tag configure_gnome_session_type preview rc=$bad_gnome_rc out=$bad_gnome_prev]"
+  fi
+done
+
+printf 'de=xfce\nno_packages=1\n' >"$pam_parity_case/home/.local/state/lightxdm/install-choices"
+set +e
+bad_upd_prev="$(env HOME="$pam_parity_case/home" USER=testuser PATH="$STUB_BIN:$PATH" \
+  LOGIN_FILE="$pam_parity_case/bad_dir/broken_login" \
+  PAM_KEYRING_STATE="$pam_parity_case/lightxdm/pam-keyring" \
+  PAM_LOGIN_BASE_STATE="$pam_parity_case/lightxdm/pam-login-base" \
+  GNOME_SESSION_TYPE_DEST="$pam_parity_case/lightxdm/gnome-session-type.conf" \
+  DM_STATE_FILE="$pam_parity_case/lightxdm/disabled-display-managers" \
+  AUTOLOGIN_DROPIN_DIR="$pam_parity_case/getty.d" \
+  bash "$REPO_ROOT/install.sh" --update --dry-run 2>&1)"
+bad_upd_rc=$?
+# shellcheck disable=SC2016
+miss_gnome_prev="$(env HOME="$pam_parity_case/home" USER=testuser PATH="$STUB_BIN:$PATH" \
+  LOGIN_FILE="$pam_parity_case/bad_dir/absent_login" \
+  GNOME_SESSION_TYPE_DEST="$pam_parity_case/lightxdm/gnome-session-type.conf" \
+  bash -c 'source "$1/install.sh" && configure_gnome_session_type gnome testuser 1 1' _ "$REPO_ROOT" 2>&1)"
+miss_gnome_rc=$?
+# shellcheck disable=SC2016
+miss_xfce_prev="$(env HOME="$pam_parity_case/home" USER=testuser PATH="$STUB_BIN:$PATH" \
+  LOGIN_FILE="$pam_parity_case/bad_dir/absent_login" \
+  GNOME_SESSION_TYPE_DEST="$pam_parity_case/lightxdm/gnome-session-type.conf" \
+  bash -c 'source "$1/install.sh" && configure_gnome_session_type xfce testuser 1 1' _ "$REPO_ROOT" 2>&1)"
+set -e
+if [[ $bad_upd_rc -eq 0 || "$bad_upd_prev" == *"--no-keyring"* || "$bad_upd_prev" != *"broken symlink"* ]]; then
+  pam_parity_ok=0
+  pam_parity_report+=" [broken symlink update preview rc=$bad_upd_rc out=$bad_upd_prev]"
+fi
+if [[ $miss_gnome_rc -ne 0 || "$miss_gnome_prev" != *"missing (installation would stop)"* ]] ||
+  [[ "$miss_xfce_prev" == *"unknown (needs root)"* || "$miss_xfce_prev" != *"no GNOME configuration to remove"* ]]; then
+  pam_parity_ok=0
+  pam_parity_report+=" [missing gnome/xfce preview: rc=$miss_gnome_rc gnome=$miss_gnome_prev xfce=$miss_xfce_prev]"
+fi
+
+# 3) Unsearchable (chmod 000) PAM dir & symlinks into/through it (non-root checks).
+if [[ $EUID -ne 0 ]]; then
+  mkdir -p "$pam_parity_case/priv_pamd" "$pam_parity_case/pub_pamd"
+  cp "$pam_parity_case/stock_login" "$pam_parity_case/priv_pamd/login"
+  ln -s "$pam_parity_case/priv_pamd/login" "$pam_parity_case/pub_pamd/login"
+  ln -s "$pam_parity_case/priv_pamd" "$pam_parity_case/pub_pamd/sym_dir"
+  chmod 000 "$pam_parity_case/priv_pamd"
+
+  set +e
+  sym_priv_status_json="$(env HOME="$pam_parity_case/home" USER=testuser PATH="$STUB_BIN:$PATH" \
+    LOGIN_FILE="$pam_parity_case/pub_pamd/login" \
+    PAM_KEYRING_STATE="$pam_parity_case/lightxdm/pam-keyring" \
+    GNOME_SESSION_TYPE_DEST="$pam_parity_case/lightxdm/gnome-session-type.conf" \
+    DM_STATE_FILE="$pam_parity_case/lightxdm/disabled-display-managers" \
+    AUTOLOGIN_DROPIN_DIR="$pam_parity_case/getty.d" \
+    bash "$REPO_ROOT/install.sh" --status --json 2>&1)"
+  # shellcheck disable=SC2016
+  sym_priv_pam_prev="$(env HOME="$pam_parity_case/home" USER=testuser PATH="$STUB_BIN:$PATH" \
+    LOGIN_FILE="$pam_parity_case/pub_pamd/login" \
+    bash -c 'source "$1/install.sh" && configure_pam xfce 1' _ "$REPO_ROOT" 2>&1)"
+  sym_priv_upd_prev="$(env HOME="$pam_parity_case/home" USER=testuser PATH="$STUB_BIN:$PATH" \
+    LOGIN_FILE="$pam_parity_case/pub_pamd/login" \
+    PAM_KEYRING_STATE="$pam_parity_case/lightxdm/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$pam_parity_case/lightxdm/pam-login-base" \
+    GNOME_SESSION_TYPE_DEST="$pam_parity_case/lightxdm/gnome-session-type.conf" \
+    DM_STATE_FILE="$pam_parity_case/lightxdm/disabled-display-managers" \
+    AUTOLOGIN_DROPIN_DIR="$pam_parity_case/getty.d" \
+    bash "$REPO_ROOT/install.sh" --update --dry-run 2>&1)"
+  set -e
+  if ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["pam"]["keyring_status"] == "unknown-needs-root", d
+assert d["pam"]["gnome_session_type"] == "unknown-needs-root", d
+' "$sym_priv_status_json"; then
+    pam_parity_ok=0
+    pam_parity_report+=" [sym->priv_pamd status --json mismatch: $sym_priv_status_json]"
+  fi
+  if [[ "$sym_priv_pam_prev" != *"unknown (needs root)"* || "$sym_priv_pam_prev" == *"missing (installation would stop)"* ]]; then
+    pam_parity_ok=0
+    pam_parity_report+=" [sym->priv_pamd configure_pam preview mismatch: $sym_priv_pam_prev]"
+  fi
+  if [[ "$sym_priv_upd_prev" == *"--no-keyring"* ]]; then
+    pam_parity_ok=0
+    pam_parity_report+=" [sym->priv_pamd --update --dry-run falsely passed --no-keyring: $sym_priv_upd_prev]"
+  fi
+
+  # Symlinked unsearchable PAM dir: configure_pam + configure_gnome_session_type preserves original backup,
+  # xfce->plasma removes old keyring lines, legacy backup cannot overwrite real backup, and symlink backup is replaced.
+  # shellcheck disable=SC2016
+  env PAM_PARITY_PRIV="$pam_parity_case/priv_pamd" PATH="$pam_parity_case/bin:$STUB_BIN:$PATH" \
+    LOGIN_FILE="$pam_parity_case/pub_pamd/sym_dir/login" \
+    PAM_KEYRING_STATE="$pam_parity_case/lightxdm/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$pam_parity_case/lightxdm/pam-login-base" \
+    GNOME_SESSION_TYPE_DEST="$pam_parity_case/lightxdm/gnome-session-type.conf" \
+    AUTOLOGIN_DROPIN_DIR="$pam_parity_case/getty.d" \
+    bash -c 'source "$1/install.sh" && configure_pam gnome && configure_gnome_session_type gnome testuser' _ "$REPO_ROOT" >/dev/null 2>&1 || {
+    pam_parity_ok=0
+    pam_parity_report+=" [sym_dir->priv_pamd gnome configure failed]"
+  }
+  # shellcheck disable=SC2016
+  env PAM_PARITY_PRIV="$pam_parity_case/priv_pamd" PATH="$pam_parity_case/bin:$STUB_BIN:$PATH" \
+    LOGIN_FILE="$pam_parity_case/pub_pamd/sym_dir/login" \
+    PAM_KEYRING_STATE="$pam_parity_case/lightxdm/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$pam_parity_case/lightxdm/pam-login-base" \
+    GNOME_SESSION_TYPE_DEST="$pam_parity_case/lightxdm/gnome-session-type.conf" \
+    AUTOLOGIN_DROPIN_DIR="$pam_parity_case/getty.d" \
+    bash -c 'source "$1/install.sh" && configure_pam plasma && configure_gnome_session_type plasma testuser' _ "$REPO_ROOT" >/dev/null 2>&1 || {
+    pam_parity_ok=0
+    pam_parity_report+=" [sym_dir->priv_pamd plasma switch failed]"
+  }
+  chmod 755 "$pam_parity_case/priv_pamd"
+  if ! cmp -s "$pam_parity_case/priv_pamd/login.lightxdm.bak" "$pam_parity_case/stock_login" ||
+    grep -q 'pam_gnome_keyring\.so' "$pam_parity_case/priv_pamd/login" ||
+    ! grep -q 'pam_kwallet5\.so' "$pam_parity_case/priv_pamd/login" ||
+    grep -q 'GNOME on TTY1' "$pam_parity_case/priv_pamd/login"; then
+    pam_parity_ok=0
+    pam_parity_report+=" [sym_dir->priv_pamd backup or switch state wrong: login=$(cat "$pam_parity_case/priv_pamd/login") bak=$(cat "$pam_parity_case/priv_pamd/login.lightxdm.bak" 2>/dev/null || echo MISSING)]"
+  fi
+
+  # Pre-existing symlinked backup inside symlinked unsearchable dir is replaced safely without clobbering target; legacy backup is not preferred over real backup.
+  printf 'poison\n' >"$pam_parity_case/poison_bak"
+  printf 'legacy_decoy\n' >"$pam_parity_case/priv_pamd/login.lightxde.bak.1751000000"
+  ln -sf "$pam_parity_case/poison_bak" "$pam_parity_case/priv_pamd/login.lightxdm.bak"
+  cp "$pam_parity_case/stock_login" "$pam_parity_case/priv_pamd/login"
+  chmod 000 "$pam_parity_case/priv_pamd"
+  # shellcheck disable=SC2016
+  env PAM_PARITY_PRIV="$pam_parity_case/priv_pamd" PATH="$pam_parity_case/bin:$STUB_BIN:$PATH" \
+    LOGIN_FILE="$pam_parity_case/pub_pamd/sym_dir/login" \
+    PAM_LOGIN_BASE_STATE="$pam_parity_case/lightxdm/pam-login-base" \
+    GNOME_SESSION_TYPE_DEST="$pam_parity_case/lightxdm/gnome-session-type.conf" \
+    bash -c 'source "$1/install.sh" && configure_gnome_session_type gnome testuser' _ "$REPO_ROOT" >/dev/null 2>&1 || {
+    pam_parity_ok=0
+    pam_parity_report+=" [sym_dir->priv_pamd gnome symlink backup cleanup failed]"
+  }
+  chmod 755 "$pam_parity_case/priv_pamd"
+  if [[ -L "$pam_parity_case/priv_pamd/login.lightxdm.bak" ]] ||
+    ! cmp -s "$pam_parity_case/priv_pamd/login.lightxdm.bak" "$pam_parity_case/stock_login" ||
+    [[ "$(cat "$pam_parity_case/poison_bak")" != "poison" ]]; then
+    pam_parity_ok=0
+    pam_parity_report+=" [sym_dir->priv_pamd symlink backup not replaced safely]"
+  fi
+
+  # Real backup + legacy backup together in unsearchable dir: configure_pam preserves real backup and removes old keyring lines cleanly.
+  chmod 000 "$pam_parity_case/priv_pamd"
+  # shellcheck disable=SC2016
+  env PAM_PARITY_PRIV="$pam_parity_case/priv_pamd" PATH="$pam_parity_case/bin:$STUB_BIN:$PATH" \
+    LOGIN_FILE="$pam_parity_case/pub_pamd/sym_dir/login" \
+    PAM_KEYRING_STATE="$pam_parity_case/lightxdm/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$pam_parity_case/lightxdm/pam-login-base" \
+    AUTOLOGIN_DROPIN_DIR="$pam_parity_case/getty.d" \
+    bash -c 'source "$1/install.sh" && configure_pam plasma && configure_pam xfce' _ "$REPO_ROOT" >/dev/null 2>&1 || {
+    pam_parity_ok=0
+    pam_parity_report+=" [sym_dir->priv_pamd plasma->xfce switch with legacy decoy failed]"
+  }
+  chmod 755 "$pam_parity_case/priv_pamd"
+  if ! cmp -s "$pam_parity_case/priv_pamd/login.lightxdm.bak" "$pam_parity_case/stock_login" ||
+    grep -q 'pam_kwallet5\.so' "$pam_parity_case/priv_pamd/login" ||
+    ! grep -q 'pam_gnome_keyring\.so' "$pam_parity_case/priv_pamd/login"; then
+    pam_parity_ok=0
+    pam_parity_report+=" [sym_dir->priv_pamd legacy decoy clobbered real backup or kwallet left behind]"
+  fi
+fi
+
+if [[ $pam_parity_ok -eq 1 ]]; then
+  pass "PAM preview, status, --update, and backup guards align with inspect_login_pam_path and symlinked/unsearchable PAM dirs"
+else
+  fail "PAM parity checks:$pam_parity_report"
+fi
+
 if ! command -v python3 >/dev/null 2>&1; then
   skip "Python VM driver unit tests (python3 unavailable)"
 else

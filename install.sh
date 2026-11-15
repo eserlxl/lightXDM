@@ -1201,11 +1201,11 @@ pam_resolve_probe_dir() {
   printf '%s\n' "$probe"
 }
 
-# True when inspecting $1 ($2 == 1 for regular non-symlink backup/state files) cannot be settled without sudo.
+# True when inspecting $1 ($2 == 1 for strict state files, $2 == 2 for PAM backups allowing symlinked parent dirs) cannot be settled without sudo.
 pam_path_needs_sudo() {
   local file="$1" no_symlink="${2:-0}" dir probe=""
   dir="$(dirname -- "$file")"
-  if [[ $no_symlink -eq 1 && ( -L "$dir" || -L "$file" ) ]]; then
+  if [[ ( $no_symlink -eq 1 && ( -L "$dir" || -L "$file" ) ) || ( $no_symlink -eq 2 && -L "$file" ) ]]; then
     return 1
   fi
   if [[ -f "$file" && -r "$file" ]] ||
@@ -1216,6 +1216,11 @@ pam_path_needs_sudo() {
     if [[ ! -L "$file" ]]; then
       return 1
     fi
+    probe="$(pam_resolve_probe_dir "$file")"
+    if [[ -d "$probe" && -x "$probe" ]]; then
+      return 1
+    fi
+  elif [[ -L "$dir" && ! -e "$dir" ]]; then
     probe="$(pam_resolve_probe_dir "$file")"
     if [[ -d "$probe" && -x "$probe" ]]; then
       return 1
@@ -1310,6 +1315,36 @@ read_pam_state_file() {
   fi
 }
 
+# Print regular non-symlink PAM backup file $1 (permitting symlinked PAM parent dirs); use sudo only when $2 == 0.
+read_pam_backup_file() {
+  local file="$1" preview="${2:-0}"
+  if [[ -L "$file" ]]; then
+    return 1
+  fi
+  if [[ -f "$file" && -r "$file" ]]; then
+    cat -- "$file"
+  elif [[ $preview -eq 0 ]] && pam_path_needs_sudo "$file" 2 &&
+    ! sudo test -L "$file" && sudo test -f "$file"; then
+    sudo cat -- "$file"
+  else
+    return 1
+  fi
+}
+
+# Back up $LOGIN_FILE to ${LOGIN_FILE}.lightxdm.bak once before editing it, replacing any
+# symlink backup (even inside a root-only or symlinked PAM directory) without clobbering a real backup.
+backup_login_pam_file() {
+  local backup="${LOGIN_FILE}.lightxdm.bak"
+  if [[ -L "$backup" ]] || { pam_path_needs_sudo "$backup" 2 && sudo test -L "$backup"; }; then
+    sudo rm -f -- "$backup" || return 1
+  fi
+  if [[ ! -e "$backup" ]] &&
+    { ! pam_path_needs_sudo "$backup" 2 || ! sudo test -e "$backup"; }; then
+    log "Backing up $LOGIN_FILE to $backup"
+    sudo cp -p -- "$LOGIN_FILE" "$backup" || return 1
+  fi
+}
+
 # Refuse symlinked state/config parent directories (matching read_pam_state_file and --status/--doctor/--fix);
 # create ($2 == 1) or chmod 755 when an existing directory is non-searchable without following symlinks.
 ensure_safe_state_dir() {
@@ -1332,17 +1367,30 @@ ensure_safe_state_dir() {
 # Installs before 2026-11-03 backed up to .lightxde.bak.<epoch>; adopt the oldest one as the
 # original so a re-install does not back up a login file that already holds old keyring lines.
 legacy_pam_backup_candidate() {
-  local preview="${1:-0}" backup_file="${LOGIN_FILE}.lightxdm.bak" old_backup epoch oldest_epoch="" login_content
-  if [[ -e "$backup_file" || -L "$backup_file" ]]; then
+  local preview="${1:-0}" backup_file="${LOGIN_FILE}.lightxdm.bak" old_backup epoch oldest_epoch="" login_content login_dir=""
+  if [[ -e "$backup_file" || -L "$backup_file" ]] ||
+    { [[ $preview -eq 0 ]] && pam_path_needs_sudo "$backup_file" 2 && { sudo test -e "$backup_file" || sudo test -L "$backup_file"; }; }; then
     return 0
   fi
   # Without old keyring lines in the login file, an uninstall already restored the original;
   # a newer leftover backup may hold keyring lines and must not become the original.
   login_content="$(read_pam_file "$LOGIN_FILE" "$preview" 2>/dev/null)" || return 0
   grep -Fxq -f <(printf '%s\n' "${LIGHTXDM_KEYRING_LINES[@]}") <<<"$login_content" || return 0
-  for old_backup in "${LOGIN_FILE}".lightxde.bak.*; do
+  login_dir="$(dirname -- "$LOGIN_FILE")"
+  local candidates=()
+  if [[ -r "$login_dir" && -x "$login_dir" ]]; then
+    for old_backup in "${LOGIN_FILE}".lightxde.bak.*; do
+      if [[ -f "$old_backup" && ! -L "$old_backup" ]]; then
+        candidates+=("$old_backup")
+      fi
+    done
+  elif [[ $preview -eq 0 ]]; then
+    # shellcheck disable=SC2016  # expanded by the inner root shell after globbing the restricted dir
+    mapfile -t candidates < <(sudo sh -c 'for f in "$1".lightxde.bak.*; do [ -f "$f" ] && [ ! -L "$f" ] && printf "%s\n" "$f"; done' _ "$LOGIN_FILE" 2>/dev/null || true)
+  fi
+  for old_backup in "${candidates[@]}"; do
     epoch="${old_backup##*.lightxde.bak.}"
-    if [[ -f "$old_backup" && ! -L "$old_backup" && "$epoch" =~ ^[0-9]+$ ]] && { [[ -z "$oldest_epoch" ]] || ((10#$epoch < 10#$oldest_epoch)); }; then
+    if [[ "$epoch" =~ ^[0-9]+$ ]] && { [[ -z "$oldest_epoch" ]] || ((10#$epoch < 10#$oldest_epoch)); }; then
       oldest_epoch="$epoch"
     fi
   done
@@ -1381,12 +1429,13 @@ pam_lines_to_add() {
 # has, the original backup lacks, and the chosen backend ($1 auth, $2 session line) no longer uses.
 pam_lines_to_remove() {
   local keep_auth="$1" keep_session="$2" preview="${3:-0}" backup_file="${LOGIN_FILE}.lightxdm.bak" line module="" login_content backup_content
-  if [[ ! -e "$backup_file" && ! -L "$backup_file" ]]; then
+  if [[ ! -e "$backup_file" && ! -L "$backup_file" ]] &&
+    { [[ $preview -ne 0 ]] || ! pam_path_needs_sudo "$backup_file" 2 || { ! sudo test -e "$backup_file" && ! sudo test -L "$backup_file"; }; }; then
     backup_file="$(legacy_pam_backup_candidate "$preview")"
   fi
-  [[ -f "$backup_file" && ! -L "$backup_file" ]] || return 0
+  [[ -n "$backup_file" ]] || return 0
+  backup_content="$(read_pam_backup_file "$backup_file" "$preview" 2>/dev/null)" || return 0
   login_content="$(read_pam_file "$LOGIN_FILE" "$preview")" || return 1
-  backup_content="$(read_pam_file "$backup_file" "$preview")" || return 1
   [[ ! "$keep_auth" =~ (pam_[[:alnum:]_]+\.so) ]] || module="${BASH_REMATCH[1]}"
   for line in "${LIGHTXDM_KEYRING_LINES[@]}"; do
     # --update refreshes only an older form of the backend's own lines: the other backend's lines are
@@ -1437,14 +1486,23 @@ configure_pam() {
 
   if [[ $preview -eq 1 ]]; then
     printf 'PAM keyring: %s\n' "$LOGIN_FILE"
-    if [[ ! -r "$LOGIN_FILE" ]]; then
-      if [[ ! -e "$LOGIN_FILE" && -x "$(dirname -- "$LOGIN_FILE")" ]]; then
+    local LOGIN_PATH_STATE="" LOGIN_PATH_REASON=""
+    inspect_login_pam_path 1
+    case "$LOGIN_PATH_STATE" in
+      ok) ;;
+      missing)
         printf '  missing (installation would stop)\n'
-      else
+        return 0
+        ;;
+      invalid)
+        log "ERROR: $LOGIN_PATH_REASON; lightXDM will not create it."
+        return 1
+        ;;
+      needs-root)
         printf '  unknown (needs root)\n'
-      fi
-      return 0
-    fi
+        return 0
+        ;;
+    esac
   else
     log "Configuring PAM for $de..."
   fi
@@ -1458,7 +1516,7 @@ configure_pam() {
     elif [[ "$LOGIN_PATH_STATE" != "ok" ]]; then
       log "ERROR: $LOGIN_FILE is missing; lightXDM will not create it."
       if [[ -e "${LOGIN_FILE}.lightxdm.bak" ]] ||
-        { [[ $preview -eq 0 ]] && pam_path_needs_sudo "${LOGIN_FILE}.lightxdm.bak" 1 && sudo test -e "${LOGIN_FILE}.lightxdm.bak"; }; then
+        { [[ $preview -eq 0 ]] && pam_path_needs_sudo "${LOGIN_FILE}.lightxdm.bak" 2 && sudo test -e "${LOGIN_FILE}.lightxdm.bak"; }; then
         log "Restore it from the backup first: sudo cp ${LOGIN_FILE}.lightxdm.bak $LOGIN_FILE"
       fi
       return 1
@@ -1488,7 +1546,7 @@ configure_pam() {
     if [[ ! -e "$preview_backup" && ! -L "$preview_backup" ]]; then
       preview_backup="$(legacy_pam_backup_candidate 1)"
     fi
-    if [[ -f "$preview_backup" && ! -L "$preview_backup" && ! -r "$preview_backup" ]]; then
+    if [[ -n "$preview_backup" && -f "$preview_backup" && ! -L "$preview_backup" && ! -r "$preview_backup" ]]; then
       printf '  removals: unknown (needs root)\n'
     else
       removals="$(pam_lines_to_remove "$auth_line" "$session_line" 1)"
@@ -1537,7 +1595,7 @@ configure_pam() {
 
   local backup_file="${LOGIN_FILE}.lightxdm.bak"
   if [[ -f "$backup_file" && ! -L "$backup_file" ]] ||
-    { pam_path_needs_sudo "$backup_file" 1 && ! sudo test -L "$backup_file" && sudo test -f "$backup_file"; }; then
+    { pam_path_needs_sudo "$backup_file" 2 && ! sudo test -L "$backup_file" && sudo test -f "$backup_file"; }; then
     local pam_sed=() stale_lines=() stale_line
     while IFS= read -r stale_line; do
       if [[ -n "$stale_line" ]]; then
@@ -1557,14 +1615,7 @@ configure_pam() {
   mapfile -t lines_to_add < <(pam_lines_to_add "$module" "$auth_line" "$session_line" "" 0)
 
   if [[ ${#lines_to_add[@]} -gt 0 ]]; then
-    if [[ -L "$backup_file" ]] || { pam_path_needs_sudo "$backup_file" 1 && sudo test -L "$backup_file"; }; then
-      sudo rm -f -- "$backup_file" || return 1
-    fi
-    if [[ ! -e "$backup_file" ]] &&
-      { ! pam_path_needs_sudo "$backup_file" 1 || ! sudo test -e "$backup_file"; }; then
-      log "Backing up $LOGIN_FILE to $backup_file"
-      sudo cp -p -- "$LOGIN_FILE" "$backup_file" || return 1
-    fi
+    backup_login_pam_file || return 1
     if [[ -n "$(read_pam_file "$LOGIN_FILE" 0 | tail -c 1)" ]]; then
       printf '\n' | sudo tee -a "$LOGIN_FILE" > /dev/null
     fi
@@ -1692,9 +1743,31 @@ configure_gnome_session_type() (
       log "ERROR: No session line in $LOGIN_FILE; lightXDM will not change it."
       return 1
     fi
-    printf 'GNOME session type: %s\n' "$LOGIN_FILE"
+    local preview_login_state="ok"
     if [[ $login_readable -eq 0 ]]; then
+      local LOGIN_PATH_STATE="" LOGIN_PATH_REASON=""
+      inspect_login_pam_path 1
+      preview_login_state="$LOGIN_PATH_STATE"
+      if [[ "$de" == gnome ]]; then
+        case "$preview_login_state" in
+          invalid)
+            log "ERROR: $LOGIN_PATH_REASON; lightXDM will not create it."
+            return 1
+            ;;
+          missing)
+            printf 'GNOME session type: %s\n  missing (installation would stop)\n' "$LOGIN_FILE"
+            return 0
+            ;;
+        esac
+      fi
+    fi
+    printf 'GNOME session type: %s\n' "$LOGIN_FILE"
+    if [[ $login_readable -eq 0 && "$preview_login_state" == "needs-root" ]]; then
       printf '  existing block: unknown (needs root)\n'
+    elif [[ $login_readable -eq 0 && "$preview_login_state" == "missing" ]]; then
+      printf '  existing block: missing (%s)\n' "$LOGIN_FILE"
+    elif [[ $login_readable -eq 0 && "$preview_login_state" == "invalid" ]]; then
+      printf '  existing block: none (%s)\n' "$LOGIN_PATH_REASON"
     fi
     if block_removed_by_user; then
       printf '  left alone: the block is not in %s, which has your own edits (--update); add only the block back with: %s --pam-only --de gnome --no-keyring\n' "$LOGIN_FILE" "$(script_cmd install.sh)"
@@ -1711,7 +1784,7 @@ configure_gnome_session_type() (
       if [[ -e "$GNOME_SESSION_TYPE_DEST" || -L "$GNOME_SESSION_TYPE_DEST" ]]; then
         printf '  remove %s\n' "$GNOME_SESSION_TYPE_DEST"
       fi
-      if [[ $has_block -eq 0 && $login_readable -eq 1 && ! -e "$GNOME_SESSION_TYPE_DEST" && ! -L "$GNOME_SESSION_TYPE_DEST" ]]; then
+      if [[ $has_block -eq 0 && ( $login_readable -eq 1 || "$preview_login_state" == "missing" || "$preview_login_state" == "invalid" ) && ! -e "$GNOME_SESSION_TYPE_DEST" && ! -L "$GNOME_SESSION_TYPE_DEST" ]]; then
         printf '  no GNOME configuration to remove\n'
       fi
     fi
@@ -1790,16 +1863,10 @@ configure_gnome_session_type() (
   if [[ "$de" == gnome && "${UPDATE_RESTORE_PAM:-0}" == 1 && -n "${UPDATE_LOGIN_SUM:-}" ]]; then
     ensure_safe_state_dir "$PAM_LOGIN_BASE_STATE" || return 1
   fi
-  local changed=0 backup="${LOGIN_FILE}.lightxdm.bak"
+  local changed=0
   if [[ "$(sha256sum < "$tmp")" != "$(sha256sum < "$login_src")" ]]; then
     changed=1
-    if [[ -L "$backup" ]]; then
-      sudo rm -f -- "$backup" || return 1
-    fi
-    if [[ ! -e "$backup" ]]; then
-      log "Backing up $LOGIN_FILE to $backup"
-      sudo cp -p -- "$LOGIN_FILE" "$backup" || return 1
-    fi
+    backup_login_pam_file || return 1
   fi
   if [[ "$de" == gnome ]]; then
     local src="$SCRIPT_DIR/pam/gnome-session-type.conf"
@@ -2032,7 +2099,7 @@ save_install_choices() {
 login_file_replaced_by_package() {
   local preview="${1:-0}" backup="${LOGIN_FILE}.lightxdm.bak" sum backup_sum base="" owner
   sum="$(set -o pipefail; read_pam_file "$LOGIN_FILE" "$preview" 2>/dev/null | sha256sum)" || return 1
-  backup_sum="$(set -o pipefail; read_pam_state_file "$backup" "$preview" 2>/dev/null | sha256sum)" || return 1
+  backup_sum="$(set -o pipefail; read_pam_backup_file "$backup" "$preview" 2>/dev/null | sha256sum)" || return 1
   base="$(read_pam_state_file "$PAM_LOGIN_BASE_STATE" "$preview" 2>/dev/null)" || base=""
   [[ "$sum" != "$backup_sum" && "${sum%% *}" != "$base" ]] || return 1
   owner="$(pacman -Qqo -- "$LOGIN_FILE" 2>/dev/null)" && [[ -n "$owner" ]] || return 1
@@ -2113,7 +2180,7 @@ authenticate_sudo() {
 # $LOGIN_FILE use. Autologin is never passed.
 saved_install_args() {
   local preview="${1:-0}" file line de="" no_packages=0 recorded_packages="" has_gnome=0 has_kwallet=0
-  local login_content="" login_readable=0 login_absent=0 login_dir
+  local login_content="" login_readable=0 login_absent=0
   file="$(install_choices_file)"
   if install_choices_readable "$file"; then
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -2133,7 +2200,6 @@ saved_install_args() {
   if [[ $no_packages -eq 1 ]]; then
     printf '%s\n' --no-packages
   fi
-  login_dir="$(dirname -- "$LOGIN_FILE")"
   if login_content="$(read_pam_file "$LOGIN_FILE" "$preview" 2>/dev/null)"; then
     login_readable=1
     if grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_gnome_keyring\.so' <<<"$login_content"; then
@@ -2142,10 +2208,12 @@ saved_install_args() {
     if grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_kwallet5\.so' <<<"$login_content"; then
       has_kwallet=1
     fi
-  elif [[ -d "$login_dir" && -x "$login_dir" && ! -e "$LOGIN_FILE" ]] ||
-    [[ ! -e "$login_dir" && ! -L "$login_dir" && -x "$(dirname -- "$login_dir")" ]] ||
-    { [[ $preview -eq 0 ]] && ! sudo test -e "$LOGIN_FILE"; }; then
-    login_absent=1
+  else
+    local LOGIN_PATH_STATE="" LOGIN_PATH_REASON=""
+    inspect_login_pam_path "$preview"
+    if [[ "$LOGIN_PATH_STATE" == "missing" ]]; then
+      login_absent=1
+    fi
   fi
   # The record tells keyring lines a .pacnew merge dropped from lines removed with uninstall.sh
   # --keyring-only; installs from before the record fall back to the lines themselves.
@@ -2519,7 +2587,9 @@ show_install_status() {
 
   local keyring_status_id="none" keyring_status="none"
   local gnome_status_id="not-configured" gnome_status="not configured"
-  if login_content="$(read_pam_file "$LOGIN_FILE" 1 2>/dev/null)"; then
+  local LOGIN_PATH_STATE="" LOGIN_PATH_REASON=""
+  inspect_login_pam_path 1
+  if [[ "$LOGIN_PATH_STATE" == "ok" ]] && login_content="$(read_pam_file "$LOGIN_FILE" 1 2>/dev/null)"; then
     local missing_gnome missing_kwallet has_gnome_line=0 has_kwallet_line=0
     missing_gnome="$(pam_lines_to_add "pam_gnome_keyring.so" "$PAM_GNOME_KEYRING_AUTH" "$PAM_GNOME_KEYRING_SESSION" "" 1 || true)"
     missing_kwallet="$(pam_lines_to_add "pam_kwallet5.so" "$PAM_KWALLET_AUTH" "$PAM_KWALLET_SESSION" "" 1 || true)"
@@ -2543,11 +2613,16 @@ show_install_status() {
     inspect_gnome_pam_status "$login_content" "$real_user"
     gnome_status_id="$GNOME_PAM_STATUS_ID"
     gnome_status="$GNOME_PAM_STATUS_MSG"
-  elif [[ ! -e "$LOGIN_FILE" && -x "$(dirname -- "$LOGIN_FILE")" ]]; then
+  elif [[ "$LOGIN_PATH_STATE" == "missing" ]]; then
     keyring_status_id="missing-login-file"
     keyring_status="missing"
     gnome_status_id="missing-login-file"
     gnome_status="missing ($LOGIN_FILE)"
+  elif [[ "$LOGIN_PATH_STATE" == "invalid" ]]; then
+    keyring_status_id="invalid-login-file"
+    keyring_status="invalid ($LOGIN_PATH_REASON)"
+    gnome_status_id="invalid-login-file"
+    gnome_status="invalid ($LOGIN_PATH_REASON)"
   else
     keyring_status_id="unknown-needs-root"
     keyring_status="unknown (needs root)"
@@ -4689,7 +4764,7 @@ EOF
     saved_install_de >/dev/null || exit 1
     if [[ $dry_run -eq 0 ]] && {
       pam_path_needs_sudo "$LOGIN_FILE" 0 ||
-        pam_path_needs_sudo "${LOGIN_FILE}.lightxdm.bak" 1 ||
+        pam_path_needs_sudo "${LOGIN_FILE}.lightxdm.bak" 2 ||
         pam_path_needs_sudo "$PAM_KEYRING_STATE" 1 ||
         pam_path_needs_sudo "$PAM_LOGIN_BASE_STATE" 1
     }; then
