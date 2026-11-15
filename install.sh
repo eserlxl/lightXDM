@@ -573,11 +573,26 @@ session_command_exists() {
   fi
 }
 
+# Lowercase ASCII letters cleanly in pure Bash without external tr dependencies.
+lowercase_ascii() {
+  local LC_ALL=C
+  printf '%s\n' "${1,,}"
+}
+
+# Return 0 when $1 is one of lightXDM's built-in desktop ids.
+is_builtin_de_id() {
+  case "$1" in
+    plasma | gnome | budgie | xfce | lxqt | lxde | mate | cinnamon | i3)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 # Normalize a .desktop filename into a valid custom session id under LC_ALL=C.
 suggest_custom_session_id() {
   local LC_ALL=C stem="${1##*/}"
-  stem="${stem%.desktop}"
-  stem="$(printf '%s' "$stem" | LC_ALL=C tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')"
+  stem="$(lowercase_ascii "${stem%.desktop}")"
   while [[ "$stem" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* ]]; do
     stem="${stem/[!abcdefghijklmnopqrstuvwxyz0123456789_-]/-}"
   done
@@ -585,14 +600,11 @@ suggest_custom_session_id() {
     stem="${stem#-}"
   done
   [[ -n "$stem" ]] || stem="custom"
-  case "$stem" in
-    plasma | gnome | budgie | xfce | lxqt | lxde | mate | cinnamon | i3)
-      printf '%s-custom\n' "$stem"
-      ;;
-    *)
-      printf '%s\n' "$stem"
-      ;;
-  esac
+  if is_builtin_de_id "$stem"; then
+    printf '%s-custom\n' "$stem"
+  else
+    printf '%s\n' "$stem"
+  fi
 }
 
 # List installed freedesktop X11 and Wayland session entries and their --from-session compatibility.
@@ -616,10 +628,8 @@ resolve_user_xdg_data_dir() {
   printf '%s\n' "$xdg_data_dir"
 }
 
-list_desktop_sessions() {
-  local LC_ALL=C json_mode=0
-  [[ "${1:-}" == "--json" ]] && json_mode=1
-
+# Populate _SESSION_SCAN_{TYPES,SCOPES,DIRS} across system and user freedesktop session dirs.
+resolve_session_scan_dirs() {
   local session_root
   session_root="$(normalize_dir_path "${SESSION_ROOT:-}")"
   [[ "$session_root" == "/" ]] && session_root=""
@@ -638,30 +648,69 @@ list_desktop_sessions() {
   [[ "$user_xsessions_dir" == "$xsessions_dir" ]] && user_xsessions_dir=""
   [[ "$user_wayland_dir" == "$wayland_dir" ]] && user_wayland_dir=""
 
-  local scan_types=() scan_scopes=() scan_dirs=() checked_dirs=()
+  _SESSION_XSESSIONS_DIR="$xsessions_dir"
+  _SESSION_WAYLAND_DIR="$wayland_dir"
+  _SESSION_USER_XSESSIONS_DIR="$user_xsessions_dir"
+  _SESSION_USER_WAYLAND_DIR="$user_wayland_dir"
+  _SESSION_SCAN_TYPES=()
+  _SESSION_SCAN_SCOPES=()
+  _SESSION_SCAN_DIRS=()
   if [[ -n "$xsessions_dir" ]]; then
-    scan_types+=(x11)
-    scan_scopes+=(system)
-    scan_dirs+=("$xsessions_dir")
-    checked_dirs+=("$xsessions_dir")
+    _SESSION_SCAN_TYPES+=(x11)
+    _SESSION_SCAN_SCOPES+=(system)
+    _SESSION_SCAN_DIRS+=("$xsessions_dir")
   fi
   if [[ -n "$user_xsessions_dir" ]]; then
-    scan_types+=(x11)
-    scan_scopes+=(user)
-    scan_dirs+=("$user_xsessions_dir")
-    checked_dirs+=("$user_xsessions_dir")
+    _SESSION_SCAN_TYPES+=(x11)
+    _SESSION_SCAN_SCOPES+=(user)
+    _SESSION_SCAN_DIRS+=("$user_xsessions_dir")
   fi
   if [[ -n "$wayland_dir" ]]; then
-    scan_types+=(wayland)
-    scan_scopes+=(system)
-    scan_dirs+=("$wayland_dir")
-    checked_dirs+=("$wayland_dir")
+    _SESSION_SCAN_TYPES+=(wayland)
+    _SESSION_SCAN_SCOPES+=(system)
+    _SESSION_SCAN_DIRS+=("$wayland_dir")
   fi
   if [[ -n "$user_wayland_dir" ]]; then
-    scan_types+=(wayland)
-    scan_scopes+=(user)
-    scan_dirs+=("$user_wayland_dir")
-    checked_dirs+=("$user_wayland_dir")
+    _SESSION_SCAN_TYPES+=(wayland)
+    _SESSION_SCAN_SCOPES+=(user)
+    _SESSION_SCAN_DIRS+=("$user_wayland_dir")
+  fi
+}
+
+# Check TryExec and Exec readiness for a parsed SESSION_ENTRY_* entry into _SESSION_MISSING_{CMD,REASON}.
+desktop_session_missing_reason() {
+  _SESSION_MISSING_CMD=""
+  _SESSION_MISSING_REASON=""
+  if [[ -n "$SESSION_ENTRY_TRY_EXEC" ]] && ! session_command_exists "$SESSION_ENTRY_TRY_EXEC"; then
+    _SESSION_MISSING_CMD="$SESSION_ENTRY_TRY_EXEC"
+    _SESSION_MISSING_REASON="missing TryExec: $SESSION_ENTRY_TRY_EXEC"
+    return 1
+  fi
+  if ! session_command_exists "$SESSION_ENTRY_EXEC_CMD"; then
+    _SESSION_MISSING_CMD="$SESSION_ENTRY_EXEC_CMD"
+    _SESSION_MISSING_REASON="missing command: $SESSION_ENTRY_EXEC_CMD"
+    return 1
+  fi
+  return 0
+}
+
+list_desktop_sessions() {
+  local LC_ALL=C json_mode=0 install_cmd=""
+  [[ "${1:-}" == "--json" ]] && json_mode=1
+  install_cmd="$(script_cmd install.sh)"
+
+  local _SESSION_XSESSIONS_DIR="" _SESSION_WAYLAND_DIR="" _SESSION_USER_XSESSIONS_DIR="" _SESSION_USER_WAYLAND_DIR=""
+  local _SESSION_SCAN_TYPES=() _SESSION_SCAN_SCOPES=() _SESSION_SCAN_DIRS=()
+  local _SESSION_MISSING_CMD="" _SESSION_MISSING_REASON=""
+  resolve_session_scan_dirs
+  local xsessions_dir="$_SESSION_XSESSIONS_DIR" wayland_dir="$_SESSION_WAYLAND_DIR"
+  local user_xsessions_dir="$_SESSION_USER_XSESSIONS_DIR" user_wayland_dir="$_SESSION_USER_WAYLAND_DIR"
+  local scan_types=() scan_scopes=() scan_dirs=() checked_dirs=()
+  if [[ ${#_SESSION_SCAN_DIRS[@]} -gt 0 ]]; then
+    scan_types=("${_SESSION_SCAN_TYPES[@]}")
+    scan_scopes=("${_SESSION_SCAN_SCOPES[@]}")
+    scan_dirs=("${_SESSION_SCAN_DIRS[@]}")
+    checked_dirs=("${_SESSION_SCAN_DIRS[@]}")
   fi
 
   local idx session_type scope dir entry label raw_stem suggested_id status_note init_cmd install_session_cmd existing_tmpl
@@ -712,7 +761,7 @@ list_desktop_sessions() {
 
       raw_stem="${entry##*/}"
       raw_stem="${raw_stem%.desktop}"
-      raw_stem="$(printf '%s' "$raw_stem" | LC_ALL=C tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')"
+      raw_stem="${raw_stem,,}"
       builtin_id=""
       exec_value=""
       missing_cmd=""
@@ -729,47 +778,39 @@ list_desktop_sessions() {
         exec_value="${SESSION_ENTRY_EXEC_LINE#exec }"
         label="${SESSION_ENTRY_NAME:-${entry##*/}}"
         suggested_id="$(suggest_custom_session_id "$entry")"
-        if [[ -n "$SESSION_ENTRY_TRY_EXEC" ]] && ! session_command_exists "$SESSION_ENTRY_TRY_EXEC"; then
-          entry_ready="false"
-          entry_status="unavailable"
-          missing_cmd="$SESSION_ENTRY_TRY_EXEC"
-          entry_error="missing TryExec: $SESSION_ENTRY_TRY_EXEC"
-          status_note="unavailable ($entry_error)"
-        elif ! session_command_exists "$SESSION_ENTRY_EXEC_CMD"; then
-          entry_ready="false"
-          entry_status="unavailable"
-          missing_cmd="$SESSION_ENTRY_EXEC_CMD"
-          entry_error="missing command: $SESSION_ENTRY_EXEC_CMD"
-          status_note="unavailable ($entry_error)"
-        else
+        if desktop_session_missing_reason; then
           entry_ready="true"
           entry_status="ready"
           ready_count=$((ready_count + 1))
           status_note="ready"
+        else
+          entry_ready="false"
+          entry_status="unavailable"
+          missing_cmd="$_SESSION_MISSING_CMD"
+          entry_error="$_SESSION_MISSING_REASON"
+          status_note="unavailable ($entry_error)"
         fi
         if [[ "$session_type" == wayland ]]; then
           existing_tmpl="$HOME/.config/lightxdm/.wayland-session-$suggested_id"
           if [[ "$entry_ready" == true ]]; then
             printf -v init_cmd '%s --init-template --wayland --de %q --from-session %q' \
-              "$(script_cmd install.sh)" "$suggested_id" "$entry"
+              "$install_cmd" "$suggested_id" "$entry"
             printf -v install_session_cmd '%s --install-session %q --wayland' \
-              "$(script_cmd install.sh)" "$entry"
+              "$install_cmd" "$entry"
           fi
         else
           existing_tmpl="$HOME/.config/lightxdm/.xinitrc-$suggested_id"
           if [[ "$entry_ready" == true ]]; then
             printf -v init_cmd '%s --init-template --de %q --from-session %q' \
-              "$(script_cmd install.sh)" "$suggested_id" "$entry"
+              "$install_cmd" "$suggested_id" "$entry"
             printf -v install_session_cmd '%s --install-session %q' \
-              "$(script_cmd install.sh)" "$entry"
+              "$install_cmd" "$entry"
           fi
         fi
-        case "$raw_stem" in
-          plasma | gnome | budgie | xfce | lxqt | lxde | mate | cinnamon | i3)
-            builtin_id="$raw_stem"
-            status_note+="; built-in: --de $raw_stem"
-            ;;
-        esac
+        if is_builtin_de_id "$raw_stem"; then
+          builtin_id="$raw_stem"
+          status_note+="; built-in: --de $raw_stem"
+        fi
         if [[ -n "$SESSION_ENTRY_DESKTOP" ]]; then
           status_note+="; desktop: $SESSION_ENTRY_DESKTOP"
         fi
@@ -782,8 +823,14 @@ list_desktop_sessions() {
         fi
         if [[ $json_mode -eq 0 ]]; then
           printf '[%s] %s (%s) — %s\n' "$session_type" "$label" "$entry" "$status_note"
-          if [[ "$status_note" == ready* ]]; then
+          if [[ "$entry_ready" == true ]]; then
             printf '  init: %s\n' "$init_cmd"
+            if [[ -n "$builtin_id" ]]; then
+              printf '  install: %s --de %s   (or custom: %s --de %s)\n' \
+                "$install_cmd" "$builtin_id" "$install_session_cmd" "$suggested_id"
+            else
+              printf '  install: %s\n' "$install_session_cmd"
+            fi
           fi
         fi
       else
@@ -3533,14 +3580,14 @@ run_preflight() {
     diag_record_check "$json_mode" "Current session" "info" "TTY/non-graphical" "TTY/non-graphical"
   fi
 
-  local login_shell=""
+  local login_shell="" missing_hook_kind=""
   if [[ -n "$current_user" ]] && command -v getent >/dev/null 2>&1; then
     login_shell="$(getent passwd "$current_user" | cut -d: -f7 || true)"
   fi
   local hook_kind="" hook_env_name="" hook_env_val="" hook_display=""
   case "$login_shell" in
     "")
-      printf -v diag_msg 'non-bash users see: %s --shell-snippet <zsh|fish>' "$install_cmd"
+      printf -v diag_msg 'non-bash users see: %s --setup-shell <zsh|fish> (or: %s --shell-snippet <zsh|fish>)' "$install_cmd" "$install_cmd"
       diag_record_check "$json_mode" "Login shell" "unknown" "$diag_msg"
       ;;
     *bash)
@@ -3567,9 +3614,11 @@ run_preflight() {
         diag_record_check "$json_mode" "Login shell" "ok" "$diag_msg"
       else
         hook_display="$(shell_hook_display_path "$hook_kind")"
-        printf -v diag_msg '%s does not read ~/.bash_profile — run: %s --shell-snippet %s >> %s' "$login_shell" "$install_cmd" "$hook_kind" "$hook_display"
+        printf -v diag_msg '%s does not read ~/.bash_profile — run: %s --setup-shell %s (or: %s --shell-snippet %s >> %s)' \
+          "$login_shell" "$install_cmd" "$hook_kind" "$install_cmd" "$hook_kind" "$hook_display"
         diag_record_check "$json_mode" "Login shell" "warn" "$diag_msg"
         warnings=$((warnings + 1))
+        missing_hook_kind="$hook_kind"
       fi
       ;;
     *)
@@ -3579,26 +3628,118 @@ run_preflight() {
       ;;
   esac
 
-  local detected_raw="" detected_des=() first_de="" next_step=""
+  local choices_file="" choices_line="" existing_de=""
+  choices_file="$(install_choices_file)"
+  if install_choices_readable "$choices_file"; then
+    while IFS= read -r choices_line || [[ -n "$choices_line" ]]; do
+      case "$choices_line" in
+        de=*) existing_de="${choices_line#de=}" ;;
+      esac
+    done <"$choices_file"
+    if [[ -n "$existing_de" ]]; then
+      printf -v diag_msg 'recorded for %s — run: %s --update --dry-run (or %s --status / --doctor)' \
+        "$existing_de" "$install_cmd" "$install_cmd"
+    else
+      printf -v diag_msg 'choices file present at %s — inspect with: %s --status' "$choices_file" "$install_cmd"
+    fi
+    diag_record_check "$json_mode" "Existing setup" "info" "$diag_msg" "$diag_msg"
+  elif [[ -L "${choices_file%/*}" || -L "$choices_file" ]]; then
+    printf -v diag_msg 'symlink ignored at %s — inspect with: %s --status' "$choices_file" "$install_cmd"
+    diag_record_check "$json_mode" "Existing setup" "info" "$diag_msg" "$diag_msg"
+  elif [[ -e "$choices_file" ]]; then
+    printf -v diag_msg 'choices file unreadable at %s — inspect with: %s --status' "$choices_file" "$install_cmd"
+    diag_record_check "$json_mode" "Existing setup" "info" "$diag_msg" "$diag_msg"
+  fi
+
+  local _SESSION_XSESSIONS_DIR="" _SESSION_WAYLAND_DIR="" _SESSION_USER_XSESSIONS_DIR="" _SESSION_USER_WAYLAND_DIR=""
+  local _SESSION_SCAN_TYPES=() _SESSION_SCAN_SCOPES=() _SESSION_SCAN_DIRS=()
+  local _SESSION_MISSING_CMD="" _SESSION_MISSING_REASON=""
+  local custom_session_entries=() custom_session_labels=() first_custom_type="" first_custom_entry=""
+  local s_idx=0 s_type="" s_dir="" s_entry="" s_stem="" s_label=""
+  local SESSION_ENTRY_NAME="" SESSION_ENTRY_EXEC_LINE="" SESSION_ENTRY_EXEC_CMD=""
+  local SESSION_ENTRY_DESKTOP="" SESSION_ENTRY_TRY_EXEC=""
+  local SESSION_ENTRY_HIDDEN=0 SESSION_ENTRY_NO_DISPLAY=0 SESSION_ENTRY_ERROR=""
+  resolve_session_scan_dirs
+  for ((s_idx = 0; s_idx < ${#_SESSION_SCAN_DIRS[@]}; s_idx++)); do
+    s_type="${_SESSION_SCAN_TYPES[$s_idx]}"
+    s_dir="${_SESSION_SCAN_DIRS[$s_idx]}"
+    [[ -d "$s_dir" && -r "$s_dir" && -x "$s_dir" ]] || continue
+    for s_entry in "${s_dir%/}"/*.desktop; do
+      [[ -e "$s_entry" || -L "$s_entry" ]] || continue
+      SESSION_ENTRY_NAME=""
+      SESSION_ENTRY_EXEC_LINE=""
+      SESSION_ENTRY_EXEC_CMD=""
+      SESSION_ENTRY_DESKTOP=""
+      SESSION_ENTRY_TRY_EXEC=""
+      SESSION_ENTRY_HIDDEN=0
+      SESSION_ENTRY_NO_DISPLAY=0
+      SESSION_ENTRY_ERROR=""
+      s_stem="${s_entry##*/}"
+      s_stem="$(lowercase_ascii "${s_stem%.desktop}")"
+      if parse_desktop_session_entry "$s_entry"; then
+        [[ $SESSION_ENTRY_HIDDEN -eq 0 && $SESSION_ENTRY_NO_DISPLAY -eq 0 ]] || continue
+        is_builtin_de_id "$s_stem" && continue
+        desktop_session_missing_reason || continue
+        s_label="${SESSION_ENTRY_NAME:-${s_entry##*/}}"
+        custom_session_entries+=("$s_entry")
+        custom_session_labels+=("$s_label ($s_entry)")
+        if [[ -z "$first_custom_entry" ]]; then
+          first_custom_entry="$s_entry"
+          first_custom_type="$s_type"
+        fi
+      fi
+    done
+  done
+
+  local custom_summary="" ci=0
+  for ((ci = 0; ci < ${#custom_session_labels[@]}; ci++)); do
+    [[ $ci -eq 0 ]] || custom_summary+=", "
+    custom_summary+="${custom_session_labels[$ci]}"
+  done
+
+  local detected_raw="" detected_des=() first_de="" next_step="" hook_flag=""
+  [[ -n "$missing_hook_kind" ]] && hook_flag=" --setup-shell $missing_hook_kind"
   if [[ $have_pacman -eq 1 ]]; then
     detected_raw="$(detect_de 2>/dev/null || true)"
     if [[ -n "$detected_raw" && "$detected_raw" != "unknown" ]]; then
       mapfile -t detected_des <<<"$detected_raw"
       first_de="${detected_des[0]}"
       diag_record_check "$json_mode" "Detected desktop(s)" "info" "${detected_des[*]}" "${detected_des[*]}"
+      if [[ " ${detected_des[*]} " == *" gnome "* ]]; then
+        diag_msg="GNOME cannot lock the screen without GDM (see docs/installation.md)"
+        diag_record_check "$json_mode" "GNOME note" "info" "$diag_msg" "$diag_msg"
+      fi
       if [[ $blockers -eq 0 ]]; then
-        printf -v next_step '%s --dry-run --de %s   (or %s)' "$install_cmd" "$first_de" "$install_cmd"
+        if [[ -n "$existing_de" ]]; then
+          printf -v next_step '%s --update --dry-run   (or %s --dry-run --de %s%s)' \
+            "$install_cmd" "$install_cmd" "$first_de" "$hook_flag"
+        else
+          printf -v next_step '%s --dry-run --de %s%s   (or %s)' "$install_cmd" "$first_de" "$hook_flag" "$install_cmd"
+        fi
       fi
     else
       diag_record_check "$json_mode" "Detected desktop(s)" "info" "none installed" "none installed"
       if [[ $blockers -eq 0 ]]; then
-        printf -v next_step '%s --list-sessions   (or %s to pick a desktop)' "$install_cmd" "$install_cmd"
+        if [[ -n "$existing_de" ]]; then
+          printf -v next_step '%s --update --dry-run   (or %s --list-sessions)' "$install_cmd" "$install_cmd"
+        elif [[ -n "$first_custom_entry" ]]; then
+          local custom_wayland_flag=""
+          [[ "$first_custom_type" == wayland ]] && custom_wayland_flag=" --wayland"
+          printf -v next_step '%s --install-session %q%s --dry-run%s   (or %s --list-sessions, or %s)' \
+            "$install_cmd" "$first_custom_entry" "$custom_wayland_flag" "$hook_flag" "$install_cmd" "$install_cmd"
+        elif [[ -n "$hook_flag" ]]; then
+          printf -v next_step '%s --list-sessions   (or %s; include%s)' "$install_cmd" "$install_cmd" "$hook_flag"
+        else
+          printf -v next_step '%s --list-sessions   (or %s to pick a desktop)' "$install_cmd" "$install_cmd"
+        fi
       fi
     fi
+    [[ -n "$custom_summary" ]] && diag_record_check "$json_mode" "Detected custom session(s)" "info" "$custom_summary" "$custom_summary"
     if [[ $json_mode -eq 0 && -n "$next_step" ]]; then
       printf 'Next step: %s\n' "$next_step"
     fi
   else
+    [[ -n "$custom_summary" ]] && diag_record_check "$json_mode" "Detected custom session(s)" "info" "$custom_summary" "$custom_summary"
     diag_record_check "$json_mode" "Detected desktop(s)" "skipped" "pacman unavailable"
   fi
 
@@ -3629,6 +3770,12 @@ run_preflight() {
       print_json_string_array "detected_desktops" "${detected_des[@]}"
     else
       print_json_string_array "detected_desktops"
+    fi
+    printf ',\n'
+    if [[ ${#custom_session_entries[@]} -gt 0 ]]; then
+      print_json_string_array "detected_custom_sessions" "${custom_session_entries[@]}"
+    else
+      print_json_string_array "detected_custom_sessions"
     fi
     printf ',\n'
     if [[ ${#enabled_dms[@]} -gt 0 ]]; then

@@ -18069,6 +18069,223 @@ assert any("cannot read " in n and "pub_pamd/login" in n for n in d["autologin"]
   fi
 fi
 
+onb_case="$TMP_DIR/preflight_list_onboarding"
+mkdir -p "$onb_case/bin" "$onb_case/home/.local/state/lightxdm" "$onb_case/dm" \
+  "$onb_case/sess/usr/share/wayland-sessions" "$onb_case/sess/usr/share/xsessions" "$onb_case/sess/usr/bin"
+for onb_tool in cut dirname grep readlink; do
+  onb_path="$(command -v "$onb_tool")"
+  ln -s "$onb_path" "$onb_case/bin/$onb_tool"
+done
+cat >"$onb_case/bin/id" <<'EOF'
+#!/bin/bash
+case "${1:-}" in
+  -u) echo 1000 ;;
+  -un) echo testuser ;;
+  -nG) echo "testuser wheel" ;;
+  *) echo 1000 ;;
+esac
+EOF
+cat >"$onb_case/bin/getent" <<'EOF'
+#!/bin/bash
+printf '%s:x:1000:1000::%s:%s\n' "${2:-testuser}" "$HOME" "${ONB_SHELL:-/bin/bash}"
+EOF
+cat >"$onb_case/bin/sudo" <<'EOF'
+#!/bin/bash
+echo "sudo should not be called by --preflight" >&2
+exit 99
+EOF
+cat >"$onb_case/bin/pacman" <<'EOF'
+#!/bin/bash
+if [[ "${1:-}" == "-Qq" && -n "${ONB_PKGS:-}" && " ${ONB_PKGS} " == *" ${2:-} "* ]]; then
+  exit 0
+fi
+exit 1
+EOF
+cat >"$onb_case/bin/systemctl" <<'EOF'
+#!/bin/bash
+case "${1:-}" in
+  is-enabled)
+    case "${2:-}" in
+      getty@tty1.service)
+        echo "enabled"
+        exit 0
+        ;;
+      *)
+        echo "disabled"
+        exit 1
+        ;;
+    esac
+    ;;
+  list-unit-files) ;;
+esac
+EOF
+chmod +x "$onb_case/bin"/{id,getent,sudo,pacman,systemctl}
+printf '#!/bin/bash\nexit 0\n' >"$onb_case/sess/usr/bin/fake-hyprland"
+printf '#!/bin/bash\nexit 0\n' >"$onb_case/sess/usr/bin/fake-openbox"
+printf '#!/bin/bash\nexit 0\n' >"$onb_case/sess/usr/bin/fake-xfce"
+chmod +x "$onb_case/sess/usr/bin"/{fake-hyprland,fake-openbox,fake-xfce}
+
+cat >"$onb_case/sess/usr/share/wayland-sessions/hyprland.desktop" <<'EOF'
+[Desktop Entry]
+Name=Hyprland
+Exec=/usr/bin/fake-hyprland
+TryExec=/usr/bin/fake-hyprland
+DesktopNames=Hyprland
+EOF
+cat >"$onb_case/sess/usr/share/xsessions/openbox.desktop" <<'EOF'
+[Desktop Entry]
+Name=Openbox
+Exec=/usr/bin/fake-openbox
+DesktopNames=Openbox
+EOF
+cat >"$onb_case/sess/usr/share/xsessions/xfce.desktop" <<'EOF'
+[Desktop Entry]
+Name=Xfce Session
+Exec=/usr/bin/fake-xfce
+DesktopNames=XFCE
+EOF
+cat >"$onb_case/sess/usr/share/xsessions/broken.desktop" <<'EOF'
+[Desktop Entry]
+Name=Broken WM
+Exec=/nonexistent/missing-wm-bin
+EOF
+cat >"$onb_case/sess/usr/share/xsessions/hidden.desktop" <<'EOF'
+[Desktop Entry]
+Name=Hidden WM
+Exec=/usr/bin/fake-openbox
+Hidden=true
+EOF
+
+onb_bash="$(command -v bash)"
+onb_ok=1
+onb_report=""
+set +e
+onb_custom_out="$(env -i HOME="$onb_case/home" USER=testuser PATH="$onb_case/bin" \
+  ONB_SHELL=/usr/bin/zsh ONB_PKGS="" SESSION_ROOT="$onb_case/sess" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  "$onb_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+onb_custom_rc=$?
+onb_custom_json_err="$onb_case/custom_json.err"
+onb_custom_json="$(env -i HOME="$onb_case/home" USER=testuser PATH="$onb_case/bin" \
+  ONB_SHELL=/usr/bin/zsh ONB_PKGS="" SESSION_ROOT="$onb_case/sess" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  "$onb_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$onb_custom_json_err")"
+onb_custom_json_rc=$?
+set -e
+
+onb_hypr="$onb_case/sess/usr/share/wayland-sessions/hyprland.desktop"
+onb_openbox="$onb_case/sess/usr/share/xsessions/openbox.desktop"
+if [[ $onb_custom_rc -ne 0 || "$onb_custom_out" != *"Detected desktop(s): none installed"* ||
+  "$onb_custom_out" != *"Detected custom session(s): Openbox ($onb_openbox), Hyprland ($onb_hypr)"* ||
+  "$onb_custom_out" == *"Broken WM"* || "$onb_custom_out" == *"Hidden WM"* ||
+  "$onb_custom_out" == *"Xfce Session ($onb_case"* ||
+  "$onb_custom_out" != *"--setup-shell zsh (or:"*"--shell-snippet zsh >> ~/.zprofile"* ||
+  "$onb_custom_out" != *"--install-session "*"openbox.desktop --dry-run --setup-shell zsh"* ||
+  "$onb_custom_out" != *"--list-sessions"* ]]; then
+  onb_ok=0
+  onb_report+=" [custom preflight prose rc=$onb_custom_rc out=$onb_custom_out]"
+fi
+set +e
+onb_way_out="$(env -i HOME="$onb_case/home" USER=testuser PATH="$onb_case/bin" \
+  ONB_SHELL=/usr/bin/fish ONB_PKGS="" SESSION_ROOT="$onb_case/sess" XSESSIONS_DIR="$onb_case/no_xsess" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  "$onb_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+onb_way_rc=$?
+set -e
+if [[ $onb_way_rc -ne 0 ||
+  "$onb_way_out" != *"--install-session "*"hyprland.desktop --wayland --dry-run --setup-shell fish"* ]]; then
+  onb_ok=0
+  onb_report+=" [wayland custom preflight rc=$onb_way_rc out=$onb_way_out]"
+fi
+if [[ $onb_custom_json_rc -ne 0 || -s "$onb_custom_json_err" ]] ||
+  ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+openbox, hypr = sys.argv[2], sys.argv[3]
+assert d["ready"] is True, d
+assert d["status"] == "warn", d
+assert d["warnings"] == 1, d
+assert d["detected_desktops"] == [], d
+assert d["detected_custom_sessions"] == [openbox, hypr], d
+assert "--install-session" in d["next_step"] and "openbox.desktop" in d["next_step"], d
+assert "--setup-shell zsh" in d["next_step"] and "--list-sessions" in d["next_step"], d
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["Detected custom session(s)"]["status"] == "info", checks
+assert "--setup-shell zsh" in checks["Login shell"]["detail"], checks
+assert "--shell-snippet zsh >> ~/.zprofile" in checks["Login shell"]["detail"], checks
+' "$onb_custom_json" "$onb_openbox" "$onb_hypr"; then
+  onb_ok=0
+  onb_report+=" [custom preflight json rc=$onb_custom_json_rc err=$(cat "$onb_custom_json_err") json=$onb_custom_json]"
+fi
+
+printf 'de=gnome\nno_packages=0\n' >"$onb_case/home/.local/state/lightxdm/install-choices"
+set +e
+onb_gnome_out="$(env -i HOME="$onb_case/home" USER=testuser PATH="$onb_case/bin" \
+  ONB_SHELL=/bin/bash ONB_PKGS=gnome-shell SESSION_ROOT="$onb_case/sess" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  "$onb_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+onb_gnome_rc=$?
+onb_gnome_json="$(env -i HOME="$onb_case/home" USER=testuser PATH="$onb_case/bin" \
+  ONB_SHELL=/bin/bash ONB_PKGS=gnome-shell SESSION_ROOT="$onb_case/sess" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  "$onb_bash" "$REPO_ROOT/install.sh" --preflight --json 2>&1)"
+onb_gnome_json_rc=$?
+set -e
+
+if [[ $onb_gnome_rc -ne 0 || "$onb_gnome_out" != *"Existing setup: recorded for gnome"* ||
+  "$onb_gnome_out" != *"--update --dry-run"* ||
+  "$onb_gnome_out" != *"GNOME note: GNOME cannot lock the screen without GDM"* ||
+  $onb_gnome_json_rc -ne 0 ]] ||
+  ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["status"] == "pass" and d["warnings"] == 0, d
+assert d["detected_desktops"] == ["gnome"], d
+assert "--update --dry-run" in d["next_step"], d
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["Existing setup"]["status"] == "info" and "recorded for gnome" in checks["Existing setup"]["detail"], checks
+assert checks["GNOME note"]["status"] == "info" and "GDM" in checks["GNOME note"]["detail"], checks
+' "$onb_gnome_json"; then
+  onb_ok=0
+  onb_report+=" [gnome/existing preflight rc=$onb_gnome_rc jrc=$onb_gnome_json_rc out=$onb_gnome_out json=$onb_gnome_json]"
+fi
+
+set +e
+onb_ls_out="$(env -i HOME="$onb_case/home" USER=testuser PATH="$onb_case/bin" \
+  SESSION_ROOT="$onb_case/sess" \
+  "$onb_bash" "$REPO_ROOT/install.sh" --list-sessions 2>&1)"
+onb_ls_rc=$?
+set -e
+if [[ $onb_ls_rc -ne 0 ]] ||
+  ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import sys
+lines = sys.argv[1].splitlines()
+def section(marker):
+    idx = next(i for i, l in enumerate(lines) if marker in l)
+    out = [lines[idx]]
+    for l in lines[idx + 1:]:
+        if l.startswith("[") or not l.startswith("  "):
+            break
+        out.append(l)
+    return out
+hypr_sec = section("hyprland.desktop")
+assert len(hypr_sec) >= 3 and hypr_sec[1].startswith("  init: ") and "--wayland --de hyprland" in hypr_sec[1], hypr_sec
+assert hypr_sec[2].startswith("  install: ") and "--install-session " in hypr_sec[2] and "--wayland" in hypr_sec[2], hypr_sec
+xfce_sec = section("xfce.desktop")
+assert len(xfce_sec) >= 3 and xfce_sec[2].startswith("  install: ") and "--de xfce" in xfce_sec[2] and "--de xfce-custom" in xfce_sec[2], xfce_sec
+broken_sec = section("broken.desktop")
+assert len(broken_sec) == 1, broken_sec
+' "$onb_ls_out"; then
+  onb_ok=0
+  onb_report+=" [list-sessions onboarding prose rc=$onb_ls_rc out=$onb_ls_out]"
+fi
+
+if [[ $onb_ok -eq 1 ]]; then
+  pass "--preflight and --list-sessions onboarding awareness (custom sessions, --setup-shell, GNOME note, existing setup, no-tr PATH)"
+else
+  fail "onboarding preflight/list-sessions checks:$onb_report"
+fi
+
 if ! command -v python3 >/dev/null 2>&1; then
   skip "Python VM driver unit tests (python3 unavailable)"
 else
