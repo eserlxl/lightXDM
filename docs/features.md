@@ -32,7 +32,7 @@ lightXDM supports built-in and custom X11/Wayland desktop sessions, non-bash log
 - **Wayland packages:** Plasma, GNOME, and Budgie do not install `xorg-server` or `xorg-xinit`.
 
 ### Custom X11 & Wayland Sessions
-- **Session Discovery:** `--list-sessions` inspects installed X11 and Wayland `.desktop` session entries safely on the host.
+- **Session Discovery:** `--list-sessions [--json]` inspects installed X11 and Wayland `.desktop` session entries across system (`/usr/share`) and user (`~/.local/share` / `$XDG_DATA_HOME`) directories safely on the host, reporting validation details and ready `--init-template` / `--install-session` commands.
 - **Editable Templates:** `--init-template [--wayland] [--from-session <path>] --de <custom-id>` creates `~/.config/lightxdm/.xinitrc-<id>` (or `.wayland-session-<id>` when `--wayland` is passed or `<path>` is a Wayland entry) for manual customization before installing with `--no-packages --de <custom-id>`.
 - **One-Command Session Provisioning:** `--install-session <path>` validates `TryExec`/`Exec` before privilege checks or home writes, infers Wayland mode when `--wayland` is set or `<path>` resides under `wayland-sessions/`, derives `--de <custom-id>` from the `.desktop` filename unless overridden, creates missing custom templates (preserving existing user templates on rerun), and installs with `--no-packages`.
 - **Keyring Selection:** Custom sessions default to GNOME Keyring (`--keyring gnome`), or use `--keyring kwallet` or `--no-keyring`.
@@ -45,7 +45,7 @@ lightXDM supports built-in and custom X11/Wayland desktop sessions, non-bash log
 
 ### Safe Updates, Diagnostics & Recovery
 - **Safe Updates (`--update` / `lightxdm-update`):** Re-applies newer lightXDM versions using your saved `install-choices` and `/etc/lightxdm/pam-keyring`. Home files you edited stay intact with updated templates written beside them as `*.lightxdm-new`, removed packages and re-enabled display managers stay as you left them (with commands printed if you want to re-sync), and PAM lines dropped by an `/etc/pam.d/login.pacnew` merge are restored without overriding edits you made in `/etc/pam.d/login`.
-- **Read-Only Checks (`--preflight [--json]`, `--status [--json]`, `--doctor [--json]`):** Inspect host readiness, current installation state, active launcher, template syntax and commands, shell hooks, `no-autostart`, `startx-attempts`, `*.lightxdm-new` files, PAM keyring/GNOME rules and `.so` modules, `getty@tty1.service`, re-enabled display managers, and TTY1 autologin conflicts without `sudo` (each supports `--json` for structured stdout output).
+- **Read-Only Checks (`--preflight [--json]`, `--status [--json]`, `--doctor [--json]`, `--list-sessions [--json]`):** Inspect host readiness, current installation state, active launcher, template syntax and commands, shell hooks, `no-autostart`, `startx-attempts`, `*.lightxdm-new` files, PAM keyring/GNOME rules and `.so` modules, `getty@tty1.service`, re-enabled display managers, TTY1 autologin conflicts, and installed X11/Wayland session entries without `sudo` (each supports `--json` for structured stdout output).
 - **Automated Recovery (`--recover` and `--fix`):** `--recover` restores broken or paused home dotfiles without `sudo` (backing up edits to `*.lightxdm-edited*` and clearing `no-autostart`/`startx-attempts`) without touching packages, PAM, or systemd; `--fix` repairs broken home dotfiles, missing managed shell hooks, PAM rules, `getty@tty1.service`, and re-enabled display managers (preserving valid user templates and calling `sudo` only when system state requires inspection or repair) before re-running `--doctor`.
 - **Crash-Loop Pause & Session Journal:** If TTY1 desktop launch occurs three times within 30 seconds, `.bash_profile` pauses auto-start via `~/.config/lightxdm/no-autostart` and opens an interactive shell; creating `~/.config/lightxdm/session-journal` sends launcher stdout/stderr to the systemd journal (`journalctl -b -t lightxdm`). See [startx-autologin.md](startx-autologin.md#recovery).
 
@@ -68,7 +68,7 @@ lightXDM supports built-in and custom X11/Wayland desktop sessions, non-bash log
 | MATE support                   | auto-detect/install, GNOME Keyring, mate-polkit, dotfiles |
 | Cinnamon support               | auto-detect/install, GNOME Keyring, built-in polkit agent, dotfiles |
 | i3 support                     | auto-detect/install, GNOME Keyring, polkit-gnome (started by `.xinitrc`), dotfiles |
-| Custom X11 & Wayland sessions  | `--list-sessions`, `--init-template [--wayland] [--from-session]`, `--install-session <path>`, `--keyring <gnome|kwallet>` |
+| Custom X11 & Wayland sessions  | `--list-sessions [--json]`, `--init-template [--wayland] [--from-session]`, `--install-session <path>`, `--keyring <gnome|kwallet>` |
 | No DE installed                | Prompts user, installs selected DE                                |
 | Display manager free           | disables SDDM, LightDM, GDM, LXDM, ly@tty1 and the display-manager.service unit |
 | Auto-start & optional autologin| TTY1 auto-start via `.bash_profile` (`~/.xinitrc` or `~/.wayland-session`), optional `zsh`/`fish` hooks (`--setup-shell`, `--shell-snippet`), optional autologin via `enable-autologin.sh` |

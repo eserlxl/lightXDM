@@ -13092,7 +13092,7 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # 6) Conflicting flag combinations exit 1 without side effects
-for bad_ls_args in "--list-sessions --de i3" "--list-sessions --status" "--status --list-sessions" "--list-sessions --dry-run"; do
+for bad_ls_args in "--list-sessions --de i3" "--list-sessions --status" "--status --list-sessions" "--list-sessions --dry-run" "--list-sessions --json --de i3" "--list-sessions --json --dry-run" "--list-sessions --json --status"; do
   read -r -a bad_ls_argv <<<"$bad_ls_args"
   : >"$STUB_LOG"
   set +e
@@ -13108,6 +13108,275 @@ if [[ -z "$ls_report" ]]; then
   pass "install.sh --list-sessions discovers X11/Wayland desktop entries safely and round-trips --init-template"
 else
   fail "install.sh --list-sessions:$ls_report"
+fi
+
+# install.sh --list-sessions discovers user XDG directories and emits valid --json without sudo or side effects
+if ! command -v python3 >/dev/null 2>&1; then
+  skip "install.sh --list-sessions user XDG and --json tests (python3 unavailable)"
+else
+  ls_json_dir="$TMP_DIR/list_sessions_json"
+  ls_json_home="$ls_json_dir/home_\"q\"\\türü"
+  mkdir -p \
+    "$ls_json_home/.config/lightxdm" \
+    "$ls_json_dir/sys_x" "$ls_json_dir/sys_w" \
+    "$ls_json_dir/user_x" "$ls_json_dir/user_w" \
+    "$ls_json_dir/empty_x" "$ls_json_dir/empty_w" \
+    "$ls_json_dir/missing_user_x" \
+    "$ls_json_dir/bin" "$ls_json_dir/etc" \
+    "$ls_json_dir/xdg_data/xsessions" "$ls_json_dir/xdg_data/wayland-sessions" \
+    "$ls_json_home/.local/share/wayland-sessions"
+
+  printf '#!/bin/bash\nexit 0\n' >"$ls_json_dir/bin/openbox"
+  printf '#!/bin/bash\nexit 0\n' >"$ls_json_dir/bin/i3"
+  printf '#!/bin/bash\nexit 0\n' >"$ls_json_dir/bin/my-way"
+  printf '#!/bin/bash\nexit 0\n' >"$ls_json_dir/bin/my-xdg-sway"
+  printf '#!/bin/bash\nexit 0\n' >"$ls_json_dir/bin/startx"
+  cat >"$ls_json_dir/bin/systemctl" <<'EOF'
+#!/bin/bash
+case "$1" in is-enabled) echo "enabled"; exit 0 ;; esac
+exit 0
+EOF
+  chmod +x "$ls_json_dir/bin/"{openbox,i3,my-way,my-xdg-sway,startx,systemctl}
+  printf '#%%PAM-1.0\nauth include system-local-login\nsession include system-local-login\n' >"$ls_json_dir/etc/login"
+
+  cat >"$ls_json_dir/sys_x/openbox.desktop" <<'EOF'
+[Desktop Entry]
+Name=Openbox
+Exec=openbox --sm-disable
+DesktopNames=OPENBOX
+EOF
+  cat >"$ls_json_dir/user_x/I3.desktop" <<'EOF'
+[Desktop Entry]
+Name=i3 User
+Exec=i3
+DesktopNames=i3
+EOF
+  cat >"$ls_json_dir/user_x/bad-field.desktop" <<'EOF'
+[Desktop Entry]
+Name=Bad Field
+Exec=openbox %F
+EOF
+  cat >"$ls_json_dir/user_x/hidden.desktop" <<'EOF'
+[Desktop Entry]
+Name=Hidden Entry
+Exec=openbox
+Hidden=true
+EOF
+  cat >"$ls_json_dir/user_x/nodisp.desktop" <<'EOF'
+[Desktop Entry]
+Name=NoDisplay Entry
+Exec=openbox
+NoDisplay=true
+EOF
+  cat >"$ls_json_dir/user_w/my-way.desktop" <<'EOF'
+[Desktop Entry]
+Name=My "Way" Session
+Exec=my-way --flag
+DesktopNames=MyWay;WL
+EOF
+  cat >"$ls_json_dir/user_w/missing-wl.desktop" <<'EOF'
+[Desktop Entry]
+Name=Missing Wayland
+Exec=no-such-wl-cmd
+EOF
+  printf '#!/bin/bash\nexec my-way\n' >"$ls_json_home/.config/lightxdm/.wayland-session-my-way"
+  chmod 755 "$ls_json_home/.config/lightxdm/.wayland-session-my-way"
+
+  cat >"$ls_json_dir/xdg_data/wayland-sessions/xdg-sway.desktop" <<'EOF'
+[Desktop Entry]
+Name=XDG Sway
+Exec=my-xdg-sway
+DesktopNames=sway
+EOF
+  cat >"$ls_json_home/.local/share/wayland-sessions/home-sway.desktop" <<'EOF'
+[Desktop Entry]
+Name=Home Local Sway
+Exec=my-xdg-sway
+DesktopNames=sway
+EOF
+
+  ls_json_ok=1
+  ls_json_report=""
+
+  if [[ "$help_ls_out" != *"--list-sessions [--json]"* || "$help_ls_out" != *"or --list-sessions"* ]]; then
+    ls_json_ok=0
+    ls_json_report+=" [help missing --list-sessions --json]"
+  fi
+
+  # Empty isolated --list-sessions --json
+  : >"$STUB_LOG"
+  set +e
+  empty_ls_js_out="$(HOME="$ls_json_home" XSESSIONS_DIR="$ls_json_dir/missing_x" WAYLAND_SESSIONS_DIR="$ls_json_dir/empty_w" USER_XSESSIONS_DIR="" USER_WAYLAND_SESSIONS_DIR="" bash "$REPO_ROOT/install.sh" --list-sessions --json 2>"$ls_json_dir/empty.err")"
+  empty_ls_js_rc=$?
+  set -e
+  if [[ $empty_ls_js_rc -ne 0 || -s "$ls_json_dir/empty.err" || -s "$STUB_LOG" ]] ||
+    ! JSON_OUT="$empty_ls_js_out" python3 - "$ls_json_dir" <<'PY'
+import json, os, sys
+ls_dir = sys.argv[1]
+d = json.loads(os.environ["JSON_OUT"])
+assert d["mode"] == "list-sessions"
+assert d["count"] == 0
+assert d["ready_count"] == 0
+assert d["sessions"] == []
+assert d["warnings"] == []
+assert d["directories"] == [
+    {"session_type": "x11", "scope": "system", "path": os.path.join(ls_dir, "missing_x"), "exists": False, "readable": False},
+    {"session_type": "wayland", "scope": "system", "path": os.path.join(ls_dir, "empty_w"), "exists": True, "readable": True},
+]
+PY
+  then
+    ls_json_ok=0
+    ls_json_report+=" [empty json: rc=$empty_ls_js_rc err=$(cat "$ls_json_dir/empty.err") out=$empty_ls_js_out]"
+  fi
+
+  # Rich system + user XDG prose & JSON output under tr_TR.UTF-8 + tricky HOME
+  : >"$STUB_LOG"
+  set +e
+  rich_ls_prose="$(HOME="$ls_json_home" PATH="$ls_json_dir/bin:$STUB_BIN:$PATH" XSESSIONS_DIR="$ls_json_dir/sys_x" WAYLAND_SESSIONS_DIR="$ls_json_dir/sys_w" USER_XSESSIONS_DIR="$ls_json_dir/user_x" USER_WAYLAND_SESSIONS_DIR="$ls_json_dir/user_w" LANG=tr_TR.UTF-8 LC_ALL=tr_TR.UTF-8 bash "$REPO_ROOT/install.sh" --list-sessions 2>"$ls_json_dir/prose.err")"
+  rich_ls_prose_rc=$?
+  rich_ls_js_out="$(HOME="$ls_json_home" PATH="$ls_json_dir/bin:$STUB_BIN:$PATH" XSESSIONS_DIR="$ls_json_dir/sys_x" WAYLAND_SESSIONS_DIR="$ls_json_dir/sys_w" USER_XSESSIONS_DIR="$ls_json_dir/user_x" USER_WAYLAND_SESSIONS_DIR="$ls_json_dir/user_w" LANG=tr_TR.UTF-8 LC_ALL=tr_TR.UTF-8 bash "$REPO_ROOT/install.sh" --list-sessions --json 2>"$ls_json_dir/rich.err")"
+  rich_ls_js_rc=$?
+  set -e
+  if [[ $rich_ls_prose_rc -ne 0 || -s "$ls_json_dir/prose.err" || "$rich_ls_prose" != *"; built-in: --de i3; desktop: i3; scope: user"* || "$rich_ls_prose" != *"; scope: user; template exists: $ls_json_home/.config/lightxdm/.wayland-session-my-way"* || "$rich_ls_prose" == *"Hidden Entry"* || "$rich_ls_prose" == *"NoDisplay Entry"* ]]; then
+    ls_json_ok=0
+    ls_json_report+=" [rich user prose: rc=$rich_ls_prose_rc err=$(cat "$ls_json_dir/prose.err") out=$rich_ls_prose]"
+  fi
+  if [[ $rich_ls_js_rc -ne 0 || -s "$ls_json_dir/rich.err" || -s "$STUB_LOG" ]] ||
+    ! JSON_OUT="$rich_ls_js_out" python3 - "$ls_json_dir" "$ls_json_home" "$ls_json_dir/roundtrip.cmds" <<'PY'
+import json, os, shlex, sys
+ls_dir, ls_home, cmd_file = sys.argv[1], sys.argv[2], sys.argv[3]
+d = json.loads(os.environ["JSON_OUT"])
+assert d["mode"] == "list-sessions"
+assert d["count"] == 5, d
+assert d["ready_count"] == 3, d
+assert d["warnings"] == []
+by_file = {item["file"]: item for item in d["sessions"]}
+assert len(by_file) == 5
+
+ob = by_file[os.path.join(ls_dir, "sys_x/openbox.desktop")]
+assert ob["session_type"] == "x11" and ob["scope"] == "system"
+assert ob["valid"] is True and ob["ready"] is True and ob["status"] == "ready"
+assert ob["exec"] == "openbox --sm-disable" and ob["desktop_names"] == "OPENBOX"
+assert ob["builtin_id"] is None and ob["suggested_id"] == "openbox"
+assert ob["template_exists"] is False
+assert "--init-template --de openbox --from-session" in ob["suggested_init_command"]
+assert "--install-session" in ob["suggested_install_command"]
+
+i3u = by_file[os.path.join(ls_dir, "user_x/I3.desktop")]
+assert i3u["session_type"] == "x11" and i3u["scope"] == "user"
+assert i3u["ready"] is True and i3u["builtin_id"] == "i3" and i3u["suggested_id"] == "i3-custom"
+
+badf = by_file[os.path.join(ls_dir, "user_x/bad-field.desktop")]
+assert badf["valid"] is False and badf["ready"] is False and badf["status"] == "unsupported"
+assert badf["error"] and badf["suggested_init_command"] is None and badf["suggested_install_command"] is None
+
+mw = by_file[os.path.join(ls_dir, "user_w/my-way.desktop")]
+assert mw["session_type"] == "wayland" and mw["scope"] == "user"
+assert mw["name"] == 'My "Way" Session' and mw["desktop_names"] == "MyWay"
+assert mw["template_path"] == os.path.join(ls_home, ".config/lightxdm/.wayland-session-my-way")
+assert mw["template_exists"] is True
+assert "--wayland" in mw["suggested_init_command"] and "--wayland" in mw["suggested_install_command"]
+
+mwl = by_file[os.path.join(ls_dir, "user_w/missing-wl.desktop")]
+assert mwl["valid"] is True and mwl["ready"] is False and mwl["status"] == "unavailable"
+assert mwl["missing_command"] == "no-such-wl-cmd"
+assert mwl["suggested_init_command"] is None and mwl["suggested_install_command"] is None
+
+with open(cmd_file + ".init", "w", encoding="utf-8") as f:
+    for tok in shlex.split(ob["suggested_init_command"]):
+        f.write(tok + "\n")
+with open(cmd_file + ".inst", "w", encoding="utf-8") as f:
+    for tok in shlex.split(mw["suggested_install_command"]) + ["--dry-run"]:
+        f.write(tok + "\n")
+PY
+  then
+    ls_json_ok=0
+    ls_json_report+=" [rich user json: rc=$rich_ls_js_rc err=$(cat "$ls_json_dir/rich.err") out=$rich_ls_js_out]"
+  else
+    mapfile -t rt_init_argv <"$ls_json_dir/roundtrip.cmds.init"
+    mapfile -t rt_inst_argv <"$ls_json_dir/roundtrip.cmds.inst"
+    rt_home="$ls_json_dir/rt_home"
+    mkdir -p "$rt_home"
+    set +e
+    rt_init_out="$(env HOME="$rt_home" PATH="$ls_json_dir/bin:$STUB_BIN:$PATH" "${rt_init_argv[@]}" 2>&1)"
+    rt_init_rc=$?
+    rt_inst_out="$(env HOME="$ls_json_home" XDG_STATE_HOME="$ls_json_home/.local/state" PATH="$ls_json_dir/bin:$STUB_BIN:$PATH" LOGIN_FILE="$ls_json_dir/etc/login" PAM_KEYRING_STATE="$ls_json_dir/etc/pam-keyring" PAM_LOGIN_BASE_STATE="$ls_json_dir/etc/pam-login-base" GNOME_SESSION_TYPE_DEST="$ls_json_dir/etc/gnome-session-type.conf" DM_STATE_FILE="$ls_json_dir/etc/disabled-dm" AUTOLOGIN_DROPIN_DIR="$ls_json_dir/getty" "${rt_inst_argv[@]}" 2>&1)"
+    rt_inst_rc=$?
+    set -e
+    if [[ $rt_init_rc -ne 0 || ! -x "$rt_home/.config/lightxdm/.xinitrc-openbox" ||
+      $rt_inst_rc -ne 0 || "$rt_inst_out" != *"Session entry:"* || "$rt_inst_out" != *"template=reuse "* ]]; then
+      ls_json_ok=0
+      ls_json_report+=" [roundtrip failed: init_rc=$rt_init_rc init_out=[$rt_init_out] inst_rc=$rt_inst_rc inst_out=[$rt_inst_out]]"
+    fi
+  fi
+
+  # Real un-isolated XDG_DATA_HOME and $HOME/.local/share discovery
+  set +e
+  xdg_ls_js_out="$(env -u SESSION_ROOT -u XSESSIONS_DIR -u WAYLAND_SESSIONS_DIR -u USER_XSESSIONS_DIR -u USER_WAYLAND_SESSIONS_DIR HOME="$ls_json_home" XDG_DATA_HOME="$ls_json_dir/xdg_data" PATH="$ls_json_dir/bin:$STUB_BIN:$PATH" bash "$REPO_ROOT/install.sh" --list-sessions --json 2>"$ls_json_dir/xdg.err")"
+  xdg_ls_js_rc=$?
+  default_xdg_js_out="$(env -u SESSION_ROOT -u XSESSIONS_DIR -u WAYLAND_SESSIONS_DIR -u USER_XSESSIONS_DIR -u USER_WAYLAND_SESSIONS_DIR -u XDG_DATA_HOME HOME="$ls_json_home" PATH="$ls_json_dir/bin:$STUB_BIN:$PATH" bash "$REPO_ROOT/install.sh" --list-sessions --json 2>"$ls_json_dir/default_xdg.err")"
+  default_xdg_js_rc=$?
+  set -e
+  if [[ $xdg_ls_js_rc -ne 0 || -s "$ls_json_dir/xdg.err" ]] ||
+    ! JSON_OUT="$xdg_ls_js_out" python3 - "$ls_json_dir" <<'PY'
+import json, os, sys
+ls_dir = sys.argv[1]
+d = json.loads(os.environ["JSON_OUT"])
+xdg_x = os.path.join(ls_dir, "xdg_data/xsessions")
+xdg_w = os.path.join(ls_dir, "xdg_data/wayland-sessions")
+dirs = {(x["scope"], x["path"]) for x in d["directories"]}
+assert ("user", xdg_x) in dirs and ("user", xdg_w) in dirs, dirs
+target = os.path.join(xdg_w, "xdg-sway.desktop")
+matches = [s for s in d["sessions"] if s["file"] == target]
+assert len(matches) == 1 and matches[0]["scope"] == "user" and matches[0]["ready"] is True, matches
+PY
+  then
+    ls_json_ok=0
+    ls_json_report+=" [xdg_data_home auto discovery: rc=$xdg_ls_js_rc err=$(cat "$ls_json_dir/xdg.err") out=$xdg_ls_js_out]"
+  fi
+  if [[ $default_xdg_js_rc -ne 0 || -s "$ls_json_dir/default_xdg.err" ]] ||
+    ! JSON_OUT="$default_xdg_js_out" python3 - "$ls_json_home" <<'PY'
+import json, os, sys
+ls_home = sys.argv[1]
+d = json.loads(os.environ["JSON_OUT"])
+target = os.path.join(ls_home, ".local/share/wayland-sessions/home-sway.desktop")
+matches = [s for s in d["sessions"] if s["file"] == target]
+assert len(matches) == 1 and matches[0]["scope"] == "user" and matches[0]["ready"] is True, matches
+PY
+  then
+    ls_json_ok=0
+    ls_json_report+=" [home .local/share fallback: rc=$default_xdg_js_rc err=$(cat "$ls_json_dir/default_xdg.err") out=$default_xdg_js_out]"
+  fi
+
+  # Unreadable user directory emits structured JSON warning with empty stderr
+  if [[ $EUID -ne 0 ]]; then
+    mkdir -p "$ls_json_dir/priv_user_x"
+    chmod 000 "$ls_json_dir/priv_user_x"
+    set +e
+    priv_js_out="$(HOME="$ls_json_home" PATH="$ls_json_dir/bin:$STUB_BIN:$PATH" XSESSIONS_DIR="$ls_json_dir/empty_x" WAYLAND_SESSIONS_DIR="$ls_json_dir/empty_w" USER_XSESSIONS_DIR="$ls_json_dir/priv_user_x" USER_WAYLAND_SESSIONS_DIR="" bash "$REPO_ROOT/install.sh" --list-sessions --json 2>"$ls_json_dir/priv.err")"
+    priv_js_rc=$?
+    set -e
+    chmod 755 "$ls_json_dir/priv_user_x"
+    if [[ $priv_js_rc -ne 0 || -s "$ls_json_dir/priv.err" ]] ||
+      ! JSON_OUT="$priv_js_out" python3 - "$ls_json_dir" <<'PY'
+import json, os, sys
+ls_dir = sys.argv[1]
+d = json.loads(os.environ["JSON_OUT"])
+px = os.path.join(ls_dir, "priv_user_x")
+assert d["warnings"] == [f"cannot read session directory {px}."], d["warnings"]
+assert any(x["path"] == px and x["scope"] == "user" and x["exists"] is True and x["readable"] is False for x in d["directories"]), d["directories"]
+PY
+    then
+      ls_json_ok=0
+      ls_json_report+=" [unreadable user json: rc=$priv_js_rc err=$(cat "$ls_json_dir/priv.err") out=$priv_js_out]"
+    fi
+  fi
+
+  if [[ $ls_json_ok -eq 1 ]]; then
+    pass "install.sh --list-sessions discovers user XDG directories and emits valid --json without sudo or side effects"
+  else
+    fail "install.sh --list-sessions user XDG/--json:$ls_json_report"
+  fi
 fi
 
 # install.sh --status --json emits valid structured JSON without sudo or side effects
@@ -13448,7 +13717,7 @@ PY
 fi
 
 # 5) Invalid --json combinations exit 1 before side effects
-for bad_js_args in "--json" "--json --de i3" "--list-sessions --json" "--status --json --de i3" "--status --json --list-sessions"; do
+for bad_js_args in "--json" "--json --de i3" "--recover --json" "--status --json --de i3" "--status --json --list-sessions" "--list-sessions --json --de i3"; do
   read -r -a bad_js_argv <<<"$bad_js_args"
   : >"$STUB_LOG"
   set +e
@@ -13456,7 +13725,7 @@ for bad_js_args in "--json" "--json --de i3" "--list-sessions --json" "--status 
   bad_js_rc=$?
   set -e
   if [[ $bad_js_rc -ne 1 || -s "$STUB_LOG" ]] ||
-    [[ "$bad_js_out" != *"--json requires --status, --preflight, or --doctor."* && "$bad_js_out" != *"--status cannot be combined with any other option."* ]]; then
+    [[ "$bad_js_out" != *"--json requires --status, --preflight, --doctor, or --list-sessions."* && "$bad_js_out" != *"--status cannot be combined with any other option."* && "$bad_js_out" != *"--list-sessions cannot be combined with any other option (except --json)."* ]]; then
     js_report+=" [bad combo '$bad_js_args': rc=$bad_js_rc out=$bad_js_out]"
   fi
 done
