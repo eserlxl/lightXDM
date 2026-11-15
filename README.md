@@ -41,7 +41,7 @@ Reboot (log out only works when no display manager was running), log in on TTY1,
 You need Arch Linux (or a derivative) with systemd, and a user in the `wheel` group with working `sudo`. Without options, the installer detects your desktop (or asks which one to install). The common options:
 
 - `--de <id>`: configure this desktop (`plasma`, `gnome`, `budgie`, `xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, `i3`, or a custom id with `--no-packages`)
-- `--status`: inspect the current lightXDM configuration, dotfile state, PAM lines, disabled display managers, and TTY1 autologin state without sudo or changes
+- `--status` (optional `--json`): inspect the current lightXDM configuration, dotfile state, PAM lines, disabled display managers, and TTY1 autologin state without sudo or changes (`--json` emits machine-readable JSON on stdout)
 - `--list-sessions`: scan installed X11 and Wayland freedesktop session entries, check executable availability, and print ready `--init-template --from-session` commands without sudo or changes
 - `--list-packages --de <id>`: print the packages it would install, change nothing
 - `--dry-run --de <id>`: preview every change the install would make (dotfiles, packages, PAM, display managers), change nothing

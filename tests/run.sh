@@ -12690,4 +12690,262 @@ else
   fail "install.sh --list-sessions:$ls_report"
 fi
 
+# install.sh --status --json emits valid structured JSON without sudo or side effects
+js_dir="$TMP_DIR/status_json"
+rm -rf "$js_dir"
+mkdir -p "$js_dir/home_empty" "$js_dir/bin" "$js_dir/empty_getty" "$js_dir/empty_etc"
+cat >"$js_dir/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}:${2:-}" in
+  is-enabled:getty@tty1.service)
+    echo "${STUB_GETTY_STATE:-enabled}"
+    [[ "${STUB_GETTY_STATE:-enabled}" == enabled ]] && exit 0 || exit 1
+    ;;
+  is-enabled:sddm.service)
+    echo "disabled"
+    exit 1
+    ;;
+  is-enabled:lightdm.service)
+    echo "enabled"
+    exit 0
+    ;;
+esac
+exit 1
+EOF
+chmod +x "$js_dir/bin/systemctl"
+
+js_report=""
+
+# 1) --help mentions --json, and json_escape handles control bytes, quotes, backslashes, and UTF-8
+help_js_out="$(bash "$REPO_ROOT/install.sh" --help)"
+if [[ "$help_js_out" != *"--json"* ]]; then
+  js_report+=" [missing --json in --help]"
+fi
+weird_src=$'a\\b"c\nd\re\tf\bg\fh\x07ü'
+weird_json="$(json_str "$weird_src")"
+if ! printf '%s' "$weird_json" | python3 -c '
+import json, sys
+val = json.loads(sys.stdin.read())
+expected = "a\\b\"c\nd\re\tf\bg\fh\x07ü"
+assert val == expected, f"got {val!r} expected {expected!r}"
+' 2>/dev/null; then
+  js_report+=" [json_escape mismatch: $weird_json]"
+fi
+
+# 2) Minimal empty state in both --status --json and --json --status orders
+for js_args in "--status --json" "--json --status"; do
+  read -r -a js_argv <<<"$js_args"
+  : >"$STUB_LOG"
+  set +e
+  empty_js_out="$(
+    env \
+      HOME="$js_dir/home_empty" \
+      XDG_STATE_HOME="$js_dir/home_empty/.local/state" \
+      PATH="$js_dir/bin:$STUB_BIN:$PATH" \
+      LOGIN_FILE="$js_dir/empty_etc/login" \
+      PAM_KEYRING_STATE="$js_dir/empty_etc/pam-keyring" \
+      GNOME_SESSION_TYPE_DEST="$js_dir/empty_etc/gnome-session-type.conf" \
+      DM_STATE_FILE="$js_dir/empty_etc/disabled-display-managers" \
+      AUTOLOGIN_DROPIN_DIR="$js_dir/empty_getty" \
+      bash "$REPO_ROOT/install.sh" "${js_argv[@]}" 2>"$js_dir/empty.err"
+  )"
+  empty_js_rc=$?
+  set -e
+  if [[ $empty_js_rc -ne 0 || -s "$js_dir/empty.err" || -s "$STUB_LOG" ]] ||
+    ! JSON_OUT="$empty_js_out" python3 - "$js_dir" <<'PY'
+import json, os, sys
+js_dir = sys.argv[1]
+d = json.loads(os.environ["JSON_OUT"])
+assert d["install_choices"]["state"] == "not-recorded"
+assert d["install_choices"]["de"] is None
+assert d["install_choices"]["no_packages"] is None
+assert d["session_template"] == {"de": None, "source": None, "path": None, "dotfile": None}
+assert d["tty1"]["autostart_paused"] is False
+assert d["tty1"]["session_journal"] is False
+assert d["tty1"]["recent_launch_attempts_30s"] == 0
+assert d["pam"]["keyring_record"] == "none"
+assert d["pam"]["keyring_status"] == "missing-login-file"
+assert d["pam"]["gnome_session_type"] == "missing-login-file"
+assert d["pam"]["pacnew_waiting"] is False
+assert d["getty_tty1_state"] == "enabled"
+assert d["disabled_display_managers"]["state"] == "none"
+assert d["disabled_display_managers"]["units"] == []
+assert d["autologin"] == {"state": "disabled", "user": None, "file": None, "warnings": [], "notes": []}
+assert any(item["path"] == os.path.join(js_dir, "home_empty/.bash_profile") and item["state"] == "missing" for item in d["dotfiles"])
+PY
+  then
+    js_report+=" [empty '$js_args': rc=$empty_js_rc err=$(cat "$js_dir/empty.err") out=$empty_js_out]"
+  fi
+done
+
+# 3) Rich populated state: tricky HOME path with quotes/backslash, recent attempts, dotfiles, PAM, pacnew, DM units, autologin warning
+rich_home="$js_dir/home_\"q\"\\türü"
+mkdir -p "$rich_home/.config/lightxdm" "$rich_home/.config/autostart" "$rich_home/.local/state/lightxdm" "$js_dir/rich_etc" "$js_dir/rich_getty"
+printf 'de=gnome\nno_packages=1\n' >"$rich_home/.local/state/lightxdm/install-choices"
+cp "$REPO_ROOT/dotfiles/.bash_profile" "$rich_home/.bash_profile"
+printf '# modified wayland\n' >"$rich_home/.wayland-session"
+cp "$REPO_ROOT/dotfiles/.wayland-session-gnome" "$rich_home/.wayland-session.lightxdm-new"
+ln -s /tmp/nonexistent-target "$rich_home/.gpg-agent-gnome"
+printf '# backup copy\n' >"$rich_home/.config/autostart/lightxdm-gpg-agent-tty.desktop.lightxdm.bak"
+: >"$rich_home/.config/lightxdm/no-autostart"
+: >"$rich_home/.config/lightxdm/session-journal"
+chmod +x "$rich_home/.wayland-session"
+printf -v now_epoch '%(%s)T' -1
+printf '%s\n%s\n%s\n' "$((now_epoch - 600))" "$((now_epoch - 10))" "$((now_epoch - 2))" >"$rich_home/.local/state/lightxdm/startx-attempts"
+
+cat >"$js_dir/rich_etc/login" <<EOF
+#%PAM-1.0
+auth       optional   pam_gnome_keyring.so
+# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)
+session    [success=2 default=ignore] pam_succeed_if.so quiet tty notin tty1:/dev/tty1
+session    [success=1 default=ignore] pam_succeed_if.so quiet user != ${USER:-tester}
+session    optional   pam_env.so readenv=0 user_readenv=0 conffile=$js_dir/rich_etc/gnome-session-type.conf
+session    include    system-local-login
+session    optional   pam_gnome_keyring.so auto_start
+EOF
+printf 'XDG_SESSION_TYPE DEFAULT=wayland\n' >"$js_dir/rich_etc/gnome-session-type.conf"
+printf 'gnome\n' >"$js_dir/rich_etc/pam-keyring"
+printf '%s\n' '#%PAM-1.0' '# upstream package login' >"$js_dir/rich_etc/login.pacnew"
+cp "$js_dir/rich_etc/login.pacnew" "$js_dir/rich_etc/pam-login-base"
+# Ensure login differs from login.pacnew but check pacnew_package_replaced=false vs true by testing package-replaced case
+cp "$js_dir/rich_etc/login.pacnew" "$js_dir/rich_etc/login.bak"
+printf 'sddm.service\nlightdm.service\n' >"$js_dir/rich_etc/disabled-display-managers"
+# shellcheck disable=SC2016  # the drop-in holds a literal $TERM
+printf '%s\n' '[Service]' 'ExecStart=' 'ExecStart=-/usr/bin/agetty --autologin alice --noclear %I $TERM' >"$js_dir/rich_getty/lightxdm-autologin.conf"
+
+: >"$STUB_LOG"
+set +e
+rich_js_out="$(
+  env \
+    USER="${USER:-tester}" \
+    HOME="$rich_home" \
+    XDG_STATE_HOME="$rich_home/.local/state" \
+    PATH="$js_dir/bin:$STUB_BIN:$PATH" \
+    STUB_GETTY_STATE="masked" \
+    LOGIN_FILE="$js_dir/rich_etc/login" \
+    PAM_KEYRING_STATE="$js_dir/rich_etc/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$js_dir/rich_etc/pam-login-base" \
+    GNOME_SESSION_TYPE_DEST="$js_dir/rich_etc/gnome-session-type.conf" \
+    DM_STATE_FILE="$js_dir/rich_etc/disabled-display-managers" \
+    AUTOLOGIN_DROPIN_DIR="$js_dir/rich_getty" \
+    bash "$REPO_ROOT/install.sh" --status --json 2>"$js_dir/rich.err"
+)"
+rich_js_rc=$?
+set -e
+if [[ $rich_js_rc -ne 0 || -s "$js_dir/rich.err" || -s "$STUB_LOG" ]] ||
+  ! JSON_OUT="$rich_js_out" python3 - "$rich_home" "$REPO_ROOT" "$js_dir" <<'PY'
+import json, os, sys
+rich_home, repo_root, js_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+d = json.loads(os.environ["JSON_OUT"])
+assert d["install_choices"] == {
+    "file": os.path.join(rich_home, ".local/state/lightxdm/install-choices"),
+    "state": "readable",
+    "de": "gnome",
+    "no_packages": True,
+}
+assert d["session_template"] == {
+    "de": "gnome",
+    "source": "bundled",
+    "path": os.path.join(repo_root, "dotfiles/.wayland-session-gnome"),
+    "dotfile": os.path.join(rich_home, ".wayland-session"),
+}
+assert d["tty1"] == {
+    "launcher_type": "wayland",
+    "launcher_path": os.path.join(rich_home, ".wayland-session"),
+    "autostart_paused": True,
+    "session_journal": True,
+    "recent_launch_attempts_30s": 2,
+}
+by_path = {item["path"]: item for item in d["dotfiles"]}
+assert by_path[os.path.join(rich_home, ".bash_profile")]["state"] == "up-to-date"
+assert by_path[os.path.join(rich_home, ".wayland-session")]["state"] == "modified"
+assert by_path[os.path.join(rich_home, ".wayland-session")]["pending_update"] == os.path.join(rich_home, ".wayland-session.lightxdm-new")
+assert by_path[os.path.join(rich_home, ".gpg-agent-gnome")]["state"] == "symlink"
+assert by_path[os.path.join(rich_home, ".gpg-agent-gnome")]["symlink_target"] == "/tmp/nonexistent-target"
+auto_path = os.path.join(rich_home, ".config/autostart/lightxdm-gpg-agent-tty.desktop")
+assert by_path[auto_path]["state"] == "missing"
+assert by_path[auto_path]["backup"] == auto_path + ".lightxdm.bak"
+assert d["pam"]["keyring_record"] == "gnome"
+assert d["pam"]["keyring_status"] == "configured-gnome"
+assert d["pam"]["gnome_session_type"] == "configured"
+assert d["pam"]["pacnew_waiting"] is True
+assert d["pam"]["pacnew_package_replaced"] is False
+assert d["getty_tty1_state"] == "masked"
+assert d["disabled_display_managers"]["state"] == "recorded"
+assert d["disabled_display_managers"]["units"] == [
+    {"unit": "sddm.service", "state": "disabled"},
+    {"unit": "lightdm.service", "state": "enabled"},
+]
+assert d["autologin"]["state"] == "enabled"
+assert d["autologin"]["user"] == "alice"
+assert d["autologin"]["file"] == os.path.join(js_dir, "rich_getty/lightxdm-autologin.conf")
+assert any("PAM keyring unlock is configured" in w for w in d["autologin"]["warnings"])
+assert d["autologin"]["notes"] == []
+PY
+then
+  js_report+=" [rich state: rc=$rich_js_rc err=$(cat "$js_dir/rich.err") out=$rich_js_out]"
+fi
+
+# 4) Unreadable root-owned files emit unknown-needs-root + notes in JSON with zero stderr output
+if [[ $EUID -ne 0 ]]; then
+  mkdir -p "$js_dir/priv_etc" "$js_dir/priv_getty"
+  cp "$js_dir/rich_etc/login" "$js_dir/priv_etc/login"
+  printf 'gnome\n' >"$js_dir/priv_etc/pam-keyring"
+  printf 'XDG_SESSION_TYPE DEFAULT=wayland\n' >"$js_dir/priv_etc/gnome-session-type.conf"
+  printf 'sddm.service\n' >"$js_dir/priv_etc/disabled-display-managers"
+  chmod 000 "$js_dir/priv_etc/login" "$js_dir/priv_etc/pam-keyring" \
+    "$js_dir/priv_etc/gnome-session-type.conf" "$js_dir/priv_etc/disabled-display-managers" "$js_dir/priv_getty"
+  set +e
+  priv_js_out="$(
+    env \
+      HOME="$js_dir/home_empty" \
+      XDG_STATE_HOME="$js_dir/home_empty/.local/state" \
+      PATH="$js_dir/bin:$STUB_BIN:$PATH" \
+      LOGIN_FILE="$js_dir/priv_etc/login" \
+      PAM_KEYRING_STATE="$js_dir/priv_etc/pam-keyring" \
+      GNOME_SESSION_TYPE_DEST="$js_dir/priv_etc/gnome-session-type.conf" \
+      DM_STATE_FILE="$js_dir/priv_etc/disabled-display-managers" \
+      AUTOLOGIN_DROPIN_DIR="$js_dir/priv_getty" \
+      bash "$REPO_ROOT/install.sh" --status --json 2>"$js_dir/priv.err"
+  )"
+  priv_js_rc=$?
+  set -e
+  chmod 755 "$js_dir/priv_getty"
+  chmod 644 "$js_dir/priv_etc/login" "$js_dir/priv_etc/pam-keyring" \
+    "$js_dir/priv_etc/gnome-session-type.conf" "$js_dir/priv_etc/disabled-display-managers"
+  if [[ $priv_js_rc -ne 0 || -s "$js_dir/priv.err" ]] ||
+    ! JSON_OUT="$priv_js_out" python3 - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["pam"]["keyring_record"] == "unknown-needs-root"
+assert d["pam"]["keyring_status"] == "unknown-needs-root"
+assert d["pam"]["gnome_session_type"] == "unknown-needs-root"
+assert d["disabled_display_managers"]["state"] == "unknown-needs-root"
+assert any("cannot read" in n for n in d["autologin"]["notes"])
+PY
+  then
+    js_report+=" [unreadable handling: rc=$priv_js_rc err=$(cat "$js_dir/priv.err") out=$priv_js_out]"
+  fi
+fi
+
+# 5) Invalid --json combinations exit 1 before side effects
+for bad_js_args in "--json" "--json --de i3" "--list-sessions --json" "--status --json --de i3" "--status --json --list-sessions"; do
+  read -r -a bad_js_argv <<<"$bad_js_args"
+  : >"$STUB_LOG"
+  set +e
+  bad_js_out="$(HOME="$js_dir/home_empty" bash "$REPO_ROOT/install.sh" "${bad_js_argv[@]}" 2>&1)"
+  bad_js_rc=$?
+  set -e
+  if [[ $bad_js_rc -ne 1 || -s "$STUB_LOG" ]] ||
+    [[ "$bad_js_out" != *"--json requires --status."* && "$bad_js_out" != *"--status cannot be combined with any other option."* ]]; then
+    js_report+=" [bad combo '$bad_js_args': rc=$bad_js_rc out=$bad_js_out]"
+  fi
+done
+
+if [[ -z "$js_report" ]]; then
+  pass "install.sh --status --json emits valid structured JSON without sudo or side effects"
+else
+  fail "install.sh --status --json:$js_report"
+fi
+
 finish_harness
