@@ -855,6 +855,25 @@ prepare_install_session() {
     check_template_not_self "$target_de" "$dest" || return 1
     check_session_commands "$dest" || return 1
     resolved_entry_check=1
+  else
+    if [[ $is_wl -eq 1 ]]; then
+      local wl_tokens=() wl_token wl_check_path
+      # Keep fresh-template Exec validation aligned with check_session_commands before sudo/home writes.
+      # shellcheck disable=SC2162
+      read -a wl_tokens <<< "${SESSION_ENTRY_EXEC_LINE#exec }"
+      for wl_token in "${wl_tokens[@]}"; do
+        [[ "$wl_token" == -* ]] && break
+        [[ "$wl_token" == /* ]] || continue
+        wl_check_path="${SESSION_ROOT:-}$wl_token"
+        if [[ ! -f "$wl_check_path" || ! -x "$wl_check_path" ]]; then
+          log "Missing command: $wl_token. Install your session and ensure $wl_token exists and is executable, then re-run."
+          return 1
+        fi
+      done
+    elif ! command -v startx >/dev/null 2>&1; then
+      log "Missing command: startx (normally provided by xorg-xinit). Install xorg-xinit and re-run."
+      return 1
+    fi
   fi
 
   INSTALL_SESSION_DE="$target_de"

@@ -14702,6 +14702,68 @@ if [[ $is_rc -ne 1 || -s "$isess_sudo_log" || -e "$isess_dir/elsewhere" ]]; then
   is_report+=" sym-template rc=$is_rc;"
 fi
 
+# Missing startx (X11) and missing secondary Wayland /* Exec paths must stop before sudo and $HOME writes
+reset_isess_fixture
+isess_nostartx_bin="$isess_dir/nostartx_bin"
+mkdir -p "$isess_nostartx_bin"
+cp "$isess_bin/"{sudo,openbox,id,getent,systemctl,pacman} "$isess_nostartx_bin/"
+for is_tool in bash dirname tr readlink cat date rm mkdir grep cut; do
+  if is_tool_path="$(command -v "$is_tool" 2>/dev/null)"; then
+    ln -sf "$is_tool_path" "$isess_nostartx_bin/$is_tool"
+  fi
+done
+is_rc=0
+is_out="$(
+  env -u SUDO_USER -u DISPLAY -u WAYLAND_DISPLAY -u SESSION_ROOT \
+    HOME="$isess_home" USER="testuser" XDG_STATE_HOME="$isess_state" \
+    XSESSIONS_DIR="$isess_xsess" WAYLAND_SESSIONS_DIR="$isess_wl" \
+    LOGIN_FILE="$isess_etc/pam.d/login" \
+    GNOME_SESSION_TYPE_DEST="$isess_etc/lightxdm/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$isess_etc/lightxdm/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$isess_etc/lightxdm/pam-login-base" \
+    DM_STATE_FILE="$isess_etc/lightxdm/disabled-display-managers" \
+    DISPLAY_MANAGER_LINK="$isess_etc/systemd/system/display-manager.service" \
+    AUTOLOGIN_DROPIN_DIR="$isess_etc/getty@tty1.service.d" \
+    ISESS_SUDO_LOG="$isess_sudo_log" \
+    PATH="$isess_nostartx_bin" \
+    bash "$REPO_ROOT/install.sh" --install-session "$isess_xsess/openbox.desktop" 2>&1
+)" || is_rc=$?
+if [[ $is_rc -ne 1 || -s "$isess_sudo_log" || -e "$isess_home/.config" ||
+  "$is_out" != *"Missing command: startx"* ]]; then
+  is_ok=0
+  is_report+=" missing-startx rc=$is_rc out=[$is_out];"
+fi
+
+cat >"$isess_wl/wrapped-sway.desktop" <<EOF
+[Desktop Entry]
+Name=Wrapped Sway
+Exec=sway $isess_bin/missing-helper --flag
+DesktopNames=sway
+Type=Application
+EOF
+reset_isess_fixture
+is_rc=0
+is_out="$(SESSION_ROOT="" run_isess_cmd --install-session "$isess_wl/wrapped-sway.desktop" 2>&1)" || is_rc=$?
+if [[ $is_rc -ne 1 || -s "$isess_sudo_log" || -e "$isess_home/.config" ||
+  "$is_out" != *"Missing command: $isess_bin/missing-helper"* ]]; then
+  is_ok=0
+  is_report+=" missing-wl-helper rc=$is_rc out=[$is_out];"
+fi
+cat >"$isess_wl/wrapped-sway-ok.desktop" <<EOF
+[Desktop Entry]
+Name=Wrapped Sway OK
+Exec=sway $isess_bin/waybox --flag $isess_bin/missing-flag-arg
+DesktopNames=sway
+Type=Application
+EOF
+reset_isess_fixture
+is_rc=0
+is_out="$(SESSION_ROOT="" run_isess_cmd --install-session "$isess_wl/wrapped-sway-ok.desktop" --dry-run 2>&1)" || is_rc=$?
+if [[ $is_rc -ne 0 || -s "$isess_sudo_log" || -e "$isess_home/.config" ]]; then
+  is_ok=0
+  is_report+=" wl-helper-flag-stop rc=$is_rc out=[$is_out];"
+fi
+
 if [[ $is_ok -eq 1 ]]; then
   pass "install.sh --install-session provisions custom X11/Wayland sessions idempotently with pre-sudo validation"
 else
