@@ -4733,6 +4733,8 @@ run_doctor() {
     if [[ -L "$helper_dot" ]]; then
       if [[ ! -e "$helper_dot" ]]; then
         helper_issues+=("$helper_dot is a broken symlink")
+      elif [[ ! -f "$helper_dot" ]]; then
+        helper_issues+=("$helper_dot is a symlink to a non-regular file")
       else
         helper_warns+=("$helper_dot is a symlink; lightXDM skips symlinks")
       fi

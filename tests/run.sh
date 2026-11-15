@@ -16653,6 +16653,19 @@ if [[ $doc_rc -ne 0 || "$doc_out" != *"Session launcher: ok ($doctor_home/.xinit
   doc_node_report+=" valid-xi-node rc=$doc_rc out=[$doc_out];"
 fi
 
+# 5) Directory symlink at ~/.gpg-agent-gnome fails --doctor cleanly
+reset_doctor_gnome_fixture
+rm -f "$doctor_home/.gpg-agent-gnome"
+mkdir -p "$doctor_home/dir-gpg-helper"
+ln -s "$doctor_home/dir-gpg-helper" "$doctor_home/.gpg-agent-gnome"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Helper dotfiles: FAIL"* || "$doc_out" != *"symlink to a non-regular file"* || "$doc_out" == *"Doctor: PASS"* ]]; then
+  doc_node_ok=0
+  doc_node_report+=" dir-helper-symlink rc=$doc_rc out=[$doc_out];"
+fi
+rm -rf "$doctor_home/dir-gpg-helper"
+
 if [[ $doc_node_ok -eq 1 ]]; then
   pass "install.sh --doctor detects non-regular and missing session launchers even when install-choices lacks de"
 else
@@ -18459,6 +18472,20 @@ fx_out="$(run_fix_cmd --fix 2>&1)" || fx_rc=$?
 if [[ $fx_rc -eq 0 || -s "$fix_sudo_log" || "$fx_out" != *"is not a real directory"* ]]; then
   fix_ok=0
   fix_report+=" sym-autostart-dir rc=$fx_rc out=[$fx_out];"
+fi
+
+reset_fix_fixture i3
+rm -f "$fix_home/.gpg-agent-gnome"
+mkdir -p "$fix_dir/helper_dir_target"
+ln -s "$fix_dir/helper_dir_target" "$fix_home/.gpg-agent-gnome"
+fx_doc_rc=0
+fx_doc_out="$(run_fix_cmd --doctor 2>&1)" || fx_doc_rc=$?
+fx_rc=0
+fx_out="$(run_fix_cmd --fix 2>&1)" || fx_rc=$?
+if [[ $fx_doc_rc -ne 1 || "$fx_doc_out" != *"Helper dotfiles: FAIL"* || "$fx_doc_out" != *"symlink to a non-regular file"* ||
+  $fx_rc -ne 0 || -s "$fix_sudo_log" || -L "$fix_home/.gpg-agent-gnome" || ! -f "$fix_home/.gpg-agent-gnome" ]]; then
+  fix_ok=0
+  fix_report+=" helper-dir-symlink-fix doc_rc=$fx_doc_rc fx_rc=$fx_rc doc=[$fx_doc_out] out=[$fx_out];"
 fi
 
 if [[ $fix_ok -eq 1 ]]; then
