@@ -4,7 +4,7 @@ How the repository is laid out and how to check a change before sending it.
 
 ```sh
 bash lint.sh               # ShellCheck on every script
-bash tests/run.sh          # behavior suite (--strict also fails on skipped checks)
+bash tests/run.sh          # behavior suite and Python VM driver unit tests (--strict also fails on skipped checks)
 bash tests/docker-arch.sh  # package lists and real PAM checks in an Arch container (needs Docker)
 bash tests/qemu-arch.sh    # real TTY1 password logins in QEMU VMs (needs Docker and KVM; slow)
 ```
@@ -65,7 +65,8 @@ lightXDM/
 │   │   ├── build-image.sh  # builds the VM image in a privileged Arch container
 │   │   └── vmtest.py       # boots one VM, installs, types the TTY1 login, checks the session
 │   ├── run.sh           # behavior suite (--strict fails on skipped checks; --help)
-│   └── template-history.sh  # prints dotfiles/template-history.sha256 from the git history
+│   ├── template-history.sh  # prints dotfiles/template-history.sha256 from the git history
+│   └── test_vmtest.py   # host-side unit tests for qemu/vmtest.py (run by tests/run.sh, or python3 -B)
 └── LICENSE
 ```
 
