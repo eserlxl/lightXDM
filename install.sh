@@ -2760,10 +2760,155 @@ autologin_note_needs_root() {
   return 1
 }
 
+# Inspect the regular user's login shell and TTY1 shell hook state into SHELL_HOOK_STATUS_*.
+inspect_shell_hook_status() {
+  local shell_user="${SUDO_USER:-${USER:-}}" passwd_line="" login_shell=""
+  local rel="" home="${HOME%/}" target="" parent="" seg segs=() dir_check="" marker_rc=0
+  [[ -n "$shell_user" ]] || shell_user="$(id -un 2>/dev/null || true)"
+  if [[ -n "$shell_user" ]] && command -v getent >/dev/null 2>&1; then
+    passwd_line="$(getent passwd "$shell_user" 2>/dev/null || true)"
+    login_shell="${passwd_line##*:}"
+  fi
+  SHELL_HOOK_STATUS_LOGIN_SHELL="$login_shell"
+  SHELL_HOOK_STATUS_KIND="unknown"
+  SHELL_HOOK_STATUS_PATH=""
+  SHELL_HOOK_STATUS_DISPLAY=""
+  SHELL_HOOK_STATUS_STATE="unknown"
+  SHELL_HOOK_STATUS_TEXT="unknown"
+
+  case "$login_shell" in
+    "")
+      return 0
+      ;;
+    *bash)
+      SHELL_HOOK_STATUS_KIND="bash"
+      rel=".bash_profile"
+      # shellcheck disable=SC2088 # literal home-relative display path for user instructions
+      SHELL_HOOK_STATUS_DISPLAY="~/.bash_profile"
+      ;;
+    *zsh)
+      SHELL_HOOK_STATUS_KIND="zsh"
+      if ! rel="$(shell_hook_relpath zsh 0)"; then
+        SHELL_HOOK_STATUS_DISPLAY="\$ZDOTDIR/.zprofile"
+        SHELL_HOOK_STATUS_STATE="outside-home"
+        SHELL_HOOK_STATUS_TEXT="$login_shell — $SHELL_HOOK_STATUS_DISPLAY (outside HOME)"
+        return 0
+      fi
+      SHELL_HOOK_STATUS_DISPLAY="$(shell_hook_display_path zsh)"
+      ;;
+    *fish)
+      SHELL_HOOK_STATUS_KIND="fish"
+      if ! rel="$(shell_hook_relpath fish 0)"; then
+        SHELL_HOOK_STATUS_DISPLAY="\$XDG_CONFIG_HOME/fish/config.fish"
+        SHELL_HOOK_STATUS_STATE="outside-home"
+        SHELL_HOOK_STATUS_TEXT="$login_shell — $SHELL_HOOK_STATUS_DISPLAY (outside HOME)"
+        return 0
+      fi
+      SHELL_HOOK_STATUS_DISPLAY="$(shell_hook_display_path fish)"
+      ;;
+    *)
+      SHELL_HOOK_STATUS_KIND="unsupported"
+      SHELL_HOOK_STATUS_STATE="unsupported"
+      SHELL_HOOK_STATUS_TEXT="$login_shell — unsupported (manual hook needed)"
+      return 0
+      ;;
+  esac
+
+  if [[ -z "${HOME:-}" ]]; then
+    SHELL_HOOK_STATUS_STATE="missing"
+    SHELL_HOOK_STATUS_TEXT="$login_shell — missing ($SHELL_HOOK_STATUS_DISPLAY)"
+    return 0
+  fi
+  [[ -n "$home" ]] || home="/"
+  [[ "$home" == "/" ]] && target="/${rel}" || target="${home}/${rel}"
+  SHELL_HOOK_STATUS_PATH="$target"
+
+  if [[ -L "$home" ]]; then
+    SHELL_HOOK_STATUS_STATE="refused-symlink-dir"
+    SHELL_HOOK_STATUS_TEXT="$login_shell — symlinked directory ($target)"
+    return 0
+  elif [[ ! -d "$home" ]]; then
+    SHELL_HOOK_STATUS_STATE="missing"
+    SHELL_HOOK_STATUS_TEXT="$login_shell — missing ($SHELL_HOOK_STATUS_DISPLAY)"
+    return 0
+  elif [[ ! -x "$home" ]]; then
+    SHELL_HOOK_STATUS_STATE="unsearchable"
+    SHELL_HOOK_STATUS_TEXT="$login_shell — unsearchable directory ($target)"
+    return 0
+  fi
+
+  if [[ "$rel" == */* ]]; then
+    IFS=/ read -ra segs <<<"${rel%/*}"
+    for seg in "${segs[@]}"; do
+      [[ -n "$seg" ]] || continue
+      parent+="/$seg"
+      [[ "$home" == "/" ]] && dir_check="$parent" || dir_check="${home}${parent}"
+      if [[ -L "$dir_check" ]]; then
+        SHELL_HOOK_STATUS_STATE="refused-symlink-dir"
+        SHELL_HOOK_STATUS_TEXT="$login_shell — symlinked directory ($target)"
+        return 0
+      elif [[ ! -e "$dir_check" ]]; then
+        SHELL_HOOK_STATUS_STATE="missing"
+        SHELL_HOOK_STATUS_TEXT="$login_shell — missing ($SHELL_HOOK_STATUS_DISPLAY)"
+        return 0
+      elif [[ ! -d "$dir_check" ]]; then
+        SHELL_HOOK_STATUS_STATE="not-regular"
+        SHELL_HOOK_STATUS_TEXT="$login_shell — parent is not a directory ($target)"
+        return 0
+      elif [[ ! -x "$dir_check" ]]; then
+        SHELL_HOOK_STATUS_STATE="unsearchable"
+        SHELL_HOOK_STATUS_TEXT="$login_shell — unsearchable directory ($target)"
+        return 0
+      fi
+    done
+  fi
+
+  if [[ -L "$target" ]]; then
+    SHELL_HOOK_STATUS_STATE="symlink"
+    SHELL_HOOK_STATUS_TEXT="$login_shell — symlink ($target)"
+  elif [[ ! -e "$target" ]]; then
+    SHELL_HOOK_STATUS_STATE="missing"
+    SHELL_HOOK_STATUS_TEXT="$login_shell — missing ($SHELL_HOOK_STATUS_DISPLAY)"
+  elif [[ ! -f "$target" ]]; then
+    SHELL_HOOK_STATUS_STATE="not-regular"
+    SHELL_HOOK_STATUS_TEXT="$login_shell — not a regular file ($target)"
+  elif [[ ! -r "$target" ]]; then
+    SHELL_HOOK_STATUS_STATE="unreadable"
+    SHELL_HOOK_STATUS_TEXT="$login_shell — unreadable ($target)"
+  elif [[ "$SHELL_HOOK_STATUS_KIND" == "bash" ]]; then
+    if grep -Eq '\.wayland-session|startx' "$target" 2>/dev/null; then
+      SHELL_HOOK_STATUS_STATE="configured"
+      SHELL_HOOK_STATUS_TEXT="$login_shell — configured ($SHELL_HOOK_STATUS_DISPLAY)"
+    else
+      SHELL_HOOK_STATUS_STATE="missing-trigger"
+      SHELL_HOOK_STATUS_TEXT="$login_shell — missing TTY1 trigger ($SHELL_HOOK_STATUS_DISPLAY)"
+    fi
+  else
+    check_shell_hook_markers "$target" 1 || marker_rc=$?
+    if [[ $marker_rc -eq 2 ]]; then
+      SHELL_HOOK_STATUS_STATE="managed"
+      SHELL_HOOK_STATUS_TEXT="$login_shell — managed ($SHELL_HOOK_STATUS_DISPLAY)"
+    elif [[ $marker_rc -eq 1 ]]; then
+      SHELL_HOOK_STATUS_STATE="malformed"
+      SHELL_HOOK_STATUS_TEXT="$login_shell — malformed markers ($SHELL_HOOK_STATUS_DISPLAY)"
+    elif grep -Eq '\.wayland-session|startx' "$target" 2>/dev/null; then
+      SHELL_HOOK_STATUS_STATE="custom"
+      SHELL_HOOK_STATUS_TEXT="$login_shell — custom ($SHELL_HOOK_STATUS_DISPLAY)"
+    else
+      SHELL_HOOK_STATUS_STATE="missing-trigger"
+      SHELL_HOOK_STATUS_TEXT="$login_shell — missing TTY1 trigger ($SHELL_HOOK_STATUS_DISPLAY)"
+    fi
+  fi
+}
+
 # Report the current lightXDM installation state without modifying files or invoking sudo.
 show_install_status() {
   local LC_ALL=C json_mode=0
   [[ "${1:-}" == "--json" ]] && json_mode=1
+
+  local SHELL_HOOK_STATUS_LOGIN_SHELL="" SHELL_HOOK_STATUS_KIND="" SHELL_HOOK_STATUS_PATH=""
+  local SHELL_HOOK_STATUS_DISPLAY="" SHELL_HOOK_STATUS_STATE="" SHELL_HOOK_STATUS_TEXT=""
+  inspect_shell_hook_status
 
   local choices_file line de="" no_packages="" choices_kind="not-recorded" choices_state="not recorded"
   choices_file="$(install_choices_file)"
@@ -3040,6 +3185,14 @@ show_install_status() {
     printf '    "recent_launch_attempts_30s": %d\n' "$recent_count"
     printf '  },\n'
 
+    printf '  "shell_hook": {\n'
+    printf '    "login_shell": %s,\n' "$(json_str_or_null "$SHELL_HOOK_STATUS_LOGIN_SHELL")"
+    printf '    "kind": %s,\n' "$(json_str "$SHELL_HOOK_STATUS_KIND")"
+    printf '    "path": %s,\n' "$(json_str_or_null "$SHELL_HOOK_STATUS_PATH")"
+    printf '    "display_path": %s,\n' "$(json_str_or_null "$SHELL_HOOK_STATUS_DISPLAY")"
+    printf '    "state": %s\n' "$(json_str "$SHELL_HOOK_STATUS_STATE")"
+    printf '  },\n'
+
     printf '  "dotfiles": [\n'
     local idx DOTFILE_STATUS_STATE="" DOTFILE_STATUS_SYMLINK_TARGET="" DOTFILE_STATUS_PENDING_UPDATE="" DOTFILE_STATUS_BACKUP=""
     for ((idx = 0; idx < ${#dotfile_targets[@]}; idx++)); do
@@ -3121,6 +3274,7 @@ show_install_status() {
   if ((recent_count > 0)); then
     printf 'Recent TTY1 launch attempts (30s): %s\n' "$recent_count"
   fi
+  printf 'Login shell: %s\n' "$SHELL_HOOK_STATUS_TEXT"
   printf 'Dotfiles:\n'
   local idx
   for ((idx = 0; idx < ${#dotfile_targets[@]}; idx++)); do
@@ -4829,7 +4983,7 @@ check_shell_hook_path_safe() {
 }
 
 check_shell_hook_markers() {
-  local target="$1" marker_info bc ec bl el
+  local target="$1" quiet="${2:-0}" marker_info bc ec bl el
   marker_info="$(awk -v b="$SHELL_HOOK_BEGIN" -v e="$SHELL_HOOK_END" '
     $0 == b { bc++; if (!bl) bl = NR }
     $0 == e { ec++; if (!el) el = NR }
@@ -4840,7 +4994,7 @@ check_shell_hook_markers() {
     return 0
   fi
   if [[ $bc -ne 1 || $ec -ne 1 || $bl -ge $el ]]; then
-    log "Found incomplete lightXDM hook markers in $target; remove them before rerunning --setup-shell."
+    [[ $quiet -eq 1 ]] || log "Found incomplete lightXDM hook markers in $target; remove them before rerunning --setup-shell."
     return 1
   fi
   return 2
@@ -5095,7 +5249,7 @@ Options:
   --pam-only        only add lightXDM's lines for --de <id> to /etc/pam.d/login (keyring unlock, and GNOME's
                     session-type block); no packages, dotfiles, display managers or saved choices change
                     (with --no-keyring, only GNOME's block)
-  --status          show the current lightXDM configuration, dotfile state, PAM state, disabled display
+  --status          show the current lightXDM configuration, login-shell hook state, dotfile state, PAM state, disabled display
                     managers and TTY1 autologin status without sudo or changes (use alone, or with --json)
   --json            with --status, --preflight, --doctor, --list-sessions, or --check-keyring, print the read-only result as structured JSON on stdout
   --list-sessions   scan installed X11 and Wayland session entries (system /usr/share and user ~/.local/share),

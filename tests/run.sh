@@ -12913,6 +12913,82 @@ if [[ $EUID -ne 0 ]]; then
   fi
 fi
 
+# 3b) Login shell hook status reporting in --status prose output.
+mkdir -p "$status_cmd_dir/shell_bin" "$status_cmd_dir/sh_bash_home" \
+  "$status_cmd_dir/sh_zsh_home/.config/zsh" "$status_cmd_dir/sh_fish_missing" \
+  "$status_cmd_dir/outside_zdotdir"
+cp "$status_cmd_dir/bin/sudo" "$status_cmd_dir/shell_bin/sudo"
+cp "$status_cmd_dir/bin/systemctl" "$status_cmd_dir/shell_bin/systemctl"
+cat >"$status_cmd_dir/shell_bin/getent" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "passwd" && "${2:-}" == "statususer" && -n "${STATUS_LOGIN_SHELL:-}" ]]; then
+  printf 'statususer:x:1000:1000::%s:%s\n' "${HOME:-/tmp}" "$STATUS_LOGIN_SHELL"
+  exit 0
+fi
+exit 2
+EOF
+chmod +x "$status_cmd_dir/shell_bin/sudo" "$status_cmd_dir/shell_bin/systemctl" "$status_cmd_dir/shell_bin/getent"
+cat >"$status_cmd_dir/sh_bash_home/.bash_profile" <<'EOF'
+[[ -z $DISPLAY && $XDG_VTNR -eq 1 ]] && exec startx
+EOF
+cat >"$status_cmd_dir/sh_zsh_home/.config/zsh/.zprofile" <<'EOF'
+# >>> lightXDM TTY1 auto-start >>>
+[[ -z "${DISPLAY:-}" && "${XDG_VTNR:-}" -eq 1 ]] && exec startx
+# <<< lightXDM TTY1 auto-start <<<
+EOF
+
+run_status_shell_prose() {
+  local sh_home="$1" sh_user="$2" sh_bin="$3" sh_zdotdir="$4"
+  env -u SUDO_USER -u XDG_STATE_HOME -u XDG_CONFIG_HOME -u ZDOTDIR -u STATUS_GETTY_STATE -u STATUS_DM_STATE \
+    ${sh_zdotdir:+ZDOTDIR="$sh_zdotdir"} \
+    HOME="$sh_home" \
+    USER="$sh_user" \
+    STATUS_LOGIN_SHELL="$sh_bin" \
+    PATH="$status_cmd_dir/shell_bin:$STUB_BIN:$PATH" \
+    STATUS_SUDO_LOG="$status_sudo_log" \
+    LOGIN_FILE="$status_cmd_dir/fresh_login" \
+    GNOME_SESSION_TYPE_DEST="$status_cmd_dir/missing-gnome.conf" \
+    PAM_KEYRING_STATE="$status_cmd_dir/missing-pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$status_cmd_dir/missing-pam-login-base" \
+    DM_STATE_FILE="$status_cmd_dir/missing-dm-state" \
+    AUTOLOGIN_DROPIN_DIR="$status_cmd_dir/missing-getty.d" \
+    bash "$REPO_ROOT/install.sh" --status 2>&1
+}
+
+set +e
+st_bash_out="$(run_status_shell_prose "$status_cmd_dir/sh_bash_home" statususer /usr/bin/bash "")"
+st_bash_rc=$?
+st_zsh_out="$(run_status_shell_prose "$status_cmd_dir/sh_zsh_home" statususer /usr/bin/zsh "$status_cmd_dir/sh_zsh_home/.config/zsh")"
+st_zsh_rc=$?
+st_fish_out="$(run_status_shell_prose "$status_cmd_dir/sh_fish_missing" statususer /usr/bin/fish "")"
+st_fish_rc=$?
+st_zout_out="$(run_status_shell_prose "$status_cmd_dir/sh_zsh_home" statususer /bin/zsh "$status_cmd_dir/outside_zdotdir")"
+st_zout_rc=$?
+st_sh_out="$(run_status_shell_prose "$status_cmd_dir/fresh_home" statususer /bin/sh "")"
+st_sh_rc=$?
+st_unk_out="$(run_status_shell_prose "$status_cmd_dir/fresh_home" unknownstatususer "" "")"
+st_unk_rc=$?
+set -e
+
+if [[ $st_bash_rc -ne 0 || -s "$status_sudo_log" || "$st_bash_out" != *"Login shell: /usr/bin/bash — configured (~/.bash_profile)"* ]]; then
+  status_cmd_report+=" [shell bash: rc=$st_bash_rc out=$st_bash_out]"
+fi
+if [[ $st_zsh_rc -ne 0 || "$st_zsh_out" != *"Login shell: /usr/bin/zsh — managed (~/.config/zsh/.zprofile)"* ]]; then
+  status_cmd_report+=" [shell zsh: rc=$st_zsh_rc out=$st_zsh_out]"
+fi
+if [[ $st_fish_rc -ne 0 || "$st_fish_out" != *"Login shell: /usr/bin/fish — missing (~/.config/fish/config.fish)"* ]]; then
+  status_cmd_report+=" [shell fish: rc=$st_fish_rc out=$st_fish_out]"
+fi
+if [[ $st_zout_rc -ne 0 || "$st_zout_out" != *"Login shell: /bin/zsh — \$ZDOTDIR/.zprofile (outside HOME)"* ]]; then
+  status_cmd_report+=" [shell zsh outside: rc=$st_zout_rc out=$st_zout_out]"
+fi
+if [[ $st_sh_rc -ne 0 || "$st_sh_out" != *"Login shell: /bin/sh — unsupported (manual hook needed)"* ]]; then
+  status_cmd_report+=" [shell unsupported: rc=$st_sh_rc out=$st_sh_out]"
+fi
+if [[ $st_unk_rc -ne 0 || "$st_unk_out" != *"Login shell: unknown"* ]]; then
+  status_cmd_report+=" [shell unknown: rc=$st_unk_rc out=$st_unk_out]"
+fi
+
 # 4) Reject incompatible combinations and document --status in --help.
 for bad_status_args in "--status --de i3" "--status --update" "--update --status" "--status --dry-run"; do
   set +e
@@ -14382,6 +14458,138 @@ PY
     js_report+=" [readable-enabled+unreadable-foreign: rc=$priv_foreign_enabled_js_rc err=$(cat "$js_dir/priv_foreign_enabled.err") out=$priv_foreign_enabled_js_out]"
   fi
 fi
+
+# 4b) shell_hook JSON reporting across bash, zsh, fish, outside-HOME, symlink, unsearchable parent, and unsupported login shells.
+mkdir -p "$js_dir/shell_bin" \
+  "$js_dir/sh_bash_home" \
+  "$js_dir/sh_zsh_home/.cfg/zsh" \
+  "$js_dir/sh_zsh_default" \
+  "$js_dir/sh_fish_sym/.xdg/fish" \
+  "$js_dir/sh_fish_priv/.xdg/fish" \
+  "$js_dir/outside_zsh" "$js_dir/outside_fish"
+: >"$js_dir/shell_sudo.log"
+cp "$js_dir/bin/systemctl" "$js_dir/shell_bin/systemctl"
+cat >"$js_dir/shell_bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf 'sudo %s\n' "$*" >>"$JS_SHELL_SUDO_LOG"
+exit 1
+EOF
+cat >"$js_dir/shell_bin/getent" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "passwd" && "${2:-}" == "jsuser" && -n "${JS_LOGIN_SHELL:-}" ]]; then
+  printf 'jsuser:x:1000:1000::%s:%s\n' "${HOME:-/tmp}" "$JS_LOGIN_SHELL"
+  exit 0
+fi
+exit 2
+EOF
+chmod +x "$js_dir/shell_bin/systemctl" "$js_dir/shell_bin/sudo" "$js_dir/shell_bin/getent"
+cat >"$js_dir/sh_bash_home/.bash_profile" <<'EOF'
+[[ -z $DISPLAY && $XDG_VTNR -eq 1 ]] && exec startx
+EOF
+cat >"$js_dir/sh_zsh_home/.cfg/zsh/.zprofile" <<'EOF'
+# >>> lightXDM TTY1 auto-start >>>
+[[ -z "${DISPLAY:-}" && "${XDG_VTNR:-}" -eq 1 ]] && exec startx
+# <<< lightXDM TTY1 auto-start <<<
+EOF
+printf '# empty profile\n' >"$js_dir/sh_zsh_default/.zprofile"
+ln -s /tmp/nonexistent-fish-hook "$js_dir/sh_fish_sym/.xdg/fish/config.fish"
+
+run_js_shell() {
+  local sh_home="$1" sh_user="$2" sh_bin="$3" sh_zdotdir="$4" sh_xdg_cfg="$5" err_file="$6"
+  env -u SUDO_USER -u XDG_STATE_HOME -u XDG_CONFIG_HOME -u ZDOTDIR \
+    ${sh_zdotdir:+ZDOTDIR="$sh_zdotdir"} \
+    ${sh_xdg_cfg:+XDG_CONFIG_HOME="$sh_xdg_cfg"} \
+    HOME="$sh_home" \
+    USER="$sh_user" \
+    JS_LOGIN_SHELL="$sh_bin" \
+    JS_SHELL_SUDO_LOG="$js_dir/shell_sudo.log" \
+    XDG_STATE_HOME="$sh_home/.local/state" \
+    PATH="$js_dir/shell_bin:$STUB_BIN:$PATH" \
+    LOGIN_FILE="$js_dir/readable_login_noblock" \
+    PAM_KEYRING_STATE="$js_dir/empty_etc/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$js_dir/empty_etc/pam-login-base" \
+    GNOME_SESSION_TYPE_DEST="$js_dir/empty_etc/gnome-session-type.conf" \
+    DM_STATE_FILE="$js_dir/empty_etc/disabled-display-managers" \
+    AUTOLOGIN_DROPIN_DIR="$js_dir/empty_getty" \
+    bash "$REPO_ROOT/install.sh" --status --json 2>"$err_file"
+}
+
+check_js_shell() {
+  local label="$1" rc="$2" out="$3" err_file="$4" exp_login="$5" exp_kind="$6" exp_path="$7" exp_disp="$8" exp_state="$9"
+  if [[ $rc -ne 0 || -s "$err_file" || -s "$js_dir/shell_sudo.log" ]] ||
+    ! JSON_OUT="$out" EXP_LOGIN="$exp_login" EXP_KIND="$exp_kind" EXP_PATH="$exp_path" EXP_DISP="$exp_disp" EXP_STATE="$exp_state" python3 - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+sh = d["shell_hook"]
+exp_login = os.environ["EXP_LOGIN"] or None
+exp_path = os.environ["EXP_PATH"] or None
+raw_disp = os.environ["EXP_DISP"]
+exp_disp = None if not raw_disp else (raw_disp if raw_disp.startswith("$") else "~/" + raw_disp)
+assert sh == {
+    "login_shell": exp_login,
+    "kind": os.environ["EXP_KIND"],
+    "path": exp_path,
+    "display_path": exp_disp,
+    "state": os.environ["EXP_STATE"],
+}, sh
+PY
+  then
+    js_report+=" [shell_hook $label: rc=$rc err=$(cat "$err_file") out=$out]"
+  fi
+}
+
+set +e
+js_sh_out="$(run_js_shell "$js_dir/sh_bash_home" jsuser /usr/bin/bash "" "" "$js_dir/sh_bash.err")"
+check_js_shell "bash-configured" $? "$js_sh_out" "$js_dir/sh_bash.err" \
+  "/usr/bin/bash" "bash" "$js_dir/sh_bash_home/.bash_profile" ".bash_profile" "configured"
+
+js_sh_out="$(run_js_shell "$js_dir/sh_zsh_default" jsuser /usr/bin/zsh "" "" "$js_dir/sh_zsh_def.err")"
+check_js_shell "zsh-missing-trigger" $? "$js_sh_out" "$js_dir/sh_zsh_def.err" \
+  "/usr/bin/zsh" "zsh" "$js_dir/sh_zsh_default/.zprofile" ".zprofile" "missing-trigger"
+
+js_sh_out="$(run_js_shell "$js_dir/sh_zsh_home" jsuser /usr/bin/zsh "$js_dir/sh_zsh_home/.cfg/zsh" "" "$js_dir/sh_zsh_man.err")"
+check_js_shell "zsh-zdotdir-managed" $? "$js_sh_out" "$js_dir/sh_zsh_man.err" \
+  "/usr/bin/zsh" "zsh" "$js_dir/sh_zsh_home/.cfg/zsh/.zprofile" ".cfg/zsh/.zprofile" "managed"
+
+printf '# >>> lightXDM TTY1 auto-start >>>\n' >"$js_dir/sh_zsh_home/.cfg/zsh/.zprofile"
+js_sh_out="$(run_js_shell "$js_dir/sh_zsh_home" jsuser /usr/bin/zsh "$js_dir/sh_zsh_home/.cfg/zsh" "" "$js_dir/sh_zsh_mal.err")"
+check_js_shell "zsh-zdotdir-malformed" $? "$js_sh_out" "$js_dir/sh_zsh_mal.err" \
+  "/usr/bin/zsh" "zsh" "$js_dir/sh_zsh_home/.cfg/zsh/.zprofile" ".cfg/zsh/.zprofile" "malformed"
+
+printf 'exec startx\n' >"$js_dir/sh_zsh_home/.cfg/zsh/.zprofile"
+js_sh_out="$(run_js_shell "$js_dir/sh_zsh_home" jsuser /usr/bin/zsh "$js_dir/sh_zsh_home/.cfg/zsh" "" "$js_dir/sh_zsh_cust.err")"
+check_js_shell "zsh-zdotdir-custom" $? "$js_sh_out" "$js_dir/sh_zsh_cust.err" \
+  "/usr/bin/zsh" "zsh" "$js_dir/sh_zsh_home/.cfg/zsh/.zprofile" ".cfg/zsh/.zprofile" "custom"
+
+js_sh_out="$(run_js_shell "$js_dir/sh_zsh_home" jsuser /usr/bin/zsh "$js_dir/outside_zsh" "" "$js_dir/sh_zsh_out.err")"
+check_js_shell "zsh-outside-home" $? "$js_sh_out" "$js_dir/sh_zsh_out.err" \
+  "/usr/bin/zsh" "zsh" "" "\$ZDOTDIR/.zprofile" "outside-home"
+
+js_sh_out="$(run_js_shell "$js_dir/sh_fish_sym" jsuser /usr/bin/fish "" "$js_dir/sh_fish_sym/.xdg" "$js_dir/sh_fish_sym.err")"
+check_js_shell "fish-symlink" $? "$js_sh_out" "$js_dir/sh_fish_sym.err" \
+  "/usr/bin/fish" "fish" "$js_dir/sh_fish_sym/.xdg/fish/config.fish" ".xdg/fish/config.fish" "symlink"
+
+js_sh_out="$(run_js_shell "$js_dir/sh_fish_sym" jsuser /usr/bin/fish "" "$js_dir/outside_fish" "$js_dir/sh_fish_out.err")"
+check_js_shell "fish-outside-home" $? "$js_sh_out" "$js_dir/sh_fish_out.err" \
+  "/usr/bin/fish" "fish" "" "\$XDG_CONFIG_HOME/fish/config.fish" "outside-home"
+
+if [[ $EUID -ne 0 ]]; then
+  chmod 000 "$js_dir/sh_fish_priv/.xdg/fish"
+  js_sh_out="$(run_js_shell "$js_dir/sh_fish_priv" jsuser /usr/bin/fish "" "$js_dir/sh_fish_priv/.xdg" "$js_dir/sh_fish_priv.err")"
+  js_sh_rc=$?
+  chmod 755 "$js_dir/sh_fish_priv/.xdg/fish"
+  check_js_shell "fish-unsearchable" "$js_sh_rc" "$js_sh_out" "$js_dir/sh_fish_priv.err" \
+    "/usr/bin/fish" "fish" "$js_dir/sh_fish_priv/.xdg/fish/config.fish" ".xdg/fish/config.fish" "unsearchable"
+fi
+
+js_sh_out="$(run_js_shell "$js_dir/home_empty" jsuser /bin/sh "" "" "$js_dir/sh_unsup.err")"
+check_js_shell "unsupported-sh" $? "$js_sh_out" "$js_dir/sh_unsup.err" \
+  "/bin/sh" "unsupported" "" "" "unsupported"
+
+js_sh_out="$(run_js_shell "$js_dir/home_empty" unknownjsuser "" "" "" "$js_dir/sh_unk.err")"
+check_js_shell "unknown" $? "$js_sh_out" "$js_dir/sh_unk.err" \
+  "" "unknown" "" "" "unknown"
+set -e
 
 # 5) Invalid --json combinations exit 1 before side effects
 for bad_js_args in "--json" "--json --de i3" "--recover --json" "--status --json --de i3" "--status --json --list-sessions" "--list-sessions --json --de i3" "--check-keyring gnome --json --de i3"; do
