@@ -13627,6 +13627,42 @@ if [[ $EUID -ne 0 ]]; then
     doctor_ok=0
     doctor_report+=" block-present-needs-root rc=$doc_rc out=[$doc_out];"
   fi
+
+  # unknown-needs-root: readable LOGIN_FILE without GNOME block + chmod 000 lightxdm dir
+  reset_doctor_gnome_fixture
+  cat >"$doctor_etc/pam.d/login" <<'EOF'
+#%PAM-1.0
+auth       include      system-local-login
+auth       optional   pam_gnome_keyring.so
+session    include      system-local-login
+session    optional   pam_gnome_keyring.so auto_start
+EOF
+  chmod 000 "$doctor_etc/lightxdm"
+  doc_rc=0
+  doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+  chmod 755 "$doctor_etc/lightxdm"
+  if [[ $doc_rc -ne 1 ||
+    "$doc_out" != *"PAM GNOME session type: FAIL (GNOME Wayland session-type PAM block missing from $doctor_etc/pam.d/login; $doctor_etc/lightxdm/gnome-session-type.conf: unknown (needs root)"* ||
+    "$doc_out" != *"--pam-only --de gnome)"* ||
+    "$doc_out" != *"Doctor: FAIL"* || "$doc_out" == *"Permission denied"* ]]; then
+    doctor_ok=0
+    doctor_report+=" unknown-needs-root-gnome rc=$doc_rc out=[$doc_out];"
+  fi
+
+  rm -f "$doctor_home/.wayland-session"
+  printf 'de=xfce\nno_packages=1\n' >"$doctor_state/lightxdm/install-choices"
+  cp "$REPO_ROOT/dotfiles/.xinitrc-xfce" "$doctor_home/.xinitrc"
+  chmod 755 "$doctor_home/.xinitrc"
+  chmod 000 "$doctor_etc/lightxdm"
+  doc_rc=0
+  doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+  chmod 755 "$doctor_etc/lightxdm"
+  if [[ $doc_rc -ne 0 ||
+    "$doc_out" != *"PAM GNOME session type: WARN ($doctor_etc/lightxdm/gnome-session-type.conf: unknown (needs root))"* ||
+    "$doc_out" != *"Doctor: PASS (0 issue(s),"* || "$doc_out" == *"Permission denied"* ]]; then
+    doctor_ok=0
+    doctor_report+=" unknown-needs-root-xfce rc=$doc_rc out=[$doc_out];"
+  fi
 fi
 
 # Combining --doctor with other options exits 1

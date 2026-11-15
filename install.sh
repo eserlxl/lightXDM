@@ -3174,6 +3174,16 @@ run_doctor() {
           warnings=$((warnings + 1))
         fi
         ;;
+      unknown-needs-root)
+        if [[ "$de" == gnome ]]; then
+          printf 'PAM GNOME session type: FAIL (GNOME Wayland session-type PAM block missing from %s; %s: %s — fix with: %s --pam-only --de gnome)\n' \
+            "$LOGIN_FILE" "$GNOME_SESSION_TYPE_DEST" "$GNOME_PAM_STATUS_MSG" "$install_cmd"
+          issues=$((issues + 1))
+        else
+          printf 'PAM GNOME session type: WARN (%s: %s)\n' "$GNOME_SESSION_TYPE_DEST" "$GNOME_PAM_STATUS_MSG"
+          warnings=$((warnings + 1))
+        fi
+        ;;
       not-configured)
         if [[ "$de" == gnome ]]; then
           printf 'PAM GNOME session type: FAIL (GNOME Wayland session-type PAM block missing from %s — fix with: %s --pam-only --de gnome)\n' "$LOGIN_FILE" "$install_cmd"
