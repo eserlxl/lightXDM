@@ -80,7 +80,7 @@ Wayland desktops do not install `xorg-server` or `xorg-xinit`. See [GNOME sessio
 ## Login modes
 
 1. **Password login (default):** type your password on TTY1; the desktop starts and PAM unlocks your keyring with that password.
-2. **Autologin:** `sudo bash enable-autologin.sh YOURUSER` (or `bash install.sh --no-keyring --autologin`) logs you in without a password, so the keyring cannot unlock automatically. See [docs/startx-autologin.md](docs/startx-autologin.md).
+2. **Autologin:** `sudo bash enable-autologin.sh YOURUSER` (or `bash install.sh --no-keyring --autologin`) logs you in without a password, so the keyring cannot unlock automatically (`bash enable-autologin.sh --status` or `--status --json` inspects saved autologin state without sudo). See [docs/startx-autologin.md](docs/startx-autologin.md).
 
 ## Before you install
 

@@ -98,8 +98,9 @@ sudo bash enable-autologin.sh --disable
 To inspect the saved configuration without sudo, run:
 ```sh
 bash enable-autologin.sh --status
+bash enable-autologin.sh --status --json
 ```
-This prints `enabled for <user> (<file>)` for the lightXDM drop-in (or an accepted legacy `override.conf`), otherwise `disabled`. It warns about other drop-ins that enable autologin or override it with a later `ExecStart=`, and, when autologin is enabled, about PAM keyring unlock lines. It exits successfully without changing files or calling `systemctl`. The status describes the saved configuration; changes take effect at the next login or reboot.
+This prints `enabled for <user> (<file>)` for the lightXDM drop-in (or an accepted legacy `override.conf`), otherwise `disabled`, or structured JSON (`"mode": "autologin-status"`, `"state": "enabled" | "disabled" | "unknown-needs-root"`, user/file details, `keyring_configured`, `dropin_files`, `warnings`, and `notes`) when `--json` is passed. It warns about other drop-ins that enable autologin or override it with a later `ExecStart=`, and, when autologin is enabled, about PAM keyring unlock lines. It exits successfully without changing files or calling `systemctl`. The status describes the saved configuration; changes take effect at the next login or reboot.
 
 ## Recovery
 

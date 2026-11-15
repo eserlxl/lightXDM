@@ -40,7 +40,7 @@ lightXDM supports built-in and custom X11/Wayland desktop sessions, non-bash log
 ### Display Manager Independence & Login Shells
 - **No Display Manager Needed:** The script disables enabled display managers (SDDM, LightDM, GDM, LXDM, `ly@tty1`, and whatever unit `display-manager.service` points to) to ensure a pure TTY workflow (`startx`, or a Wayland session for Plasma, GNOME, and Budgie); `ly` on other TTYs is left alone unless `display-manager.service` points to it. `lightxdm-update` never disables one you enabled again; it names it and the command that disables it.
 - **GNOME limitation:** GNOME cannot lock the screen without GDM. See [GNOME session requirements](installation.md#gnome-session-requirements) before choosing it.
-- **Auto-Start on TTY1:** After login on TTY1, your desktop environment starts automatically—no need to run `startx` manually. Optional passwordless autologin is available via `enable-autologin.sh` (with the trade-off that the keyring cannot unlock automatically unless its password is empty).
+- **Auto-Start on TTY1:** After login on TTY1, your desktop environment starts automatically—no need to run `startx` manually. Optional passwordless autologin is available via `enable-autologin.sh` (with `--status [--json]` for human or machine-readable status inspection, and the trade-off that the keyring cannot unlock automatically unless its password is empty).
 - **Bash, Zsh, and Fish Hooks:** Bash works directly via `~/.bash_profile`. For `zsh` or `fish`, `--setup-shell <zsh|fish|auto>` idempotently writes a managed `# >>> lightXDM TTY1 auto-start >>>` block in `~/.zprofile` or `~/.config/fish/config.fish` (which `uninstall.sh` cleanly removes), and `--shell-snippet <zsh|fish>` prints the snippet for manual setup.
 
 ### Safe Updates, Diagnostics & Recovery
@@ -71,7 +71,7 @@ lightXDM supports built-in and custom X11/Wayland desktop sessions, non-bash log
 | Custom X11 & Wayland sessions  | `--list-sessions [--json]`, `--init-template [--wayland] [--from-session]`, `--install-session <path>`, `--keyring <gnome|kwallet>` |
 | No DE installed                | Prompts user, installs selected DE                                |
 | Display manager free           | disables SDDM, LightDM, GDM, LXDM, ly@tty1 and the display-manager.service unit |
-| Auto-start & optional autologin| TTY1 auto-start via `.bash_profile` (`~/.xinitrc` or `~/.wayland-session`), optional `zsh`/`fish` hooks (`--setup-shell`, `--shell-snippet`), optional autologin via `enable-autologin.sh` |
+| Auto-start & optional autologin| TTY1 auto-start via `.bash_profile` (`~/.xinitrc` or `~/.wayland-session`), optional `zsh`/`fish` hooks (`--setup-shell`, `--shell-snippet`), optional autologin via `enable-autologin.sh` (`--status [--json]`) |
 | Safe updates                   | `--update` (`lightxdm-update`) keeps edited dotfiles (`*.lightxdm-new`), preserves user package/DM/PAM choices, restores `.pacnew`-dropped PAM lines |
 | Diagnostics & recovery         | `--preflight [--json]`, `--status [--json]`, `--doctor [--json]`, `--recover`, `--fix`, automatic crash-loop pause (`no-autostart`), `session-journal` |
 | Polkit integration             | systemd's defaults for power actions, `udisks2` defaults for USB, correct agent for each DE |

@@ -12,18 +12,19 @@ LOGIN_FILE="${LOGIN_FILE:-/etc/pam.d/login}"
 readonly AUTOLOGIN_EXEC_RE='^[[:space:]]*ExecStart[[:space:]]*=.*([[:space:]]--autologin([[:space:]]+|=)|[[:space:]]-a[[:space:]]+)([^-[:space:]][^[:space:]]*)'
 
 usage() {
-  echo "Usage: sudo bash $0 <username> | --disable; bash $0 --status | -h | --help" >&2
+  echo "Usage: sudo bash $0 <username> | --disable; bash $0 --status [--json] | -h | --help" >&2
   exit 1
 }
 
 show_help() {
   cat <<EOF
-Usage: sudo bash $0 <username> | --disable; bash $0 --status | -h | --help
+Usage: sudo bash $0 <username> | --disable; bash $0 --status [--json] | -h | --help
 
 Turn passwordless TTY1 autologin on or off (changes apply at the next login or reboot).
   <username>  log <username> in on TTY1 without a password
   --disable   remove lightXDM's autologin drop-in
   --status    show whether autologin is enabled; read-only, no sudo needed
+  --json      with --status, print the read-only status as structured JSON on stdout
   -h, --help  show this help
 EOF
   exit 0
@@ -40,14 +41,68 @@ is_legacy_autologin_override() {
   [[ ${#lines[@]} -eq 3 && "${lines[0]}" == "[Service]" && "${lines[1]}" == "ExecStart=" && "${lines[2]}" =~ $exec_re ]]
 }
 
-warn_keyring_unlock() {
+json_escape() {
+  local s="$1" out="" i ch code LC_ALL=C
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\b'/\\b}"
+  s="${s//$'\f'/\\f}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  if [[ "$s" == *[$'\001'-$'\037']* ]]; then
+    for ((i = 0; i < ${#s}; i++)); do
+      ch="${s:i:1}"
+      if [[ "$ch" == [$'\001'-$'\037'] ]]; then
+        printf -v code '%d' "'$ch"
+        printf -v ch '\\u%04x' "$code"
+      fi
+      out+="$ch"
+    done
+    printf '%s' "$out"
+    return 0
+  fi
+  printf '%s' "$s"
+}
+
+json_str() {
+  printf '"%s"' "$(json_escape "$1")"
+}
+
+json_str_or_null() {
+  if [[ -n "${1-}" ]]; then
+    json_str "$1"
+  else
+    printf 'null'
+  fi
+}
+
+print_json_string_array() {
+  local first=1 item
+  printf '['
+  for item in "$@"; do
+    if [[ $first -eq 0 ]]; then
+      printf ', '
+    fi
+    first=0
+    json_str "$item"
+  done
+  printf ']'
+}
+
+inspect_login_keyring() {
+  LOGIN_KEYRING_STATE="false"
+  LOGIN_KEYRING_NOTE=""
+  LOGIN_KEYRING_WARNING=""
   if [[ -f "$LOGIN_FILE" ]]; then
     if [[ ! -r "$LOGIN_FILE" ]]; then
-      echo "Note: cannot read $LOGIN_FILE; run --status with sudo for an exact result." >&2
+      LOGIN_KEYRING_STATE="null"
+      LOGIN_KEYRING_NOTE="Note: cannot read $LOGIN_FILE; run --status with sudo for an exact result."
       return 0
     fi
     if grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*(pam_kwallet5\.so|pam_gnome_keyring\.so)([[:space:]]|$)' "$LOGIN_FILE"; then
-      echo "Warning: PAM keyring unlock is configured in $LOGIN_FILE; the keyring will not unlock automatically with autologin and will ask for its password in the desktop, unless its password is empty. To remove the keyring lines lightXDM added, run 'sudo $(printf 'bash %q' "$SCRIPT_DIR/uninstall.sh") --keyring-only'."
+      LOGIN_KEYRING_STATE="true"
+      LOGIN_KEYRING_WARNING="Warning: PAM keyring unlock is configured in $LOGIN_FILE; the keyring will not unlock automatically with autologin and will ask for its password in the desktop, unless its password is empty. To remove the keyring lines lightXDM added, run 'sudo $(printf 'bash %q' "$SCRIPT_DIR/uninstall.sh") --keyring-only'."
     fi
   elif [[ ! -e "$LOGIN_FILE" ]]; then
     local resolved probe
@@ -57,8 +112,19 @@ warn_keyring_unlock() {
       probe="$(dirname -- "$probe")"
     done
     if [[ -d "$probe" && ! -x "$probe" ]]; then
-      echo "Note: cannot read $LOGIN_FILE; run --status with sudo for an exact result." >&2
+      LOGIN_KEYRING_STATE="null"
+      LOGIN_KEYRING_NOTE="Note: cannot read $LOGIN_FILE; run --status with sudo for an exact result."
     fi
+  fi
+}
+
+warn_keyring_unlock() {
+  local LOGIN_KEYRING_STATE="" LOGIN_KEYRING_NOTE="" LOGIN_KEYRING_WARNING=""
+  inspect_login_keyring
+  if [[ -n "$LOGIN_KEYRING_NOTE" ]]; then
+    echo "$LOGIN_KEYRING_NOTE" >&2
+  elif [[ -n "$LOGIN_KEYRING_WARNING" ]]; then
+    echo "$LOGIN_KEYRING_WARNING"
   fi
 }
 
@@ -76,15 +142,25 @@ dropin_enables_autologin() {
 }
 
 show_status() {
-  local file line status_file="" target_user="" reset_file="" foreign_autologin=0 LC_ALL=C
+  local json_mode=0
+  [[ "${1:-}" == "--json" ]] && json_mode=1
+  local file line status_file="" target_user="" reset_file="" foreign_autologin=0 any_unreadable=0 LC_ALL=C
+  local -a warnings=() notes=() dropin_files=()
+  local LOGIN_KEYRING_STATE="false" LOGIN_KEYRING_NOTE="" LOGIN_KEYRING_WARNING=""
   if [[ -d "$OVERRIDE_DIR" && ! ( -r "$OVERRIDE_DIR" && -x "$OVERRIDE_DIR" ) ]]; then
-    echo "Note: cannot read $OVERRIDE_DIR; run --status with sudo for an exact result." >&2
+    local dir_note="Note: cannot read $OVERRIDE_DIR; run --status with sudo for an exact result."
+    notes+=("$dir_note")
+    any_unreadable=1
+    [[ $json_mode -eq 0 ]] && echo "$dir_note" >&2
   fi
   # The accepted legacy override sorts after the current lightXDM drop-in.
   for file in "$OVERRIDE_FILE" "$LEGACY_OVERRIDE_FILE"; do
     [[ -f "$file" ]] || continue
     if [[ ! -r "$file" ]]; then
-      echo "Note: cannot read $file; run --status with sudo for an exact result." >&2
+      local file_note="Note: cannot read $file; run --status with sudo for an exact result."
+      notes+=("$file_note")
+      any_unreadable=1
+      [[ $json_mode -eq 0 ]] && echo "$file_note" >&2
       continue
     fi
     if [[ "$file" == "$LEGACY_OVERRIDE_FILE" ]] && ! is_legacy_autologin_override "$file"; then
@@ -104,41 +180,110 @@ show_status() {
       fi
     done < "$file"
   done
-  if [[ -n "$status_file" ]]; then
-    echo "enabled for $target_user ($status_file)"
-  else
-    echo "disabled"
+  if [[ $json_mode -eq 0 ]]; then
+    if [[ -n "$status_file" ]]; then
+      echo "enabled for $target_user ($status_file)"
+    else
+      echo "disabled"
+    fi
   fi
   for file in "$OVERRIDE_DIR"/*.conf; do
+    if [[ -e "$file" || -L "$file" ]]; then
+      dropin_files+=("$file")
+    fi
     if [[ -f "$file" && ! -r "$file" ]]; then
       if [[ "$file" != "$OVERRIDE_FILE" && "$file" != "$LEGACY_OVERRIDE_FILE" ]]; then
-        echo "Note: cannot read $file; run --status with sudo for an exact result." >&2
+        local foreign_note="Note: cannot read $file; run --status with sudo for an exact result."
+        notes+=("$foreign_note")
+        [[ $json_mode -eq 0 ]] && echo "$foreign_note" >&2
       fi
+      any_unreadable=1
       continue
     fi
     [[ -f "$file" && -r "$file" && "$file" != "$status_file" && "$file" != "$reset_file" ]] || continue
     if dropin_enables_autologin "$file"; then
-      echo "Warning: $file still enables autologin."
+      local foreign_warn="Warning: $file still enables autologin."
+      warnings+=("$foreign_warn")
+      [[ $json_mode -eq 0 ]] && echo "$foreign_warn"
       foreign_autologin=1
     fi
     if [[ -n "$status_file" && "$file" > "$status_file" ]] &&
       grep -Eq '^[[:space:]]*ExecStart[[:space:]]*=' "$file"; then
-      echo "Warning: $file overrides autologin with a later ExecStart= setting."
+      local override_warn="Warning: $file overrides autologin with a later ExecStart= setting."
+      warnings+=("$override_warn")
+      [[ $json_mode -eq 0 ]] && echo "$override_warn"
     fi
   done
+  inspect_login_keyring
   if [[ -n "$status_file" || $foreign_autologin -eq 1 ]]; then
-    warn_keyring_unlock
+    if [[ -n "$LOGIN_KEYRING_NOTE" ]]; then
+      notes+=("$LOGIN_KEYRING_NOTE")
+      [[ $json_mode -eq 0 ]] && echo "$LOGIN_KEYRING_NOTE" >&2
+    elif [[ -n "$LOGIN_KEYRING_WARNING" ]]; then
+      warnings+=("$LOGIN_KEYRING_WARNING")
+      [[ $json_mode -eq 0 ]] && echo "$LOGIN_KEYRING_WARNING"
+    fi
+  fi
+  if [[ $json_mode -eq 1 ]]; then
+    local state_label="disabled" json_user="" json_file=""
+    if [[ -n "$status_file" ]]; then
+      state_label="enabled"
+      json_user="$target_user"
+      json_file="$status_file"
+    elif [[ $any_unreadable -eq 1 ]]; then
+      state_label="unknown-needs-root"
+    fi
+    printf '{\n'
+    printf '  "mode": "autologin-status",\n'
+    printf '  "state": %s,\n' "$(json_str "$state_label")"
+    printf '  "user": %s,\n' "$(json_str_or_null "$json_user")"
+    printf '  "file": %s,\n' "$(json_str_or_null "$json_file")"
+    printf '  "override_dir": %s,\n' "$(json_str "$OVERRIDE_DIR")"
+    printf '  "login_file": %s,\n' "$(json_str "$LOGIN_FILE")"
+    printf '  "keyring_configured": %s,\n' "$LOGIN_KEYRING_STATE"
+    printf '  "dropin_files": '
+    print_json_string_array "${dropin_files[@]}"
+    printf ',\n'
+    printf '  "warnings": '
+    print_json_string_array "${warnings[@]}"
+    printf ',\n'
+    printf '  "notes": '
+    print_json_string_array "${notes[@]}"
+    printf '\n'
+    printf '}\n'
   fi
 }
 
 main() {
-  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  if [[ $# -eq 1 ]] && [[ "$1" == "-h" || "$1" == "--help" ]]; then
     show_help
   fi
 
-  if [[ "${1:-}" == "--status" ]]; then
-    [[ $# -eq 1 ]] || usage
-    show_status
+  local saw_status=0 saw_json=0 arg
+  for arg in "$@"; do
+    case "$arg" in
+      --status)
+        [[ $saw_status -eq 0 ]] || usage
+        saw_status=1
+        ;;
+      --json)
+        [[ $saw_json -eq 0 ]] || usage
+        saw_json=1
+        ;;
+    esac
+  done
+  if [[ $saw_json -eq 1 && $saw_status -eq 0 ]]; then
+    echo "--json requires --status." >&2
+    usage
+  fi
+  if [[ $saw_status -eq 1 ]]; then
+    if [[ $saw_json -eq 1 ]]; then
+      [[ $# -eq 2 ]] || usage
+      show_status --json
+    else
+      [[ $# -eq 1 ]] || usage
+      show_status
+    fi
     exit 0
   fi
 

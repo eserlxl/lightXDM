@@ -1320,6 +1320,186 @@ else
   fail "enable-autologin.sh --status unreadable drop-in directory (status=$status, output=$output)"
 fi
 
+# enable-autologin.sh --status --json emits structured JSON cleanly without sudo or stderr leaks
+auto_json_dir="$TMP_DIR/autologin_json"
+rm -rf "$auto_json_dir"
+mkdir -p "$auto_json_dir/getty.d" "$auto_json_dir/weird \"dir"
+auto_json_report=""
+
+auto_help_out="$(bash "$REPO_ROOT/enable-autologin.sh" --help 2>&1)"
+if [[ "$auto_help_out" != *"--status [--json]"* || "$auto_help_out" != *"--json"* ]]; then
+  auto_json_report+=" [missing --json in --help]"
+fi
+
+# 1) Disabled across --status --json and --json --status, both missing OVERRIDE_DIR and readable keyring LOGIN_FILE
+printf '#%s\nauth optional pam_gnome_keyring.so\n' 'PAM-1.0' >"$auto_json_dir/login_keyring"
+printf '# PAM login\n' >"$auto_json_dir/login_plain"
+for auto_js_flags in "--status --json" "--json --status"; do
+  read -r -a auto_js_argv <<<"$auto_js_flags"
+  : >"$STUB_LOG"
+  set +e
+  auto_js_out="$(env OVERRIDE_DIR="$auto_json_dir/missing.d" LOGIN_FILE="$auto_json_dir/login_keyring" \
+    bash "$REPO_ROOT/enable-autologin.sh" "${auto_js_argv[@]}" 2>"$auto_json_dir/err")"
+  auto_js_rc=$?
+  set -e
+  if [[ $auto_js_rc -ne 0 || -s "$auto_json_dir/err" || -s "$STUB_LOG" ]] ||
+    ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+assert d == {
+    "mode": "autologin-status",
+    "state": "disabled",
+    "user": None,
+    "file": None,
+    "override_dir": sys.argv[2],
+    "login_file": sys.argv[3],
+    "keyring_configured": True,
+    "dropin_files": [],
+    "warnings": [],
+    "notes": [],
+}, d
+' "$auto_js_out" "$auto_json_dir/missing.d" "$auto_json_dir/login_keyring"; then
+    auto_json_report+=" [disabled-keyring '$auto_js_flags': rc=$auto_js_rc err=$(cat "$auto_json_dir/err") out=$auto_js_out]"
+  fi
+done
+
+# 2) Enabled with foreign autologin, later ExecStart= override, PAM keyring warning, and special characters in path
+cat >"$auto_json_dir/getty.d/00-foreign.conf" <<'EOF'
+[Service]
+ExecStart=/usr/bin/agetty --autologin foreignuser tty1
+EOF
+# shellcheck disable=SC2016  # $TERM is literal systemd syntax
+printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin=eq_user --noclear %%I $TERM\n' >"$auto_json_dir/getty.d/lightxdm-autologin.conf"
+cat >"$auto_json_dir/getty.d/zz-later.conf" <<'EOF'
+[Service]
+ExecStart=/usr/bin/agetty tty1
+EOF
+set +e
+auto_en_out="$(env OVERRIDE_DIR="$auto_json_dir/getty.d" LOGIN_FILE="$auto_json_dir/login_keyring" \
+  bash "$REPO_ROOT/enable-autologin.sh" --status --json 2>"$auto_json_dir/err")"
+auto_en_rc=$?
+auto_bin_out="$(cd / && env LIGHTXDM_DIR="$REPO_ROOT" OVERRIDE_DIR="$auto_json_dir/getty.d" LOGIN_FILE="$auto_json_dir/login_plain" \
+  "$REPO_ROOT/bin/lightxdm-autologin" --status --json 2>"$auto_json_dir/bin.err")"
+auto_bin_rc=$?
+set -e
+if [[ $auto_en_rc -ne 0 || -s "$auto_json_dir/err" ]] ||
+  ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+gd = sys.argv[2]
+assert d["mode"] == "autologin-status", d
+assert d["state"] == "enabled", d
+assert d["user"] == "eq_user", d
+assert d["file"] == f"{gd}/lightxdm-autologin.conf", d
+assert d["keyring_configured"] is True, d
+assert d["dropin_files"] == [f"{gd}/00-foreign.conf", f"{gd}/lightxdm-autologin.conf", f"{gd}/zz-later.conf"], d
+assert any("00-foreign.conf still enables autologin." in w for w in d["warnings"]), d
+assert any("zz-later.conf overrides autologin" in w for w in d["warnings"]), d
+assert any("PAM keyring unlock is configured" in w for w in d["warnings"]), d
+assert d["notes"] == [], d
+' "$auto_en_out" "$auto_json_dir/getty.d"; then
+  auto_json_report+=" [enabled-warnings: rc=$auto_en_rc err=$(cat "$auto_json_dir/err") out=$auto_en_out]"
+fi
+if [[ $auto_bin_rc -ne 0 || -s "$auto_json_dir/bin.err" ]] ||
+  ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["state"] == "enabled" and d["user"] == "eq_user" and d["keyring_configured"] is False, d
+' "$auto_bin_out"; then
+  auto_json_report+=" [bin-launcher: rc=$auto_bin_rc err=$(cat "$auto_json_dir/bin.err") out=$auto_bin_out]"
+fi
+
+# Special characters in OVERRIDE_DIR / LOGIN_FILE paths escape cleanly
+cat >"$auto_json_dir/weird \"dir/lightxdm-autologin.conf" <<'EOF'
+[Service]
+ExecStart=-/usr/bin/agetty -a short_user tty1
+EOF
+auto_weird_out="$(env OVERRIDE_DIR="$auto_json_dir/weird \"dir" LOGIN_FILE="$auto_json_dir/login_plain" \
+  bash "$REPO_ROOT/enable-autologin.sh" --status --json 2>"$auto_json_dir/weird.err")"
+if [[ -s "$auto_json_dir/weird.err" ]] ||
+  ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["state"] == "enabled" and d["user"] == "short_user" and d["override_dir"] == sys.argv[2], d
+' "$auto_weird_out" "$auto_json_dir/weird \"dir"; then
+  auto_json_report+=" [weird-path: err=$(cat "$auto_json_dir/weird.err") out=$auto_weird_out]"
+fi
+
+# 3) Unreadable OVERRIDE_DIR, drop-in, and unsearchable LOGIN_FILE -> unknown-needs-root / null keyring, empty stderr
+if [[ $EUID -ne 0 ]]; then
+  mkdir -p "$auto_json_dir/priv_pamd" "$auto_json_dir/priv_dropin"
+  printf '#%s\nauth optional pam_gnome_keyring.so\n' 'PAM-1.0' >"$auto_json_dir/priv_pamd/login"
+  # shellcheck disable=SC2016
+  printf '[Service]\nExecStart=-/usr/bin/agetty --autologin someone --noclear %%I $TERM\n' >"$auto_json_dir/priv_dropin/lightxdm-autologin.conf"
+  chmod 000 "$auto_json_dir/priv_dropin/lightxdm-autologin.conf" "$auto_json_dir/priv_pamd"
+
+  set +e
+  unr_dropin_json="$(env OVERRIDE_DIR="$auto_json_dir/priv_dropin" LOGIN_FILE="$auto_json_dir/priv_pamd/login" \
+    bash "$REPO_ROOT/enable-autologin.sh" --status --json 2>"$auto_json_dir/unr1.err")"
+  unr_dropin_rc=$?
+  chmod 000 "$auto_json_dir/priv_dropin"
+  unr_dir_json="$(env OVERRIDE_DIR="$auto_json_dir/priv_dropin" LOGIN_FILE="$auto_json_dir/priv_pamd/login" \
+    bash "$REPO_ROOT/enable-autologin.sh" --status --json 2>"$auto_json_dir/unr2.err")"
+  unr_dir_rc=$?
+  chmod 755 "$auto_json_dir/priv_dropin"
+  chmod 644 "$auto_json_dir/priv_dropin/lightxdm-autologin.conf"
+  unr_login_json="$(env OVERRIDE_DIR="$auto_json_dir/priv_dropin" LOGIN_FILE="$auto_json_dir/priv_pamd/login" \
+    bash "$REPO_ROOT/enable-autologin.sh" --status --json 2>"$auto_json_dir/unr3.err")"
+  unr_login_rc=$?
+  set -e
+  chmod 755 "$auto_json_dir/priv_pamd"
+
+  if [[ $unr_dropin_rc -ne 0 || -s "$auto_json_dir/unr1.err" ]] ||
+    ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["state"] == "unknown-needs-root", d
+assert d["user"] is None and d["file"] is None, d
+assert d["keyring_configured"] is None, d
+assert any("lightxdm-autologin.conf" in n for n in d["notes"]), d
+' "$unr_dropin_json"; then
+    auto_json_report+=" [unr-dropin: rc=$unr_dropin_rc err=$(cat "$auto_json_dir/unr1.err") out=$unr_dropin_json]"
+  fi
+  if [[ $unr_dir_rc -ne 0 || -s "$auto_json_dir/unr2.err" ]] ||
+    ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["state"] == "unknown-needs-root", d
+assert any("cannot read " in n and sys.argv[2] in n for n in d["notes"]), d
+' "$unr_dir_json" "$auto_json_dir/priv_dropin"; then
+    auto_json_report+=" [unr-dir: rc=$unr_dir_rc err=$(cat "$auto_json_dir/unr2.err") out=$unr_dir_json]"
+  fi
+  if [[ $unr_login_rc -ne 0 || -s "$auto_json_dir/unr3.err" ]] ||
+    ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["state"] == "enabled" and d["user"] == "someone", d
+assert d["keyring_configured"] is None, d
+assert any("cannot read " in n and sys.argv[2] in n for n in d["notes"]), d
+' "$unr_login_json" "$auto_json_dir/priv_pamd/login"; then
+    auto_json_report+=" [unr-login: rc=$unr_login_rc err=$(cat "$auto_json_dir/unr3.err") out=$unr_login_json]"
+  fi
+fi
+
+# 4) Reject invalid --json combinations cleanly before root checks
+for bad_auto_js in "--json" "--disable --json" "testuser --json" "--json testuser" "--status --json --extra" \
+  "--status --status" "--json --json" "--status --help" "--help --status" "--help --json" "--json --help"; do
+  read -r -a bad_auto_argv <<<"$bad_auto_js"
+  set +e
+  bad_auto_out="$(env OVERRIDE_DIR="$auto_json_dir/missing.d" bash "$REPO_ROOT/enable-autologin.sh" "${bad_auto_argv[@]}" 2>&1)"
+  bad_auto_rc=$?
+  set -e
+  if [[ $bad_auto_rc -ne 1 || "$bad_auto_out" != *"Usage:"* || "$bad_auto_out" == *"Please run as root"* ]]; then
+    auto_json_report+=" [bad combo '$bad_auto_js': rc=$bad_auto_rc out=$bad_auto_out]"
+  fi
+done
+
+if [[ -z "$auto_json_report" ]]; then
+  pass "enable-autologin.sh --status --json emits valid JSON with unknown-needs-root and empty stderr"
+else
+  fail "enable-autologin.sh --status --json:$auto_json_report"
+fi
+
 # Case 15b: only later drop-ins with an active ExecStart setting warn about overriding autologin
 if [[ $can_unshare -eq 0 ]]; then
   skip "enable-autologin.sh warns about later ExecStart drop-ins (unshare -r unavailable)"
