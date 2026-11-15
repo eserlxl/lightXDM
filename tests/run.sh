@@ -18197,8 +18197,13 @@ if [[ $onb_way_rc -ne 0 ||
   onb_ok=0
   onb_report+=" [wayland custom preflight rc=$onb_way_rc out=$onb_way_out]"
 fi
+onb_have_python=0
+if command -v python3 >/dev/null 2>&1; then
+  onb_have_python=1
+fi
+
 if [[ $onb_custom_json_rc -ne 0 || -s "$onb_custom_json_err" ]] ||
-  ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+  { [[ $onb_have_python -eq 1 ]] && ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
 import json, sys
 d = json.loads(sys.argv[1])
 openbox, hypr = sys.argv[2], sys.argv[3]
@@ -18213,7 +18218,7 @@ checks = {c["name"]: c for c in d["checks"]}
 assert checks["Detected custom session(s)"]["status"] == "info", checks
 assert "--setup-shell zsh" in checks["Login shell"]["detail"], checks
 assert "--shell-snippet zsh >> ~/.zprofile" in checks["Login shell"]["detail"], checks
-' "$onb_custom_json" "$onb_openbox" "$onb_hypr"; then
+' "$onb_custom_json" "$onb_openbox" "$onb_hypr"; }; then
   onb_ok=0
   onb_report+=" [custom preflight json rc=$onb_custom_json_rc err=$(cat "$onb_custom_json_err") json=$onb_custom_json]"
 fi
@@ -18236,7 +18241,7 @@ if [[ $onb_gnome_rc -ne 0 || "$onb_gnome_out" != *"Existing setup: recorded for 
   "$onb_gnome_out" != *"--update --dry-run"* ||
   "$onb_gnome_out" != *"GNOME note: GNOME cannot lock the screen without GDM"* ||
   $onb_gnome_json_rc -ne 0 ]] ||
-  ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+  { [[ $onb_have_python -eq 1 ]] && ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
 import json, sys
 d = json.loads(sys.argv[1])
 assert d["status"] == "pass" and d["warnings"] == 0, d
@@ -18245,7 +18250,7 @@ assert "--update --dry-run" in d["next_step"], d
 checks = {c["name"]: c for c in d["checks"]}
 assert checks["Existing setup"]["status"] == "info" and "recorded for gnome" in checks["Existing setup"]["detail"], checks
 assert checks["GNOME note"]["status"] == "info" and "GDM" in checks["GNOME note"]["detail"], checks
-' "$onb_gnome_json"; then
+' "$onb_gnome_json"; }; then
   onb_ok=0
   onb_report+=" [gnome/existing preflight rc=$onb_gnome_rc jrc=$onb_gnome_json_rc out=$onb_gnome_out json=$onb_gnome_json]"
 fi
@@ -18256,8 +18261,8 @@ onb_ls_out="$(env -i HOME="$onb_case/home" USER=testuser PATH="$onb_case/bin" \
   "$onb_bash" "$REPO_ROOT/install.sh" --list-sessions 2>&1)"
 onb_ls_rc=$?
 set -e
-if [[ $onb_ls_rc -ne 0 ]] ||
-  ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+if [[ $onb_ls_rc -ne 0 || "$onb_ls_out" != *"  init: "* || "$onb_ls_out" != *"  install: "* ]] ||
+  { [[ $onb_have_python -eq 1 ]] && ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
 import sys
 lines = sys.argv[1].splitlines()
 def section(marker):
@@ -18275,9 +18280,13 @@ xfce_sec = section("xfce.desktop")
 assert len(xfce_sec) >= 3 and xfce_sec[2].startswith("  install: ") and "--de xfce" in xfce_sec[2] and "--de xfce-custom" in xfce_sec[2], xfce_sec
 broken_sec = section("broken.desktop")
 assert len(broken_sec) == 1, broken_sec
-' "$onb_ls_out"; then
+' "$onb_ls_out"; }; then
   onb_ok=0
   onb_report+=" [list-sessions onboarding prose rc=$onb_ls_rc out=$onb_ls_out]"
+fi
+
+if [[ $onb_have_python -eq 0 ]]; then
+  skip "onboarding preflight/list-sessions JSON and Python assertions (python3 unavailable)"
 fi
 
 if [[ $onb_ok -eq 1 ]]; then
