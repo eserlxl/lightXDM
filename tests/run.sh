@@ -8366,11 +8366,14 @@ set +e
 output="$(HOME="$reject_wayland_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --wayland --no-packages --de sway 2>&1)"
 status=$?
 set -e
-if [[ $status -eq 1 && "$output" == *"--wayland requires --init-template"* && "$output" == *"Usage:"* &&
+if [[ $status -eq 1 &&
+  "$output" == *"--wayland requires --init-template --de <custom-id> or --install-session <path>."* &&
+  "$output" == *"--wayland"*"--install-session"* &&
+  "$output" == *"Usage:"* &&
   ! -s "$STUB_LOG" && ! -e "$reject_wayland_home/.config" ]]; then
-  pass "--wayland without --init-template prints usage before any changes"
+  pass "--wayland without --init-template or --install-session prints updated usage before any changes"
 else
-  fail "--wayland without --init-template (status=$status, output=$output)"
+  fail "--wayland without --init-template or --install-session (status=$status, output=$output)"
 fi
 
 for reject_wayland_de in plasma gnome budgie xfce lxqt lxde mate cinnamon i3; do

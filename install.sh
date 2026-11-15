@@ -4134,7 +4134,7 @@ Options:
   --install-session <path> validate a custom X11/Wayland .desktop entry, create ~/.config/lightxdm/ template if missing,
                     and run the custom install (--no-packages implied; infers Wayland for wayland-sessions or --wayland;
                     optional --de <custom-id>, --wayland, --dry-run, --non-interactive, --keyring, --no-keyring, --autologin, --setup-shell)
-  --wayland         with --init-template --de <custom-id>, create a minimal Wayland template (default command: exec <id>)
+  --wayland         with --init-template --de <custom-id>, create a minimal Wayland template (default command: exec <id>); also accepted with --install-session <path>
   --no-packages     skip package installation
   --keyring <gnome|kwallet> choose the PAM keyring backend for a custom id (requires --no-packages;
                     cannot combine with --no-keyring or --init-template)
@@ -4528,7 +4528,7 @@ EOF
   fi
 
   if [[ $wayland -eq 1 && $init_template -eq 0 && -z "$install_session" ]]; then
-    log "--wayland requires --init-template --de <custom-id>."
+    log "--wayland requires --init-template --de <custom-id> or --install-session <path>."
     echo "$usage" >&2
     exit 1
   fi
