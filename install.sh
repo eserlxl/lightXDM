@@ -2244,6 +2244,19 @@ inspect_gnome_pam_status() {
   fi
 }
 
+# True when an enable-autologin.sh --status Note reports an unreadable drop-in dir or *.conf file.
+autologin_note_needs_root() {
+  local autologin_dir="${AUTOLOGIN_DROPIN_DIR%/}"
+  case "$1" in
+    "Note: cannot read $AUTOLOGIN_DROPIN_DIR;"* | \
+      "Note: cannot read $AUTOLOGIN_DROPIN_DIR/"*.conf";"* | \
+      "Note: cannot read $autologin_dir/"*.conf";"* )
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 # Report the current lightXDM installation state without modifying files or invoking sudo.
 show_install_status() {
   local LC_ALL=C json_mode=0
@@ -2487,14 +2500,10 @@ show_install_status() {
     if [[ "$auto_state" == disabled ]]; then
       local note_item
       for note_item in "${auto_notes[@]}"; do
-        case "$note_item" in
-          "Note: cannot read $AUTOLOGIN_DROPIN_DIR;"* | \
-            "Note: cannot read $AUTOLOGIN_DROPIN_DIR/lightxdm-autologin.conf;"* | \
-            "Note: cannot read $AUTOLOGIN_DROPIN_DIR/override.conf;"*)
-            auto_state="unknown-needs-root"
-            break
-            ;;
-        esac
+        if autologin_note_needs_root "$note_item"; then
+          auto_state="unknown-needs-root"
+          break
+        fi
       done
     fi
 
@@ -3262,14 +3271,10 @@ run_doctor() {
   if [[ "$auto_state" == disabled ]]; then
     local note_item
     for note_item in "${auto_notes[@]}"; do
-      case "$note_item" in
-        "Note: cannot read $AUTOLOGIN_DROPIN_DIR;"* | \
-          "Note: cannot read $AUTOLOGIN_DROPIN_DIR/lightxdm-autologin.conf;"* | \
-          "Note: cannot read $AUTOLOGIN_DROPIN_DIR/override.conf;"*)
-          auto_needs_root=1
-          break
-          ;;
-      esac
+      if autologin_note_needs_root "$note_item"; then
+        auto_needs_root=1
+        break
+      fi
     done
   fi
   if [[ $auto_needs_root -eq 1 ]]; then

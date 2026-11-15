@@ -13082,6 +13082,51 @@ PY
   then
     js_report+=" [block-present-needs-root: rc=$priv_gnome_block_js_rc err=$(cat "$js_dir/priv_gnome_block.err") out=$priv_gnome_block_js_out]"
   fi
+
+  mkdir -p "$js_dir/priv_foreign_dropin_dir"
+  printf '[Service]\nExecStart=-/usr/bin/agetty --autologin alice --noclear %%I %s\n' "\$TERM" >"$js_dir/priv_foreign_dropin_dir/99-custom.conf"
+  chmod 000 "$js_dir/priv_foreign_dropin_dir/99-custom.conf"
+  set +e
+  priv_foreign_js_out="$(
+    env \
+      HOME="$js_dir/home_empty" XDG_STATE_HOME="$js_dir/home_empty/.local/state" PATH="$js_dir/bin:$STUB_BIN:$PATH" \
+      LOGIN_FILE="$js_dir/readable_login_noblock" PAM_KEYRING_STATE="$js_dir/empty_etc/pam-keyring" \
+      GNOME_SESSION_TYPE_DEST="$js_dir/empty_etc/gnome-session-type.conf" DM_STATE_FILE="$js_dir/empty_etc/disabled-display-managers" \
+      AUTOLOGIN_DROPIN_DIR="$js_dir/priv_foreign_dropin_dir/" bash "$REPO_ROOT/install.sh" --status --json 2>"$js_dir/priv_foreign.err"
+  )"
+  priv_foreign_js_rc=$?
+  printf '[Service]\nExecStart=-/usr/bin/agetty --autologin alice --noclear %%I %s\n' "\$TERM" >"$js_dir/priv_foreign_dropin_dir/lightxdm-autologin.conf"
+  priv_foreign_enabled_js_out="$(
+    env \
+      HOME="$js_dir/home_empty" XDG_STATE_HOME="$js_dir/home_empty/.local/state" PATH="$js_dir/bin:$STUB_BIN:$PATH" \
+      LOGIN_FILE="$js_dir/readable_login_noblock" PAM_KEYRING_STATE="$js_dir/empty_etc/pam-keyring" \
+      GNOME_SESSION_TYPE_DEST="$js_dir/empty_etc/gnome-session-type.conf" DM_STATE_FILE="$js_dir/empty_etc/disabled-display-managers" \
+      AUTOLOGIN_DROPIN_DIR="$js_dir/priv_foreign_dropin_dir" bash "$REPO_ROOT/install.sh" --status --json 2>"$js_dir/priv_foreign_enabled.err"
+  )"
+  priv_foreign_enabled_js_rc=$?
+  set -e
+  chmod 644 "$js_dir/priv_foreign_dropin_dir/99-custom.conf"
+  if [[ $priv_foreign_js_rc -ne 0 || -s "$js_dir/priv_foreign.err" ]] ||
+    ! JSON_OUT="$priv_foreign_js_out" python3 - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["autologin"]["state"] == "unknown-needs-root"
+assert any("cannot read " in n and "99-custom.conf" in n for n in d["autologin"]["notes"])
+PY
+  then
+    js_report+=" [unreadable foreign dropin: rc=$priv_foreign_js_rc err=$(cat "$js_dir/priv_foreign.err") out=$priv_foreign_js_out]"
+  fi
+  if [[ $priv_foreign_enabled_js_rc -ne 0 || -s "$js_dir/priv_foreign_enabled.err" ]] ||
+    ! JSON_OUT="$priv_foreign_enabled_js_out" python3 - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["autologin"]["state"] == "enabled"
+assert d["autologin"]["user"] == "alice"
+assert any("cannot read " in n and "99-custom.conf" in n for n in d["autologin"]["notes"])
+PY
+  then
+    js_report+=" [readable-enabled+unreadable-foreign: rc=$priv_foreign_enabled_js_rc err=$(cat "$js_dir/priv_foreign_enabled.err") out=$priv_foreign_enabled_js_out]"
+  fi
 fi
 
 # 5) Invalid --json combinations exit 1 before side effects
@@ -13662,6 +13707,21 @@ EOF
     "$doc_out" != *"Doctor: PASS (0 issue(s),"* || "$doc_out" == *"Permission denied"* ]]; then
     doctor_ok=0
     doctor_report+=" unknown-needs-root-xfce rc=$doc_rc out=[$doc_out];"
+  fi
+
+  # Unreadable foreign autologin drop-in without lightxdm-autologin.conf warns instead of reporting disabled
+  reset_doctor_gnome_fixture
+  printf '[Service]\nExecStart=-/usr/bin/agetty --autologin alice --noclear %%I %s\n' "\$TERM" >"$doctor_etc/getty@tty1.service.d/99-custom.conf"
+  chmod 000 "$doctor_etc/getty@tty1.service.d/99-custom.conf"
+  doc_rc=0
+  doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+  chmod 644 "$doctor_etc/getty@tty1.service.d/99-custom.conf"
+  if [[ $doc_rc -ne 0 ||
+    "$doc_out" != *"Autologin: WARN ($doctor_etc/getty@tty1.service.d: unknown (needs root))"* ||
+    "$doc_out" != *"Doctor: PASS (0 issue(s), 1 warning(s))"* ||
+    "$doc_out" == *"Autologin: ok"* || "$doc_out" == *"Permission denied"* ]]; then
+    doctor_ok=0
+    doctor_report+=" unreadable-foreign-autologin rc=$doc_rc out=[$doc_out];"
   fi
 fi
 
