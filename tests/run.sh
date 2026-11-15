@@ -15328,4 +15328,19 @@ else
   fail "install.sh --fix:$fix_report"
 fi
 
+if ! command -v python3 >/dev/null 2>&1; then
+  skip "Python VM driver unit tests (python3 unavailable)"
+else
+  set +e
+  py_vm_output="$(PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s "$REPO_ROOT/tests" -p "test_*.py" 2>&1)"
+  py_vm_status=$?
+  set -e
+  py_pycache="$(find "$REPO_ROOT/tests" -type d -name '__pycache__' 2>/dev/null || true)"
+  if [[ $py_vm_status -eq 0 && -z "$py_pycache" && "$py_vm_output" == *"OK"* && "$py_vm_output" != *"Ran 0 tests"* ]]; then
+    pass "Python VM driver unit tests pass without leaving __pycache__"
+  else
+    fail "Python VM driver unit tests (status=$py_vm_status, pycache=$py_pycache, output=$py_vm_output)"
+  fi
+fi
+
 finish_harness
