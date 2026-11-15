@@ -18477,6 +18477,79 @@ if [[ $guided_live_rc -ne 0 || "$guided_live_out" != *"Running:"*"--de xfce --se
   guided_report+=" [live confirm rc=$guided_live_rc steps=$guided_live_steps out=$guided_live_out]"
 fi
 
+mkdir -p "$guided_case/edge_ovf" "$guided_case/edge_sym" "$guided_case/edge_inc" "$guided_case/edge_ro"
+set +e
+guided_ovf_out="$(printf '18446744073709551617\n4\n1\nn\n' | env HOME="$guided_case/edge_ovf" USER=testuser PATH="$guided_case/bin:$PATH" \
+  GUIDED_SHELL=/bin/bash GUIDED_PKGS="" SESSION_ROOT="$guided_case/empty_sess" \
+  DISPLAY_MANAGER_LINK="$guided_case/dm/display-manager.service" \
+  bash "$REPO_ROOT/install.sh" --guided --dry-run 2>&1)"
+guided_ovf_rc=$?
+set -e
+if [[ $guided_ovf_rc -ne 0 || "$guided_ovf_out" != *"Selection out of range (18446744073709551617)"* ||
+  "$guided_ovf_out" != *"Equivalent command: bash $REPO_ROOT/install.sh --de xfce"$'\n'* ]]; then
+  guided_ok=0
+  guided_report+=" [step1 overflow rc=$guided_ovf_rc out=$guided_ovf_out]"
+fi
+
+: >"$guided_case/edge_sym/ztarget"
+ln -s ztarget "$guided_case/edge_sym/.zprofile"
+set +e
+guided_sym_out="$(printf '1\n1\n' | env HOME="$guided_case/edge_sym" USER=testuser PATH="$guided_case/bin:$PATH" \
+  GUIDED_SHELL=/usr/bin/zsh GUIDED_PKGS="" SESSION_ROOT="$guided_case/empty_sess" \
+  DISPLAY_MANAGER_LINK="$guided_case/dm/display-manager.service" \
+  bash "$REPO_ROOT/install.sh" --guided --dry-run 2>&1)"
+guided_sym_rc=$?
+set -e
+if [[ $guided_sym_rc -ne 0 || "$guided_sym_out" != *"Refusing symlinked shell configuration file"* ||
+  "$guided_sym_out" != *"--shell-snippet zsh"* ||
+  "$guided_sym_out" != *"Guided dry run complete"* ||
+  "$guided_sym_out" == *"Configure auto-start hook"* ||
+  "$guided_sym_out" != *"Equivalent command: bash $REPO_ROOT/install.sh --de plasma"$'\n'* ]]; then
+  guided_ok=0
+  guided_report+=" [symlink zprofile fallback rc=$guided_sym_rc out=$guided_sym_out]"
+fi
+
+printf '# >>> lightXDM TTY1 auto-start >>>\n' >"$guided_case/edge_inc/.zprofile"
+set +e
+guided_inc_out="$(printf '1\n1\n' | env HOME="$guided_case/edge_inc" USER=testuser PATH="$guided_case/bin:$PATH" \
+  GUIDED_SHELL=/usr/bin/zsh GUIDED_PKGS="" SESSION_ROOT="$guided_case/empty_sess" \
+  DISPLAY_MANAGER_LINK="$guided_case/dm/display-manager.service" \
+  bash "$REPO_ROOT/install.sh" --guided --dry-run 2>&1)"
+guided_inc_rc=$?
+set -e
+if [[ $guided_inc_rc -ne 0 || "$guided_inc_out" != *"Found incomplete lightXDM hook markers"* ||
+  "$guided_inc_out" != *"--shell-snippet zsh"* ||
+  "$guided_inc_out" != *"Guided dry run complete"* ||
+  "$guided_inc_out" == *"Configure auto-start hook"* ||
+  "$guided_inc_out" != *"Equivalent command: bash $REPO_ROOT/install.sh --de plasma"$'\n'* ]]; then
+  guided_ok=0
+  guided_report+=" [incomplete markers fallback rc=$guided_inc_rc out=$guided_inc_out]"
+fi
+
+: >"$guided_case/edge_ro/.zprofile"
+chmod 444 "$guided_case/edge_ro/.zprofile"
+guided_ro_log="$guided_case/live_ro.log"
+set +e
+guided_ro_out="$(printf '4\n1\ny\n' | env HOME="$guided_case/edge_ro" USER=testuser PATH="$guided_case/bin:$PATH" \
+  GUIDED_SHELL=/usr/bin/zsh GUIDED_PKGS="" SESSION_ROOT="$guided_case/empty_sess" \
+  DISPLAY_MANAGER_LINK="$guided_case/dm/display-manager.service" \
+  GUIDED_LOG="$guided_ro_log" \
+  bash "$guided_case/run_live.sh" "$REPO_ROOT" 2>&1)"
+guided_ro_rc=$?
+set -e
+guided_ro_steps="$(cat "$guided_ro_log" 2>/dev/null || true)"
+chmod 644 "$guided_case/edge_ro/.zprofile" 2>/dev/null || true
+if [[ $guided_ro_rc -ne 0 || "$guided_ro_out" != *"Cannot write shell configuration file"* ||
+  "$guided_ro_out" != *"--shell-snippet zsh"* ||
+  "$guided_ro_out" != *"Equivalent command: bash $REPO_ROOT/install.sh --de xfce"$'\n'* ||
+  "$guided_ro_out" != *"=> Running: bash $REPO_ROOT/install.sh --de xfce"$'\n'* ||
+  "$guided_ro_out" != *"lightXDM install complete!"* ||
+  "$guided_ro_steps" != *$'sudo:testuser\npkg:xfce\ncopy:xfce\npam:xfce\nsave:xfce'* ||
+  "$guided_ro_steps" == *"hook:"* ]]; then
+  guided_ok=0
+  guided_report+=" [readonly zprofile live rc=$guided_ro_rc steps=$guided_ro_steps out=$guided_ro_out]"
+fi
+
 if [[ $guided_ok -eq 1 ]]; then
   pass "install.sh --guided interactive onboarding (preflight gate, custom/built-in menus, GNOME confirm, shell hook, preview, cancel/EOF, live confirm)"
 else

@@ -3927,6 +3927,10 @@ run_guided_wizard() {
         continue
         ;;
     esac
+    if [[ ${#reply} -gt 9 ]]; then
+      printf 'Selection out of range (%s); enter 1-%d or q.\n' "$reply" "${#menu_labels[@]}"
+      continue
+    fi
     pick_idx=$((10#$reply))
     if ((pick_idx < 1 || pick_idx > ${#menu_labels[@]})); then
       printf 'Selection out of range (%s); enter 1-%d or q.\n' "$reply" "${#menu_labels[@]}"
@@ -3935,7 +3939,8 @@ run_guided_wizard() {
     pick_idx=$((pick_idx - 1))
     chosen_kind="${menu_kinds[$pick_idx]}"
     if [[ "$chosen_kind" == choose-builtin ]]; then
-      local bi_picked=0
+      local bi_picked=0 bi_hint=" or q"
+      [[ $has_discovered -eq 1 ]] && bi_hint=", b, or q"
       while true; do
         printf '\nBuilt-in desktops:\n'
         for ((idx = 0; idx < ${#builtin_ids[@]}; idx++)); do
@@ -3960,10 +3965,14 @@ run_guided_wizard() {
             fi
             ;;
           "" | *[!0123456789]*)
-            printf 'Invalid selection (%s); enter 1-%d or q.\n' "$reply" "${#builtin_ids[@]}"
+            printf 'Invalid selection (%s); enter 1-%d%s.\n' "$reply" "${#builtin_ids[@]}" "$bi_hint"
             continue
             ;;
           *)
+            if [[ ${#reply} -gt 9 ]]; then
+              printf 'Selection out of range (%s); enter 1-%d%s.\n' "$reply" "${#builtin_ids[@]}" "$bi_hint"
+              continue
+            fi
             local bi_idx=$((10#$reply))
             if ((bi_idx >= 1 && bi_idx <= ${#builtin_ids[@]})); then
               chosen_kind="builtin"
@@ -3973,7 +3982,7 @@ run_guided_wizard() {
               bi_picked=1
               break
             fi
-            printf 'Selection out of range (%s); enter 1-%d or q.\n' "$reply" "${#builtin_ids[@]}"
+            printf 'Selection out of range (%s); enter 1-%d%s.\n' "$reply" "${#builtin_ids[@]}" "$bi_hint"
             continue
             ;;
         esac
@@ -4079,23 +4088,31 @@ run_guided_wizard() {
         "$login_shell" "$(script_cmd install.sh)" "$hook_kind"
     elif ! shell_has_tty1_hook "$hook_kind"; then
       hook_display="$(shell_hook_display_path "$hook_kind")"
-      printf '\nStep 3 — Login shell TTY1 hook (%s):\n' "$login_shell"
-      while true; do
-        printf 'Configure auto-start hook in %s (--setup-shell %s)? [Y/n]: ' "$hook_display" "$hook_kind"
-        if ! IFS= read -r reply; then
-          log "Input closed (EOF) during guided setup; no changes were made."
-          return 1
-        fi
-        case "$reply" in
-          "" | y | Y | yes | YES) chosen_setup_shell="$hook_kind"; break ;;
-          n | N | no | NO) chosen_setup_shell=""; break ;;
-          q | Q | quit | QUIT)
-            log "Cancelled by user; no changes were made."
-            return 0
-            ;;
-          *) printf 'Please enter y or n.\n' ;;
-        esac
-      done
+      local shell_validate_err=""
+      if shell_validate_err="$(validate_setup_shell "$hook_kind" "$dry_run" 2>&1)"; then
+        printf '\nStep 3 — Login shell TTY1 hook (%s):\n' "$login_shell"
+        while true; do
+          printf 'Configure auto-start hook in %s (--setup-shell %s)? [Y/n]: ' "$hook_display" "$hook_kind"
+          if ! IFS= read -r reply; then
+            log "Input closed (EOF) during guided setup; no changes were made."
+            return 1
+          fi
+          case "$reply" in
+            "" | y | Y | yes | YES) chosen_setup_shell="$hook_kind"; break ;;
+            n | N | no | NO) chosen_setup_shell=""; break ;;
+            q | Q | quit | QUIT)
+              log "Cancelled by user; no changes were made."
+              return 0
+              ;;
+            *) printf 'Please enter y or n.\n' ;;
+          esac
+        done
+      else
+        printf '\n'
+        [[ -n "$shell_validate_err" ]] && printf '%s\n' "$shell_validate_err" >&2
+        printf 'Note: cannot auto-configure %s (see warning above); add TTY1 snippet manually with %s --shell-snippet %s\n' \
+          "$hook_display" "$(script_cmd install.sh)" "$hook_kind"
+      fi
     else
       hook_display="$(shell_hook_display_path "$hook_kind")"
       printf '\nLogin shell TTY1 hook already present in %s.\n' "$hook_display"
