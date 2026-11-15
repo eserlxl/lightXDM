@@ -14708,4 +14708,307 @@ else
   fail "install.sh --install-session:$is_report"
 fi
 
+# --- install.sh --fix ---
+fix_dir="$TMP_DIR/fix_test"
+fix_home="$fix_dir/home"
+fix_state="$fix_dir/state"
+fix_etc="$fix_dir/etc"
+fix_root="$fix_dir/root"
+fix_bin="$fix_dir/bin"
+fix_sudo_log="$fix_dir/sudo.log"
+fix_getty_file="$fix_dir/getty_state"
+fix_sddm_file="$fix_dir/sddm_enabled"
+mkdir -p "$fix_home" "$fix_state" "$fix_etc/pam.d" "$fix_etc/lightxdm" "$fix_etc/systemd/system" \
+  "$fix_etc/getty@tty1.service.d" "$fix_root/usr/lib/security" "$fix_root/usr/bin" "$fix_bin"
+
+cp "$setup_shell_bin/"{id,pacman,startx} "$fix_bin/"
+: >"$fix_root/usr/lib/security/pam_gnome_keyring.so"
+: >"$fix_root/usr/lib/security/pam_kwallet5.so"
+cat >"$fix_root/usr/bin/gnome-session" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$fix_bin/i3" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$fix_bin/getent" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "passwd" ]]; then
+  printf 'testuser:x:1000:1000:Test User:/tmp:%s\n' "${FAKE_SHELL:-/usr/bin/bash}"
+  exit 0
+fi
+exit 2
+EOF
+cat >"$fix_bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  list-unit-files)
+    printf 'getty@tty1.service %s\n' "$(cat "${FIX_GETTY_FILE:?}")"
+    if [[ "$(cat "${FIX_SDDM_FILE:?}")" == "1" ]]; then
+      printf 'sddm.service enabled\n'
+    else
+      printf 'sddm.service disabled\n'
+    fi
+    exit 0
+    ;;
+  is-enabled)
+    case "${2:-}" in
+      getty@tty1.service)
+        st="$(cat "${FIX_GETTY_FILE:?}")"
+        printf '%s\n' "$st"
+        [[ "$st" == "enabled" ]]
+        ;;
+      sddm.service)
+        if [[ "$(cat "${FIX_SDDM_FILE:?}")" == "1" ]]; then
+          printf 'enabled\n'
+          exit 0
+        fi
+        printf 'disabled\n'
+        exit 1
+        ;;
+      *)
+        printf 'disabled\n'
+        exit 1
+        ;;
+    esac
+    ;;
+  is-active)
+    exit 1
+    ;;
+  unmask)
+    if [[ "${2:-}" == "getty@tty1.service" ]]; then
+      printf '%s\n' "${FIX_UNMASK_RESULT:-enabled}" >"${FIX_GETTY_FILE:?}"
+      exit 0
+    fi
+    exit 1
+    ;;
+  enable)
+    if [[ "${2:-}" == "getty@tty1.service" ]]; then
+      printf 'enabled\n' >"${FIX_GETTY_FILE:?}"
+      exit 0
+    fi
+    exit 1
+    ;;
+  disable)
+    if [[ "${2:-}" == "sddm.service" ]]; then
+      printf '0\n' >"${FIX_SDDM_FILE:?}"
+      exit 0
+    fi
+    exit 1
+    ;;
+esac
+exit 1
+EOF
+cat >"$fix_bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${FIX_SUDO_LOG:?}"
+has_n=0
+for a in "$@"; do
+  [[ "$a" == "-n" ]] && has_n=1
+done
+if [[ "${FAKE_SUDO_FAIL_N:-0}" == "1" && $has_n -eq 1 ]]; then
+  exit 1
+fi
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -v | -k | -K | -n | -S) shift ;;
+    -p) shift 2 ;;
+    --)
+      shift
+      break
+      ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+if [[ $# -eq 0 ]]; then
+  exit 0
+fi
+"$@"
+EOF
+chmod +x "$fix_root/usr/bin/gnome-session" "$fix_bin/"{i3,getent,systemctl,sudo}
+
+run_fix_cmd() {
+  env -u SUDO_USER -u DISPLAY -u WAYLAND_DISPLAY \
+    HOME="$fix_home" \
+    USER="testuser" \
+    XDG_STATE_HOME="$fix_state" \
+    SESSION_ROOT="$fix_root" \
+    LOGIN_FILE="$fix_etc/pam.d/login" \
+    GNOME_SESSION_TYPE_DEST="$fix_etc/lightxdm/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$fix_etc/lightxdm/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$fix_etc/lightxdm/pam-login-base" \
+    DM_STATE_FILE="$fix_etc/lightxdm/disabled-display-managers" \
+    DISPLAY_MANAGER_LINK="$fix_etc/systemd/system/display-manager.service" \
+    AUTOLOGIN_DROPIN_DIR="$fix_etc/getty@tty1.service.d" \
+    FIX_SUDO_LOG="$fix_sudo_log" \
+    FIX_GETTY_FILE="$fix_getty_file" \
+    FIX_SDDM_FILE="$fix_sddm_file" \
+    PATH="$fix_bin:/usr/bin:/bin" \
+    bash "$REPO_ROOT/install.sh" "$@"
+}
+
+reset_fix_fixture() {
+  local target_de="${1:-i3}"
+  rm -rf "$fix_home" "$fix_state" "$fix_etc"
+  mkdir -p "$fix_home" "$fix_state" "$fix_etc/pam.d" "$fix_etc/lightxdm" "$fix_etc/systemd/system" "$fix_etc/getty@tty1.service.d"
+  printf '#%%PAM-1.0\nauth include system-local-login\nsession include system-local-login\n' >"$fix_etc/pam.d/login"
+  printf 'enabled\n' >"$fix_getty_file"
+  printf '0\n' >"$fix_sddm_file"
+  : >"$fix_sudo_log"
+  run_fix_cmd --de "$target_de" --no-packages --non-interactive >/dev/null 2>&1
+  : >"$fix_sudo_log"
+}
+
+fix_ok=1
+fix_report=""
+
+# 1. Healthy system no-op (--dry-run and live) never calls sudo
+reset_fix_fixture i3
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || -s "$fix_sudo_log" || "$fx_out" != *"Nothing to fix"* ]]; then
+  fix_ok=0
+  fix_report+=" healthy-dry rc=$fx_rc out=[$fx_out];"
+fi
+fx_rc=0
+fx_out="$(run_fix_cmd --fix 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || -s "$fix_sudo_log" || "$fx_out" != *"Doctor: PASS"* ]]; then
+  fix_ok=0
+  fix_report+=" healthy-live rc=$fx_rc out=[$fx_out];"
+fi
+
+# 2. Home-only broken/paused + zsh hook fixes without invoking sudo
+reset_fix_fixture i3
+rm -f "$fix_home/.xinitrc"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$fix_home/.wayland-session"
+chmod 755 "$fix_home/.wayland-session"
+mkdir -p "$fix_home/.config/lightxdm"
+: >"$fix_home/.config/lightxdm/no-autostart"
+fx_rc=0
+fx_out="$(FAKE_SHELL=/usr/bin/zsh run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || -s "$fix_sudo_log" ||
+  "$fx_out" != *"Fix plan for de=i3"* ||
+  "$fx_out" != *"Shell hook (zsh):"* ||
+  ! -e "$fix_home/.config/lightxdm/no-autostart" ||
+  -e "$fix_home/.xinitrc" || -e "$fix_home/.zprofile" ]]; then
+  fix_ok=0
+  fix_report+=" home-dry rc=$fx_rc out=[$fx_out];"
+fi
+fx_rc=0
+fx_out="$(FAKE_SHELL=/usr/bin/zsh run_fix_cmd --fix 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || -s "$fix_sudo_log" ||
+  ! -f "$fix_home/.xinitrc" || -e "$fix_home/.wayland-session" ||
+  ! -e "$fix_home/.wayland-session.lightxdm.bak" ||
+  -e "$fix_home/.config/lightxdm/no-autostart" ||
+  "$fx_out" != *"Doctor: PASS"* ]] ||
+  ! grep -Fxq '# >>> lightXDM TTY1 auto-start >>>' "$fix_home/.zprofile"; then
+  fix_ok=0
+  fix_report+=" home-live rc=$fx_rc sudo=$(wc -l <"$fix_sudo_log") out=[$fx_out];"
+fi
+
+# 3. System-only repair preserves valid user-edited ~/.xinitrc; failed --non-interactive sudo leaves $HOME & /etc untouched
+reset_fix_fixture i3
+printf '# custom user xinitrc line\n' >>"$fix_home/.xinitrc"
+printf '#%%PAM-1.0\nauth include system-local-login\nsession include system-local-login\n' >"$fix_etc/pam.d/login"
+printf 'masked\n' >"$fix_getty_file"
+printf '1\n' >"$fix_sddm_file"
+fx_rc=0
+fx_out="$(FAKE_SUDO_FAIL_N=1 FIX_UNMASK_RESULT=disabled run_fix_cmd --fix --non-interactive 2>&1)" || fx_rc=$?
+if [[ $fx_rc -eq 0 || "$(cat "$fix_getty_file")" != "masked" || "$(cat "$fix_sddm_file")" != "1" ||
+  -e "$fix_home/.xinitrc.lightxdm-edited" ]]; then
+  fix_ok=0
+  fix_report+=" sudo-n-fail rc=$fx_rc out=[$fx_out];"
+fi
+: >"$fix_sudo_log"
+fx_rc=0
+fx_out="$(FIX_UNMASK_RESULT=disabled run_fix_cmd --fix --non-interactive 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || ! -s "$fix_sudo_log" ||
+  "$(cat "$fix_getty_file")" != "enabled" || "$(cat "$fix_sddm_file")" != "0" ||
+  -e "$fix_home/.xinitrc.lightxdm-edited" ||
+  "$fx_out" != *"Doctor: PASS"* ]] ||
+  ! grep -Fxq '# custom user xinitrc line' "$fix_home/.xinitrc" ||
+  ! grep -Fq 'pam_gnome_keyring.so' "$fix_etc/pam.d/login" ||
+  ! grep -Fxq 'sddm.service' "$fix_etc/lightxdm/disabled-display-managers"; then
+  fix_ok=0
+  fix_report+=" sys-live rc=$fx_rc getty=$(cat "$fix_getty_file") sddm=$(cat "$fix_sddm_file") out=[$fx_out];"
+fi
+
+# 4. GNOME session-type PAM + file remediation alongside keyring restoration
+reset_fix_fixture gnome
+printf '#%%PAM-1.0\nauth include system-local-login\nsession include system-local-login\n' >"$fix_etc/pam.d/login"
+rm -f "$fix_etc/lightxdm/gnome-session-type.conf"
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --non-interactive 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || ! -f "$fix_etc/lightxdm/gnome-session-type.conf" ||
+  "$fx_out" != *"Doctor: PASS"* ]] ||
+  ! grep -Fq '# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)' "$fix_etc/pam.d/login" ||
+  ! grep -Fq 'pam_gnome_keyring.so' "$fix_etc/pam.d/login"; then
+  fix_ok=0
+  fix_report+=" gnome-pam rc=$fx_rc out=[$fx_out];"
+fi
+
+# 5. Unreadable PAM dry-run reports PAM probe cleanly without sudo; symlink/edited-block/bad flags reject safely
+if [[ $EUID -ne 0 ]]; then
+  reset_fix_fixture i3
+  chmod 000 "$fix_etc/pam.d/login"
+  fx_rc=0
+  fx_out="$(run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+  chmod 644 "$fix_etc/pam.d/login"
+  if [[ $fx_rc -ne 0 || -s "$fix_sudo_log" || "$fx_out" != *"PAM probe: unknown (needs root"* ]]; then
+    fix_ok=0
+    fix_report+=" unreadable-pam-dry rc=$fx_rc out=[$fx_out];"
+  fi
+fi
+
+reset_fix_fixture i3
+ln -s "$fix_dir/outside" "$fix_home/.zprofile"
+fx_rc=0
+fx_out="$(FAKE_SHELL=/usr/bin/zsh run_fix_cmd --fix 2>&1)" || fx_rc=$?
+if [[ $fx_rc -eq 0 || -e "$fix_dir/outside" || "$fx_out" != *"Refusing symlinked"* ]]; then
+  fix_ok=0
+  fix_report+=" sym-zprofile rc=$fx_rc out=[$fx_out];"
+fi
+
+reset_fix_fixture gnome
+printf '#%%PAM-1.0\n# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)\n# edited line\nsession include system-local-login\n' >"$fix_etc/pam.d/login"
+fx_rc=0
+fx_out="$(run_fix_cmd --fix --non-interactive 2>&1)" || fx_rc=$?
+if [[ $fx_rc -eq 0 || -s "$fix_sudo_log" || "$fx_out" != *"Edited lightXDM GNOME block"* ]]; then
+  fix_ok=0
+  fix_report+=" edited-gnome-block rc=$fx_rc out=[$fx_out];"
+fi
+
+reset_fix_fixture i3
+for bad_fx in \
+  "--fix --recover" \
+  "--fix --update" \
+  "--fix --doctor" \
+  "--fix --status" \
+  "--fix --pam-only --de i3" \
+  "--fix --setup-shell zsh" \
+  "--fix --install-session $fix_dir/none.desktop" \
+  "--fix --no-keyring" \
+  "--fix --autologin" \
+  "--fix --de"; do
+  fx_rc=0
+  read -r -a fx_bad_args <<<"$bad_fx"
+  run_fix_cmd "${fx_bad_args[@]}" >/dev/null 2>&1 || fx_rc=$?
+  if [[ $fx_rc -ne 1 ]]; then
+    fix_ok=0
+    fix_report+=" bad($bad_fx) rc=$fx_rc;"
+  fi
+done
+if [[ -s "$fix_sudo_log" ]]; then
+  fix_ok=0
+  fix_report+=" bad-touched-sudo;"
+fi
+
+if [[ $fix_ok -eq 1 ]]; then
+  pass "install.sh --fix diagnoses and repairs home, shell hooks, PAM, and systemd/DM health cleanly and preserves valid user edits"
+else
+  fail "install.sh --fix:$fix_report"
+fi
+
 finish_harness

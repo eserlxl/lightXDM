@@ -3277,9 +3277,9 @@ run_doctor() {
   return 1
 }
 
-# Recover user session dotfiles and clear boot-loop pauses cleanly without sudo or package changes.
-run_recover() {
-  local LC_ALL=C target_de="$1" preview="${2:-0}" setup_shell="${3:-}" resolved_setup_shell=""
+# Resolve and validate the target desktop and session template for --recover and --fix.
+validate_repair_target_de() {
+  local caller_flag="$1" target_de="$2" template=""
   if [[ -z "$target_de" ]]; then
     target_de="$(saved_install_de)" || return 1
   fi
@@ -3287,13 +3287,12 @@ run_recover() {
     plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
     *)
       if [[ -z "$target_de" || "$target_de" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* ]]; then
-        log "Unsupported desktop environment for --recover: $target_de"
+        log "Unsupported desktop environment for $caller_flag: $target_de"
         return 1
       fi
       ;;
   esac
 
-  local template
   template="$(xinitrc_template "$target_de")" || return 1
   if [[ ! -f "$template" ]]; then
     log "Missing session template for $target_de: $template"
@@ -3303,6 +3302,16 @@ run_recover() {
   check_template_syntax "$template" || return 1
   check_template_not_self "$target_de" "$template" || return 1
   check_session_commands "$template" || return 1
+  REPAIR_TARGET_DE="$target_de"
+  REPAIR_TEMPLATE="$template"
+}
+
+# Recover user session dotfiles and clear boot-loop pauses cleanly without sudo or package changes.
+run_recover() {
+  local LC_ALL=C target_de="$1" preview="${2:-0}" setup_shell="${3:-}" resolved_setup_shell=""
+  local REPAIR_TARGET_DE="" REPAIR_TEMPLATE=""
+  validate_repair_target_de "--recover" "$target_de" || return 1
+  target_de="$REPAIR_TARGET_DE"
   if [[ -n "$setup_shell" ]]; then
     validate_setup_shell "$setup_shell" || return 1
     resolved_setup_shell="$(resolve_setup_shell "$setup_shell")" || return 1
@@ -3388,6 +3397,348 @@ run_recover() {
   if [[ $preview -eq 0 ]]; then
     log "Home recovery complete for $target_de. Run '$(script_cmd install.sh) --doctor' to verify PAM and systemd health."
   fi
+}
+
+# Read-only ($1=1) or sudo-enabled ($1=0) PAM inspection for --fix, setting FIX_* caller state.
+inspect_fix_pam_state() {
+  local probe_preview="${1:-1}" target_de="$2" real_user="$3"
+  FIX_NEED_PAM_KEYRING=0
+  FIX_PAM_BACKEND=""
+  FIX_NEED_GNOME_PAM=0
+  FIX_GNOME_DE="$target_de"
+  FIX_NEED_PAM_PROBE=0
+
+  if [[ -L "$(dirname -- "$PAM_KEYRING_STATE")" || -L "$PAM_KEYRING_STATE" ]]; then
+    log "ERROR: $PAM_KEYRING_STATE or its directory is a symlink; lightXDM ignores symlinks."
+    return 1
+  fi
+  if [[ -L "$(dirname -- "$LOGIN_FILE")" || -L "$LOGIN_FILE" ]]; then
+    log "ERROR: $LOGIN_FILE or its directory is a symlink; lightXDM ignores symlinks."
+    return 1
+  fi
+  if [[ -L "$(dirname -- "$GNOME_SESSION_TYPE_DEST")" || -L "$GNOME_SESSION_TYPE_DEST" ]]; then
+    log "ERROR: $GNOME_SESSION_TYPE_DEST or its directory is a symlink; lightXDM ignores symlinks."
+    return 1
+  fi
+
+  local pam_record="" pam_expected=""
+  if pam_record="$(read_pam_state_file "$PAM_KEYRING_STATE" "$probe_preview" 2>/dev/null)"; then
+    case "$pam_record" in
+      gnome | kwallet) pam_expected="$pam_record" ;;
+    esac
+  elif [[ $probe_preview -eq 1 ]] && pam_path_needs_sudo "$PAM_KEYRING_STATE" 1; then
+    FIX_NEED_PAM_PROBE=1
+  fi
+
+  local login_content=""
+  if login_content="$(read_pam_file "$LOGIN_FILE" "$probe_preview" 2>/dev/null)"; then
+    local missing_gnome="" missing_kwallet="" has_gnome_line=0 has_kwallet_line=0
+    missing_gnome="$(pam_lines_to_add "pam_gnome_keyring.so" "$PAM_GNOME_KEYRING_AUTH" "$PAM_GNOME_KEYRING_SESSION" "" "$probe_preview" || true)"
+    missing_kwallet="$(pam_lines_to_add "pam_kwallet5.so" "$PAM_KWALLET_AUTH" "$PAM_KWALLET_SESSION" "" "$probe_preview" || true)"
+    grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_gnome_keyring\.so' <<<"$login_content" && has_gnome_line=1
+    grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_kwallet5\.so' <<<"$login_content" && has_kwallet_line=1
+    if [[ "$pam_expected" == gnome && -n "$missing_gnome" ]]; then
+      FIX_NEED_PAM_KEYRING=1
+      FIX_PAM_BACKEND="gnome"
+    elif [[ "$pam_expected" == kwallet && -n "$missing_kwallet" ]]; then
+      FIX_NEED_PAM_KEYRING=1
+      FIX_PAM_BACKEND="kwallet"
+    elif { [[ $has_gnome_line -eq 1 && -n "$missing_gnome" ]]; } || { [[ $has_kwallet_line -eq 1 && -n "$missing_kwallet" ]]; }; then
+      FIX_NEED_PAM_KEYRING=1
+      if [[ -n "$pam_expected" ]]; then
+        FIX_PAM_BACKEND="$pam_expected"
+      elif [[ $has_kwallet_line -eq 1 && -n "$missing_kwallet" && $has_gnome_line -eq 0 ]]; then
+        FIX_PAM_BACKEND="kwallet"
+      else
+        FIX_PAM_BACKEND="gnome"
+      fi
+    fi
+
+    local GNOME_PAM_STATUS_ID="" GNOME_PAM_STATUS_MSG=""
+    inspect_gnome_pam_status "$login_content" "$real_user"
+    case "$GNOME_PAM_STATUS_ID" in
+      configured) ;;
+      block-present-needs-root)
+        if [[ $probe_preview -eq 1 ]]; then
+          FIX_NEED_PAM_PROBE=1
+        elif sudo test -L "$GNOME_SESSION_TYPE_DEST"; then
+          log "ERROR: $GNOME_SESSION_TYPE_DEST is a symlink; lightXDM ignores symlinks."
+          return 1
+        elif ! sudo test -f "$GNOME_SESSION_TYPE_DEST"; then
+          FIX_NEED_GNOME_PAM=1
+          FIX_GNOME_DE="$target_de"
+        fi
+        ;;
+      block-present-missing-file)
+        FIX_NEED_GNOME_PAM=1
+        FIX_GNOME_DE="$target_de"
+        ;;
+      edited-block)
+        log "ERROR: Edited lightXDM GNOME block in $LOGIN_FILE; remove lightXDM's GNOME lines by hand or restore ${LOGIN_FILE}.lightxdm.bak."
+        return 1
+        ;;
+      file-without-block)
+        FIX_NEED_GNOME_PAM=1
+        FIX_GNOME_DE="$target_de"
+        ;;
+      unknown-needs-root)
+        if [[ "$target_de" == gnome ]]; then
+          FIX_NEED_GNOME_PAM=1
+          FIX_GNOME_DE="gnome"
+        elif [[ $probe_preview -eq 1 ]]; then
+          FIX_NEED_PAM_PROBE=1
+        elif sudo test -L "$GNOME_SESSION_TYPE_DEST"; then
+          log "ERROR: $GNOME_SESSION_TYPE_DEST is a symlink; lightXDM ignores symlinks."
+          return 1
+        elif sudo test -e "$GNOME_SESSION_TYPE_DEST"; then
+          FIX_NEED_GNOME_PAM=1
+          FIX_GNOME_DE="$target_de"
+        fi
+        ;;
+      not-configured)
+        if [[ "$target_de" == gnome ]]; then
+          FIX_NEED_GNOME_PAM=1
+          FIX_GNOME_DE="gnome"
+        fi
+        ;;
+    esac
+  elif [[ $probe_preview -eq 1 ]] && pam_path_needs_sudo "$LOGIN_FILE" 0; then
+    FIX_NEED_PAM_PROBE=1
+  elif [[ ! -e "$LOGIN_FILE" && -x "$(dirname -- "$LOGIN_FILE")" ]]; then
+    log "ERROR: $LOGIN_FILE is missing; lightXDM will not create it. Reinstall pambase or restore ${LOGIN_FILE}.lightxdm.bak."
+    return 1
+  fi
+  return 0
+}
+
+# Diagnose and automatically repair home dotfiles, non-bash shell hooks, PAM rules, and systemd/DM state.
+run_fix() {
+  local LC_ALL=C target_de="$1" preview="${2:-0}" non_interactive="${3:-0}"
+  local REPAIR_TARGET_DE="" REPAIR_TEMPLATE="" UPDATE_RUN=0 display_manager_disabled=0
+  validate_repair_target_de "--fix" "$target_de" || return 1
+  target_de="$REPAIR_TARGET_DE"
+
+  local template="$REPAIR_TEMPLATE" expected_mode="x11"
+  if [[ "${template##*/}" == .wayland-session-* ]]; then
+    expected_mode="wayland"
+  fi
+
+  local real_user="${SUDO_USER:-${USER:-}}" login_shell=""
+  [[ -n "$real_user" ]] || real_user="$(id -un 2>/dev/null || true)"
+  if [[ -n "$real_user" ]] && command -v getent >/dev/null 2>&1; then
+    login_shell="$(getent passwd "$real_user" | cut -d: -f7 || true)"
+  fi
+
+  local need_home_recover=0 need_shell_hook=""
+  local wl="$HOME/.wayland-session" xi="$HOME/.xinitrc"
+  if [[ "$expected_mode" == wayland ]]; then
+    if [[ ( -L "$wl" && ( ! -e "$wl" || ! -f "$wl" ) ) || ! -f "$wl" || ! -x "$wl" || ! -r "$wl" ]] ||
+      ! check_template_syntax "$wl" >/dev/null 2>&1 ||
+      ! check_session_commands "$wl" >/dev/null 2>&1; then
+      need_home_recover=1
+    fi
+  else
+    if [[ ( -e "$wl" || -L "$wl" ) && -x "$wl" ]]; then
+      need_home_recover=1
+    elif [[ ( -L "$xi" && ( ! -e "$xi" || ! -f "$xi" ) ) || ! -f "$xi" || ! -r "$xi" ]] ||
+      ! check_template_syntax "$xi" >/dev/null 2>&1 ||
+      ! check_session_commands "$xi" >/dev/null 2>&1; then
+      need_home_recover=1
+    fi
+  fi
+
+  case "$login_shell" in
+    *bash | "")
+      if [[ ! -f "$HOME/.bash_profile" || ! -r "$HOME/.bash_profile" ]] ||
+        ! grep -Eq '\.wayland-session|startx' "$HOME/.bash_profile"; then
+        need_home_recover=1
+      fi
+      ;;
+    *zsh)
+      if [[ ! -f "$HOME/.zprofile" || ! -r "$HOME/.zprofile" ]] ||
+        ! grep -Eq '\.wayland-session|startx' "$HOME/.zprofile" 2>/dev/null; then
+        need_shell_hook="zsh"
+      fi
+      ;;
+    *fish)
+      if [[ ! -f "$HOME/.config/fish/config.fish" || ! -r "$HOME/.config/fish/config.fish" ]] ||
+        ! grep -Eq '\.wayland-session|startx' "$HOME/.config/fish/config.fish" 2>/dev/null; then
+        need_shell_hook="fish"
+      fi
+      ;;
+  esac
+
+  if [[ -e "$HOME/.config/lightxdm/no-autostart" || -L "$HOME/.config/lightxdm/no-autostart" ]]; then
+    need_home_recover=1
+  fi
+
+  if [[ -n "$need_shell_hook" ]]; then
+    validate_setup_shell "$need_shell_hook" "$preview" || return 1
+  fi
+
+  local FIX_NEED_PAM_KEYRING=0 FIX_PAM_BACKEND="" FIX_NEED_GNOME_PAM=0
+  local FIX_GNOME_DE="$target_de" FIX_NEED_PAM_PROBE=0
+  inspect_fix_pam_state 1 "$target_de" "$real_user" || return 1
+
+  local need_getty_unmask=0 need_getty_enable=0 need_disable_dms=0 need_dm_state_probe=0
+  local enabled_dms=() extra_dm_units=() dm_unit dm_state_content
+  if command -v systemctl >/dev/null 2>&1; then
+    local getty_state=""
+    getty_state="$(systemctl is-enabled getty@tty1.service 2>/dev/null || true)"
+    case "$getty_state" in
+      masked) need_getty_unmask=1 ;;
+      disabled) need_getty_enable=1 ;;
+    esac
+
+    mapfile -t enabled_dms < <(detect_enabled_dms)
+    if [[ ${#enabled_dms[@]} -gt 0 ]]; then
+      need_disable_dms=1
+    fi
+    if [[ -L "$(dirname -- "$DM_STATE_FILE")" || -L "$DM_STATE_FILE" ]]; then
+      log "ERROR: $DM_STATE_FILE or its directory is a symlink; lightXDM ignores symlinks."
+      return 1
+    fi
+    if [[ -f "$DM_STATE_FILE" ]]; then
+      if [[ -r "$DM_STATE_FILE" ]]; then
+        dm_state_content="$(cat -- "$DM_STATE_FILE")"
+        while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
+          [[ -n "$dm_unit" ]] || continue
+          local dm_short="${dm_unit%.service}"
+          if [[ " ${enabled_dms[*]} " != *" $dm_short "* ]] &&
+            [[ "$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)" == "enabled" ]]; then
+            extra_dm_units+=("$dm_unit")
+          fi
+        done <<<"$dm_state_content"
+      elif pam_path_needs_sudo "$DM_STATE_FILE" 1; then
+        need_dm_state_probe=1
+      fi
+    fi
+    if [[ ${#extra_dm_units[@]} -gt 0 ]]; then
+      need_disable_dms=1
+    fi
+  fi
+
+  local need_sudo=0
+  if [[ $FIX_NEED_PAM_KEYRING -eq 1 || $FIX_NEED_GNOME_PAM -eq 1 || $FIX_NEED_PAM_PROBE -eq 1 ||
+    $need_getty_unmask -eq 1 || $need_getty_enable -eq 1 || $need_disable_dms -eq 1 ||
+    $need_dm_state_probe -eq 1 ]]; then
+    need_sudo=1
+  fi
+
+  if [[ $preview -eq 1 ]]; then
+    if [[ $need_home_recover -eq 0 && -z "$need_shell_hook" && $need_sudo -eq 0 ]]; then
+      printf 'Nothing to fix for de=%s (dry run; system is healthy)\n' "$target_de"
+      return 0
+    fi
+    printf 'Fix plan for de=%s (dry run; no files changed):\n' "$target_de"
+    if [[ $need_home_recover -eq 1 ]]; then
+      run_recover "$target_de" 1 "" || return 1
+    fi
+    if [[ -n "$need_shell_hook" ]]; then
+      apply_shell_hook "$need_shell_hook" 1 || return 1
+    fi
+    if [[ $FIX_NEED_PAM_PROBE -eq 1 ]]; then
+      printf 'PAM probe: unknown (needs root — sudo required during live --fix to inspect %s)\n' "$LOGIN_FILE"
+    else
+      if [[ $FIX_NEED_PAM_KEYRING -eq 1 ]]; then
+        configure_pam "$target_de" 1 "${FIX_PAM_BACKEND:-gnome}" || return 1
+      fi
+      if [[ $FIX_NEED_GNOME_PAM -eq 1 ]]; then
+        configure_gnome_session_type "$FIX_GNOME_DE" "$real_user" 1 1 || return 1
+      fi
+    fi
+    if [[ $need_getty_unmask -eq 1 ]]; then
+      printf 'Systemd: sudo systemctl unmask getty@tty1.service\n'
+    fi
+    if [[ $need_getty_unmask -eq 1 || $need_getty_enable -eq 1 ]]; then
+      printf 'Systemd: ensure getty@tty1.service is enabled (sudo systemctl enable getty@tty1.service)\n'
+    fi
+    if [[ $need_disable_dms -eq 1 ]]; then
+      if [[ ${#enabled_dms[@]} -gt 0 ]]; then
+        disable_display_managers 1 || return 1
+      fi
+      for dm_unit in "${extra_dm_units[@]}"; do
+        record_and_disable_unit "$dm_unit" 1 || return 1
+      done
+    fi
+    if [[ $need_dm_state_probe -eq 1 ]]; then
+      printf 'Display-manager state: unknown (needs root — sudo required during live --fix to inspect %s)\n' "$DM_STATE_FILE"
+    fi
+    return 0
+  fi
+
+  if [[ $need_home_recover -eq 0 && -z "$need_shell_hook" && $need_sudo -eq 0 ]]; then
+    log "Nothing to fix for $target_de; verifying with doctor..."
+    local healthy_status=0
+    run_doctor || healthy_status=$?
+    return "$healthy_status"
+  fi
+
+  if [[ $need_sudo -eq 1 ]]; then
+    check_root || return $?
+    authenticate_sudo "$non_interactive" "$real_user"
+    if [[ $FIX_NEED_PAM_PROBE -eq 1 ]]; then
+      inspect_fix_pam_state 0 "$target_de" "$real_user" || return 1
+    fi
+    if [[ $need_dm_state_probe -eq 1 ]]; then
+      if sudo test -L "$DM_STATE_FILE"; then
+        log "ERROR: $DM_STATE_FILE is a symlink; lightXDM ignores symlinks."
+        return 1
+      fi
+      if sudo test -f "$DM_STATE_FILE"; then
+        dm_state_content="$(sudo cat -- "$DM_STATE_FILE" 2>/dev/null)" || return 1
+        while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
+          [[ -n "$dm_unit" ]] || continue
+          local dm_short="${dm_unit%.service}"
+          if [[ " ${enabled_dms[*]} " != *" $dm_short "* ]] &&
+            [[ "$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)" == "enabled" ]]; then
+            extra_dm_units+=("$dm_unit")
+          fi
+        done <<<"$dm_state_content"
+        if [[ ${#extra_dm_units[@]} -gt 0 ]]; then
+          need_disable_dms=1
+        fi
+      fi
+    fi
+  fi
+
+  if [[ $need_home_recover -eq 1 ]]; then
+    run_recover "$target_de" 0 "$need_shell_hook" || return 1
+  elif [[ -n "$need_shell_hook" ]]; then
+    apply_shell_hook "$need_shell_hook" 0 || return 1
+  fi
+
+  if [[ $FIX_NEED_PAM_KEYRING -eq 1 ]]; then
+    configure_pam "$target_de" 0 "${FIX_PAM_BACKEND:-gnome}" || return 1
+  fi
+  if [[ $FIX_NEED_GNOME_PAM -eq 1 ]]; then
+    configure_gnome_session_type "$FIX_GNOME_DE" "$real_user" 0 1 || return 1
+  fi
+  if [[ $need_getty_unmask -eq 1 ]]; then
+    log "Unmasking getty@tty1.service..."
+    sudo systemctl unmask getty@tty1.service || return 1
+    if [[ "$(systemctl is-enabled getty@tty1.service 2>/dev/null || true)" == "disabled" ]]; then
+      need_getty_enable=1
+    fi
+  fi
+  if [[ $need_getty_enable -eq 1 ]]; then
+    log "Enabling getty@tty1.service..."
+    sudo systemctl enable getty@tty1.service || return 1
+  fi
+  if [[ $need_disable_dms -eq 1 ]]; then
+    if [[ ${#enabled_dms[@]} -gt 0 ]]; then
+      disable_display_managers 0 || return 1
+    fi
+    for dm_unit in "${extra_dm_units[@]}"; do
+      if [[ "$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)" == "enabled" ]]; then
+        record_and_disable_unit "$dm_unit" 0 || return 1
+      fi
+    done
+  fi
+
+  local doctor_status=0
+  run_doctor || doctor_status=$?
+  return "$doctor_status"
 }
 
 # Emit the canonical non-bash TTY1 auto-start block cleanly on stdout
@@ -3725,6 +4076,7 @@ main() {
   local preflight_only=0
   local doctor_only=0
   local recover=0
+  local fix_mode=0
   local init_template=0
   local wayland=0
   local from_session=""
@@ -3733,7 +4085,7 @@ main() {
   local install_session_dest=""
   local install_session_template_exists=0
   local pam_only=0
-  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--preflight] [--doctor] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
+  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--preflight] [--doctor] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--fix [--dry-run] [--non-interactive] [--de <id>]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -3795,6 +4147,11 @@ Options:
   --recover         restore broken or paused home session dotfiles from validated templates without sudo or
                     package/PAM/systemd changes, saving any edits as *.lightxdm-edited* and clearing
                     ~/.config/lightxdm/no-autostart (optional --dry-run, --de <id>, and --setup-shell <zsh|fish|auto>)
+  --fix             automatically diagnose and repair broken/paused home dotfiles, missing non-bash shell hooks,
+                    PAM keyring/GNOME rules, masked/disabled getty@tty1.service, and re-enabled display
+                    managers; preserves valid user-edited templates, elevates with sudo only when system
+                    state needs repair or inspection, and re-runs --doctor
+                    (optional --dry-run, --non-interactive, and --de <id>)
 
 uninstall.sh reverts these changes; installed packages stay.
 EOF
@@ -3908,6 +4265,10 @@ EOF
         recover=1
         shift
         ;;
+      --fix)
+        fix_mode=1
+        shift
+        ;;
       --status)
         status_only=1
         shift
@@ -3972,7 +4333,7 @@ EOF
 
   if [[ $status_only -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $dry_run -eq 1 ||
+      -n "$install_session" || $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || $dry_run -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 ||
       -n "$from_session" || $pam_only -eq 1 ]]; then
@@ -3990,7 +4351,7 @@ EOF
 
   if [[ $list_sessions -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 ||
+      -n "$install_session" || $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 ||
       $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
       $update -eq 1 || $status_only -eq 1 || $json_output -eq 1 || $init_template -eq 1 ||
@@ -4037,7 +4398,7 @@ EOF
 
   if [[ $recover -eq 1 ]]; then
     if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$install_session" || $preflight_only -eq 1 ||
-      $doctor_only -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
+      $doctor_only -eq 1 || $fix_mode -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
       $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" ||
       $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
@@ -4059,9 +4420,33 @@ EOF
     return "$recover_status"
   fi
 
+  if [[ $fix_mode -eq 1 ]]; then
+    if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
+      -n "$install_session" || $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 ||
+      $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
+      $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 ||
+      $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
+      log "--fix takes only optional --dry-run, --non-interactive, and --de <id>."
+      echo "$usage" >&2
+      exit 1
+    fi
+    if [[ $de_specified -eq 1 && -z "$de" ]]; then
+      log "--de requires a desktop id."
+      echo "$usage" >&2
+      exit 1
+    fi
+    if [[ $EUID -eq 0 && $dry_run -eq 0 ]]; then
+      log "Do not run --fix as root or with sudo; run it as the user who logs in."
+      exit 1
+    fi
+    local fix_status=0
+    run_fix "$de" "$dry_run" "$non_interactive" || fix_status=$?
+    return "$fix_status"
+  fi
+
   if [[ $update -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || -n "$install_session" ||
-      $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
+      $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
       -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 ||
       $json_output -eq 1 ]]; then
