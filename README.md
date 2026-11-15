@@ -43,6 +43,7 @@ You need Arch Linux (or a derivative) with systemd, and a user in the `wheel` gr
 - `--de <id>`: configure this desktop (`plasma`, `gnome`, `budgie`, `xfce`, `lxqt`, `lxde`, `mate`, `cinnamon`, `i3`, or a custom id with `--no-packages`)
 - `--status` (optional `--json`): inspect the current lightXDM configuration, dotfile state, PAM lines, disabled display managers, and TTY1 autologin state without sudo or changes (`--json` emits machine-readable JSON on stdout)
 - `--list-sessions`: scan installed X11 and Wayland freedesktop session entries, check executable availability, and print ready `--init-template --from-session` commands without sudo or changes
+- `--preflight`: check user/sudo, `pacman`/`systemctl`, `getty@tty1.service`, enabled display managers, login shell, and detected desktops without sudo or changes, then print the next command
 - `--list-packages --de <id>`: print the packages it would install, change nothing
 - `--dry-run --de <id>`: preview every change the install would make (dotfiles, packages, PAM, display managers), change nothing
 - `--non-interactive --de <id>`: for unattended installs, fail instead of prompting for sudo

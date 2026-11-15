@@ -2469,6 +2469,138 @@ show_install_status() {
   fi
 }
 
+# Run pre-install onboarding readiness checks cleanly without sudo or side effects
+run_preflight() {
+  local blockers=0
+  local current_user="${SUDO_USER:-${USER:-}}"
+  if [[ -z "$current_user" ]]; then
+    current_user="$(id -un 2>/dev/null || true)"
+  fi
+
+  if [[ $EUID -eq 0 ]]; then
+    printf 'User/sudo: FAIL (running as root; run as a regular user, not root or sudo)\n'
+    blockers=$((blockers + 1))
+  elif ! command -v sudo >/dev/null 2>&1; then
+    printf "User/sudo: FAIL (sudo not found; install as root: su -c 'pacman -S sudo')\n"
+    blockers=$((blockers + 1))
+  else
+    local groups_out="" group_note=""
+    groups_out="$(id -nG 2>/dev/null || true)"
+    if [[ -n "$groups_out" && " $groups_out " != *" wheel "* ]]; then
+      group_note="; not in wheel group (ensure sudo privileges)"
+    fi
+    printf 'User/sudo: ok (%s, sudo available%s)\n' "${current_user:-regular user}" "$group_note"
+  fi
+
+  local have_pacman=0 have_systemctl=0 missing_tools=()
+  if command -v pacman >/dev/null 2>&1; then
+    have_pacman=1
+  else
+    missing_tools+=("pacman")
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    have_systemctl=1
+  else
+    missing_tools+=("systemctl")
+  fi
+  if [[ ${#missing_tools[@]} -eq 0 ]]; then
+    printf 'System tools: ok (pacman, systemctl)\n'
+  else
+    printf 'System tools: FAIL (missing: %s)\n' "${missing_tools[*]}"
+    blockers=$((blockers + 1))
+  fi
+
+  local enabled_dms=()
+  if [[ $have_systemctl -eq 1 ]]; then
+    local getty_state=""
+    getty_state="$(systemctl is-enabled getty@tty1.service 2>/dev/null || true)"
+    if [[ "$getty_state" == masked ]]; then
+      printf 'getty@tty1.service: FAIL (masked — unmask with: sudo systemctl unmask getty@tty1.service)\n'
+      blockers=$((blockers + 1))
+    else
+      printf 'getty@tty1.service: ok (%s)\n' "${getty_state:-unknown}"
+    fi
+
+    local dm dm_unit unit_files=""
+    unit_files="$(systemctl list-unit-files 2>/dev/null || true)"
+    for dm in "${DM_LIST[@]}"; do
+      if [[ -n "$unit_files" ]] && grep -E -- "^[[:space:]]*${dm}\.service([[:space:]]|$)" <<<"$unit_files" >/dev/null; then
+        if [[ "$(systemctl is-enabled "${dm}.service" 2>/dev/null || true)" == "enabled" ]]; then
+          enabled_dms+=("$dm")
+        fi
+      fi
+    done
+    if [[ -L "$DISPLAY_MANAGER_LINK" ]] && dm_unit="$(readlink -f "$DISPLAY_MANAGER_LINK" 2>/dev/null || true)"; then
+      dm_unit="${dm_unit##*/}"
+      dm="${dm_unit%.service}"
+      if [[ -n "$dm_unit" && " ${enabled_dms[*]} " != *" $dm "* ]] && [[ "$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)" == "enabled" ]]; then
+        enabled_dms+=("$dm")
+      fi
+    fi
+    if [[ " ${enabled_dms[*]} " != *" ly@tty1 "* ]] && [[ "$(systemctl is-enabled ly@tty1.service 2>/dev/null || true)" == "enabled" ]]; then
+      enabled_dms+=("ly@tty1")
+    fi
+    if [[ ${#enabled_dms[@]} -gt 0 ]]; then
+      printf 'Display managers: %s enabled (install will disable cleanly; uninstall restores)\n' "${enabled_dms[*]}"
+    else
+      printf 'Display managers: ok (none enabled)\n'
+    fi
+  else
+    printf 'getty@tty1.service: skipped (systemctl unavailable)\n'
+  fi
+
+  if [[ -n "${WAYLAND_DISPLAY:-}" || -n "${DISPLAY:-}" ]]; then
+    printf 'Current session: graphical (%s — safe to install; current session will stay running)\n' "${WAYLAND_DISPLAY:-$DISPLAY}"
+  else
+    printf 'Current session: TTY/non-graphical\n'
+  fi
+
+  local login_shell=""
+  if [[ -n "$current_user" ]] && command -v getent >/dev/null 2>&1; then
+    login_shell="$(getent passwd "$current_user" | cut -d: -f7 || true)"
+  fi
+  case "$login_shell" in
+    "")
+      printf 'Login shell: unknown (non-bash users see: %s --shell-snippet <zsh|fish>)\n' "$(script_cmd install.sh)"
+      ;;
+    *bash)
+      printf 'Login shell: ok (%s — reads ~/.bash_profile)\n' "$login_shell"
+      ;;
+    *zsh)
+      printf 'Login shell: WARN (%s does not read ~/.bash_profile — run: %s --shell-snippet zsh >> ~/.zprofile)\n' "$login_shell" "$(script_cmd install.sh)"
+      ;;
+    *fish)
+      printf 'Login shell: WARN (%s does not read ~/.bash_profile — run: %s --shell-snippet fish >> ~/.config/fish/config.fish)\n' "$login_shell" "$(script_cmd install.sh)"
+      ;;
+    *)
+      printf 'Login shell: WARN (%s does not read ~/.bash_profile — add TTY1 auto-start block per docs/startx-autologin.md)\n' "$login_shell"
+      ;;
+  esac
+
+  local detected_raw="" detected_des=() first_de=""
+  if [[ $have_pacman -eq 1 ]]; then
+    detected_raw="$(detect_de 2>/dev/null || true)"
+    if [[ -n "$detected_raw" && "$detected_raw" != "unknown" ]]; then
+      mapfile -t detected_des <<<"$detected_raw"
+      first_de="${detected_des[0]}"
+      printf 'Detected desktop(s): %s\n' "${detected_des[*]}"
+      printf 'Next step: %s --dry-run --de %s   (or %s)\n' "$(script_cmd install.sh)" "$first_de" "$(script_cmd install.sh)"
+    else
+      printf 'Detected desktop(s): none installed\n'
+      printf 'Next step: %s --list-sessions   (or %s to pick a desktop)\n' "$(script_cmd install.sh)" "$(script_cmd install.sh)"
+    fi
+  else
+    printf 'Detected desktop(s): skipped (pacman unavailable)\n'
+  fi
+
+  if [[ $blockers -eq 0 ]]; then
+    printf 'Preflight: PASS (ready to run lightXDM installer)\n'
+    return 0
+  fi
+  printf 'Preflight: FAIL (%d blocker(s) found above)\n' "$blockers"
+  return 1
+}
+
 # Emit the canonical non-bash TTY1 auto-start block cleanly on stdout
 print_shell_snippet() {
   case "$1" in
@@ -2525,11 +2657,12 @@ main() {
   local json_output=0
   local list_sessions=0
   local shell_snippet=""
+  local preflight_only=0
   local init_template=0
   local wayland=0
   local from_session=""
   local pam_only=0
-  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions] [--shell-snippet <zsh|fish>] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
+  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions] [--shell-snippet <zsh|fish>] [--preflight] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -2579,6 +2712,8 @@ Options:
                     --init-template --from-session commands without sudo or changes (use alone)
   --shell-snippet <zsh|fish> print the non-bash TTY1 auto-start block for ~/.zprofile or ~/.config/fish/config.fish
                     without sudo or changes (use alone)
+  --preflight       check user/sudo, pacman/systemctl, getty@tty1.service, display managers, login shell,
+                    and installed desktops without sudo or changes, then suggest the next command (use alone)
 
 uninstall.sh reverts these changes; installed packages stay.
 EOF
@@ -2590,6 +2725,10 @@ EOF
         ;;
       --list-sessions)
         list_sessions=1
+        shift
+        ;;
+      --preflight)
+        preflight_only=1
         shift
         ;;
       --shell-snippet)
@@ -2720,10 +2859,10 @@ EOF
 
   if [[ $status_only -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" ||
-      $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
-      -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
-      $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" ||
-      $pam_only -eq 1 ]]; then
+      $preflight_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 ||
+      $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 ||
+      $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 ||
+      -n "$from_session" || $pam_only -eq 1 ]]; then
       log "--status cannot be combined with any other option."
       echo "$usage" >&2
       exit 1
@@ -2737,11 +2876,11 @@ EOF
   fi
 
   if [[ $list_sessions -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || -n "$shell_snippet" || $dry_run -eq 1 ||
-      $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
-      -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 ||
-      $status_only -eq 1 || $json_output -eq 1 || $init_template -eq 1 || $wayland -eq 1 ||
-      -n "$from_session" || $pam_only -eq 1 ]]; then
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || -n "$shell_snippet" || $preflight_only -eq 1 ||
+      $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
+      -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
+      $update -eq 1 || $status_only -eq 1 || $json_output -eq 1 || $init_template -eq 1 ||
+      $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
       log "--list-sessions cannot be combined with any other option."
       echo "$usage" >&2
       exit 1
@@ -2760,11 +2899,23 @@ EOF
     return 0
   fi
 
+  if [[ $preflight_only -eq 1 ]]; then
+    if [[ $argument_count -ne 1 ]]; then
+      log "--preflight cannot be combined with any other option."
+      echo "$usage" >&2
+      exit 1
+    fi
+    local preflight_status=0
+    run_preflight || preflight_status=$?
+    return "$preflight_status"
+  fi
+
   if [[ $update -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" ||
-      $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
-      $no_polkit_rule -eq 1 || $autologin -eq 1 || $init_template -eq 1 || $wayland -eq 1 ||
-      -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
+      $preflight_only -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
+      -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $init_template -eq 1 ||
+      $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 ||
+      $json_output -eq 1 ]]; then
       log "--update reuses the saved choices and takes only --dry-run and --non-interactive; to change a choice, run $(script_cmd install.sh) with its options."
       exit 1
     fi

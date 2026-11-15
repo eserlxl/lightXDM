@@ -13098,4 +13098,175 @@ if [[ $snippet_bad_ok -eq 1 ]]; then
   pass "install.sh --shell-snippet rejects missing, unsupported, and combined options"
 fi
 
+# --- install.sh --preflight ---
+preflight_dir="$TMP_DIR/preflight_test"
+preflight_home="$preflight_dir/home"
+preflight_bin="$preflight_dir/bin"
+preflight_log="$preflight_dir/sudo.log"
+preflight_dm_dir="$preflight_dir/systemd"
+mkdir -p "$preflight_home" "$preflight_bin" "$preflight_dm_dir"
+for core_cmd in cut dirname grep readlink; do
+  ln -sf "$(command -v "$core_cmd")" "$preflight_bin/$core_cmd"
+done
+cat >"$preflight_bin/id" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+  -un) echo testuser ;;
+  -nG) echo "testuser wheel" ;;
+  *) echo 1000 ;;
+esac
+EOF
+cat >"$preflight_bin/getent" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "passwd" ]; then
+  echo "testuser:x:1000:1000::/home/testuser:${PREFLIGHT_SHELL:-/bin/bash}"
+fi
+EOF
+cat >"$preflight_bin/sudo" <<EOF
+#!/bin/sh
+echo "sudo \$*" >>"$preflight_log"
+exit 99
+EOF
+cat >"$preflight_bin/pacman" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "-Qq" ] && [ -n "${PREFLIGHT_PKG:-}" ] && [ "${2:-}" = "$PREFLIGHT_PKG" ]; then
+  exit 0
+fi
+exit 1
+EOF
+cat >"$preflight_bin/systemctl" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+  is-enabled)
+    case "${2:-}" in
+      getty@tty1.service)
+        echo "${PREFLIGHT_GETTY:-enabled}"
+        [ "${PREFLIGHT_GETTY:-enabled}" = "enabled" ]
+        ;;
+      "${PREFLIGHT_DM:-}" )
+        if [ -n "${PREFLIGHT_DM:-}" ]; then
+          echo enabled
+          exit 0
+        fi
+        echo disabled
+        exit 1
+        ;;
+      *)
+        echo disabled
+        exit 1
+        ;;
+    esac
+    ;;
+  list-unit-files)
+    if [ -n "${PREFLIGHT_DM:-}" ]; then
+      printf '%s enabled -\n' "$PREFLIGHT_DM"
+    fi
+    ;;
+esac
+EOF
+chmod +x "$preflight_bin"/{id,getent,sudo,pacman,systemctl}
+
+preflight_bash="$(command -v bash)"
+preflight_ok=1
+preflight_report=""
+set +e
+pf_out="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM=lightdm.service \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_rc=$?
+set -e
+if [[ $pf_rc -ne 0 || "$pf_out" != *"Preflight: PASS"* || "$pf_out" != *"User/sudo: ok (testuser, sudo available)"* ||
+  "$pf_out" != *"Display managers: lightdm enabled"* || "$pf_out" != *"--shell-snippet zsh >> ~/.zprofile"* ||
+  "$pf_out" != *"Detected desktop(s): xfce"* || "$pf_out" != *"--dry-run --de xfce"* ||
+  -s "$preflight_log" || -n "$(ls -A "$preflight_home")" ]]; then
+  preflight_ok=0
+  preflight_report+=" [ready zsh/xfce rc=$pf_rc out=$pf_out]"
+fi
+
+set +e
+pf_unknown="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG="" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_rc=$?
+set -e
+if [[ $pf_rc -ne 0 || "$pf_unknown" != *"Preflight: PASS"* || "$pf_unknown" != *"Login shell: ok (/bin/bash"* ||
+  "$pf_unknown" != *"Detected desktop(s): none installed"* || "$pf_unknown" != *"--list-sessions"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [bash/unknown rc=$pf_rc out=$pf_unknown]"
+fi
+
+set +e
+pf_masked="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_GETTY=masked DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_rc=$?
+set -e
+if [[ $pf_rc -ne 1 || "$pf_masked" != *"getty@tty1.service: FAIL (masked"* || "$pf_masked" != *"Preflight: FAIL (1 blocker(s)"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [masked getty rc=$pf_rc out=$pf_masked]"
+fi
+
+preflight_no_sudo="$preflight_dir/no_sudo_bin"
+mkdir -p "$preflight_no_sudo"
+for b in cut dirname grep readlink id getent pacman systemctl; do
+  ln -sf "$preflight_bin/$b" "$preflight_no_sudo/$b"
+done
+set +e
+pf_nosudo="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_no_sudo" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_rc=$?
+set -e
+if [[ $pf_rc -ne 1 || "$pf_nosudo" != *"User/sudo: FAIL (sudo not found"* || "$pf_nosudo" != *"Preflight: FAIL (1 blocker(s)"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [no sudo rc=$pf_rc out=$pf_nosudo]"
+fi
+
+preflight_no_pacman="$preflight_dir/no_pacman_bin"
+mkdir -p "$preflight_no_pacman"
+for b in cut dirname grep readlink id getent sudo systemctl; do
+  ln -sf "$preflight_bin/$b" "$preflight_no_pacman/$b"
+done
+set +e
+pf_nopac="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_no_pacman" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_rc=$?
+set -e
+if [[ $pf_rc -ne 1 || "$pf_nopac" != *"System tools: FAIL (missing: pacman)"* ||
+  "$pf_nopac" != *"Detected desktop(s): skipped (pacman unavailable)"* ||
+  "$pf_nopac" != *"Preflight: FAIL (1 blocker(s)"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [no pacman rc=$pf_rc out=$pf_nopac]"
+fi
+
+for bad_pf in "--preflight --dry-run" "--status --preflight" "--list-sessions --preflight"; do
+  # shellcheck disable=SC2086 # intentional word splitting over literal flag combinations
+  if env -i HOME="$preflight_home" PATH="$preflight_bin" "$preflight_bash" "$REPO_ROOT/install.sh" $bad_pf >/dev/null 2>&1; then
+    preflight_ok=0
+    preflight_report+=" [combined $bad_pf unexpectedly passed]"
+  fi
+done
+
+if [[ $can_unshare -eq 1 ]]; then
+  set +e
+  pf_root="$(unshare -r env -i HOME="$preflight_home" PATH="$preflight_bin" \
+    DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+    "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+  pf_rc=$?
+  set -e
+  if [[ $pf_rc -ne 1 || "$pf_root" != *"User/sudo: FAIL (running as root"* || "$pf_root" != *"Preflight: FAIL"* ]]; then
+    preflight_ok=0
+    preflight_report+=" [root rc=$pf_rc out=$pf_root]"
+  fi
+fi
+
+if [[ $preflight_ok -eq 1 ]]; then
+  pass "install.sh --preflight validates host readiness, shell hints, and next steps cleanly without sudo or side effects"
+else
+  fail "install.sh --preflight:$preflight_report"
+fi
+
 finish_harness
