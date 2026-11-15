@@ -1234,6 +1234,25 @@ read_pam_state_file() {
   fi
 }
 
+# Refuse symlinked state/config parent directories (matching read_pam_state_file and --status/--doctor/--fix);
+# create ($2 == 1) or chmod 755 when an existing directory is non-searchable without following symlinks.
+ensure_safe_state_dir() {
+  local target="$1" create="${2:-0}" dir parent_dir
+  dir="$(dirname -- "$target")"
+  parent_dir="$(dirname -- "$dir")"
+  if [[ -L "$dir" ]] || { [[ ! -x "$parent_dir" ]] && sudo test -L "$dir"; }; then
+    log "ERROR: $dir is a symlink; lightXDM ignores symlinked state directories."
+    return 1
+  fi
+  if [[ -d "$dir" ]] || { [[ ! -x "$parent_dir" ]] && sudo test -d "$dir"; }; then
+    if [[ ! -x "$dir" ]] && { [[ -x "$parent_dir" ]] || ! sudo test -x "$dir"; }; then
+      sudo chmod 755 -- "$dir" || return 1
+    fi
+  elif [[ $create -eq 1 ]]; then
+    sudo install -d -m755 -- "$dir" || return 1
+  fi
+}
+
 # Installs before 2026-11-03 backed up to .lightxde.bak.<epoch>; adopt the oldest one as the
 # original so a re-install does not back up a login file that already holds old keyring lines.
 legacy_pam_backup_candidate() {
@@ -1416,6 +1435,10 @@ configure_pam() {
       return 0
     fi
   fi
+  ensure_safe_state_dir "$PAM_KEYRING_STATE" || return 1
+  if [[ "${UPDATE_RESTORE_PAM:-0}" == 1 && -n "${UPDATE_LOGIN_SUM:-}" ]]; then
+    ensure_safe_state_dir "$PAM_LOGIN_BASE_STATE" || return 1
+  fi
   adopt_legacy_pam_backup || return 1
 
   local package
@@ -1466,11 +1489,6 @@ configure_pam() {
     log "PAM configuration for $module already exists. Skipping."
   fi
   # --update reads this record to tell keyring lines a .pacnew merge dropped from lines removed on purpose.
-  local keyring_state_dir
-  keyring_state_dir="$(dirname -- "$PAM_KEYRING_STATE")"
-  if [[ -d "$keyring_state_dir" && ! -x "$keyring_state_dir" ]]; then
-    sudo chmod 755 -- "$keyring_state_dir" || return 1
-  fi
   if [[ ! -f "$PAM_KEYRING_STATE" || -L "$PAM_KEYRING_STATE" || ! -r "$PAM_KEYRING_STATE" ||
     "$(stat -c %a -- "$PAM_KEYRING_STATE" 2>/dev/null)" != 644 ||
     "$(cat -- "$PAM_KEYRING_STATE" 2>/dev/null)" != "$backend" ]]; then
@@ -1609,6 +1627,7 @@ configure_gnome_session_type() (
   fi
   if [[ "$de" != gnome && $has_block -eq 0 ]]; then
     if [[ -e "$GNOME_SESSION_TYPE_DEST" || -L "$GNOME_SESSION_TYPE_DEST" ]]; then
+      ensure_safe_state_dir "$GNOME_SESSION_TYPE_DEST" || return 1
       sudo rm -f -- "$GNOME_SESSION_TYPE_DEST" || return 1
     fi
     return 0
@@ -1666,6 +1685,12 @@ configure_gnome_session_type() (
     log "ERROR: No session line in $LOGIN_FILE; lightXDM will not change it."
     return 1
   fi
+  if [[ "$de" == gnome || -e "$GNOME_SESSION_TYPE_DEST" || -L "$GNOME_SESSION_TYPE_DEST" ]]; then
+    ensure_safe_state_dir "$GNOME_SESSION_TYPE_DEST" || return 1
+  fi
+  if [[ "$de" == gnome && "${UPDATE_RESTORE_PAM:-0}" == 1 && -n "${UPDATE_LOGIN_SUM:-}" ]]; then
+    ensure_safe_state_dir "$PAM_LOGIN_BASE_STATE" || return 1
+  fi
   local changed=0 backup="${LOGIN_FILE}.lightxdm.bak"
   if [[ "$(sha256sum < "$tmp")" != "$(sha256sum < "$login_src")" ]]; then
     changed=1
@@ -1678,11 +1703,7 @@ configure_gnome_session_type() (
     fi
   fi
   if [[ "$de" == gnome ]]; then
-    local src="$SCRIPT_DIR/pam/gnome-session-type.conf" gnome_state_dir
-    gnome_state_dir="$(dirname -- "$GNOME_SESSION_TYPE_DEST")"
-    if [[ -d "$gnome_state_dir" && ! -x "$gnome_state_dir" ]]; then
-      sudo chmod 755 -- "$gnome_state_dir" || return 1
-    fi
+    local src="$SCRIPT_DIR/pam/gnome-session-type.conf"
     if [[ ! -f "$GNOME_SESSION_TYPE_DEST" || -L "$GNOME_SESSION_TYPE_DEST" || ! -r "$GNOME_SESSION_TYPE_DEST" ]] ||
       [[ "$(sha256sum < "$src")" != "$(sha256sum < "$GNOME_SESSION_TYPE_DEST")" || "$(stat -c %a "$GNOME_SESSION_TYPE_DEST")" != 644 ]]; then
       sudo install -TDm644 "$src" "$GNOME_SESSION_TYPE_DEST" || return 1
@@ -1717,6 +1738,7 @@ record_and_disable_unit() {
     printf 'Display manager: %s\n' "$unit"
     return 0
   fi
+  ensure_safe_state_dir "$DM_STATE_FILE" || return 1
   local existing_raw="" line has_unit=0 kept=()
   if ! sudo test -L "$DM_STATE_FILE" && sudo test -f "$DM_STATE_FILE"; then
     existing_raw="$(sudo cat -- "$DM_STATE_FILE")" || return
@@ -1758,13 +1780,7 @@ disable_display_managers() {
   local preview="${1:-0}"
   if [[ $preview -eq 0 && "${UPDATE_RUN:-0}" != 1 ]]; then
     log "Disabling any installed display managers..."
-    local dm_dir
-    dm_dir="$(dirname -- "$DM_STATE_FILE")"
-    if [[ ! -d "$dm_dir" ]]; then
-      sudo install -d -m755 -- "$dm_dir" || return
-    elif [[ ! -x "$dm_dir" ]]; then
-      sudo chmod 755 -- "$dm_dir" || return
-    fi
+    ensure_safe_state_dir "$DM_STATE_FILE" 1 || return 1
   fi
   local dm dm_unit recorded_units unit_files
   local disabled_dms=()
@@ -1948,11 +1964,7 @@ start_update_run() {
 # version, so a later removal of the lines by hand is not taken for another merge.
 record_login_base() {
   [[ "${UPDATE_RESTORE_PAM:-0}" == 1 && -n "${UPDATE_LOGIN_SUM:-}" ]] || return 0
-  local base_state_dir
-  base_state_dir="$(dirname -- "$PAM_LOGIN_BASE_STATE")"
-  if [[ -d "$base_state_dir" && ! -x "$base_state_dir" ]]; then
-    sudo chmod 755 -- "$base_state_dir" || return 1
-  fi
+  ensure_safe_state_dir "$PAM_LOGIN_BASE_STATE" || return 1
   if [[ ! -f "$PAM_LOGIN_BASE_STATE" || -L "$PAM_LOGIN_BASE_STATE" || ! -r "$PAM_LOGIN_BASE_STATE" ||
     "$(stat -c %a -- "$PAM_LOGIN_BASE_STATE" 2>/dev/null)" != 644 ||
     "$(cat -- "$PAM_LOGIN_BASE_STATE" 2>/dev/null)" != "$UPDATE_LOGIN_SUM" ]]; then

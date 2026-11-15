@@ -11243,6 +11243,136 @@ else
   fail "directory and PAM-backup symlink safety:$dir_sym_report"
 fi
 
+# Symlinked /etc/lightxdm parent directories are refused across all install.sh state/config write helpers.
+state_dir_sym_case="$TMP_DIR/state_dir_symlink"
+mkdir -p "$state_dir_sym_case/target" "$state_dir_sym_case/etc" "$state_dir_sym_case/bin" "$state_dir_sym_case/getty.d"
+chmod 700 "$state_dir_sym_case/target"
+ln -s "$state_dir_sym_case/target" "$state_dir_sym_case/etc/lightxdm"
+printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$state_dir_sym_case/login"
+cp -- "$state_dir_sym_case/login" "$state_dir_sym_case/login.orig"
+cat >"$state_dir_sym_case/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  list-unit-files) printf 'sddm.service enabled\n' ;;
+  is-enabled) [[ "${2:-}" == "sddm.service" ]] && { echo enabled; exit 0; }; echo disabled; exit 1 ;;
+  disable) echo "unexpected disable $*" >>"${STATE_DIR_SYM_LOG:?}"; exit 1 ;;
+esac
+EOF
+cat >"$state_dir_sym_case/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf 'sudo %s\n' "$*" >>"${STATE_DIR_SYM_LOG:?}"
+if [[ -n "${LOCKED_ETC_DIR:-}" && -d "$LOCKED_ETC_DIR" ]]; then
+  chmod 700 -- "$LOCKED_ETC_DIR"
+fi
+"$@"
+rc=$?
+if [[ -n "${LOCKED_ETC_DIR:-}" && -d "$LOCKED_ETC_DIR" ]]; then
+  chmod 600 -- "$LOCKED_ETC_DIR"
+fi
+exit "$rc"
+EOF
+chmod +x "$state_dir_sym_case/bin/systemctl" "$state_dir_sym_case/bin/sudo"
+
+state_dir_sym_report=""
+state_sym_log="$state_dir_sym_case/ops.log"
+: >"$state_sym_log"
+set +e
+# shellcheck disable=SC2016
+out_pam_dir_sym="$(env PATH="$state_dir_sym_case/bin:$STUB_BIN:$PATH" STATE_DIR_SYM_LOG="$state_sym_log" \
+  LOGIN_FILE="$state_dir_sym_case/login" \
+  PAM_KEYRING_STATE="$state_dir_sym_case/etc/lightxdm/pam-keyring" \
+  PAM_LOGIN_BASE_STATE="$state_dir_sym_case/etc/lightxdm/pam-login-base" \
+  AUTOLOGIN_DROPIN_DIR="$state_dir_sym_case/getty.d" \
+  bash -c 'source "$1/install.sh" && configure_pam xfce' _ "$REPO_ROOT" 2>&1)"
+rc_pam_dir_sym=$?
+# shellcheck disable=SC2016
+out_gnome_dir_sym="$(env PATH="$state_dir_sym_case/bin:$STUB_BIN:$PATH" STATE_DIR_SYM_LOG="$state_sym_log" \
+  LOGIN_FILE="$state_dir_sym_case/login" \
+  GNOME_SESSION_TYPE_DEST="$state_dir_sym_case/etc/lightxdm/gnome-session-type.conf" \
+  PAM_LOGIN_BASE_STATE="$state_dir_sym_case/etc/lightxdm/pam-login-base" \
+  bash -c 'source "$1/install.sh" && configure_gnome_session_type gnome tester' _ "$REPO_ROOT" 2>&1)"
+rc_gnome_dir_sym=$?
+# shellcheck disable=SC2016
+out_base_dir_sym="$(env PATH="$state_dir_sym_case/bin:$STUB_BIN:$PATH" STATE_DIR_SYM_LOG="$state_sym_log" \
+  PAM_LOGIN_BASE_STATE="$state_dir_sym_case/etc/lightxdm/pam-login-base" \
+  bash -c 'source "$1/install.sh" && UPDATE_RESTORE_PAM=1 && UPDATE_LOGIN_SUM=deadbeef && record_login_base' _ "$REPO_ROOT" 2>&1)"
+rc_base_dir_sym=$?
+# shellcheck disable=SC2016
+out_dm_dir_sym="$(env PATH="$state_dir_sym_case/bin:$STUB_BIN:$PATH" STATE_DIR_SYM_LOG="$state_sym_log" \
+  DM_STATE_FILE="$state_dir_sym_case/etc/lightxdm/disabled-display-managers" \
+  DISPLAY_MANAGER_LINK="$state_dir_sym_case/no-dm-link" \
+  bash -c 'source "$1/install.sh" && disable_display_managers 0' _ "$REPO_ROOT" 2>&1)"
+rc_dm_dir_sym=$?
+# shellcheck disable=SC2016
+out_rec_dir_sym="$(env PATH="$state_dir_sym_case/bin:$STUB_BIN:$PATH" STATE_DIR_SYM_LOG="$state_sym_log" \
+  DM_STATE_FILE="$state_dir_sym_case/etc/lightxdm/disabled-display-managers" \
+  bash -c 'source "$1/install.sh" && record_and_disable_unit sddm.service 0' _ "$REPO_ROOT" 2>&1)"
+rc_rec_dir_sym=$?
+set -e
+
+printf 'keep\n' >"$state_dir_sym_case/target/gnome-session-type.conf"
+set +e
+# shellcheck disable=SC2016
+out_gnome_rm_sym="$(env PATH="$state_dir_sym_case/bin:$STUB_BIN:$PATH" STATE_DIR_SYM_LOG="$state_sym_log" \
+  LOGIN_FILE="$state_dir_sym_case/login" \
+  GNOME_SESSION_TYPE_DEST="$state_dir_sym_case/etc/lightxdm/gnome-session-type.conf" \
+  bash -c 'source "$1/install.sh" && configure_gnome_session_type xfce tester' _ "$REPO_ROOT" 2>&1)"
+rc_gnome_rm_sym=$?
+set -e
+[[ -f "$state_dir_sym_case/target/gnome-session-type.conf" &&
+  "$(cat "$state_dir_sym_case/target/gnome-session-type.conf")" == "keep" ]] ||
+  state_dir_sym_report+=" [non-gnome rm deleted through symlink dir]"
+rm -f -- "$state_dir_sym_case/target/gnome-session-type.conf"
+
+if [[ $rc_pam_dir_sym -eq 0 || "$out_pam_dir_sym" != *"is a symlink"* ]]; then
+  state_dir_sym_report+=" [configure_pam allowed symlink dir: rc=$rc_pam_dir_sym out=$out_pam_dir_sym]"
+fi
+if [[ $rc_gnome_dir_sym -eq 0 || "$out_gnome_dir_sym" != *"is a symlink"* ]]; then
+  state_dir_sym_report+=" [configure_gnome_session_type allowed symlink dir: rc=$rc_gnome_dir_sym out=$out_gnome_dir_sym]"
+fi
+if [[ $rc_base_dir_sym -eq 0 || "$out_base_dir_sym" != *"is a symlink"* ]]; then
+  state_dir_sym_report+=" [record_login_base allowed symlink dir: rc=$rc_base_dir_sym out=$out_base_dir_sym]"
+fi
+if [[ $rc_dm_dir_sym -eq 0 || "$out_dm_dir_sym" != *"is a symlink"* ]]; then
+  state_dir_sym_report+=" [disable_display_managers allowed symlink dir: rc=$rc_dm_dir_sym out=$out_dm_dir_sym]"
+fi
+if [[ $rc_rec_dir_sym -eq 0 || "$out_rec_dir_sym" != *"is a symlink"* ]]; then
+  state_dir_sym_report+=" [record_and_disable_unit allowed symlink dir: rc=$rc_rec_dir_sym out=$out_rec_dir_sym]"
+fi
+if [[ $rc_gnome_rm_sym -eq 0 || "$out_gnome_rm_sym" != *"is a symlink"* ]]; then
+  state_dir_sym_report+=" [configure_gnome_session_type non-gnome rm allowed symlink dir: rc=$rc_gnome_rm_sym out=$out_gnome_rm_sym]"
+fi
+cmp -s "$state_dir_sym_case/login" "$state_dir_sym_case/login.orig" &&
+  [[ ! -e "$state_dir_sym_case/login.lightxdm.bak" ]] ||
+  state_dir_sym_report+=" [LOGIN_FILE or backup modified on symlinked state dir]"
+[[ "$(stat -c %a -- "$state_dir_sym_case/target")" == 700 && -z "$(ls -A "$state_dir_sym_case/target")" ]] ||
+  state_dir_sym_report+=" [symlink target modified or chmodded]"
+[[ ! -s "$state_sym_log" ]] ||
+  state_dir_sym_report+=" [unexpected sudo/systemctl ops: $(cat "$state_sym_log")]"
+
+# Unsearchable parent directory also checks symlink via sudo test -L cleanly.
+mkdir -p "$state_dir_sym_case/locked_etc"
+ln -s "$state_dir_sym_case/target" "$state_dir_sym_case/locked_etc/lightxdm"
+chmod 600 "$state_dir_sym_case/locked_etc"
+set +e
+# shellcheck disable=SC2016
+out_locked_sym="$(env PATH="$state_dir_sym_case/bin:$STUB_BIN:$PATH" STATE_DIR_SYM_LOG="$state_sym_log" \
+  LOCKED_ETC_DIR="$state_dir_sym_case/locked_etc" \
+  PAM_LOGIN_BASE_STATE="$state_dir_sym_case/locked_etc/lightxdm/pam-login-base" \
+  bash -c 'source "$1/install.sh" && UPDATE_RESTORE_PAM=1 && UPDATE_LOGIN_SUM=deadbeef && record_login_base' _ "$REPO_ROOT" 2>&1)"
+rc_locked_sym=$?
+set -e
+chmod 755 "$state_dir_sym_case/locked_etc"
+if [[ $rc_locked_sym -eq 0 || "$out_locked_sym" != *"is a symlink"* || -n "$(ls -A "$state_dir_sym_case/target")" ]]; then
+  state_dir_sym_report+=" [locked parent dir allowed symlink: rc=$rc_locked_sym out=$out_locked_sym]"
+fi
+
+if [[ -z "$state_dir_sym_report" ]]; then
+  pass "install.sh write helpers refuse symlinked /etc/lightxdm parent directories without chmodding or writing targets"
+else
+  fail "symlinked state parent dir check:$state_dir_sym_report"
+fi
+
 if [[ $can_unshare -eq 0 ]]; then
   skip "uninstall.sh ignores symlinked PAM backups and restores Polkit backup with mv -T (unshare -r unavailable)"
 else
