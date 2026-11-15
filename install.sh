@@ -3112,6 +3112,107 @@ run_doctor() {
   return 1
 }
 
+# Recover user session dotfiles and clear boot-loop pauses cleanly without sudo or package changes.
+run_recover() {
+  local LC_ALL=C target_de="$1" preview="${2:-0}"
+  if [[ -z "$target_de" ]]; then
+    target_de="$(saved_install_de)" || return 1
+  fi
+  case "$target_de" in
+    plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
+    *)
+      if [[ -z "$target_de" || "$target_de" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* ]]; then
+        log "Unsupported desktop environment for --recover: $target_de"
+        return 1
+      fi
+      ;;
+  esac
+
+  local template
+  template="$(xinitrc_template "$target_de")" || return 1
+  if [[ ! -f "$template" ]]; then
+    log "Missing session template for $target_de: $template"
+    log "Create a custom template first with: $(script_cmd install.sh) --init-template --de $target_de"
+    return 1
+  fi
+  check_template_syntax "$template" || return 1
+  check_template_not_self "$target_de" "$template" || return 1
+  check_session_commands "$template" || return 1
+
+  # Force fresh preservation/restoration semantics in copy_dotfile rather than --update skipping edits.
+  local UPDATE_RUN=0
+  if [[ $preview -eq 1 ]]; then
+    printf 'Recovering lightXDM home session for de=%s (dry run; no files changed)\n' "$target_de"
+  else
+    log "Recovering lightXDM home session dotfiles for $target_de (preserving any existing originals/edits)..."
+  fi
+  copy_dotfiles "$target_de" "$preview" || return 1
+
+  local candidate_dot candidate_parent
+  for candidate_dot in \
+    "$HOME/.bash_profile" "$HOME/.wayland-session" "$HOME/.xinitrc" \
+    "$HOME/.gpg-agent-gnome" "$HOME/.gpg-agent-kwallet" \
+    "$HOME/.config/autostart/lightxdm-gpg-agent-tty.desktop"; do
+    if [[ -e "${candidate_dot}.lightxdm-new" || -L "${candidate_dot}.lightxdm-new" ]]; then
+      candidate_parent="${candidate_dot%/*}"
+      if [[ -L "$candidate_parent" ]]; then
+        log "WARNING: Refusing to modify ${candidate_dot}.lightxdm-new inside symlinked directory $candidate_parent."
+        continue
+      fi
+      if [[ $preview -eq 1 ]]; then
+        printf 'Remove pending update: %s.lightxdm-new\n' "$candidate_dot"
+      else
+        rm -f -- "${candidate_dot}.lightxdm-new"
+      fi
+    fi
+  done
+
+  local pause_marker="$HOME/.config/lightxdm/no-autostart"
+  if [[ -e "$pause_marker" || -L "$pause_marker" ]]; then
+    if [[ -L "$HOME/.config" || -L "$HOME/.config/lightxdm" ]]; then
+      log "WARNING: Refusing to modify $pause_marker inside a symlinked config directory."
+    elif [[ $preview -eq 1 ]]; then
+      printf 'Remove auto-start pause marker: %s\n' "$pause_marker"
+    else
+      rm -f -- "$pause_marker"
+      log "Removed auto-start pause marker $pause_marker"
+    fi
+  fi
+
+  local attempts_file="${XDG_STATE_HOME:-$HOME/.local/state}/lightxdm/startx-attempts"
+  if [[ -e "$attempts_file" || -L "$attempts_file" ]]; then
+    if [[ -L "${attempts_file%/*}" ]]; then
+      log "WARNING: Refusing to clear $attempts_file inside a symlinked state directory."
+    elif [[ $preview -eq 1 ]]; then
+      printf 'Clear crash-loop attempt counter: %s\n' "$attempts_file"
+    else
+      rm -f -- "$attempts_file"
+    fi
+  fi
+
+  local real_user="${SUDO_USER:-${USER:-}}" login_shell=""
+  [[ -n "$real_user" ]] || real_user="$(id -un 2>/dev/null || true)"
+  if [[ -n "$real_user" ]] && command -v getent >/dev/null 2>&1; then
+    login_shell="$(getent passwd "$real_user" | cut -d: -f7 || true)"
+  fi
+  case "$login_shell" in
+    *zsh)
+      if [[ ! -f "$HOME/.zprofile" ]] || ! grep -Eq '\.wayland-session|startx' "$HOME/.zprofile" 2>/dev/null; then
+        log "Note: Login shell is $login_shell without a TTY1 trigger in ~/.zprofile; run: $(script_cmd install.sh) --shell-snippet zsh >> ~/.zprofile"
+      fi
+      ;;
+    *fish)
+      if [[ ! -f "$HOME/.config/fish/config.fish" ]] || ! grep -Eq '\.wayland-session|startx' "$HOME/.config/fish/config.fish" 2>/dev/null; then
+        log "Note: Login shell is $login_shell without a TTY1 trigger in ~/.config/fish/config.fish; run: $(script_cmd install.sh) --shell-snippet fish >> ~/.config/fish/config.fish"
+      fi
+      ;;
+  esac
+
+  if [[ $preview -eq 0 ]]; then
+    log "Home recovery complete for $target_de. Run '$(script_cmd install.sh) --doctor' to verify PAM and systemd health."
+  fi
+}
+
 # Emit the canonical non-bash TTY1 auto-start block cleanly on stdout
 print_shell_snippet() {
   case "$1" in
@@ -3170,11 +3271,12 @@ main() {
   local shell_snippet=""
   local preflight_only=0
   local doctor_only=0
+  local recover=0
   local init_template=0
   local wayland=0
   local from_session=""
   local pam_only=0
-  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions] [--shell-snippet <zsh|fish>] [--preflight] [--doctor] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
+  local usage="Usage: bash $0 [-h|--help] [--status [--json]] [--list-sessions] [--shell-snippet <zsh|fish>] [--preflight] [--doctor] [--recover [--dry-run] [--de <id>]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet>] [--no-keyring] [--autologin] [--update] [--pam-only]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -3228,6 +3330,9 @@ Options:
                     and installed desktops without sudo or changes, then suggest the next command (use alone)
   --doctor          verify post-install session launcher, shell hooks, PAM keyring/GNOME rules, .pacnew drift,
                     and systemd boot health without sudo or changes, with fix commands (use alone)
+  --recover         restore broken or paused home session dotfiles from validated templates without sudo or
+                    package/PAM/systemd changes, saving any edits as *.lightxdm-edited* and clearing
+                    ~/.config/lightxdm/no-autostart (optional --dry-run and --de <id>)
 
 uninstall.sh reverts these changes; installed packages stay.
 EOF
@@ -3322,6 +3427,10 @@ EOF
         update=1
         shift
         ;;
+      --recover)
+        recover=1
+        shift
+        ;;
       --status)
         status_only=1
         shift
@@ -3377,7 +3486,7 @@ EOF
 
   if [[ $status_only -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" ||
-      $preflight_only -eq 1 || $doctor_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 ||
+      $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 ||
       $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 ||
       $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 ||
       -n "$from_session" || $pam_only -eq 1 ]]; then
@@ -3394,7 +3503,7 @@ EOF
   fi
 
   if [[ $list_sessions -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || -n "$shell_snippet" || $preflight_only -eq 1 || $doctor_only -eq 1 ||
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || -n "$shell_snippet" || $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 ||
       $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
       $update -eq 1 || $status_only -eq 1 || $json_output -eq 1 || $init_template -eq 1 ||
@@ -3439,9 +3548,33 @@ EOF
     return "$doctor_status"
   fi
 
+  if [[ $recover -eq 1 ]]; then
+    if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || $preflight_only -eq 1 ||
+      $doctor_only -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
+      -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
+      $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" ||
+      $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
+      log "--recover takes only optional --dry-run and --de <id>."
+      echo "$usage" >&2
+      exit 1
+    fi
+    if [[ $de_specified -eq 1 && -z "$de" ]]; then
+      log "--de requires a desktop id."
+      echo "$usage" >&2
+      exit 1
+    fi
+    if [[ $EUID -eq 0 && $dry_run -eq 0 ]]; then
+      log "Do not run --recover as root or with sudo; run it as the user who logs in."
+      exit 1
+    fi
+    local recover_status=0
+    run_recover "$de" "$dry_run" || recover_status=$?
+    return "$recover_status"
+  fi
+
   if [[ $update -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" ||
-      $preflight_only -eq 1 || $doctor_only -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
+      $preflight_only -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
       -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 ||
       $json_output -eq 1 ]]; then

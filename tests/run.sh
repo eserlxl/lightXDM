@@ -13590,4 +13590,160 @@ else
   fail "install.sh --doctor:$doctor_report"
 fi
 
+recover_ok=1
+recover_report=""
+
+help_rec_out="$(bash "$REPO_ROOT/install.sh" --help 2>&1 || true)"
+if [[ "$help_rec_out" != *"--recover"* ]]; then
+  recover_ok=0
+  recover_report+=" missing --recover from --help;"
+fi
+
+# Dry-run previews restoration, pending .lightxdm-new removal, and pause clearing without modifying files
+reset_doctor_gnome_fixture
+printf '#!/usr/bin/env bash\nif broken; then\n' >"$doctor_home/.wayland-session"
+chmod 644 "$doctor_home/.wayland-session"
+: >"$doctor_home/.wayland-session.lightxdm-new"
+: >"$doctor_home/.config/lightxdm/no-autostart"
+printf '100\n101\n102\n' >"$doctor_state/lightxdm/startx-attempts"
+before_wl_sum="$(sha256sum <"$doctor_home/.wayland-session")"
+rec_rc=0
+rec_out="$(run_doctor_cmd --recover --dry-run 2>&1)" || rec_rc=$?
+after_wl_sum="$(sha256sum <"$doctor_home/.wayland-session")"
+if [[ $rec_rc -ne 0 || "$before_wl_sum" != "$after_wl_sum" ||
+  ! -e "$doctor_home/.config/lightxdm/no-autostart" ||
+  ! -e "$doctor_home/.wayland-session.lightxdm-new" ||
+  "$rec_out" != *"Remove pending update:"* ||
+  "$rec_out" != *"Remove auto-start pause marker:"* ||
+  "$rec_out" != *"Clear crash-loop attempt counter:"* ]]; then
+  recover_ok=0
+  recover_report+=" dry-run rc=$rec_rc out=[$rec_out];"
+fi
+
+# Live --recover preserves user edits, restores executable template, cleans .lightxdm-new & pause markers, and passes --doctor
+: >"$doctor_home/.wayland-session.lightxdm.absent"
+: >"$doctor_home/.xinitrc.lightxdm.absent"
+rec_rc=0
+rec_out="$(run_doctor_cmd --recover 2>&1)" || rec_rc=$?
+if [[ $rec_rc -ne 0 || -e "$doctor_dir/sudo.log" ||
+  ! -x "$doctor_home/.wayland-session" ||
+  ! -e "$doctor_home/.wayland-session.lightxdm-edited" ||
+  -e "$doctor_home/.wayland-session.lightxdm-new" ||
+  -e "$doctor_home/.config/lightxdm/no-autostart" ||
+  -e "$doctor_state/lightxdm/startx-attempts" ]]; then
+  recover_ok=0
+  recover_report+=" live-gnome rc=$rec_rc out=[$rec_out];"
+fi
+if ! cmp -s "$doctor_home/.wayland-session" "$REPO_ROOT/dotfiles/.wayland-session-gnome"; then
+  recover_ok=0
+  recover_report+=" restored-gnome-mismatch;"
+fi
+doc_after_rec=0
+doc_after_out="$(run_doctor_cmd --doctor 2>&1)" || doc_after_rec=$?
+if [[ $doc_after_rec -ne 0 || "$doc_after_out" != *"Doctor: PASS" ]]; then
+  recover_ok=0
+  recover_report+=" doctor-after-recover rc=$doc_after_rec out=[$doc_after_out];"
+fi
+
+# Recover X11 setup preserves & removes shadowing executable ~/.wayland-session and restores ~/.xinitrc
+reset_doctor_gnome_fixture
+printf 'de=xfce\nno_packages=1\n' >"$doctor_state/lightxdm/install-choices"
+printf '#!/usr/bin/env bash\n# custom wayland launcher\n' >"$doctor_home/.wayland-session"
+chmod 755 "$doctor_home/.wayland-session"
+: >"$doctor_home/.xinitrc.lightxdm.absent"
+printf '# broken xinitrc\n' >"$doctor_home/.xinitrc"
+: >"$doctor_home/.config/lightxdm/no-autostart"
+rm -f "$doctor_etc/lightxdm/pam-keyring" "$doctor_etc/lightxdm/gnome-session-type.conf"
+cat >"$doctor_etc/pam.d/login" <<'EOF'
+#%PAM-1.0
+auth       include      system-local-login
+session    include      system-local-login
+EOF
+rec_rc=0
+rec_out="$(run_doctor_cmd --recover 2>&1)" || rec_rc=$?
+if [[ $rec_rc -ne 0 || -e "$doctor_home/.wayland-session" ||
+  ! -e "$doctor_home/.wayland-session.lightxdm.bak" ||
+  ! -x "$doctor_home/.xinitrc" ||
+  ! -e "$doctor_home/.xinitrc.lightxdm-edited" ||
+  -e "$doctor_home/.config/lightxdm/no-autostart" ]]; then
+  recover_ok=0
+  recover_report+=" x11-unshadow rc=$rec_rc out=[$rec_out];"
+fi
+doc_x11_rc=0
+doc_x11_out="$(run_doctor_cmd --doctor 2>&1)" || doc_x11_rc=$?
+if [[ $doc_x11_rc -ne 0 || "$doc_x11_out" != *"Doctor: PASS" ]]; then
+  recover_ok=0
+  recover_report+=" x11-doctor-after rc=$doc_x11_rc out=[$doc_x11_out];"
+fi
+
+# Missing install-choices without --de fails cleanly; with --de xfce recovers cleanly
+rm -f "$doctor_state/lightxdm/install-choices"
+printf '# gone\n' >"$doctor_home/.xinitrc"
+rec_rc=0
+run_doctor_cmd --recover >/dev/null 2>&1 || rec_rc=$?
+if [[ $rec_rc -ne 1 ]]; then
+  recover_ok=0
+  recover_report+=" missing-choices-no-de rc=$rec_rc;"
+fi
+rec_rc=0
+rec_out="$(run_doctor_cmd --recover --de xfce 2>&1)" || rec_rc=$?
+if [[ $rec_rc -ne 0 ]] || ! cmp -s "$doctor_home/.xinitrc" "$REPO_ROOT/dotfiles/.xinitrc-xfce"; then
+  recover_ok=0
+  recover_report+=" explicit-de rc=$rec_rc out=[$rec_out];"
+fi
+
+# Bad custom template aborts before clearing no-autostart or modifying dotfiles
+reset_doctor_gnome_fixture
+: >"$doctor_home/.config/lightxdm/no-autostart"
+printf '#!/usr/bin/env bash\nif broken; then\nexec startxfce4\n' >"$doctor_home/.config/lightxdm/.xinitrc-badtm"
+printf 'de=badtm\nno_packages=1\n' >"$doctor_state/lightxdm/install-choices"
+before_bp_sum="$(sha256sum <"$doctor_home/.bash_profile")"
+rec_rc=0
+rec_out="$(run_doctor_cmd --recover 2>&1)" || rec_rc=$?
+after_bp_sum="$(sha256sum <"$doctor_home/.bash_profile")"
+if [[ $rec_rc -ne 1 || ! -e "$doctor_home/.config/lightxdm/no-autostart" || "$before_bp_sum" != "$after_bp_sum" ]]; then
+  recover_ok=0
+  recover_report+=" bad-template-abort rc=$rec_rc out=[$rec_out];"
+fi
+
+# Non-bash shell reminder does not alter user shell rc
+reset_doctor_gnome_fixture
+rec_rc=0
+rec_out="$(FAKE_SHELL=/usr/bin/zsh run_doctor_cmd --recover 2>&1)" || rec_rc=$?
+if [[ $rec_rc -ne 0 || "$rec_out" != *"--shell-snippet zsh >> ~/.zprofile"* || -e "$doctor_home/.zprofile" ]]; then
+  recover_ok=0
+  recover_report+=" zsh-note rc=$rec_rc out=[$rec_out];"
+fi
+
+# Disallowed flag combinations exit 1 without side effects
+for combo in "--recover --update" "--recover --no-keyring" "--recover --autologin" "--recover --doctor" "--recover --pam-only" "--status --recover"; do
+  rec_rc=0
+  read -r -a combo_args <<<"$combo"
+  run_doctor_cmd "${combo_args[@]}" >/dev/null 2>&1 || rec_rc=$?
+  if [[ $rec_rc -ne 1 ]]; then
+    recover_ok=0
+    recover_report+=" combo($combo) rc=$rec_rc;"
+  fi
+done
+
+if [[ $EUID -eq 0 ]]; then
+  rec_rc=0
+  run_doctor_cmd --recover >/dev/null 2>&1 || rec_rc=$?
+  if [[ $rec_rc -ne 1 ]]; then
+    recover_ok=0
+    recover_report+=" root-refused rc=$rec_rc;"
+  fi
+fi
+
+if [[ -e "$doctor_dir/sudo.log" ]]; then
+  recover_ok=0
+  recover_report+=" sudo-invoked;"
+fi
+
+if [[ $recover_ok -eq 1 ]]; then
+  pass "install.sh --recover restores session dotfiles, preserves edits, clears crash pauses, and guards options cleanly without sudo"
+else
+  fail "install.sh --recover:$recover_report"
+fi
+
 finish_harness
