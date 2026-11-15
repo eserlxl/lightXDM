@@ -196,12 +196,16 @@ target_home_is_safe() {
 }
 
 # Verify $TARGET_HOME and every segment along relative directory $1 are non-symlink directories
-# (or absent trailing segments when $2 == 1). Returns 2 on any symlink segment, 1 on missing/non-dir.
+# (or absent trailing segments when $2 == 1). Returns 2 on any symlink segment, 3 on an
+# unsearchable directory for non-root, 1 on missing/non-dir.
 home_dir_is_safe() {
   local rel_dir="${1:-.}" allow_absent="${2:-0}" home cur seg
   local -a segments=()
   home="$(normalize_home_path "${TARGET_HOME:-}")"
   target_home_is_safe "$home" || return $?
+  if [[ $EUID -ne 0 && ! -x "$home" ]]; then
+    return 3
+  fi
   if [[ -z "$rel_dir" || "$rel_dir" == "." ]]; then
     return 0
   fi
@@ -219,6 +223,9 @@ home_dir_is_safe() {
       return 2
     fi
     if [[ -d "$cur" ]]; then
+      if [[ $EUID -ne 0 && ! -x "$cur" ]]; then
+        return 3
+      fi
       continue
     fi
     if [[ -e "$cur" ]]; then
@@ -423,10 +430,15 @@ cleanup_shell_hooks() {
     hook_rels+=("$candidate")
   }
 
+  [[ "$home" == "/" ]] && hooks_file="/.local/state/lightxdm/installed-shell-hooks" || hooks_file="$home/.local/state/lightxdm/installed-shell-hooks"
   rc=0
   home_dir_is_safe ".local/state/lightxdm" || rc=$?
-  if [[ $rc -eq 0 ]]; then
-    [[ "$home" == "/" ]] && hooks_file="/.local/state/lightxdm/installed-shell-hooks" || hooks_file="$home/.local/state/lightxdm/installed-shell-hooks"
+  if [[ $rc -eq 3 ]]; then
+    dry_warn_err "Warning: Cannot read $hooks_file; skipping custom shell hook lookup."
+    if [[ $dry_run -eq 1 && $EUID -ne 0 ]]; then
+      DRY_NEEDS_ROOT=true
+    fi
+  elif [[ $rc -eq 0 ]]; then
     if [[ -L "$hooks_file" ]]; then
       dry_warn_err "Warning: Refusing symlinked shell hook record $hooks_file."
     elif [[ -f "$hooks_file" ]]; then
@@ -459,6 +471,13 @@ cleanup_shell_hooks() {
     if [[ $rc -eq 2 ]]; then
       dry_warn_err "Warning: Refusing symlinked directory along $target."
       [[ $dry_run -eq 1 ]] && append_dry_shell_hook_json "$target" "refused-symlink-dir"
+      continue
+    elif [[ $rc -eq 3 ]]; then
+      dry_warn_err "Warning: Cannot read $target; skipping shell hook cleanup."
+      if [[ $dry_run -eq 1 ]]; then
+        [[ $EUID -ne 0 ]] && DRY_NEEDS_ROOT=true
+        append_dry_shell_hook_json "$target" "unknown-needs-root"
+      fi
       continue
     elif [[ $rc -ne 0 ]]; then
       [[ $dry_run -eq 1 ]] && append_dry_shell_hook_json "$target" "absent"
@@ -556,6 +575,14 @@ cleanup_home_dotfiles() {
       if [[ $rc -eq 2 ]]; then
         dry_warn_err "Warning: Refusing symlinked directory along $home/$dotfile."
         [[ $dry_run -eq 1 ]] && append_dry_dotfile_json "$dotfile" "$home/$dotfile" "refused-symlink-dir" false false false ""
+      elif [[ $rc -eq 3 ]]; then
+        if [[ $dry_run -eq 1 ]]; then
+          dry_action "Skipped check on $home/$dotfile (parent directory unsearchable without root)."
+          DRY_NEEDS_ROOT=true
+          append_dry_dotfile_json "$dotfile" "$home/$dotfile" "unknown-needs-root" false false false ""
+        else
+          dry_warn_err "Warning: Cannot access parent directory of $home/$dotfile; skipping dotfile cleanup."
+        fi
       else
         [[ $dry_run -eq 1 ]] && append_dry_dotfile_json "$dotfile" "$home/$dotfile" "absent" false false false ""
       fi
@@ -689,6 +716,15 @@ cleanup_home_state_dir() {
     if [[ $rc -eq 2 ]]; then
       dry_warn_err "Warning: Refusing symlinked directory along $home/.local/state/lightxdm."
       DRY_STATE_DIR_STATUS="refused-symlink-dir"
+    elif [[ $rc -eq 3 ]]; then
+      dry_warn_err "Warning: Cannot read $state_dir; skipping state file lookup."
+      if [[ $dry_run -eq 1 ]]; then
+        [[ $EUID -ne 0 ]] && DRY_NEEDS_ROOT=true
+        DRY_STATE_DIR_STATUS="unknown-needs-root"
+        for state_file in "${state_files[@]}"; do
+          append_dry_state_file_json "$state_file" "$state_dir/$state_file" "unknown-needs-root"
+        done
+      fi
     elif [[ $dry_run -eq 1 ]]; then
       for state_file in "${state_files[@]}"; do
         append_dry_state_file_json "$state_file" "$state_dir/$state_file" "absent"

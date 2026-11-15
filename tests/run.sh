@@ -13441,6 +13441,65 @@ assert any("Cannot read" in w for w in d["warnings"]), d["warnings"]
 ' "$priv_js_out" "$un_js_dir/priv_home"; then
     un_js_report+=" [priv: rc=$priv_js_rc err=$(cat "$un_js_dir/priv.err") out=$priv_js_out]"
   fi
+
+  mkdir -p "$un_js_dir/priv_dir_home/.local/state/lightxdm" "$un_js_dir/priv_dir_home/.config/fish" "$un_js_dir/priv_dir_home/.config/autostart"
+  printf '.config/custom/hook.zsh\n' >"$un_js_dir/priv_dir_home/.local/state/lightxdm/installed-shell-hooks"
+  printf '# secret fish\n' >"$un_js_dir/priv_dir_home/.config/fish/config.fish"
+  printf '[Desktop Entry]\n' >"$un_js_dir/priv_dir_home/.config/autostart/lightxdm-gpg-agent-tty.desktop"
+  chmod 000 "$un_js_dir/priv_dir_home/.local/state/lightxdm" "$un_js_dir/priv_dir_home/.config"
+  set +e
+  priv_dir_js_out="$(
+    env -u SUDO_USER -u ZDOTDIR -u XDG_CONFIG_HOME \
+      HOME="$un_js_dir/priv_dir_home" \
+      TARGET_HOME="$un_js_dir/priv_dir_home" \
+      PATH="$dry_un_dir/bin:$STUB_BIN:$PATH" \
+      LOGIN_FILE="$un_js_dir/missing" \
+      GNOME_SESSION_TYPE_DEST="$un_js_dir/missing" \
+      PAM_KEYRING_STATE="$un_js_dir/missing" \
+      PAM_LOGIN_BASE_STATE="$un_js_dir/missing" \
+      DM_STATE_FILE="$un_js_dir/missing" \
+      OVERRIDE_DIR="$un_js_dir/missing-getty" \
+      POLKIT_RULE="$un_js_dir/missing" \
+      bash "$REPO_ROOT/uninstall.sh" --dry-run --json 2>"$un_js_dir/priv_dir.err"
+  )"
+  priv_dir_js_rc=$?
+  priv_dir_txt_out="$(
+    env -u SUDO_USER -u ZDOTDIR -u XDG_CONFIG_HOME \
+      HOME="$un_js_dir/priv_dir_home" \
+      TARGET_HOME="$un_js_dir/priv_dir_home" \
+      PATH="$dry_un_dir/bin:$STUB_BIN:$PATH" \
+      LOGIN_FILE="$un_js_dir/missing" \
+      GNOME_SESSION_TYPE_DEST="$un_js_dir/missing" \
+      PAM_KEYRING_STATE="$un_js_dir/missing" \
+      PAM_LOGIN_BASE_STATE="$un_js_dir/missing" \
+      DM_STATE_FILE="$un_js_dir/missing" \
+      OVERRIDE_DIR="$un_js_dir/missing-getty" \
+      POLKIT_RULE="$un_js_dir/missing" \
+      bash "$REPO_ROOT/uninstall.sh" --dry-run 2>&1
+  )"
+  priv_dir_txt_rc=$?
+  set -e
+  chmod 755 "$un_js_dir/priv_dir_home/.local/state/lightxdm" "$un_js_dir/priv_dir_home/.config"
+  if [[ $priv_dir_js_rc -ne 0 || -s "$un_js_dir/priv_dir.err" || $priv_dir_txt_rc -ne 0 ]] ||
+    [[ "$priv_dir_txt_out" != *"Warning: Cannot read"*"installed-shell-hooks"* ||
+      "$priv_dir_txt_out" != *"Warning: Cannot read"*"config.fish"* ||
+      "$priv_dir_txt_out" != *"Warning: Cannot read"*"lightxdm"* ]] ||
+    ! PYTHONDONTWRITEBYTECODE=1 python3 -B -c '
+import json, sys
+d = json.loads(sys.argv[1])
+h = sys.argv[2]
+assert d["needs_root"] is True, d
+assert d["state_files"]["status"] == "unknown-needs-root", d["state_files"]
+assert all(x["status"] == "unknown-needs-root" for x in d["state_files"]["files"]), d["state_files"]
+dots = {x["dotfile"]: x["action"] for x in d["dotfiles"]}
+assert dots[".config/autostart/lightxdm-gpg-agent-tty.desktop"] == "unknown-needs-root", dots
+hooks = {x["path"]: x["status"] for x in d["shell_hooks"]}
+assert hooks[f"{h}/.config/fish/config.fish"] == "unknown-needs-root", hooks
+assert any("installed-shell-hooks" in w for w in d["warnings"]), d["warnings"]
+assert any("config.fish" in w for w in d["warnings"]), d["warnings"]
+' "$priv_dir_js_out" "$un_js_dir/priv_dir_home"; then
+    un_js_report+=" [priv_dir: js_rc=$priv_dir_js_rc txt_rc=$priv_dir_txt_rc err=$(cat "$un_js_dir/priv_dir.err") out=$priv_dir_js_out txt=$priv_dir_txt_out]"
+  fi
 fi
 
 # 4) Special characters in TARGET_HOME and LOGIN_FILE stay valid JSON and reject bad --json combos cleanly
