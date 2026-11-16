@@ -639,9 +639,13 @@ def check_python_invocations(root: Path, errors: list[str]) -> None:
         root / "tests" / "qemu-arch.sh",
         root / "tests" / "run.sh",
     ]
-    cases_dir = root / "tests" / "cases"
-    if cases_dir.is_dir():
-        targets.extend(sorted(cases_dir.glob("*.sh")))
+    seen_targets = set(targets)
+    tests_dir = root / "tests"
+    if tests_dir.is_dir():
+        for extra_sh in sorted(tests_dir.rglob("*.sh")):
+            if extra_sh not in seen_targets:
+                targets.append(extra_sh)
+                seen_targets.add(extra_sh)
 
     for path in targets:
         if not path.is_file():

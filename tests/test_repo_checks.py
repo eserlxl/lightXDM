@@ -315,6 +315,20 @@ class RepoIntegrityTests(unittest.TestCase):
             proc_good = _run_integrity(root)
             self.assertEqual(proc_good.returncode, 0, proc_good.stderr)
 
+    def test_optional_tests_shell_scripts_are_scanned_for_python_invocations(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            _create_valid_fixture(root)
+            docker_sh = root / "tests" / "docker-arch.sh"
+            docker_sh.write_text("#!/usr/bin/env bash\npython3 tests/helper.py\n", encoding="utf-8")
+            proc_bad = _run_integrity(root)
+            self.assertNotEqual(proc_bad.returncode, 0)
+            self.assertIn("tests/docker-arch.sh:2:", proc_bad.stderr)
+
+            docker_sh.write_text("#!/usr/bin/env bash\nPYTHONDONTWRITEBYTECODE=1 python3 -B tests/helper.py\n", encoding="utf-8")
+            proc_ok = _run_integrity(root)
+            self.assertEqual(proc_ok.returncode, 0, proc_ok.stderr)
+
     def test_bytecode_artifacts_fail_unless_excluded(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
