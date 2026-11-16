@@ -433,6 +433,15 @@ state_path_is_safe() {
   _path_parent_issue "$1" state
 }
 
+# Strip all trailing slashes from HOME before stripping it from a target path so HOME=/ or HOME=/home/u/ matches cleanly.
+_home_relpath() {
+  local target="$1" home="$HOME"
+  while [[ "$home" == */ ]]; do
+    home="${home%/}"
+  done
+  printf '%s\n' "${target#"${home}/"}"
+}
+
 # Back up a pre-existing dotfile once, or save post-install user edits before overwriting
 preserve_dotfile() {
   local target="$1"
@@ -472,7 +481,7 @@ preserve_dotfile() {
         return 0
       fi
     fi
-    if is_past_lightxdm_template "$target" "${target#"$HOME"/}"; then
+    if is_past_lightxdm_template "$target" "$(_home_relpath "$target")"; then
       return 0
     fi
   fi
@@ -1382,7 +1391,8 @@ dotfile_record_file() {
 
 # Print the recorded hash of what lightXDM last wrote into home dotfile $1, if there is one.
 recorded_dotfile_sum() {
-  local rel="${1#"$HOME"/}" file line sum="" LC_ALL=C
+  local rel file line sum="" LC_ALL=C
+  rel="$(_home_relpath "$1")"
   file="$(dotfile_record_file)"
   state_path_is_safe "$file" && [[ -f "$file" && ! -L "$file" && -r "$file" ]] || return 0
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -1399,7 +1409,7 @@ record_dotfile() {
   file="$(dotfile_record_file)"
   dir="${file%/*}"
   state_path_is_safe "$file" || return 1
-  rel="${target#"$HOME"/}"
+  rel="$(_home_relpath "$target")"
   sum="$(sha256sum <"$target")" || return 1
   if [[ -f "$file" && ! -L "$file" && -r "$file" ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -1433,7 +1443,7 @@ dotfile_unchanged() {
   home_target_parent_is_safe "$target" && [[ -f "$target" && ! -L "$target" && -r "$target" && -f "$source" && -r "$source" ]] || return 1
   sum="$(sha256sum <"$target")"
   [[ "${sum%% *}" == "$(recorded_dotfile_sum "$target")" || "$sum" == "$(sha256sum <"$source")" ]] ||
-    is_past_lightxdm_template "$target" "${target#"$HOME"/}"
+    is_past_lightxdm_template "$target" "$(_home_relpath "$target")"
 }
 
 # --update refreshes a dotfile only while it is lightXDM's own unchanged copy. An edited file (or a
@@ -2814,7 +2824,7 @@ inspect_dotfile_status() {
     DOTFILE_STATUS_STATE="matches-recorded"
     return 0
   fi
-  if is_past_lightxdm_template "$target" "${target#"$HOME"/}"; then
+  if is_past_lightxdm_template "$target" "$(_home_relpath "$target")"; then
     DOTFILE_STATUS_STATE="matches-past-template"
     return 0
   fi
@@ -6541,12 +6551,27 @@ resolve_setup_gpg() {
           esac
         done <"$choices_file"
       fi
+      local pam_txt="" pam_login_backend=""
+      if [[ -f "$LOGIN_FILE" && ! -L "$LOGIN_FILE" && -r "$LOGIN_FILE" ]]; then
+        pam_txt="$(cat "$LOGIN_FILE" 2>/dev/null || true)"
+        if grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_kwallet5\.so' <<<"$pam_txt" &&
+          ! grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_gnome_keyring\.so' <<<"$pam_txt"; then
+          pam_login_backend="kwallet"
+        elif grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_gnome_keyring\.so' <<<"$pam_txt" &&
+          ! grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_kwallet5\.so' <<<"$pam_txt"; then
+          pam_login_backend="gnome"
+        fi
+      fi
       if [[ -n "$saved_de" ]]; then
         if builtin_de_keyring_backend "$saved_de"; then
           return 0
         fi
         pam_state="$(read_pam_state_file "$PAM_KEYRING_STATE" 1 2>/dev/null || true)"
         if [[ "$pam_state" == "kwallet" ]]; then
+          printf 'kwallet\n'
+        elif [[ "$pam_state" == "gnome" ]]; then
+          printf 'gnome\n'
+        elif [[ "$pam_login_backend" == "kwallet" ]]; then
           printf 'kwallet\n'
         else
           printf 'gnome\n'
@@ -6556,6 +6581,10 @@ resolve_setup_gpg() {
       pam_state="$(read_pam_state_file "$PAM_KEYRING_STATE" 1 2>/dev/null || true)"
       if [[ "$pam_state" == "kwallet" || "$pam_state" == "gnome" ]]; then
         printf '%s\n' "$pam_state"
+        return 0
+      fi
+      if [[ "$pam_login_backend" == "kwallet" || "$pam_login_backend" == "gnome" ]]; then
+        printf '%s\n' "$pam_login_backend"
         return 0
       fi
       if command -v pacman >/dev/null 2>&1; then
@@ -6618,7 +6647,7 @@ validate_setup_gpg() {
       log "ERROR: Invalid pinentry executable path: $pinentry_bin"
       return 1
     fi
-    if [[ $preview -eq 0 && ! -x "$pinentry_bin" ]]; then
+    if [[ $preview -eq 0 && ( ! -f "$pinentry_bin" || ! -x "$pinentry_bin" ) ]]; then
       log "ERROR: Pinentry executable not found or not executable: $pinentry_bin. Install 'pinentry' (for example: sudo pacman -S pinentry) and re-run."
       return 1
     fi
@@ -6694,7 +6723,7 @@ apply_gpg_setup() {
 
   resolved="$(resolve_setup_gpg "$spec" "$context_de" "$context_keyring")" || return 1
   pinentry_bin="$(_gpg_pinentry_bin "$resolved")" || return 1
-  if [[ $preview -eq 1 && ! -x "$pinentry_bin" ]]; then
+  if [[ $preview -eq 1 && ( ! -f "$pinentry_bin" || ! -x "$pinentry_bin" ) ]]; then
     log "WARNING: Pinentry executable not found: $pinentry_bin (install 'pinentry' before applying)."
   fi
 
@@ -7208,11 +7237,14 @@ run_login_mode() {
 
 # Inspect, adopt, or dismiss pending *.lightxdm-new dotfile updates safely without sudo.
 run_dotfile_updates() {
-  local LC_ALL=C action="$1" preview="${2:-0}" home="${HOME%/}" had_error=0 pending_count=0
-  if [[ -z "${HOME:-}" ]]; then
+  local LC_ALL=C action="$1" preview="${2:-0}" home="${HOME:-}" had_error=0 pending_count=0
+  if [[ -z "$home" ]]; then
     log "ERROR: HOME is unset; cannot inspect pending dotfile updates."
     return 1
   fi
+  while [[ "$home" == */ ]]; do
+    home="${home%/}"
+  done
   [[ -n "$home" ]] || home="/"
   if [[ -L "$home" || ! -d "$home" ]]; then
     log "ERROR: Refusing unsafe home directory: $HOME"
@@ -7295,9 +7327,11 @@ run_dotfile_updates() {
       log "WARNING: Cannot read $target to preserve edits before adopting $new_file."
       return 1
     fi
-    if [[ "$target" == "$home/.xinitrc" || "$target" == "$home/.wayland-session" ]]; then
-      check_template_syntax "$new_file" || return 1
-    fi
+    case "$target" in
+      "$home/.xinitrc" | "$home/.wayland-session" | "$home/.gpg-agent-gnome" | "$home/.gpg-agent-kwallet" | "$home/.bash_profile")
+        check_template_syntax "$new_file" || return 1
+        ;;
+    esac
     if [[ $is_preview -eq 1 ]]; then
       if [[ -f "$target" ]] && [[ "$(sha256sum <"$target")" != "$(sha256sum <"$new_file")" ]]; then
         printf 'Would adopt %s -> %s (mode %s; preserving existing file before replacing)\n' "$new_file" "$target" "$mode"
@@ -7312,7 +7346,7 @@ run_dotfile_updates() {
       log "WARNING: Cannot write parent directory $parent_dir for $target."
       return 1
     fi
-    if [[ -f "$target" ]]; then
+    if [[ -f "$target" ]] || [[ ! -e "$target" && ! -L "$target" ]]; then
       preserve_dotfile "$target" "$new_file" || return 1
     fi
     tmp_dest="$(mktemp "${parent_dir}/.${target##*/}.lightxdm.XXXXXX")" || return 1
@@ -7384,6 +7418,10 @@ run_dotfile_updates() {
     if [[ $had_error -eq 0 ]]; then
       printf 'No pending *.lightxdm-new dotfile updates found.\n'
     fi
+    return "$had_error"
+  fi
+
+  if [[ ${#pending_targets[@]} -eq 0 ]]; then
     return "$had_error"
   fi
 

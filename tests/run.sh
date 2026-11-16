@@ -20202,6 +20202,55 @@ if [[ $du_sym_tgt_rc -eq 0 || "$du_sym_tgt_out" != *"Refusing to replace symlink
   du_report+=" [symlink-target rc=$du_sym_tgt_rc out=$du_sym_tgt_out]"
 fi
 
+# Missing-target adoption writes .lightxdm.absent, .gpg-agent-* syntax check runs, empty dry-run header omitted, trailing-slash HOME normalized
+rm -f "$du_case/home/.bash_profile" "$du_case/home/.bash_profile.lightxdm.bak" "$du_case/home/.bash_profile.lightxdm.absent"
+printf '# adopted bp\n' >"$du_case/home/.bash_profile.lightxdm-new"
+set +e
+du_abs_out="$(run_du_cmd --dotfile-updates accept 2>&1)"
+du_abs_rc=$?
+set -e
+if [[ $du_abs_rc -ne 0 || ! -f "$du_case/home/.bash_profile.lightxdm.absent" ||
+  "$(cat "$du_case/home/.bash_profile")" != "# adopted bp" ]]; then
+  du_ok=0
+  du_report+=" [missing-absent rc=$du_abs_rc out=$du_abs_out]"
+fi
+
+printf '# orig gpg\n' >"$du_case/home/.gpg-agent-gnome"
+printf '#!/bin/bash\nif true; then\n' >"$du_case/home/.gpg-agent-gnome.lightxdm-new"
+set +e
+du_gpg_syn_out="$(run_du_cmd --dotfile-updates accept 2>&1)"
+du_gpg_syn_rc=$?
+set -e
+rm -f "$du_case/home/.gpg-agent-gnome.lightxdm-new"
+if [[ $du_gpg_syn_rc -eq 0 || "$du_gpg_syn_out" != *"Invalid Bash syntax"* ||
+  "$(cat "$du_case/home/.gpg-agent-gnome")" != "# orig gpg" ]]; then
+  du_ok=0
+  du_report+=" [gpg-bad-syntax rc=$du_gpg_syn_rc out=$du_gpg_syn_out]"
+fi
+
+ln -s "$du_case/home/.bash_profile" "$du_case/home/.bash_profile.lightxdm-new"
+set +e
+du_empty_hdr_out="$(run_du_cmd --dotfile-updates accept --dry-run 2>&1)"
+du_empty_hdr_rc=$?
+set -e
+rm -f "$du_case/home/.bash_profile.lightxdm-new"
+if [[ $du_empty_hdr_rc -eq 0 || "$du_empty_hdr_out" == *"Dotfile updates (accept; dry run"* ]]; then
+  du_ok=0
+  du_report+=" [empty-dry-header rc=$du_empty_hdr_rc out=$du_empty_hdr_out]"
+fi
+
+printf '#!/bin/bash\nexec xfce4-session\n' >"$du_case/home/.xinitrc.lightxdm-new"
+: >"$du_rec_file"
+set +e
+du_slash_out="$(HOME="$du_case/home/" USER="testuser" XDG_STATE_HOME="$du_case/home/.local/state" \
+  bash "$REPO_ROOT/install.sh" --dotfile-updates accept 2>&1)"
+du_slash_rc=$?
+set -e
+if [[ $du_slash_rc -ne 0 ]] || ! grep -Fqx "$(sha256sum <"$du_case/home/.xinitrc" | awk '{print $1}')  .xinitrc" "$du_rec_file"; then
+  du_ok=0
+  du_report+=" [trailing-slash-home rc=$du_slash_rc rec=$(cat "$du_rec_file") out=$du_slash_out]"
+fi
+
 if [[ $du_ok -eq 1 ]]; then
   pass "install.sh --dotfile-updates <diff|accept|dismiss|interactive> resolution, dry-run, mode/backup/record handling, and symlink safety"
 else
@@ -20493,6 +20542,30 @@ if [[ $sg_comb_dry_rc -ne 0 || "$sg_comb_dry_out" != *"GPG configuration (kwalle
   "$sg_comb_dry_out" != *"+ enable-ssh-support"* || -e "$sg_case/home/.gnupg" ]]; then
   sg_ok=0
   sg_report+=" [combined-dry rc=$sg_comb_dry_rc out=$sg_comb_dry_out]"
+fi
+
+# Fallback to readable LOGIN_FILE pam_kwallet5.so when pam-keyring missing, and refuse directory pinentry
+rm -f "$sg_case/etc/lightxdm/pam-keyring" "$sg_case/home/.local/state/lightxdm/install-choices"
+printf '%s\n%s\n' '#%PAM-1.0' 'auth       optional   pam_kwallet5.so' >"$sg_case/etc/pam.d/login"
+set +e
+sg_pam_kw_out="$(run_sg_cmd --setup-gpg auto --dry-run 2>&1)"
+sg_pam_kw_rc=$?
+printf 'de=sway\n' >"$sg_case/home/.local/state/lightxdm/install-choices"
+sg_pam_sway_out="$(run_sg_cmd --setup-gpg auto --dry-run 2>&1)"
+sg_pam_sway_rc=$?
+sg_pin_dir_out="$(PINENTRY_GNOME_BIN="$sg_case/bin" run_sg_cmd --setup-gpg gnome 2>&1)"
+sg_pin_dir_rc=$?
+sg_pin_dir_dry_out="$(PINENTRY_GNOME_BIN="$sg_case/bin" run_sg_cmd --setup-gpg gnome --dry-run 2>&1)"
+sg_pin_dir_dry_rc=$?
+set -e
+rm -f "$sg_case/home/.local/state/lightxdm/install-choices"
+printf '%s\n' '#%PAM-1.0' >"$sg_case/etc/pam.d/login"
+if [[ $sg_pam_kw_rc -ne 0 || "$sg_pam_kw_out" != *"GPG configuration (kwallet):"* ||
+  $sg_pam_sway_rc -ne 0 || "$sg_pam_sway_out" != *"GPG configuration (kwallet):"* ||
+  $sg_pin_dir_rc -eq 0 || "$sg_pin_dir_out" != *"Pinentry executable not found or not executable"* ||
+  $sg_pin_dir_dry_rc -ne 0 || "$sg_pin_dir_dry_out" != *"WARNING: Pinentry executable not found"* ]]; then
+  sg_ok=0
+  sg_report+=" [pam-kwallet-or-dirpin kw_rc=$sg_pam_kw_rc sway_rc=$sg_pam_sway_rc dir_rc=$sg_pin_dir_rc]"
 fi
 
 if [[ $sg_ok -eq 1 ]]; then
