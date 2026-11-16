@@ -3097,6 +3097,139 @@ managed_shell_hook_is_current() {
   [[ $found -eq 1 && "${actual}." == "$expected" ]]
 }
 
+# Inspect the regular user's GPG agent pinentry/SSH configuration into GPG_SETUP_STATUS_* without writing or using sudo.
+inspect_gpg_setup_status() {
+  local rel="" home="${HOME%/}" target="" parent="" seg segs=() dir_check="" marker_rc=0
+  local line="" inside=0
+  GPG_SETUP_STATUS_PATH=""
+  # shellcheck disable=SC2088 # literal home-relative display path for user instructions
+  GPG_SETUP_STATUS_DISPLAY="~/.gnupg/gpg-agent.conf"
+  GPG_SETUP_STATUS_STATE="missing"
+  GPG_SETUP_STATUS_PINENTRY=""
+  GPG_SETUP_STATUS_PINENTRY_OK="null"
+  GPG_SETUP_STATUS_SSH="null"
+  GPG_SETUP_STATUS_TEXT="not configured ($GPG_SETUP_STATUS_DISPLAY)"
+
+  if ! rel="$(_gpg_conf_relpath 0)"; then
+    GPG_SETUP_STATUS_DISPLAY="\$GNUPGHOME/gpg-agent.conf"
+    GPG_SETUP_STATUS_STATE="outside-home"
+    GPG_SETUP_STATUS_TEXT="outside HOME ($GPG_SETUP_STATUS_DISPLAY)"
+    return 0
+  fi
+  if [[ "$rel" != ".gnupg/gpg-agent.conf" ]]; then
+    # shellcheck disable=SC2088 # literal home-relative display path for user instructions
+    GPG_SETUP_STATUS_DISPLAY="~/${rel}"
+  fi
+  if [[ -z "${HOME:-}" ]]; then
+    GPG_SETUP_STATUS_TEXT="not configured ($GPG_SETUP_STATUS_DISPLAY)"
+    return 0
+  fi
+  [[ -n "$home" ]] || home="/"
+  [[ "$home" == "/" ]] && target="/${rel}" || target="${home}/${rel}"
+  GPG_SETUP_STATUS_PATH="$target"
+  GPG_SETUP_STATUS_TEXT="not configured ($GPG_SETUP_STATUS_DISPLAY)"
+
+  if [[ -L "$home" ]]; then
+    GPG_SETUP_STATUS_STATE="refused-symlink-dir"
+    GPG_SETUP_STATUS_TEXT="symlinked directory ($target)"
+    return 0
+  elif [[ ! -d "$home" ]]; then
+    return 0
+  elif [[ ! -x "$home" ]]; then
+    GPG_SETUP_STATUS_STATE="unsearchable"
+    GPG_SETUP_STATUS_TEXT="unsearchable directory ($target)"
+    return 0
+  fi
+
+  if [[ "$rel" == */* ]]; then
+    IFS=/ read -ra segs <<<"${rel%/*}"
+    for seg in "${segs[@]}"; do
+      [[ -n "$seg" ]] || continue
+      parent+="/$seg"
+      [[ "$home" == "/" ]] && dir_check="$parent" || dir_check="${home}${parent}"
+      if [[ -L "$dir_check" ]]; then
+        GPG_SETUP_STATUS_STATE="refused-symlink-dir"
+        GPG_SETUP_STATUS_TEXT="symlinked directory ($target)"
+        return 0
+      elif [[ ! -e "$dir_check" ]]; then
+        return 0
+      elif [[ ! -d "$dir_check" ]]; then
+        GPG_SETUP_STATUS_STATE="not-regular"
+        GPG_SETUP_STATUS_TEXT="parent is not a directory ($target)"
+        return 0
+      elif [[ ! -x "$dir_check" ]]; then
+        GPG_SETUP_STATUS_STATE="unsearchable"
+        GPG_SETUP_STATUS_TEXT="unsearchable directory ($target)"
+        return 0
+      fi
+    done
+  fi
+
+  if [[ -L "$target" ]]; then
+    GPG_SETUP_STATUS_STATE="symlink"
+    GPG_SETUP_STATUS_TEXT="symlink ($target)"
+    return 0
+  elif [[ ! -e "$target" ]]; then
+    return 0
+  elif [[ ! -f "$target" ]]; then
+    GPG_SETUP_STATUS_STATE="not-regular"
+    GPG_SETUP_STATUS_TEXT="not a regular file ($target)"
+    return 0
+  elif [[ ! -r "$target" ]]; then
+    GPG_SETUP_STATUS_STATE="unreadable"
+    GPG_SETUP_STATUS_TEXT="unreadable ($target)"
+    return 0
+  fi
+
+  _check_fenced_block_markers "$target" "$GPG_CONF_BEGIN" "$GPG_CONF_END" 1 || marker_rc=$?
+  GPG_SETUP_STATUS_SSH="false"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$GPG_CONF_BEGIN" ]]; then
+      inside=1
+      continue
+    elif [[ "$line" == "$GPG_CONF_END" ]]; then
+      inside=0
+      continue
+    fi
+    if [[ "$line" =~ ^[[:space:]]*enable-ssh-support([[:space:]#]|$) ]]; then
+      GPG_SETUP_STATUS_SSH="true"
+    fi
+    if [[ $marker_rc -eq 2 ]]; then
+      if [[ $inside -eq 1 && "$line" =~ ^[[:space:]]*pinentry-program[[:space:]]+([^[:space:]#]+) ]]; then
+        GPG_SETUP_STATUS_PINENTRY="${BASH_REMATCH[1]}"
+      fi
+    elif [[ -z "$GPG_SETUP_STATUS_PINENTRY" && "$line" =~ ^[[:space:]]*pinentry-program[[:space:]]+([^[:space:]#]+) ]]; then
+      GPG_SETUP_STATUS_PINENTRY="${BASH_REMATCH[1]}"
+    fi
+  done <"$target"
+
+  if [[ -n "$GPG_SETUP_STATUS_PINENTRY" ]]; then
+    if [[ -f "$GPG_SETUP_STATUS_PINENTRY" && -x "$GPG_SETUP_STATUS_PINENTRY" ]]; then
+      GPG_SETUP_STATUS_PINENTRY_OK="true"
+    else
+      GPG_SETUP_STATUS_PINENTRY_OK="false"
+    fi
+  fi
+
+  if [[ $marker_rc -eq 1 ]]; then
+    GPG_SETUP_STATUS_STATE="malformed"
+    GPG_SETUP_STATUS_TEXT="malformed markers ($GPG_SETUP_STATUS_DISPLAY)"
+  elif [[ $marker_rc -eq 2 ]]; then
+    GPG_SETUP_STATUS_STATE="managed"
+    GPG_SETUP_STATUS_TEXT="managed (${GPG_SETUP_STATUS_PINENTRY:-missing pinentry-program}; ssh-support=$GPG_SETUP_STATUS_SSH) ($GPG_SETUP_STATUS_DISPLAY)"
+    if [[ "$GPG_SETUP_STATUS_PINENTRY_OK" != "true" ]]; then
+      GPG_SETUP_STATUS_TEXT+=" [pinentry missing or not executable]"
+    fi
+  else
+    GPG_SETUP_STATUS_STATE="unmanaged"
+    if [[ -n "$GPG_SETUP_STATUS_PINENTRY" ]]; then
+      GPG_SETUP_STATUS_TEXT="unmanaged ($GPG_SETUP_STATUS_PINENTRY; ssh-support=$GPG_SETUP_STATUS_SSH) ($GPG_SETUP_STATUS_DISPLAY)"
+    else
+      GPG_SETUP_STATUS_TEXT="unmanaged ($GPG_SETUP_STATUS_DISPLAY)"
+    fi
+  fi
+}
+
 # Report the current lightXDM installation state without modifying files or invoking sudo.
 show_install_status() {
   local LC_ALL=C json_mode=0
@@ -3105,6 +3238,11 @@ show_install_status() {
   local SHELL_HOOK_STATUS_LOGIN_SHELL="" SHELL_HOOK_STATUS_KIND="" SHELL_HOOK_STATUS_PATH=""
   local SHELL_HOOK_STATUS_DISPLAY="" SHELL_HOOK_STATUS_STATE="" SHELL_HOOK_STATUS_TEXT=""
   inspect_shell_hook_status
+
+  local GPG_SETUP_STATUS_PATH="" GPG_SETUP_STATUS_DISPLAY="" GPG_SETUP_STATUS_STATE=""
+  local GPG_SETUP_STATUS_PINENTRY="" GPG_SETUP_STATUS_PINENTRY_OK="null" GPG_SETUP_STATUS_SSH="null"
+  local GPG_SETUP_STATUS_TEXT=""
+  inspect_gpg_setup_status
 
   local choices_file line de="" no_packages="" choices_kind="not-recorded" choices_state="not recorded"
   local choices_parent_rc=0
@@ -3456,6 +3594,15 @@ show_install_status() {
       json_str "${auto_notes[$idx]}"
     done
     printf ']\n'
+    printf '  },\n'
+
+    printf '  "gpg_setup": {\n'
+    printf '    "path": %s,\n' "$(json_str_or_null "$GPG_SETUP_STATUS_PATH")"
+    printf '    "display_path": %s,\n' "$(json_str_or_null "$GPG_SETUP_STATUS_DISPLAY")"
+    printf '    "state": %s,\n' "$(json_str "$GPG_SETUP_STATUS_STATE")"
+    printf '    "pinentry_program": %s,\n' "$(json_str_or_null "$GPG_SETUP_STATUS_PINENTRY")"
+    printf '    "pinentry_executable": %s,\n' "$GPG_SETUP_STATUS_PINENTRY_OK"
+    printf '    "ssh_support": %s\n' "$GPG_SETUP_STATUS_SSH"
     printf '  }\n'
     printf '}\n'
     return 0
@@ -3478,6 +3625,7 @@ show_install_status() {
     printf 'Recent TTY1 launch attempts (30s): %s\n' "$recent_count"
   fi
   printf 'Login shell: %s\n' "$SHELL_HOOK_STATUS_TEXT"
+  printf 'GPG agent setup: %s\n' "$GPG_SETUP_STATUS_TEXT"
   printf 'Dotfiles:\n'
   local idx
   for ((idx = 0; idx < ${#dotfile_targets[@]}; idx++)); do
@@ -4824,6 +4972,37 @@ run_doctor() {
     diag_record_check "$json_mode" "Dotfile record" "fail" "$diag_msg"
     issues=$((issues + 1))
   fi
+
+  local GPG_SETUP_STATUS_PATH="" GPG_SETUP_STATUS_DISPLAY="" GPG_SETUP_STATUS_STATE=""
+  local GPG_SETUP_STATUS_PINENTRY="" GPG_SETUP_STATUS_PINENTRY_OK="null" GPG_SETUP_STATUS_SSH="null"
+  local GPG_SETUP_STATUS_TEXT=""
+  inspect_gpg_setup_status
+  case "$GPG_SETUP_STATUS_STATE" in
+    managed)
+      if [[ "$GPG_SETUP_STATUS_PINENTRY_OK" == "true" ]]; then
+        diag_record_check "$json_mode" "GPG agent setup" "ok" "$GPG_SETUP_STATUS_TEXT"
+      else
+        printf -v diag_msg '%s pinentry-program missing or not executable (%s) — install pinentry or rerun: %s --setup-gpg auto' \
+          "$GPG_SETUP_STATUS_PATH" "${GPG_SETUP_STATUS_PINENTRY:-unset}" "$install_cmd"
+        diag_record_check "$json_mode" "GPG agent setup" "fail" "$diag_msg"
+        issues=$((issues + 1))
+      fi
+      ;;
+    malformed)
+      printf -v diag_msg 'incomplete lightXDM GPG markers in %s — remove them before rerunning: %s --setup-gpg auto' \
+        "$GPG_SETUP_STATUS_PATH" "$install_cmd"
+      diag_record_check "$json_mode" "GPG agent setup" "fail" "$diag_msg"
+      issues=$((issues + 1))
+      ;;
+    not-regular | unreadable | unsearchable)
+      diag_record_check "$json_mode" "GPG agent setup" "fail" "$GPG_SETUP_STATUS_TEXT"
+      issues=$((issues + 1))
+      ;;
+    symlink | refused-symlink-dir | outside-home)
+      diag_record_check "$json_mode" "GPG agent setup" "warn" "$GPG_SETUP_STATUS_TEXT"
+      warnings=$((warnings + 1))
+      ;;
+  esac
 
   local pam_record="" pam_expected="" pam_mismatch=0 keyring_configured=0 builtin_backend=""
   builtin_backend="$(builtin_de_keyring_backend "$de" 2>/dev/null || true)"
@@ -6506,11 +6685,12 @@ GPG_CONF_BEGIN="# >>> lightXDM GPG setup >>>"
 GPG_CONF_END="# <<< lightXDM GPG setup <<<"
 
 _gpg_conf_relpath() {
+  local strict="${1:-1}"
   if [[ -n "${GNUPGHOME:-}" && "$GNUPGHOME" != /* ]]; then
-    log "Refusing relative GNUPGHOME path ($GNUPGHOME): expected an absolute path inside HOME."
+    [[ $strict -eq 1 ]] && log "Refusing relative GNUPGHOME path ($GNUPGHOME): expected an absolute path inside HOME."
     return 1
   fi
-  _resolve_env_shell_hook_relpath "${GNUPGHOME:-}" "GNUPGHOME" ".gnupg/gpg-agent.conf" "gpg-agent.conf" 1
+  _resolve_env_shell_hook_relpath "${GNUPGHOME:-}" "GNUPGHOME" ".gnupg/gpg-agent.conf" "gpg-agent.conf" "$strict"
 }
 
 _gpg_pinentry_bin() {

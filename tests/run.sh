@@ -20568,6 +20568,95 @@ if [[ $sg_pam_kw_rc -ne 0 || "$sg_pam_kw_out" != *"GPG configuration (kwallet):"
   sg_report+=" [pam-kwallet-or-dirpin kw_rc=$sg_pam_kw_rc sway_rc=$sg_pam_sway_rc dir_rc=$sg_pin_dir_rc]"
 fi
 
+# Read-only --status [--json] and --doctor [--json] GPG setup observability
+rm -rf "$sg_case/home/.gnupg"
+set +e
+sg_st_miss="$(run_sg_cmd --status --json 2>"$sg_case/st_miss.err")"
+sg_st_miss_rc=$?
+sg_doc_miss="$(run_sg_cmd --doctor --json 2>"$sg_case/doc_miss.err")"
+set -e
+if [[ $sg_st_miss_rc -ne 0 || -s "$sg_case/st_miss.err" || -s "$sg_case/doc_miss.err" ]] ||
+  ! ST="$sg_st_miss" DOC="$sg_doc_miss" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+s = json.loads(os.environ["ST"])
+d = json.loads(os.environ["DOC"])
+assert s["gpg_setup"]["state"] == "missing", s["gpg_setup"]
+assert s["gpg_setup"]["pinentry_program"] is None
+assert s["gpg_setup"]["pinentry_executable"] is None
+assert s["gpg_setup"]["ssh_support"] is None
+assert all(c["name"] != "GPG agent setup" for c in d["checks"]), d["checks"]
+PY
+then
+  sg_ok=0
+  sg_report+=" [status-doc-missing rc=$sg_st_miss_rc err=$(cat "$sg_case/st_miss.err")]"
+fi
+
+run_sg_cmd --setup-gpg kwallet --gpg-ssh >/dev/null 2>&1
+set +e
+sg_st_man="$(run_sg_cmd --status --json 2>"$sg_case/st_man.err")"
+sg_st_man_rc=$?
+sg_st_txt="$(run_sg_cmd --status 2>&1)"
+sg_doc_man="$(run_sg_cmd --doctor --json 2>"$sg_case/doc_man.err")"
+set -e
+if [[ $sg_st_man_rc -ne 0 || -s "$sg_case/st_man.err" || -s "$sg_case/doc_man.err" ||
+  "$sg_st_txt" != *"GPG agent setup: managed ("*"pinentry-qt; ssh-support=true)"* ]] ||
+  ! ST="$sg_st_man" DOC="$sg_doc_man" BIN="$sg_case/bin/pinentry-qt" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+s = json.loads(os.environ["ST"])
+d = json.loads(os.environ["DOC"])
+g = s["gpg_setup"]
+assert g["state"] == "managed", g
+assert g["pinentry_program"] == os.environ["BIN"], g
+assert g["pinentry_executable"] is True, g
+assert g["ssh_support"] is True, g
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["GPG agent setup"]["status"] == "ok", checks
+PY
+then
+  sg_ok=0
+  sg_report+=" [status-doc-managed rc=$sg_st_man_rc err=$(cat "$sg_case/st_man.err")]"
+fi
+
+printf '# >>> lightXDM GPG setup >>>\npinentry-program /nonexistent/pinentry\n# <<< lightXDM GPG setup <<<\n' >"$sg_conf"
+set +e
+sg_doc_badpin="$(run_sg_cmd --doctor --json 2>"$sg_case/doc_badpin.err")"
+set -e
+printf '# >>> lightXDM GPG setup >>>\npinentry-program %s/bin/pinentry-qt\n' "$sg_case" >"$sg_conf"
+set +e
+sg_st_mal="$(run_sg_cmd --status --json 2>"$sg_case/st_mal.err")"
+sg_doc_mal="$(run_sg_cmd --doctor --json 2>"$sg_case/doc_mal.err")"
+sg_st_out="$(env -u SUDO_USER GNUPGHOME=/tmp/outside-gnupg PATH="$sg_case/bin:$PATH" HOME="$sg_case/home" USER="testuser" \
+  XDG_STATE_HOME="$sg_case/home/.local/state" LOGIN_FILE="$sg_case/etc/pam.d/login" \
+  PAM_KEYRING_STATE="$sg_case/etc/lightxdm/pam-keyring" DM_STATE_FILE="$sg_case/etc/lightxdm/disabled-display-managers" \
+  AUTOLOGIN_DROPIN_DIR="$sg_case/etc/systemd/system/getty@tty1.service.d" \
+  bash "$REPO_ROOT/install.sh" --status --json 2>"$sg_case/st_out.err")"
+sg_doc_out="$(env -u SUDO_USER GNUPGHOME=/tmp/outside-gnupg PATH="$sg_case/bin:$PATH" HOME="$sg_case/home" USER="testuser" \
+  XDG_STATE_HOME="$sg_case/home/.local/state" LOGIN_FILE="$sg_case/etc/pam.d/login" \
+  PAM_KEYRING_STATE="$sg_case/etc/lightxdm/pam-keyring" DM_STATE_FILE="$sg_case/etc/lightxdm/disabled-display-managers" \
+  AUTOLOGIN_DROPIN_DIR="$sg_case/etc/systemd/system/getty@tty1.service.d" \
+  bash "$REPO_ROOT/install.sh" --doctor --json 2>"$sg_case/doc_out.err")"
+set -e
+rm -rf "$sg_case/home/.gnupg"
+if [[ -s "$sg_case/doc_badpin.err" || -s "$sg_case/st_mal.err" || -s "$sg_case/doc_mal.err" ||
+  -s "$sg_case/st_out.err" || -s "$sg_case/doc_out.err" ]] ||
+  ! BP="$sg_doc_badpin" SM="$sg_st_mal" DM="$sg_doc_mal" SO="$sg_st_out" DO="$sg_doc_out" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+bp = {c["name"]: c for c in json.loads(os.environ["BP"])["checks"]}
+assert bp["GPG agent setup"]["status"] == "fail" and "missing or not executable" in bp["GPG agent setup"]["detail"], bp
+sm = json.loads(os.environ["SM"])["gpg_setup"]
+assert sm["state"] == "malformed", sm
+dm = {c["name"]: c for c in json.loads(os.environ["DM"])["checks"]}
+assert dm["GPG agent setup"]["status"] == "fail" and "incomplete lightXDM GPG markers" in dm["GPG agent setup"]["detail"], dm
+so = json.loads(os.environ["SO"])["gpg_setup"]
+assert so["state"] == "outside-home" and so["path"] is None, so
+do = {c["name"]: c for c in json.loads(os.environ["DO"])["checks"]}
+assert do["GPG agent setup"]["status"] == "warn" and "outside HOME" in do["GPG agent setup"]["detail"], do
+PY
+then
+  sg_ok=0
+  sg_report+=" [status-doc-errors]"
+fi
+
 if [[ $sg_ok -eq 1 ]]; then
   pass "install.sh --setup-gpg <gnome|kwallet|auto|remove> [--gpg-ssh] resolution, permissions, reload, and symlink safety"
 else
