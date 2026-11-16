@@ -19857,7 +19857,129 @@ EOF
     lm_ok=0
     lm_report+=" [root-refused rc=$lm_root_rc out=$lm_root_out]"
   fi
+
+  # Under sudo --dry-run (EUID 0 + SUDO_USER=testuser), resolve target user from SUDO_USER
+  set +e
+  lm_sudo_dry_out="$(
+    env \
+      SUDO_USER=testuser \
+      HOME="$lm_case/home" \
+      USER=root \
+      XDG_STATE_HOME="$lm_case/home/.local/state" \
+      PATH="$lm_case/bin:$PATH" \
+      LOGIN_FILE="$lm_case/etc/pam.d/login" \
+      PAM_KEYRING_STATE="$lm_case/etc/lightxdm/pam-keyring" \
+      PAM_LOGIN_BASE_STATE="$lm_case/etc/lightxdm/pam-login-base" \
+      GNOME_SESSION_TYPE_DEST="$lm_case/etc/lightxdm/gnome-session-type.conf" \
+      AUTOLOGIN_DROPIN_DIR="$lm_case/getty.d" \
+      DM_STATE_FILE="$lm_case/etc/lightxdm/disabled-display-managers" \
+      POLKIT_RULE="$lm_case/etc/polkit-1/rules.d/49-nopasswd.rules" \
+      unshare -r bash "$REPO_ROOT/install.sh" --login-mode autologin --dry-run 2>&1
+  )"
+  lm_sudo_dry_rc=$?
+  set -e
+  if [[ $lm_sudo_dry_rc -ne 0 || "$lm_sudo_dry_out" != *"TTY1 autologin: enable for testuser"* ]]; then
+    lm_ok=0
+    lm_report+=" [sudo-dry-autologin rc=$lm_sudo_dry_rc out=$lm_sudo_dry_out]"
+  fi
 fi
+
+# Unreadable 0600 drop-ins in dry-run + broken symlink drop-in preview (non-root)
+if [[ $EUID -ne 0 ]]; then
+  printf '[Service]\nExecStart=/usr/bin/agetty --autologin testuser\n' >"$lm_case/getty.d/lightxdm-autologin.conf"
+  printf '[Service]\nExecStart=/bin/true\n' >"$lm_case/getty.d/00-foreign.conf"
+  printf '[Service]\nExecStart=/bin/true\n' >"$lm_case/getty.d/override.conf"
+  chmod 000 "$lm_case/getty.d/00-foreign.conf" "$lm_case/getty.d/override.conf"
+  set +e
+  lm_unread_auto_dry="$(run_lm_cmd --login-mode autologin --dry-run 2>&1)"
+  lm_unread_auto_rc=$?
+  lm_unread_pw_dry="$(run_lm_cmd --login-mode password --dry-run 2>&1)"
+  lm_unread_pw_rc=$?
+  set -e
+  chmod 644 "$lm_case/getty.d/00-foreign.conf" "$lm_case/getty.d/override.conf"
+  rm -f "$lm_case/getty.d/00-foreign.conf" "$lm_case/getty.d/override.conf" "$lm_case/getty.d/lightxdm-autologin.conf"
+  if [[ $lm_unread_auto_rc -ne 0 ||
+    "$lm_unread_auto_dry" != *"00-foreign.conf: unknown (needs root"* ||
+    "$lm_unread_auto_dry" != *"override.conf: unknown (needs root"* ]]; then
+    lm_ok=0
+    lm_report+=" [unread-auto-dropin rc=$lm_unread_auto_rc out=$lm_unread_auto_dry]"
+  fi
+  if [[ $lm_unread_pw_rc -ne 0 ||
+    "$lm_unread_pw_dry" != *"TTY1 autologin: disable ($lm_case/getty.d/lightxdm-autologin.conf)"* ||
+    "$lm_unread_pw_dry" != *"Note: cannot read $lm_case/getty.d/00-foreign.conf"* ]]; then
+    lm_ok=0
+    lm_report+=" [unread-pw-dropin rc=$lm_unread_pw_rc out=$lm_unread_pw_dry]"
+  fi
+fi
+
+# Broken symlink lightxdm-autologin.conf preview in password mode
+ln -s "$lm_case/nonexistent-dropin-target" "$lm_case/getty.d/lightxdm-autologin.conf"
+set +e
+lm_broken_drop_out="$(run_lm_cmd --login-mode password --dry-run 2>&1)"
+lm_broken_drop_rc=$?
+set -e
+rm -f "$lm_case/getty.d/lightxdm-autologin.conf"
+if [[ $lm_broken_drop_rc -ne 0 || "$lm_broken_drop_out" != *"TTY1 autologin: remove broken symlink ($lm_case/getty.d/lightxdm-autologin.conf)"* ]]; then
+  lm_ok=0
+  lm_report+=" [broken-dropin-dry rc=$lm_broken_drop_rc out=$lm_broken_drop_out]"
+fi
+
+# Phase-2 blockers abort before Phase-1 mutations in autologin and password modes
+printf 'gnome\n' >"$lm_case/etc/lightxdm/pam-keyring"
+mkdir -p "$lm_case/getty.d/lightxdm-autologin.conf"
+set +e
+lm_blk_auto_out="$(run_lm_sim_cmd --login-mode autologin --non-interactive 2>&1)"
+lm_blk_auto_rc=$?
+set -e
+rmdir "$lm_case/getty.d/lightxdm-autologin.conf"
+if [[ $lm_blk_auto_rc -eq 0 || ! -f "$lm_case/etc/lightxdm/pam-keyring" ||
+  "$lm_blk_auto_out" != *"is a directory; expected a systemd drop-in file"* ]]; then
+  lm_ok=0
+  lm_report+=" [block-auto-phase1 rc=$lm_blk_auto_rc out=$lm_blk_auto_out]"
+fi
+
+printf "[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin testuser --noclear %%I \$TERM\n" >"$lm_case/getty.d/lightxdm-autologin.conf"
+rm -f "$lm_case/etc/lightxdm/pam-keyring"
+ln -s "$lm_case/nonexistent-keyring-state" "$lm_case/etc/lightxdm/pam-keyring"
+set +e
+lm_blk_pw_out="$(run_lm_sim_cmd --login-mode password --non-interactive 2>&1)"
+lm_blk_pw_rc=$?
+set -e
+if [[ $lm_blk_pw_rc -eq 0 || ! -f "$lm_case/getty.d/lightxdm-autologin.conf" ]]; then
+  lm_ok=0
+  lm_report+=" [block-pw-sym-phase1 rc=$lm_blk_pw_rc out=$lm_blk_pw_out]"
+fi
+rm -f "$lm_case/getty.d/lightxdm-autologin.conf" "$lm_case/etc/lightxdm/pam-keyring"
+# Also verify hidden symlink inside 000 state dir and directory PAM_KEYRING_STATE abort before disabling autologin
+if [[ $EUID -ne 0 ]]; then
+  printf "[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin testuser --noclear %%I \$TERM\n" >"$lm_case/getty.d/lightxdm-autologin.conf"
+  ln -s "$lm_case/nonexistent-keyring-state" "$lm_case/etc/lightxdm/pam-keyring"
+  chmod 000 "$lm_case/etc/lightxdm"
+  set +e
+  lm_blk_hidden_out="$(run_lm_sim_cmd --login-mode password --non-interactive 2>&1)"
+  lm_blk_hidden_rc=$?
+  set -e
+  chmod 755 "$lm_case/etc/lightxdm"
+  if [[ $lm_blk_hidden_rc -eq 0 || ! -f "$lm_case/getty.d/lightxdm-autologin.conf" ||
+    "$lm_blk_hidden_out" != *"or its directory is a symlink"* ]]; then
+    lm_ok=0
+    lm_report+=" [block-pw-hidden-sym rc=$lm_blk_hidden_rc out=$lm_blk_hidden_out]"
+  fi
+  rm -f "$lm_case/getty.d/lightxdm-autologin.conf" "$lm_case/etc/lightxdm/pam-keyring"
+fi
+printf "[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin testuser --noclear %%I \$TERM\n" >"$lm_case/getty.d/lightxdm-autologin.conf"
+mkdir -p "$lm_case/etc/lightxdm/pam-keyring"
+set +e
+lm_blk_pw_dir_out="$(run_lm_sim_cmd --login-mode password --non-interactive 2>&1)"
+lm_blk_pw_dir_rc=$?
+set -e
+if [[ $lm_blk_pw_dir_rc -eq 0 || ! -f "$lm_case/getty.d/lightxdm-autologin.conf" ||
+  "$lm_blk_pw_dir_out" != *"exists and is not a regular file"* ]]; then
+  lm_ok=0
+  lm_report+=" [block-pw-dir-phase1 rc=$lm_blk_pw_dir_rc out=$lm_blk_pw_dir_out]"
+fi
+rmdir "$lm_case/etc/lightxdm/pam-keyring"
+rm -f "$lm_case/getty.d/lightxdm-autologin.conf"
 
 if [[ $lm_ok -eq 1 ]]; then
   pass "install.sh --login-mode <password|autologin> validation, dry-run, preflight guards, and round-trip switching"

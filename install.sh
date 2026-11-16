@@ -6883,11 +6883,73 @@ _login_mode_sudo_script() {
   fi
 }
 
+_lm_test_path() {
+  local use_sudo="$1" flag="$2" path="$3" probe
+  probe="$(dirname -- "$path")"
+  while [[ "$probe" != "/" && "$probe" != "." && ! -e "$probe" && ! -L "$probe" ]]; do
+    probe="$(dirname -- "$probe")"
+  done
+  if [[ -d "$probe" && -x "$probe" ]]; then
+    test "$flag" "$path"
+  elif [[ -L "$probe" || ( -e "$probe" && ! -d "$probe" ) ]]; then
+    return 1
+  elif [[ $use_sudo -eq 1 ]]; then
+    sudo test "$flag" "$path"
+  else
+    return 1
+  fi
+}
+
+_login_mode_check_dropin_paths() {
+  local use_sudo="${1:-0}" check_legacy="${2:-0}" drop_in=""
+  if _lm_test_path "$use_sudo" -L "$AUTOLOGIN_DROPIN_DIR" ||
+    { _lm_test_path "$use_sudo" -e "$AUTOLOGIN_DROPIN_DIR" && ! _lm_test_path "$use_sudo" -d "$AUTOLOGIN_DROPIN_DIR"; }; then
+    log "ERROR: $AUTOLOGIN_DROPIN_DIR must be a directory (refusing symlink or non-directory path)."
+    return 1
+  fi
+  if _lm_test_path "$use_sudo" -d "$AUTOLOGIN_DROPIN_DIR"; then
+    drop_in="$AUTOLOGIN_DROPIN_DIR/lightxdm-autologin.conf"
+    if _lm_test_path "$use_sudo" -d "$drop_in" && ! _lm_test_path "$use_sudo" -L "$drop_in"; then
+      log "ERROR: $drop_in is a directory; expected a systemd drop-in file."
+      return 1
+    fi
+    if [[ $check_legacy -eq 1 ]]; then
+      drop_in="$AUTOLOGIN_DROPIN_DIR/override.conf"
+      if _lm_test_path "$use_sudo" -d "$drop_in" && ! _lm_test_path "$use_sudo" -L "$drop_in"; then
+        log "ERROR: $drop_in is a directory; expected a systemd drop-in file."
+        return 1
+      fi
+    fi
+  fi
+}
+
+_login_mode_check_state_target() {
+  local target="$1" use_sudo="${2:-0}" dir
+  dir="$(dirname -- "$target")"
+  if _lm_test_path "$use_sudo" -L "$dir" || _lm_test_path "$use_sudo" -L "$target"; then
+    log "ERROR: $target or its directory is a symlink; lightXDM ignores symlinks."
+    return 1
+  fi
+  if _lm_test_path "$use_sudo" -e "$dir" && ! _lm_test_path "$use_sudo" -d "$dir"; then
+    log "ERROR: $dir exists and is not a directory."
+    return 1
+  fi
+  if _lm_test_path "$use_sudo" -e "$target" && ! _lm_test_path "$use_sudo" -f "$target"; then
+    log "ERROR: $target exists and is not a regular file."
+    return 1
+  fi
+}
+
 # Switch an existing lightXDM setup between password+PAM keyring unlock and passwordless TTY1 autologin
 # without modifying dotfiles, packages, shell hooks, or display managers.
 run_login_mode() {
   local LC_ALL=C target_mode="$1" target_de="$2" de_specified="$3" keyring="$4" preview="${5:-0}" non_interactive="${6:-0}"
-  local real_user="${USER:-$(id -un)}"
+  local real_user=""
+  if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" ]]; then
+    real_user="$SUDO_USER"
+  else
+    real_user="${USER:-$(id -un)}"
+  fi
   if [[ -z "$real_user" || "$real_user" == -* || "$real_user" == *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]* ]]; then
     log "ERROR: Invalid user name: $real_user"
     return 1
@@ -6921,6 +6983,11 @@ run_login_mode() {
       log "ERROR: Missing uninstall.sh or enable-autologin.sh under $SCRIPT_DIR."
       return 1
     fi
+    _login_mode_check_dropin_paths 0 1 || return 1
+    if [[ -d "$PAM_KEYRING_STATE" && ! -L "$PAM_KEYRING_STATE" ]]; then
+      log "ERROR: $PAM_KEYRING_STATE is a directory; expected a regular state file."
+      return 1
+    fi
     if [[ $preview -eq 1 ]]; then
       printf 'Login mode: autologin (dry run; no files or systemd units changed)\n'
       local ko_preview_out="" ko_line=""
@@ -6948,17 +7015,27 @@ run_login_mode() {
         printf 'TTY1 autologin overrides: unknown (needs root — inspect %s with sudo)\n' "$AUTOLOGIN_DROPIN_DIR"
       else
         local legacy_override="$AUTOLOGIN_DROPIN_DIR/override.conf" drop_in=""
-        if [[ -f "$legacy_override" && ! -L "$legacy_override" && -r "$legacy_override" ]]; then
-          local legacy_lines=() legacy_re='^ExecStart=-/usr/bin/agetty --autologin [^-[:space:]:][^[:space:]:]* --noclear %I [$]TERM$'
-          mapfile -t legacy_lines <"$legacy_override"
-          if [[ ${#legacy_lines[@]} -eq 3 && "${legacy_lines[0]}" == "[Service]" && "${legacy_lines[1]}" == "ExecStart=" && "${legacy_lines[2]}" =~ $legacy_re ]]; then
-            printf 'Would remove legacy autologin override: %s\n' "$legacy_override"
+        if [[ -f "$legacy_override" && ! -L "$legacy_override" ]]; then
+          if [[ ! -r "$legacy_override" ]]; then
+            printf 'TTY1 autologin override %s: unknown (needs root — inspect with sudo)\n' "$legacy_override"
+          else
+            local legacy_lines=() legacy_re='^ExecStart=-/usr/bin/agetty --autologin [^-[:space:]:][^[:space:]:]* --noclear %I [$]TERM$'
+            mapfile -t legacy_lines <"$legacy_override"
+            if [[ ${#legacy_lines[@]} -eq 3 && "${legacy_lines[0]}" == "[Service]" && "${legacy_lines[1]}" == "ExecStart=" && "${legacy_lines[2]}" =~ $legacy_re ]]; then
+              printf 'Would remove legacy autologin override: %s\n' "$legacy_override"
+            fi
           fi
         fi
         for drop_in in "$AUTOLOGIN_DROPIN_DIR"/*.conf; do
-          if [[ -f "$drop_in" && -r "$drop_in" && "$drop_in" > "$AUTOLOGIN_DROPIN_DIR/lightxdm-autologin.conf" ]] &&
-            grep -Eq '^[[:space:]]*ExecStart[[:space:]]*=' "$drop_in"; then
-            printf 'Warning: %s overrides autologin with a later ExecStart= setting.\n' "$drop_in"
+          if [[ -f "$drop_in" ]]; then
+            if [[ ! -r "$drop_in" ]]; then
+              if [[ "$drop_in" != "$legacy_override" && "$drop_in" != "$AUTOLOGIN_DROPIN_DIR/lightxdm-autologin.conf" ]]; then
+                printf 'TTY1 autologin override %s: unknown (needs root — inspect with sudo)\n' "$drop_in"
+              fi
+            elif [[ "$drop_in" > "$AUTOLOGIN_DROPIN_DIR/lightxdm-autologin.conf" ]] &&
+              grep -Eq '^[[:space:]]*ExecStart[[:space:]]*=' "$drop_in"; then
+              printf 'Warning: %s overrides autologin with a later ExecStart= setting.\n' "$drop_in"
+            fi
           fi
         done
       fi
@@ -6967,6 +7044,11 @@ run_login_mode() {
 
     check_root || return $?
     authenticate_sudo "$non_interactive" "$real_user"
+    _login_mode_check_dropin_paths 1 1 || return 1
+    if _lm_test_path 1 -d "$PAM_KEYRING_STATE" && ! _lm_test_path 1 -L "$PAM_KEYRING_STATE"; then
+      log "ERROR: $PAM_KEYRING_STATE is a directory; expected a regular state file."
+      return 1
+    fi
     _login_mode_sudo_script "$SCRIPT_DIR/uninstall.sh" --keyring-only || return 1
     if _login_mode_has_custom_env; then
       _login_mode_sudo_script "$SCRIPT_DIR/enable-autologin.sh" "$real_user" || return 1
@@ -7034,13 +7116,10 @@ run_login_mode() {
     log "ERROR: Missing enable-autologin.sh under $SCRIPT_DIR."
     return 1
   fi
-  if [[ -L "$(dirname -- "$PAM_KEYRING_STATE")" || -L "$PAM_KEYRING_STATE" ]]; then
-    log "ERROR: $PAM_KEYRING_STATE or its directory is a symlink; lightXDM ignores symlinks."
-    return 1
-  fi
-  if [[ "$target_de" == "gnome" ]] && [[ -L "$(dirname -- "$GNOME_SESSION_TYPE_DEST")" || -L "$GNOME_SESSION_TYPE_DEST" ]]; then
-    log "ERROR: $GNOME_SESSION_TYPE_DEST or its directory is a symlink; lightXDM ignores symlinks."
-    return 1
+  _login_mode_check_dropin_paths 0 0 || return 1
+  _login_mode_check_state_target "$PAM_KEYRING_STATE" 0 || return 1
+  if [[ "$target_de" == "gnome" ]]; then
+    _login_mode_check_state_target "$GNOME_SESSION_TYPE_DEST" 0 || return 1
   fi
 
   local resolved_keyring=""
@@ -7048,7 +7127,7 @@ run_login_mode() {
     resolved_keyring="$(_resolve_password_keyring_backend 1)"
     printf 'Login mode: password (de=%s, keyring=%s; dry run; no files or systemd units changed)\n' "$target_de" "$resolved_keyring"
     local auto_status_out="" auto_line="" auto_file="" auto_needs_root=0
-    local -a auto_warnings=()
+    local -a auto_warnings=() auto_notes=()
     auto_status_out="$(env OVERRIDE_DIR="$AUTOLOGIN_DROPIN_DIR" LOGIN_FILE="$LOGIN_FILE" bash "$SCRIPT_DIR/enable-autologin.sh" --status 2>&1 || true)"
     while IFS= read -r auto_line || [[ -n "$auto_line" ]]; do
       [[ -n "$auto_line" ]] || continue
@@ -7057,16 +7136,23 @@ run_login_mode() {
       elif [[ "$auto_line" == Warning:\ * ]]; then
         [[ "$auto_line" == *"PAM keyring unlock is configured"* ]] || auto_warnings+=("$auto_line")
       elif [[ "$auto_line" == Note:\ * ]] && autologin_note_needs_root "$auto_line"; then
+        [[ "$auto_line" == *"cannot read $LOGIN_FILE;"* ]] || auto_notes+=("$auto_line")
         auto_needs_root=1
       fi
     done <<<"$auto_status_out"
     if [[ -n "$auto_file" ]]; then
       printf 'TTY1 autologin: disable (%s)\n' "$auto_file"
+    elif [[ -L "$AUTOLOGIN_DROPIN_DIR/lightxdm-autologin.conf" && ! -e "$AUTOLOGIN_DROPIN_DIR/lightxdm-autologin.conf" ]]; then
+      printf 'TTY1 autologin: remove broken symlink (%s/lightxdm-autologin.conf)\n' "$AUTOLOGIN_DROPIN_DIR"
     elif [[ $auto_needs_root -eq 1 ]]; then
       printf 'TTY1 autologin: unknown (needs root — inspect %s live)\n' "$AUTOLOGIN_DROPIN_DIR"
     else
       printf 'TTY1 autologin: already disabled (no lightXDM drop-in)\n'
     fi
+    local note_item=""
+    for note_item in "${auto_notes[@]}"; do
+      printf '%s\n' "$note_item"
+    done
     local warn_item=""
     for warn_item in "${auto_warnings[@]}"; do
       printf '%s\n' "$warn_item"
@@ -7105,6 +7191,11 @@ run_login_mode() {
       log "ERROR: $GNOME_PAM_STATUS_MSG"
       return 1
     fi
+  fi
+  _login_mode_check_dropin_paths 1 0 || return 1
+  _login_mode_check_state_target "$PAM_KEYRING_STATE" 1 || return 1
+  if [[ "$target_de" == "gnome" ]]; then
+    _login_mode_check_state_target "$GNOME_SESSION_TYPE_DEST" 1 || return 1
   fi
 
   _login_mode_sudo_script "$SCRIPT_DIR/enable-autologin.sh" --disable || return 1
