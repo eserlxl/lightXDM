@@ -41,7 +41,7 @@ for script in "${scripts[@]}"; do
     # The sourced gpg-agent dotfiles export a command substitution in one step (SC2155).
     case "$script" in
       dotfiles/.gpg-agent-*) opts=(-e SC2155) ;;
-      # Full dataflow analysis of the 8,000-line test suite needs about 13 GB of memory.
+      # Full dataflow analysis of the 21,000+ line test suite needs about 13 GB of memory.
       tests/run.sh) opts=(--extended-analysis=false) ;;
     esac
     shellcheck "${opts[@]}" "$SCRIPT_DIR/$script"
@@ -53,3 +53,29 @@ for script in "${scripts[@]}"; do
 done
 
 echo "ShellCheck completed for all scripts."
+
+if command -v git >/dev/null 2>&1 && [[ -e "$SCRIPT_DIR/.git" ]] && git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  missing_scripts=()
+  while IFS= read -r -d '' tracked_file; do
+    [[ -z "$tracked_file" || "$tracked_file" == *.desktop ]] && continue
+    listed=0
+    for script in "${scripts[@]}"; do
+      if [[ "$script" == "$tracked_file" ]]; then
+        listed=1
+        break
+      fi
+    done
+    if [[ "$listed" -eq 0 ]]; then
+      missing_scripts+=("$tracked_file")
+    fi
+  done < <(git -C "$SCRIPT_DIR" ls-files -z -- '*.sh' 'dotfiles/.*')
+  if [[ ${#missing_scripts[@]} -gt 0 ]]; then
+    echo "Error: lint.sh scripts=() misses tracked shell/dotfile files: ${missing_scripts[*]}" >&2
+    exit 1
+  fi
+  echo "Tracked shell script and template list is complete."
+else
+  echo "Skipping git tracked-script completeness check (not a git checkout)."
+fi
+
+bash "$SCRIPT_DIR/tests/template-history.sh" --check
