@@ -6197,10 +6197,12 @@ refresh_managed_shell_hooks_on_update() {
       continue
     fi
     if [[ ! -r "$target" ]]; then
-      if [[ $preview -eq 1 ]]; then
-        printf 'Shell hook: %s (stays: unreadable; --update)\n' "$target"
-      else
-        log "WARNING: Cannot read shell hook $target during --update; leaving untouched."
+      if [[ $explicit -eq 1 ]]; then
+        if [[ $preview -eq 1 ]]; then
+          printf 'Shell hook: %s (stays: unreadable; --update)\n' "$target"
+        else
+          log "WARNING: Cannot read shell hook $target during --update; leaving untouched."
+        fi
       fi
       continue
     fi
@@ -6247,11 +6249,15 @@ refresh_managed_shell_hooks_on_update() {
       log "WARNING: Failed preparing shell hook update for $target."
       continue
     }
-    {
+    if ! {
       printf '%s\n' "$SHELL_HOOK_BEGIN"
       print_shell_snippet "$kind"
       printf '%s\n' "$SHELL_HOOK_END"
-    } >"$block_file"
+    } >"$block_file"; then
+      rm -f -- "$block_file" "$tmp"
+      log "WARNING: Failed preparing shell hook update for $target."
+      continue
+    fi
     dest_tmp="$(mktemp "${target_parent}/.${target##*/}.lightxdm.XXXXXX")" || {
       rm -f -- "$block_file" "$tmp"
       log "WARNING: Failed preparing shell hook update for $target."
@@ -6288,11 +6294,14 @@ apply_shell_hook() {
 
   local block_file tmp="" dest_tmp=""
   block_file="$(mktemp)" || return 1
-  {
+  if ! {
     printf '%s\n' "$SHELL_HOOK_BEGIN"
     print_shell_snippet "$resolved"
     printf '%s\n' "$SHELL_HOOK_END"
-  } >"$block_file"
+  } >"$block_file"; then
+    rm -f -- "$block_file"
+    return 1
+  fi
 
   if [[ -f "$target" ]]; then
     local marker_rc=0

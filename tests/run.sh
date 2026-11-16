@@ -17481,6 +17481,30 @@ if [[ "$upd_sym_live_out" != *"WARNING: Refusing symlinked shell hook file"* ||
   upd_ss_report+=" update-symlink live=[$upd_sym_live_out];"
 fi
 
+# 5) unreadable non-explicit secondary shell config stays silent during --update while explicit unreadable hook still reports
+if [[ $(id -u) -ne 0 ]]; then
+  printf '# untouched zsh profile\n' >"$upd_ss_home/.zprofile.reg"
+  rm -f "$upd_ss_home/.zprofile"
+  mv "$upd_ss_home/.zprofile.reg" "$upd_ss_home/.zprofile"
+  chmod 000 "$upd_ss_home/.config/fish/config.fish"
+  upd_nonexp_dry="$(FAKE_SHELL=/usr/bin/zsh run_upd_ss_cmd --update --dry-run 2>&1)" || upd_ss_ok=0
+  upd_nonexp_live="$(FAKE_SHELL=/usr/bin/zsh run_upd_ss_cmd --update --non-interactive 2>&1)" || upd_ss_ok=0
+  chmod 644 "$upd_ss_home/.config/fish/config.fish"
+  if [[ "$upd_nonexp_dry" == *"config.fish"* || "$upd_nonexp_live" == *"config.fish"* ]]; then
+    upd_ss_ok=0
+    upd_ss_report+=" update-nonexplicit-unreadable dry=[$upd_nonexp_dry] live=[$upd_nonexp_live];"
+  fi
+  chmod 000 "$upd_ss_home/.zprofile"
+  upd_exp_dry="$(FAKE_SHELL=/usr/bin/zsh run_upd_ss_cmd --update --dry-run 2>&1)" || upd_ss_ok=0
+  upd_exp_live="$(FAKE_SHELL=/usr/bin/zsh run_upd_ss_cmd --update --non-interactive 2>&1)" || upd_ss_ok=0
+  chmod 644 "$upd_ss_home/.zprofile"
+  if [[ "$upd_exp_dry" != *"stays: unreadable; --update"* ||
+    "$upd_exp_live" != *"WARNING: Cannot read shell hook $upd_ss_home/.zprofile during --update"* ]]; then
+    upd_ss_ok=0
+    upd_ss_report+=" update-explicit-unreadable dry=[$upd_exp_dry] live=[$upd_exp_live];"
+  fi
+fi
+
 if [[ $upd_ss_ok -eq 1 ]]; then
   pass "install.sh --update refreshes outdated managed zsh/fish shell hooks safely while unifying hook diagnostics across main, --recover, and --guided"
 else
