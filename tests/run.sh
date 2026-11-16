@@ -12650,14 +12650,8 @@ else
   fail "install.sh atomic state writes:$atomic_helper_report"
 fi
 
-if [[ $can_unshare -eq 0 ]]; then
-  skip "uninstall.sh and enable-autologin.sh atomic state/drop-in writes under failure and umask 077 (unshare -r unavailable)"
-else
-  atomic_priv_report=""
-  mkdir -p "$atomic_dir/priv/pam.d" "$atomic_dir/priv/state" "$atomic_dir/priv/getty.d" "$atomic_dir/priv/polkit" "$atomic_dir/priv/home" "$atomic_dir/priv/bin"
-  printf '%s\n' '#%PAM-1.0' >"$atomic_dir/priv/pam.d/login"
-  printf 'user\n' >"$atomic_dir/priv/home/.keep"
-  cat >"$atomic_dir/priv/bin/systemctl" <<'EOF'
+mkdir -p "$atomic_dir/priv/bin"
+cat >"$atomic_dir/priv/bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
   enable)
@@ -12676,13 +12670,76 @@ case "${1:-}" in
 esac
 exit 0
 EOF
-  chmod +x "$atomic_dir/priv/bin/systemctl"
+cat >"$atomic_dir/priv/bin/getent" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "passwd" && "${2:-}" == "testuser" ]]; then
+  printf 'testuser:x:1000:1000::/home/testuser:/bin/bash\n'
+  exit 0
+fi
+command -p getent "$@"
+EOF
+chmod +x "$atomic_dir/priv/bin/systemctl" "$atomic_dir/priv/bin/getent"
+
+check_enable_autologin_atomic() {
+  local label="$1" work_dir="$2"
+  shift 2
+  local auto_fail_out="" auto_fail_rc=0 auto_temps="" auto_ok_out="" auto_ok_rc=0
+  atomic_autologin_report=""
+  rm -rf "$work_dir"
+  mkdir -p "$work_dir/getty.d" "$work_dir/pam.d"
+  printf '%s\n' '#%PAM-1.0' >"$work_dir/pam.d/login"
+  printf 'existing-dropin\n' >"$work_dir/getty.d/lightxdm-autologin.conf"
+  set +e
+  auto_fail_out="$(
+    env PATH="$atomic_dir/fail_bin:$atomic_dir/priv/bin:$PATH" \
+      OVERRIDE_DIR="$work_dir/getty.d" \
+      LOGIN_FILE="$work_dir/pam.d/login" \
+      USER=testuser \
+      "$@" testuser 2>&1
+  )"
+  auto_fail_rc=$?
+  set -e
+  auto_temps="$(find "$work_dir/getty.d" -maxdepth 1 -name '.lightxdm-autologin.conf.*' | tr '\n' ' ')"
+  if [[ $auto_fail_rc -ne 1 || "$auto_fail_out" == *"Usage:"* || "$auto_fail_out" == *"does not exist"* ||
+    "$(cat "$work_dir/getty.d/lightxdm-autologin.conf")" != "existing-dropin" ||
+    -n "$auto_temps" ]]; then
+    atomic_autologin_report+=" [$label mv-fail: rc=$auto_fail_rc, temps=$auto_temps, out=$auto_fail_out]"
+  fi
+
+  printf 'victim-autologin\n' >"$work_dir/victim_autologin"
+  ln -sf "$work_dir/victim_autologin" "$work_dir/getty.d/lightxdm-autologin.conf"
+  set +e
+  auto_ok_out="$(
+    umask 077
+    env PATH="$atomic_dir/priv/bin:$PATH" \
+      OVERRIDE_DIR="$work_dir/getty.d" \
+      LOGIN_FILE="$work_dir/pam.d/login" \
+      USER=testuser \
+      "$@" testuser 2>&1
+  )"
+  auto_ok_rc=$?
+  set -e
+  if [[ $auto_ok_rc -ne 0 || -L "$work_dir/getty.d/lightxdm-autologin.conf" ||
+    "$(stat -c %a -- "$work_dir/getty.d/lightxdm-autologin.conf")" != "644" ||
+    "$(cat "$work_dir/victim_autologin")" != "victim-autologin" ]] ||
+    ! grep -Fq -- "--autologin testuser --noclear %I \$TERM" "$work_dir/getty.d/lightxdm-autologin.conf"; then
+    atomic_autologin_report+=" [$label symlink/umask077: rc=$auto_ok_rc, out=$auto_ok_out]"
+  fi
+}
+
+if [[ $can_unshare -eq 0 ]]; then
+  skip "uninstall.sh and enable-autologin.sh atomic state/drop-in writes under failure and umask 077 (unshare -r unavailable)"
+else
+  atomic_priv_report=""
+  mkdir -p "$atomic_dir/priv/pam.d" "$atomic_dir/priv/state" "$atomic_dir/priv/polkit" "$atomic_dir/priv/home"
+  printf '%s\n' '#%PAM-1.0' >"$atomic_dir/priv/pam.d/login"
+  printf 'user\n' >"$atomic_dir/priv/home/.keep"
 
   # 1) uninstall.sh DM_STATE_FILE preserves prior file on atomic mv failure and cleans temp file.
   printf 'lightdm.service\nsddm.service\n' >"$atomic_dir/priv/state/disabled-display-managers"
   set +e
   uninst_dm_fail="$(
-    PATH="$atomic_dir/fail_bin:$atomic_dir/priv/bin:$PATH" \
+    env PATH="$atomic_dir/fail_bin:$atomic_dir/priv/bin:$PATH" \
       TARGET_HOME="$atomic_dir/priv/home" \
       LOGIN_FILE="$atomic_dir/priv/pam.d/login" \
       GNOME_SESSION_TYPE_DEST="$atomic_dir/priv/state/gnome-session-type.conf" \
@@ -12706,7 +12763,7 @@ EOF
   set +e
   uninst_dm_ok="$(
     umask 077
-    PATH="$atomic_dir/priv/bin:$PATH" \
+    env PATH="$atomic_dir/priv/bin:$PATH" \
       TARGET_HOME="$atomic_dir/priv/home" \
       LOGIN_FILE="$atomic_dir/priv/pam.d/login" \
       GNOME_SESSION_TYPE_DEST="$atomic_dir/priv/state/gnome-session-type.conf" \
@@ -12726,49 +12783,24 @@ EOF
   fi
 
   # 3) enable-autologin.sh OVERRIDE_FILE preserves existing drop-in on mv failure and replaces symlink cleanly as 0644 under umask 077.
-  printf 'existing-dropin\n' >"$atomic_dir/priv/getty.d/lightxdm-autologin.conf"
-  set +e
-  auto_fail_out="$(
-    PATH="$atomic_dir/fail_bin:$atomic_dir/priv/bin:$PATH" \
-      OVERRIDE_DIR="$atomic_dir/priv/getty.d" \
-      LOGIN_FILE="$atomic_dir/priv/pam.d/login" \
-      USER=testuser \
-      unshare -r bash "$REPO_ROOT/enable-autologin.sh" --no-interactive testuser 2>&1
-  )"
-  auto_fail_rc=$?
-  set -e
-  auto_temps="$(find "$atomic_dir/priv/getty.d" -maxdepth 1 -name '.lightxdm-autologin.conf.*' | tr '\n' ' ')"
-  if [[ $auto_fail_rc -ne 1 ||
-    "$(cat "$atomic_dir/priv/getty.d/lightxdm-autologin.conf")" != "existing-dropin" ||
-    -n "$auto_temps" ]]; then
-    atomic_priv_report+=" [autologin mv-fail: rc=$auto_fail_rc, temps=$auto_temps, out=$auto_fail_out]"
-  fi
-
-  printf 'victim-autologin\n' >"$atomic_dir/victim_autologin"
-  ln -sf "$atomic_dir/victim_autologin" "$atomic_dir/priv/getty.d/lightxdm-autologin.conf"
-  set +e
-  auto_ok_out="$(
-    umask 077
-    PATH="$atomic_dir/priv/bin:$PATH" \
-      OVERRIDE_DIR="$atomic_dir/priv/getty.d" \
-      LOGIN_FILE="$atomic_dir/priv/pam.d/login" \
-      USER=testuser \
-      unshare -r bash "$REPO_ROOT/enable-autologin.sh" --no-interactive testuser 2>&1
-  )"
-  auto_ok_rc=$?
-  set -e
-  if [[ $auto_ok_rc -ne 0 || -L "$atomic_dir/priv/getty.d/lightxdm-autologin.conf" ||
-    "$(stat -c %a -- "$atomic_dir/priv/getty.d/lightxdm-autologin.conf")" != "644" ||
-    "$(cat "$atomic_dir/victim_autologin")" != "victim-autologin" ]] ||
-    ! grep -Fq -- "--autologin testuser --noclear %I \$TERM" "$atomic_dir/priv/getty.d/lightxdm-autologin.conf"; then
-    atomic_priv_report+=" [autologin symlink/umask077: rc=$auto_ok_rc, out=$auto_ok_out]"
-  fi
+  check_enable_autologin_atomic autologin "$atomic_dir/priv_auto" unshare -r bash "$REPO_ROOT/enable-autologin.sh"
+  atomic_priv_report+="$atomic_autologin_report"
 
   if [[ -z "$atomic_priv_report" ]]; then
     pass "uninstall.sh and enable-autologin.sh write DM state and autologin drop-in atomically as 0644"
   else
     fail "uninstall.sh/enable-autologin.sh atomic writes:$atomic_priv_report"
   fi
+fi
+
+# Non-unshare simulated-root check so enable-autologin.sh atomic mv-failure and 0644 symlink replacement always execute.
+sed 's/EUID -ne 0/EUID -lt 0/g' "$REPO_ROOT/enable-autologin.sh" >"$atomic_dir/sim_enable_autologin.sh"
+chmod +x "$atomic_dir/sim_enable_autologin.sh"
+check_enable_autologin_atomic sim_autologin "$atomic_dir/sim_auto" bash "$atomic_dir/sim_enable_autologin.sh"
+if [[ -z "$atomic_autologin_report" ]]; then
+  pass "enable-autologin.sh writes autologin drop-in atomically as 0644 under simulated root"
+else
+  fail "enable-autologin.sh simulated-root atomic writes:$atomic_autologin_report"
 fi
 
 # Non-GNOME configure_gnome_session_type handles dangling symlinks at GNOME_SESSION_TYPE_DEST in preview and apply paths.
