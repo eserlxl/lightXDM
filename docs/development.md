@@ -68,8 +68,8 @@ lightXDM/
 │   │   └── vmtest.py       # boots one VM, installs, types the TTY1 login, checks the session
 │   ├── run.sh             # behavior suite and Python unit tests (--strict fails on skipped checks; --help)
 │   ├── template-history.sh  # prints or --check-verifies dotfiles/template-history.sha256 from git history
-│   ├── test_repo_checks.py  # unit tests for check_repo_integrity.py (run by tests/run.sh, or python3 -B -m unittest)
-│   └── test_vmtest.py     # host-side unit tests for qemu/vmtest.py (run by tests/run.sh, or python3 -B -m unittest)
+│   ├── test_repo_checks.py  # unit tests for check_repo_integrity.py (run by tests/run.sh, or python3 -B -m unittest discover -s tests)
+│   └── test_vmtest.py     # host-side unit tests for qemu/vmtest.py (run by tests/run.sh, or python3 -B -m unittest discover -s tests)
 └── LICENSE
 ```
 
