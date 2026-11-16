@@ -33,6 +33,7 @@ CONDITIONAL_MAPPINGS = {
 SHELL_INTERPRETERS = {"sh", "/bin/sh", "/usr/bin/sh", "bash", "/bin/bash", "/usr/bin/bash"}
 PYTHON_BIN_RE = re.compile(r"^python(?:3(?:\.\d+)?)?$")
 SHELL_WORDS_TAKE_VALUE = {"-W", "-X", "-Q"}
+ENV_OPTIONS_TAKE_VALUE = {"-u", "--unset", "-C", "--chdir", "-S", "--split-string", "-a", "--argv0"}
 TOP_KEY_RE = re.compile(r"^([A-Za-z0-9_.-]+):\s*(?:#.*)?$")
 CHILD_KEY_RE = re.compile(r"^([A-Za-z0-9_.-]+):\s*(.*)$")
 LIST_ITEM_RE = re.compile(r"^-\s+(.*)$")
@@ -479,6 +480,14 @@ def _split_shell_statements(cmd_text: str) -> list[list[str]]:
     return statements
 
 
+def _is_bytecode_env_guard(tok: str) -> bool:
+    """Return True if tok assigns PYTHONDONTWRITEBYTECODE=1 (with optional quotes)."""
+    if "=" not in tok:
+        return False
+    key, val = tok.split("=", 1)
+    return key == "PYTHONDONTWRITEBYTECODE" and _strip_matching_quotes(val) == "1"
+
+
 def _check_statement_python_invocation(tokens: list[str]) -> str | None:
     """Return an error reason if tokens run a repo .py script or -m unittest without -B/PYTHONDONTWRITEBYTECODE=1."""
     idx = 0
@@ -490,21 +499,43 @@ def _check_statement_python_invocation(tokens: list[str]) -> str | None:
             idx += 1
             continue
         if "=" in tok and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tok):
-            if tok == "PYTHONDONTWRITEBYTECODE=1":
+            if _is_bytecode_env_guard(tok):
                 has_env_guard = True
             idx += 1
             continue
         if tok == "env":
             idx += 1
-            while idx < len(tokens) and (tokens[idx].startswith("-") or "=" in tokens[idx]):
-                if tokens[idx] == "PYTHONDONTWRITEBYTECODE=1":
-                    has_env_guard = True
-                idx += 1
+            while idx < len(tokens):
+                env_tok = tokens[idx]
+                if env_tok == "--":
+                    idx += 1
+                    break
+                if env_tok in ENV_OPTIONS_TAKE_VALUE:
+                    idx += 2
+                    continue
+                if env_tok.startswith("-"):
+                    idx += 1
+                    continue
+                if "=" in env_tok and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", env_tok):
+                    if _is_bytecode_env_guard(env_tok):
+                        has_env_guard = True
+                    idx += 1
+                    continue
+                break
             continue
         if tok == "command":
-            if idx + 1 < len(tokens) and tokens[idx + 1] in ("-v", "-V"):
-                return None
             idx += 1
+            while idx < len(tokens):
+                cmd_opt = tokens[idx]
+                if cmd_opt == "--":
+                    idx += 1
+                    break
+                if cmd_opt.startswith("-") and len(cmd_opt) > 1:
+                    if "v" in cmd_opt[1:] or "V" in cmd_opt[1:]:
+                        return None
+                    idx += 1
+                    continue
+                break
             continue
         break
 
@@ -512,7 +543,7 @@ def _check_statement_python_invocation(tokens: list[str]) -> str | None:
         return None
 
     cmd_name = _strip_matching_quotes(tokens[idx])
-    if not PYTHON_BIN_RE.match(cmd_name):
+    if not PYTHON_BIN_RE.match(Path(cmd_name).name):
         return None
 
     has_b_flag = False
@@ -526,6 +557,12 @@ def _check_statement_python_invocation(tokens: list[str]) -> str | None:
             i += 1
             continue
         if arg.startswith("-") and len(arg) > 1:
+            if arg in SHELL_WORDS_TAKE_VALUE:
+                i += 2
+                continue
+            if arg[:2] in SHELL_WORDS_TAKE_VALUE:
+                i += 1
+                continue
             flags = arg[1:]
             if "B" in flags:
                 has_b_flag = True
@@ -542,9 +579,6 @@ def _check_statement_python_invocation(tokens: list[str]) -> str | None:
                     if not (has_b_flag or has_env_guard):
                         return f"{cmd_name} -m {mod_name} invoked without -B or PYTHONDONTWRITEBYTECODE=1"
                 return None
-            if arg in SHELL_WORDS_TAKE_VALUE:
-                i += 2
-                continue
             i += 1
             continue
 
@@ -617,10 +651,12 @@ def check_python_invocations(root: Path, errors: list[str]) -> None:
         rel_path = path.relative_to(root)
         for line_no, logical_line in _logical_shell_lines(lines):
             snippets = [logical_line, *_extract_subshells(logical_line)]
+            seen_reasons: set[str] = set()
             for snippet in snippets:
                 for stmt_tokens in _split_shell_statements(snippet):
                     reason = _check_statement_python_invocation(stmt_tokens)
-                    if reason:
+                    if reason and reason not in seen_reasons:
+                        seen_reasons.add(reason)
                         errors.append(f"{rel_path}:{line_no}: {reason}")
 
 

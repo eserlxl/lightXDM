@@ -268,6 +268,53 @@ class RepoIntegrityTests(unittest.TestCase):
             self.assertNotEqual(proc_cases.returncode, 0)
             self.assertIn("tests/cases/bad.sh", proc_cases.stderr)
 
+    def test_wrapper_path_option_and_subshell_python_invocations(self):
+        bad_lines = [
+            "env -u SUDO_USER python3 tests/helper.py",
+            "command -p python3 tests/helper.py",
+            "/usr/bin/python3 -m unittest discover -s tests",
+            "python3 -Ximporttime tests/helper.py",
+            "python3 -WBytecode tests/helper.py",
+            "python3 -Wdefault:compile tests/helper.py",
+        ]
+        for line in bad_lines:
+            with self.subTest(bad_line=line):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    root = Path(tmpdir)
+                    _create_valid_fixture(root)
+                    (root / "tests" / "run.sh").write_text(f"#!/usr/bin/env bash\n{line}\n", encoding="utf-8")
+                    proc = _run_integrity(root)
+                    self.assertNotEqual(proc.returncode, 0, proc.stdout)
+                    self.assertIn("tests/run.sh:2:", proc.stderr)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            _create_valid_fixture(root)
+            (root / "tests" / "run.sh").write_text(
+                "#!/usr/bin/env bash\nout=$(python3 tests/helper.py)\n",
+                encoding="utf-8",
+            )
+            proc_sub = _run_integrity(root)
+            self.assertNotEqual(proc_sub.returncode, 0)
+            err_lines = [ln for ln in proc_sub.stderr.splitlines() if "tests/run.sh:2:" in ln]
+            self.assertEqual(len(err_lines), 1, proc_sub.stderr)
+
+        good_lines = [
+            'PYTHONDONTWRITEBYTECODE="1" python3 tests/helper.py',
+            "env -u SUDO_USER PYTHONDONTWRITEBYTECODE=1 python3 tests/helper.py",
+            "command -p -v python3",
+            "command -pv python3",
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            _create_valid_fixture(root)
+            (root / "tests" / "run.sh").write_text(
+                "#!/usr/bin/env bash\n" + "\n".join(good_lines) + "\n",
+                encoding="utf-8",
+            )
+            proc_good = _run_integrity(root)
+            self.assertEqual(proc_good.returncode, 0, proc_good.stderr)
+
     def test_bytecode_artifacts_fail_unless_excluded(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
