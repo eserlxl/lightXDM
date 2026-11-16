@@ -79,3 +79,43 @@ else
 fi
 
 bash "$SCRIPT_DIR/tests/template-history.sh" --check
+
+py_files=()
+if [[ -d "$SCRIPT_DIR/tests" ]]; then
+  while IFS= read -r -d '' py_file; do
+    py_files+=("$py_file")
+  done < <(find "$SCRIPT_DIR/tests" \( -name '.git' -o -name '.qb' -o -name '.planwright' \) -prune -o -type f -name '*.py' -print0 | LC_ALL=C sort -z)
+fi
+
+if [[ ${#py_files[@]} -gt 0 ]]; then
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "Error: python3 not found for Python static checks." >&2
+    exit 1
+  fi
+  py_compile_dir="$(mktemp -d)"
+  trap 'rm -rf -- "$py_compile_dir"' EXIT
+  PYTHONDONTWRITEBYTECODE=1 python3 -B - "$py_compile_dir" "$SCRIPT_DIR" "${py_files[@]}" <<'PY'
+import ast
+import os
+import py_compile
+import sys
+
+compile_dir = sys.argv[1]
+repo_root = sys.argv[2]
+for idx, path in enumerate(sys.argv[3:]):
+    rel_path = os.path.relpath(path, repo_root)
+    print(f"Checking {rel_path}...")
+    try:
+        with open(path, "rb") as handle:
+            source = handle.read()
+        ast.parse(source, filename=path)
+        cfile = os.path.join(compile_dir, f"mod_{idx}.pyc")
+        py_compile.compile(path, cfile=cfile, doraise=True)
+    except (OSError, SyntaxError, ValueError, py_compile.PyCompileError) as exc:
+        print(f"Error checking {rel_path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+PY
+  rm -rf -- "$py_compile_dir"
+  trap - EXIT
+  echo "Python AST and bytecode checks completed for ${#py_files[@]} file(s)."
+fi

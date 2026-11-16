@@ -23,3 +23,7 @@
 # Local audit reports
 docs/audits/
 .remember/
+
+# Python bytecode
+__pycache__/
+*.py[cod]

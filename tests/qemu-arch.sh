@@ -190,7 +190,7 @@ for de in "${desktops[@]}"; do
   mkdir -p "$run_dir"
   rm -f -- "$run_dir/result"
   echo "Testing $de (log: $run_dir/driver.log)"
-  python3 "$REPO_ROOT/tests/qemu/vmtest.py" "$de" "$REPO_ROOT" "$VM_DIR" "$port" >"$run_dir/vmtest.out" 2>&1 &
+  PYTHONDONTWRITEBYTECODE=1 python3 -B "$REPO_ROOT/tests/qemu/vmtest.py" "$de" "$REPO_ROOT" "$VM_DIR" "$port" >"$run_dir/vmtest.out" 2>&1 &
   running=$((running + 1))
 done
 wait || true
