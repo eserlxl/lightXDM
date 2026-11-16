@@ -6473,6 +6473,267 @@ apply_shell_hook() {
   return 0
 }
 
+_login_mode_has_custom_env() {
+  [[ "$LOGIN_FILE" != "/etc/pam.d/login" ||
+    "$PAM_KEYRING_STATE" != "/etc/lightxdm/pam-keyring" ||
+    "$PAM_LOGIN_BASE_STATE" != "/etc/lightxdm/pam-login-base" ||
+    "$GNOME_SESSION_TYPE_DEST" != "/etc/lightxdm/gnome-session-type.conf" ||
+    "$AUTOLOGIN_DROPIN_DIR" != "/etc/systemd/system/getty@tty1.service.d" ||
+    "$DM_STATE_FILE" != "/etc/lightxdm/disabled-display-managers" ||
+    "${POLKIT_RULE:-/etc/polkit-1/rules.d/49-nopasswd.rules}" != "/etc/polkit-1/rules.d/49-nopasswd.rules" ||
+    -n "${SYSTEMD_RUN_DIR:-}" ]]
+}
+
+_login_mode_sudo_script() {
+  if _login_mode_has_custom_env; then
+    local -a env_vars=(
+      "LOGIN_FILE=$LOGIN_FILE"
+      "PAM_KEYRING_STATE=$PAM_KEYRING_STATE"
+      "PAM_LOGIN_BASE_STATE=$PAM_LOGIN_BASE_STATE"
+      "GNOME_SESSION_TYPE_DEST=$GNOME_SESSION_TYPE_DEST"
+      "OVERRIDE_DIR=$AUTOLOGIN_DROPIN_DIR"
+      "DM_STATE_FILE=$DM_STATE_FILE"
+      "POLKIT_RULE=${POLKIT_RULE:-/etc/polkit-1/rules.d/49-nopasswd.rules}"
+    )
+    [[ -n "${SYSTEMD_RUN_DIR:-}" ]] && env_vars+=("SYSTEMD_RUN_DIR=$SYSTEMD_RUN_DIR")
+    sudo env "${env_vars[@]}" bash "$@"
+  else
+    sudo bash "$@"
+  fi
+}
+
+# Switch an existing lightXDM setup between password+PAM keyring unlock and passwordless TTY1 autologin
+# without modifying dotfiles, packages, shell hooks, or display managers.
+run_login_mode() {
+  local LC_ALL=C target_mode="$1" target_de="$2" de_specified="$3" keyring="$4" preview="${5:-0}" non_interactive="${6:-0}"
+  local real_user="${USER:-$(id -un)}"
+  if [[ -z "$real_user" || "$real_user" == -* || "$real_user" == *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]* ]]; then
+    log "ERROR: Invalid user name: $real_user"
+    return 1
+  fi
+
+  if [[ "$target_mode" == "autologin" ]]; then
+    check_tty1_getty || return 1
+    if command -v getent >/dev/null 2>&1; then
+      local passwd_entry="" pw_name="" pw_uid="" pw_shell=""
+      passwd_entry="$(getent passwd "$real_user" 2>/dev/null || true)"
+      passwd_entry="${passwd_entry%%$'\n'*}"
+      if [[ -z "$passwd_entry" ]]; then
+        log "User '$real_user' does not exist."
+        return 1
+      fi
+      IFS=: read -r pw_name _ pw_uid _ _ _ pw_shell <<<"$passwd_entry"
+      if [[ "$pw_name" != "$real_user" ]]; then
+        log "User '$real_user' does not exist."
+        return 1
+      fi
+      if [[ ! "$pw_uid" =~ ^[0-9]+$ || "$pw_uid" =~ ^0+$ ]]; then
+        log "Refusing to enable autologin for root (UID 0)."
+        return 1
+      fi
+      if [[ "$pw_shell" == *nologin || "$pw_shell" == *false ]]; then
+        log "User '$real_user' has non-interactive shell '$pw_shell'."
+        return 1
+      fi
+    fi
+    if [[ ! -f "$SCRIPT_DIR/uninstall.sh" || ! -f "$SCRIPT_DIR/enable-autologin.sh" ]]; then
+      log "ERROR: Missing uninstall.sh or enable-autologin.sh under $SCRIPT_DIR."
+      return 1
+    fi
+    if [[ $preview -eq 1 ]]; then
+      printf 'Login mode: autologin (dry run; no files or systemd units changed)\n'
+      local ko_preview_out="" ko_line=""
+      ko_preview_out="$(env \
+        LOGIN_FILE="$LOGIN_FILE" \
+        PAM_KEYRING_STATE="$PAM_KEYRING_STATE" \
+        PAM_LOGIN_BASE_STATE="$PAM_LOGIN_BASE_STATE" \
+        GNOME_SESSION_TYPE_DEST="$GNOME_SESSION_TYPE_DEST" \
+        OVERRIDE_DIR="$AUTOLOGIN_DROPIN_DIR" \
+        DM_STATE_FILE="$DM_STATE_FILE" \
+        POLKIT_RULE="${POLKIT_RULE:-/etc/polkit-1/rules.d/49-nopasswd.rules}" \
+        bash "$SCRIPT_DIR/uninstall.sh" --keyring-only --dry-run 2>&1)" || return 1
+      while IFS= read -r ko_line || [[ -n "$ko_line" ]]; do
+        case "$ko_line" in
+          "" | "Dry run: no files or systemd units will be modified." | \
+            "Dry run complete: no files or systemd units were modified." | \
+            "Dry run (--keyring-only):"* | \
+            "To log in on TTY1 without a password, run:"*) ;;
+          *) printf '%s\n' "$ko_line" ;;
+        esac
+      done <<<"$ko_preview_out"
+      printf 'Note: dotfiles, packages, shell hooks, GNOME session-type config, and display managers stay unchanged.\n'
+      printf 'TTY1 autologin: enable for %s (%s/lightxdm-autologin.conf)\n' "$real_user" "$AUTOLOGIN_DROPIN_DIR"
+      if [[ -d "$AUTOLOGIN_DROPIN_DIR" && ! ( -r "$AUTOLOGIN_DROPIN_DIR" && -x "$AUTOLOGIN_DROPIN_DIR" ) ]]; then
+        printf 'TTY1 autologin overrides: unknown (needs root — inspect %s with sudo)\n' "$AUTOLOGIN_DROPIN_DIR"
+      else
+        local legacy_override="$AUTOLOGIN_DROPIN_DIR/override.conf" drop_in=""
+        if [[ -f "$legacy_override" && ! -L "$legacy_override" && -r "$legacy_override" ]]; then
+          local legacy_lines=() legacy_re='^ExecStart=-/usr/bin/agetty --autologin [^-[:space:]:][^[:space:]:]* --noclear %I [$]TERM$'
+          mapfile -t legacy_lines <"$legacy_override"
+          if [[ ${#legacy_lines[@]} -eq 3 && "${legacy_lines[0]}" == "[Service]" && "${legacy_lines[1]}" == "ExecStart=" && "${legacy_lines[2]}" =~ $legacy_re ]]; then
+            printf 'Would remove legacy autologin override: %s\n' "$legacy_override"
+          fi
+        fi
+        for drop_in in "$AUTOLOGIN_DROPIN_DIR"/*.conf; do
+          if [[ -f "$drop_in" && -r "$drop_in" && "$drop_in" > "$AUTOLOGIN_DROPIN_DIR/lightxdm-autologin.conf" ]] &&
+            grep -Eq '^[[:space:]]*ExecStart[[:space:]]*=' "$drop_in"; then
+            printf 'Warning: %s overrides autologin with a later ExecStart= setting.\n' "$drop_in"
+          fi
+        done
+      fi
+      return 0
+    fi
+
+    check_root || return $?
+    authenticate_sudo "$non_interactive" "$real_user"
+    _login_mode_sudo_script "$SCRIPT_DIR/uninstall.sh" --keyring-only || return 1
+    if _login_mode_has_custom_env; then
+      _login_mode_sudo_script "$SCRIPT_DIR/enable-autologin.sh" "$real_user" || return 1
+    else
+      enable_autologin "$real_user" || return 1
+    fi
+    log "Login mode switched to autologin for $real_user (dotfiles, packages, shell hooks, and display managers unchanged)."
+    return 0
+  fi
+
+  if [[ $de_specified -eq 1 ]]; then
+    case "$target_de" in
+      plasma | gnome | xfce | lxqt | lxde | mate | cinnamon | budgie | i3) ;;
+      *)
+        if [[ -z "$target_de" || "$target_de" == *[!abcdefghijklmnopqrstuvwxyz0123456789_-]* ]]; then
+          log "Unsupported desktop environment: $target_de (valid ids: plasma gnome xfce lxqt lxde mate cinnamon budgie i3)"
+          return 1
+        fi
+        local custom_template=""
+        custom_template="$(xinitrc_template "$target_de")" || return 1
+        if [[ ! -f "$custom_template" ]]; then
+          log "No custom session template found for $target_de: $custom_template"
+          log "Create its template first with: $(script_cmd install.sh) --init-template --de $target_de"
+          return 1
+        fi
+        ;;
+    esac
+  else
+    target_de="$(saved_install_de)" || return 1
+  fi
+
+  local builtin_backend=""
+  builtin_backend="$(builtin_de_keyring_backend "$target_de" 2>/dev/null || true)"
+  if [[ -n "$keyring" && -n "$builtin_backend" ]]; then
+    log "--keyring is only for custom ids; $target_de already has a keyring backend."
+    return 1
+  fi
+
+  _resolve_password_keyring_backend() {
+    local probe_preview="${1:-1}" rec="" pam_txt=""
+    if [[ -n "$builtin_backend" ]]; then
+      printf '%s\n' "$builtin_backend"
+      return 0
+    fi
+    if [[ -n "$keyring" ]]; then
+      printf '%s\n' "$keyring"
+      return 0
+    fi
+    rec="$(read_pam_state_file "$PAM_KEYRING_STATE" "$probe_preview" 2>/dev/null || true)"
+    if [[ "$rec" == "gnome" || "$rec" == "kwallet" ]]; then
+      printf '%s\n' "$rec"
+      return 0
+    fi
+    pam_txt="$(read_pam_file "$LOGIN_FILE" "$probe_preview" 2>/dev/null || true)"
+    if grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_kwallet5\.so' <<<"$pam_txt" &&
+      ! grep -Eq '^[[:space:]]*-?(auth|session)[[:space:]][^#]*pam_gnome_keyring\.so' <<<"$pam_txt"; then
+      printf 'kwallet\n'
+      return 0
+    fi
+    printf 'gnome\n'
+  }
+
+  check_tty1_getty || return 1
+  if [[ ! -f "$SCRIPT_DIR/enable-autologin.sh" ]]; then
+    log "ERROR: Missing enable-autologin.sh under $SCRIPT_DIR."
+    return 1
+  fi
+  if [[ -L "$(dirname -- "$PAM_KEYRING_STATE")" || -L "$PAM_KEYRING_STATE" ]]; then
+    log "ERROR: $PAM_KEYRING_STATE or its directory is a symlink; lightXDM ignores symlinks."
+    return 1
+  fi
+  if [[ "$target_de" == "gnome" ]] && [[ -L "$(dirname -- "$GNOME_SESSION_TYPE_DEST")" || -L "$GNOME_SESSION_TYPE_DEST" ]]; then
+    log "ERROR: $GNOME_SESSION_TYPE_DEST or its directory is a symlink; lightXDM ignores symlinks."
+    return 1
+  fi
+
+  local resolved_keyring=""
+  if [[ $preview -eq 1 ]]; then
+    resolved_keyring="$(_resolve_password_keyring_backend 1)"
+    printf 'Login mode: password (de=%s, keyring=%s; dry run; no files or systemd units changed)\n' "$target_de" "$resolved_keyring"
+    local auto_status_out="" auto_line="" auto_file="" auto_needs_root=0
+    local -a auto_warnings=()
+    auto_status_out="$(env OVERRIDE_DIR="$AUTOLOGIN_DROPIN_DIR" LOGIN_FILE="$LOGIN_FILE" bash "$SCRIPT_DIR/enable-autologin.sh" --status 2>&1 || true)"
+    while IFS= read -r auto_line || [[ -n "$auto_line" ]]; do
+      [[ -n "$auto_line" ]] || continue
+      if [[ "$auto_line" =~ ^enabled\ for\ [^[:space:]]+\ \((.*)\)$ ]]; then
+        auto_file="${BASH_REMATCH[1]}"
+      elif [[ "$auto_line" == Warning:\ * ]]; then
+        [[ "$auto_line" == *"PAM keyring unlock is configured"* ]] || auto_warnings+=("$auto_line")
+      elif [[ "$auto_line" == Note:\ * ]] && autologin_note_needs_root "$auto_line"; then
+        auto_needs_root=1
+      fi
+    done <<<"$auto_status_out"
+    if [[ -n "$auto_file" ]]; then
+      printf 'TTY1 autologin: disable (%s)\n' "$auto_file"
+    elif [[ $auto_needs_root -eq 1 ]]; then
+      printf 'TTY1 autologin: unknown (needs root — inspect %s live)\n' "$AUTOLOGIN_DROPIN_DIR"
+    else
+      printf 'TTY1 autologin: already disabled (no lightXDM drop-in)\n'
+    fi
+    local warn_item=""
+    for warn_item in "${auto_warnings[@]}"; do
+      printf '%s\n' "$warn_item"
+    done
+    configure_pam "$target_de" 1 "$resolved_keyring" || return 1
+    if [[ "$target_de" == "gnome" ]]; then
+      configure_gnome_session_type "$target_de" "$real_user" 1 0 || return 1
+    fi
+    return 0
+  fi
+
+  check_root || return $?
+  authenticate_sudo "$non_interactive" "$real_user"
+  resolved_keyring="$(_resolve_password_keyring_backend 0)"
+
+  local LOGIN_PATH_STATE="" LOGIN_PATH_REASON=""
+  inspect_login_pam_path 0
+  if [[ "$LOGIN_PATH_STATE" == "invalid" ]]; then
+    log "ERROR: $LOGIN_PATH_REASON; lightXDM will not create it."
+    return 1
+  elif [[ "$LOGIN_PATH_STATE" != "ok" ]]; then
+    log "ERROR: $LOGIN_FILE is missing; lightXDM will not create it."
+    return 1
+  fi
+  ensure_safe_state_dir "$PAM_KEYRING_STATE" 0 || return 1
+  if [[ "$target_de" == "gnome" ]]; then
+    ensure_safe_state_dir "$GNOME_SESSION_TYPE_DEST" 0 || return 1
+    local login_check_txt=""
+    login_check_txt="$(read_pam_file "$LOGIN_FILE" 0)" || return 1
+    local GNOME_PAM_STATUS_ID="" GNOME_PAM_STATUS_MSG=""
+    inspect_gnome_pam_status "$login_check_txt" "$real_user"
+    if [[ "$GNOME_PAM_STATUS_ID" == "edited-block" ]]; then
+      log "ERROR: Edited lightXDM GNOME block in $LOGIN_FILE; remove lightXDM's GNOME lines by hand or restore ${LOGIN_FILE}.lightxdm.bak."
+      return 1
+    elif [[ "$GNOME_PAM_STATUS_ID" == "not-regular" || "$GNOME_PAM_STATUS_ID" == "symlink-ignored" ]]; then
+      log "ERROR: $GNOME_PAM_STATUS_MSG"
+      return 1
+    fi
+  fi
+
+  _login_mode_sudo_script "$SCRIPT_DIR/enable-autologin.sh" --disable || return 1
+  configure_pam "$target_de" 0 "$resolved_keyring" || return 1
+  if [[ "$target_de" == "gnome" ]]; then
+    configure_gnome_session_type "$target_de" "$real_user" 0 0 || return 1
+  fi
+  log "Login mode switched to password login with $resolved_keyring keyring unlock for $target_de (dotfiles, packages, shell hooks, and display managers unchanged)."
+}
+
 # --- Main ---
 
 main() {
@@ -6509,7 +6770,8 @@ main() {
   local install_session_dest=""
   local install_session_template_exists=0
   local pam_only=0
-  local usage="Usage: bash $0 [-h|--help] [--guided [--dry-run]] [--status [--json]] [--list-sessions [--json]] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--preflight [--json]] [--doctor [--json]] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--fix [--dry-run] [--non-interactive] [--de <id>]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet> [--json]] [--no-keyring] [--autologin] [--update] [--pam-only]"
+  local login_mode=""
+  local usage="Usage: bash $0 [-h|--help] [--guided [--dry-run]] [--status [--json]] [--list-sessions [--json]] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--preflight [--json]] [--doctor [--json]] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--fix [--dry-run] [--non-interactive] [--de <id>]] [--login-mode <password|autologin> [--dry-run] [--non-interactive] [--de <id>] [--keyring <gnome|kwallet>]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet> [--json]] [--no-keyring] [--autologin] [--update] [--pam-only]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -6580,6 +6842,9 @@ Options:
                     managers; preserves valid user-edited templates, elevates with sudo only when system
                     state needs repair or inspection, and re-runs --doctor
                     (optional --dry-run, --non-interactive, and --de <id>)
+  --login-mode <password|autologin> switch an existing setup between password login with PAM keyring unlock
+                    and passwordless TTY1 autologin without touching dotfiles, packages, shell hooks, or display
+                    managers (optional --dry-run, --non-interactive, and for password: --de <id>, --keyring <gnome|kwallet>)
 
 uninstall.sh reverts these changes; installed packages stay.
 EOF
@@ -6701,6 +6966,21 @@ EOF
         fix_mode=1
         shift
         ;;
+      --login-mode)
+        if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then
+          log "Missing argument for --login-mode (valid modes: password autologin)"
+          echo "$usage" >&2
+          exit 1
+        fi
+        case "$2" in
+          password | autologin) login_mode="$2" ;;
+          *)
+            log "Invalid login mode: $2 (valid modes: password autologin)"
+            exit 1
+            ;;
+        esac
+        shift 2
+        ;;
       --status)
         status_only=1
         shift
@@ -6765,7 +7045,7 @@ EOF
 
   if [[ $status_only -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || $dry_run -eq 1 ||
+      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || $dry_run -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 ||
       -n "$from_session" || $pam_only -eq 1 ]]; then
@@ -6783,7 +7063,7 @@ EOF
 
   if [[ $list_sessions -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 ||
+      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" ||
       $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
       $update -eq 1 || $status_only -eq 1 || $init_template -eq 1 ||
@@ -6812,7 +7092,7 @@ EOF
 
   if [[ $preflight_only -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || $dry_run -eq 1 ||
+      -n "$install_session" || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || $dry_run -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $status_only -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
@@ -6831,7 +7111,7 @@ EOF
 
   if [[ $doctor_only -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || $dry_run -eq 1 ||
+      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || $dry_run -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $status_only -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
@@ -6850,7 +7130,7 @@ EOF
 
   if [[ $recover -eq 1 ]]; then
     if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$install_session" || $preflight_only -eq 1 ||
-      $guided -eq 1 || $doctor_only -eq 1 || $fix_mode -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
+      $guided -eq 1 || $doctor_only -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
       $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" ||
       $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
@@ -6874,7 +7154,7 @@ EOF
 
   if [[ $fix_mode -eq 1 ]]; then
     if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 ||
+      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || -n "$login_mode" ||
       $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
@@ -6898,7 +7178,7 @@ EOF
 
   if [[ $update -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || -n "$install_session" ||
-      $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
+      $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
       -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 ||
       $json_output -eq 1 ]]; then
@@ -6959,6 +7239,31 @@ EOF
     local guided_status=0
     run_guided_wizard "$dry_run" || guided_status=$?
     return "$guided_status"
+  fi
+
+  if [[ -n "$login_mode" ]]; then
+    if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
+      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 ||
+      $no_packages -eq 1 || $no_keyring -eq 1 || -n "$check_keyring" ||
+      $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 ||
+      $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
+      log "--login-mode takes only optional --dry-run, --non-interactive, and (with password) --de <id> / --keyring <gnome|kwallet>."
+      echo "$usage" >&2
+      exit 1
+    fi
+    if [[ "$login_mode" == "autologin" && ( $de_specified -eq 1 || -n "$keyring" ) ]]; then
+      log "--login-mode autologin does not take --de or --keyring."
+      echo "$usage" >&2
+      exit 1
+    fi
+    if [[ $de_specified -eq 1 && -z "$de" ]]; then
+      log "--de requires a desktop id."
+      echo "$usage" >&2
+      exit 1
+    fi
+    local login_mode_status=0
+    run_login_mode "$login_mode" "$de" "$de_specified" "$keyring" "$dry_run" "$non_interactive" || login_mode_status=$?
+    return "$login_mode_status"
   fi
 
   if [[ -n "$from_session" ]]; then

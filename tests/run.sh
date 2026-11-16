@@ -19441,6 +19441,430 @@ else
   fail "install.sh --guided onboarding checks:$guided_report"
 fi
 
+# --login-mode <password|autologin>: option validation, dry-run previews, preflight guards, and live password <-> autologin round-trips
+lm_case="$TMP_DIR/login_mode"
+mkdir -p "$lm_case/home/.config/lightxdm" "$lm_case/home/.local/state/lightxdm" \
+  "$lm_case/etc/pam.d" "$lm_case/etc/lightxdm" "$lm_case/getty.d" "$lm_case/bin" "$lm_case/systemd_run"
+lm_sudo_log="$lm_case/sudo.log"
+: >"$lm_sudo_log"
+
+cat >"$lm_case/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+echo "sudo $*" >>"${LM_SUDO_LOG:-/dev/null}"
+if [[ "${1:-}" == "-n" ]]; then
+  shift
+  if [[ "${LM_SUDO_FAIL:-0}" == "1" ]]; then
+    exit 1
+  fi
+fi
+if [[ "${1:-}" == "-v" ]]; then
+  exit 0
+fi
+if [[ "${LM_USE_UNSHARE:-0}" == "1" ]]; then
+  exec unshare -r "$@"
+fi
+exec "$@"
+EOF
+
+cat >"$lm_case/bin/id" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-nG" ]]; then
+  echo "wheel testuser"
+  exit 0
+fi
+if [[ "${1:-}" == "-un" ]]; then
+  echo "testuser"
+  exit 0
+fi
+exec /usr/bin/id "$@"
+EOF
+
+cat >"$lm_case/bin/getent" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "passwd" && "${2:-}" == "testuser" ]]; then
+  echo "testuser:x:1000:1000:Test User:/home/testuser:/bin/bash"
+  exit 0
+fi
+if [[ "${1:-}" == "passwd" && "${2:-}" == "nologinuser" ]]; then
+  echo "nologinuser:x:1001:1001:Locked:/home/nologinuser:/usr/bin/nologin"
+  exit 0
+fi
+exit 2
+EOF
+
+cat >"$lm_case/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+echo "systemctl $*" >>"${LM_SYSCTL_LOG:-/dev/null}"
+if [[ "${1:-}" == "is-enabled" && "${2:-}" == "getty@tty1.service" ]]; then
+  echo "${LM_GETTY_STATE:-enabled}"
+  [[ "${LM_GETTY_STATE:-enabled}" == "masked" ]] && exit 0
+  exit 0
+fi
+exit 0
+EOF
+
+chmod +x "$lm_case/bin/sudo" "$lm_case/bin/id" "$lm_case/bin/getent" "$lm_case/bin/systemctl"
+
+lm_ok=1
+lm_report=""
+
+run_lm_cmd() {
+  env -u SUDO_USER \
+    HOME="$lm_case/home" \
+    USER="${LM_USER:-testuser}" \
+    XDG_STATE_HOME="$lm_case/home/.local/state" \
+    PATH="$lm_case/bin:$PATH" \
+    LOGIN_FILE="$lm_case/etc/pam.d/login" \
+    PAM_KEYRING_STATE="$lm_case/etc/lightxdm/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$lm_case/etc/lightxdm/pam-login-base" \
+    GNOME_SESSION_TYPE_DEST="$lm_case/etc/lightxdm/gnome-session-type.conf" \
+    AUTOLOGIN_DROPIN_DIR="$lm_case/getty.d" \
+    DM_STATE_FILE="$lm_case/etc/lightxdm/disabled-display-managers" \
+    POLKIT_RULE="$lm_case/etc/polkit-1/rules.d/49-nopasswd.rules" \
+    SYSTEMD_RUN_DIR="$lm_case/systemd_run" \
+    LM_SUDO_LOG="$lm_sudo_log" \
+    bash "$REPO_ROOT/install.sh" "$@"
+}
+
+printf '#%%PAM-1.0\nauth       include      system-local-login\nsession    include      system-local-login\n' >"$lm_case/etc/pam.d/login"
+cp "$lm_case/etc/pam.d/login" "$lm_case/etc/pam.d/login.lightxdm.bak"
+printf 'de=gnome\nno_packages=1\n' >"$lm_case/home/.local/state/lightxdm/install-choices"
+
+for bad_lm in \
+  "--login-mode" \
+  "--login-mode bogus" \
+  "--login-mode --dry-run" \
+  "--login-mode autologin --de xfce" \
+  "--login-mode autologin --keyring gnome" \
+  "--login-mode password --no-keyring" \
+  "--login-mode password --autologin" \
+  "--login-mode password --pam-only --de xfce" \
+  "--login-mode password --update" \
+  "--login-mode password --fix" \
+  "--login-mode password --recover" \
+  "--login-mode password --guided" \
+  "--login-mode password --status" \
+  "--login-mode password --json" \
+  "--login-mode password --no-packages" \
+  "--login-mode password --setup-shell zsh" \
+  "--status --login-mode password" \
+  "--update --login-mode password" \
+  "--login-mode password --de xfce --keyring gnome"; do
+  : >"$lm_sudo_log"
+  read -r -a bad_lm_argv <<<"$bad_lm"
+  set +e
+  bad_lm_out="$(run_lm_cmd "${bad_lm_argv[@]}" 2>&1)"
+  bad_lm_rc=$?
+  set -e
+  if [[ $bad_lm_rc -eq 0 || -s "$lm_sudo_log" ]]; then
+    lm_ok=0
+    lm_report+=" [bad_combo($bad_lm) rc=$bad_lm_rc sudo=$(cat "$lm_sudo_log") out=$bad_lm_out]"
+  fi
+done
+
+# --login-mode password without saved install-choices or --de fails cleanly before sudo
+rm -f "$lm_case/home/.local/state/lightxdm/install-choices"
+: >"$lm_sudo_log"
+set +e
+lm_nochoices_out="$(run_lm_cmd --login-mode password --dry-run 2>&1)"
+lm_nochoices_rc=$?
+set -e
+if [[ $lm_nochoices_rc -eq 0 || -s "$lm_sudo_log" || "$lm_nochoices_out" != *"No saved install choices"* ]]; then
+  lm_ok=0
+  lm_report+=" [no-choices rc=$lm_nochoices_rc out=$lm_nochoices_out]"
+fi
+
+# Dry-run previews for both directions leave files untouched and invoke zero sudo
+printf 'de=gnome\nno_packages=1\n' >"$lm_case/home/.local/state/lightxdm/install-choices"
+printf 'gnome\n' >"$lm_case/etc/lightxdm/pam-keyring"
+cat >>"$lm_case/etc/pam.d/login" <<'EOF'
+auth       optional   pam_gnome_keyring.so
+session    optional   pam_gnome_keyring.so auto_start
+EOF
+lm_login_before="$(sha256sum <"$lm_case/etc/pam.d/login")"
+: >"$lm_sudo_log"
+set +e
+lm_dry_auto_out="$(run_lm_cmd --login-mode autologin --dry-run 2>&1)"
+lm_dry_auto_rc=$?
+set -e
+if [[ $lm_dry_auto_rc -ne 0 || -s "$lm_sudo_log" ||
+  "$(sha256sum <"$lm_case/etc/pam.d/login")" != "$lm_login_before" ||
+  "$lm_dry_auto_out" != *"Login mode: autologin (dry run"* ||
+  "$lm_dry_auto_out" != *"Would restore $lm_case/etc/pam.d/login from backup"* ||
+  "$lm_dry_auto_out" != *"Would remove $lm_case/etc/lightxdm/pam-keyring"* ||
+  "$lm_dry_auto_out" != *"Note: dotfiles, packages, shell hooks, GNOME session-type config, and display managers stay unchanged."* ||
+  "$lm_dry_auto_out" != *"TTY1 autologin: enable for testuser ($lm_case/getty.d/lightxdm-autologin.conf)"* ||
+  -e "$lm_case/getty.d/lightxdm-autologin.conf" ]]; then
+  lm_ok=0
+  lm_report+=" [dry-autologin rc=$lm_dry_auto_rc out=$lm_dry_auto_out]"
+fi
+
+printf "[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin testuser --noclear %%I \$TERM\n" >"$lm_case/getty.d/lightxdm-autologin.conf"
+printf '[Service]\nExecStart=/usr/bin/agetty --autologin foreignuser tty1\n' >"$lm_case/getty.d/00-foreign.conf"
+: >"$lm_sudo_log"
+set +e
+lm_dry_pw_out="$(run_lm_cmd --login-mode password --dry-run 2>&1)"
+lm_dry_pw_rc=$?
+set -e
+if [[ $lm_dry_pw_rc -ne 0 || -s "$lm_sudo_log" ||
+  "$lm_dry_pw_out" != *"Login mode: password (de=gnome, keyring=gnome; dry run"* ||
+  "$lm_dry_pw_out" != *"TTY1 autologin: disable ($lm_case/getty.d/lightxdm-autologin.conf)"* ||
+  "$lm_dry_pw_out" != *"Warning: $lm_case/getty.d/00-foreign.conf still enables autologin."* ||
+  "$lm_dry_pw_out" != *"PAM keyring: $lm_case/etc/pam.d/login"* ||
+  "$lm_dry_pw_out" != *"GNOME session type: $lm_case/etc/pam.d/login"* ||
+  ! -f "$lm_case/getty.d/lightxdm-autologin.conf" ]]; then
+  lm_ok=0
+  lm_report+=" [dry-password rc=$lm_dry_pw_rc out=$lm_dry_pw_out]"
+fi
+rm -f "$lm_case/getty.d/00-foreign.conf"
+
+# Masked getty@tty1.service aborts before touching PAM or autologin
+: >"$lm_sudo_log"
+set +e
+lm_masked_out="$(LM_GETTY_STATE=masked run_lm_cmd --login-mode autologin 2>&1)"
+lm_masked_rc=$?
+set -e
+if [[ $lm_masked_rc -eq 0 || -s "$lm_sudo_log" || "$lm_masked_out" != *"getty@tty1.service is masked"* ]]; then
+  lm_ok=0
+  lm_report+=" [masked-getty rc=$lm_masked_rc out=$lm_masked_out]"
+fi
+
+# Non-interactive sudo failure aborts cleanly without mutating PAM or autologin
+: >"$lm_sudo_log"
+set +e
+lm_ni_fail_out="$(LM_SUDO_FAIL=1 run_lm_cmd --login-mode password --non-interactive 2>&1)"
+lm_ni_fail_rc=$?
+set -e
+if [[ $lm_ni_fail_rc -eq 0 || ! -f "$lm_case/getty.d/lightxdm-autologin.conf" || "$lm_ni_fail_out" != *"Failed to authenticate with sudo"* ]]; then
+  lm_ok=0
+  lm_report+=" [ni-fail rc=$lm_ni_fail_rc out=$lm_ni_fail_out]"
+fi
+
+# Missing LOGIN_FILE aborts --login-mode password before disabling autologin
+mv "$lm_case/etc/pam.d/login" "$lm_case/etc/pam.d/login.saved"
+set +e
+lm_missing_pam_out="$(run_lm_cmd --login-mode password --non-interactive 2>&1)"
+lm_missing_pam_rc=$?
+set -e
+mv "$lm_case/etc/pam.d/login.saved" "$lm_case/etc/pam.d/login"
+if [[ $lm_missing_pam_rc -eq 0 || ! -f "$lm_case/getty.d/lightxdm-autologin.conf" ||
+  "$lm_missing_pam_out" != *"is missing; lightXDM will not create it"* ]]; then
+  lm_ok=0
+  lm_report+=" [missing-login-before-disable rc=$lm_missing_pam_rc out=$lm_missing_pam_out]"
+fi
+
+# Symlinked /etc/lightxdm aborts --login-mode password before disabling autologin
+mv "$lm_case/etc/lightxdm" "$lm_case/etc/lightxdm.real"
+ln -s "$lm_case/etc/lightxdm.real" "$lm_case/etc/lightxdm"
+set +e
+lm_sym_dir_out="$(run_lm_cmd --login-mode password --non-interactive 2>&1)"
+lm_sym_dir_rc=$?
+set -e
+rm -f "$lm_case/etc/lightxdm"
+mv "$lm_case/etc/lightxdm.real" "$lm_case/etc/lightxdm"
+if [[ $lm_sym_dir_rc -eq 0 || ! -f "$lm_case/getty.d/lightxdm-autologin.conf" ||
+  "$lm_sym_dir_out" != *"or its directory is a symlink"* ]]; then
+  lm_ok=0
+  lm_report+=" [symlink-state-dir rc=$lm_sym_dir_rc out=$lm_sym_dir_out]"
+fi
+
+# Unreadable PAM/drop-in preview shows unknown (needs root) cleanly
+chmod 000 "$lm_case/etc/pam.d/login" "$lm_case/getty.d"
+set +e
+lm_unread_out="$(run_lm_cmd --login-mode password --dry-run 2>&1)"
+lm_unread_rc=$?
+set -e
+chmod 644 "$lm_case/etc/pam.d/login"
+chmod 755 "$lm_case/getty.d"
+if [[ $lm_unread_rc -ne 0 || "$lm_unread_out" != *"unknown (needs root"* ]]; then
+  lm_ok=0
+  lm_report+=" [unreadable-dry rc=$lm_unread_rc out=$lm_unread_out]"
+fi
+
+# Non-root live round-trip simulation using copied scripts (covers real configure_pam, configure_gnome_session_type, uninstall --keyring-only, enable-autologin)
+mkdir -p "$lm_case/sim/pam" "$lm_case/sim/dotfiles"
+cp "$REPO_ROOT/install.sh" "$lm_case/sim/install.sh"
+cp "$REPO_ROOT/pam/gnome-session-type.conf" "$lm_case/sim/pam/gnome-session-type.conf"
+sed 's/EUID -ne 0/EUID -lt 0/g' "$REPO_ROOT/uninstall.sh" >"$lm_case/sim/uninstall.sh"
+sed 's/EUID -ne 0/EUID -lt 0/g' "$REPO_ROOT/enable-autologin.sh" >"$lm_case/sim/enable-autologin.sh"
+chmod +x "$lm_case/sim/install.sh" "$lm_case/sim/uninstall.sh" "$lm_case/sim/enable-autologin.sh"
+
+run_lm_sim_cmd() {
+  env -u SUDO_USER \
+    HOME="$lm_case/home" \
+    USER="testuser" \
+    XDG_STATE_HOME="$lm_case/home/.local/state" \
+    PATH="$lm_case/bin:$PATH" \
+    LOGIN_FILE="$lm_case/etc/pam.d/login" \
+    PAM_KEYRING_STATE="$lm_case/etc/lightxdm/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$lm_case/etc/lightxdm/pam-login-base" \
+    GNOME_SESSION_TYPE_DEST="$lm_case/etc/lightxdm/gnome-session-type.conf" \
+    AUTOLOGIN_DROPIN_DIR="$lm_case/getty.d" \
+    DM_STATE_FILE="$lm_case/etc/lightxdm/disabled-display-managers" \
+    POLKIT_RULE="$lm_case/etc/polkit-1/rules.d/49-nopasswd.rules" \
+    SYSTEMD_RUN_DIR="$lm_case/systemd_run" \
+    LM_SUDO_LOG="$lm_sudo_log" \
+    bash "$lm_case/sim/install.sh" "$@"
+}
+
+rm -f "$lm_case/getty.d/lightxdm-autologin.conf"
+cat >"$lm_case/etc/pam.d/login" <<EOF
+#%PAM-1.0
+# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)
+session    [success=2 default=ignore] pam_succeed_if.so quiet tty notin tty1:/dev/tty1
+session    [success=1 default=ignore] pam_succeed_if.so quiet user != testuser
+session    optional   pam_env.so readenv=0 user_readenv=0 conffile=$lm_case/etc/lightxdm/gnome-session-type.conf
+auth       include      system-local-login
+session    include      system-local-login
+auth       optional   pam_gnome_keyring.so
+session    optional   pam_gnome_keyring.so auto_start
+EOF
+printf 'XDG_SESSION_TYPE DEFAULT=wayland\n' >"$lm_case/etc/lightxdm/gnome-session-type.conf"
+printf 'gnome\n' >"$lm_case/etc/lightxdm/pam-keyring"
+printf 'de=gnome\nno_packages=1\n' >"$lm_case/home/.local/state/lightxdm/install-choices"
+printf 'custom-edited-wayland\n' >"$lm_case/home/.wayland-session"
+chmod 755 "$lm_case/home/.wayland-session"
+
+set +e
+lm_sim_auto_out="$(run_lm_sim_cmd --login-mode autologin --non-interactive 2>&1)"
+lm_sim_auto_rc=$?
+set -e
+if [[ $lm_sim_auto_rc -ne 0 ||
+  ! -f "$lm_case/getty.d/lightxdm-autologin.conf" ||
+  -e "$lm_case/etc/lightxdm/pam-keyring" ||
+  ! -f "$lm_case/etc/lightxdm/gnome-session-type.conf" ||
+  "$(cat "$lm_case/home/.wayland-session")" != "custom-edited-wayland" ]] ||
+  grep -Fq 'pam_gnome_keyring.so' "$lm_case/etc/pam.d/login" ||
+  ! grep -Fq 'conffile='"$lm_case/etc/lightxdm/gnome-session-type.conf" "$lm_case/etc/pam.d/login"; then
+  lm_ok=0
+  lm_report+=" [sim-to-autologin rc=$lm_sim_auto_rc out=$lm_sim_auto_out pam=$(cat "$lm_case/etc/pam.d/login")]"
+fi
+
+set +e
+lm_sim_pw_out="$(run_lm_sim_cmd --login-mode password --non-interactive 2>&1)"
+lm_sim_pw_rc=$?
+set -e
+if [[ $lm_sim_pw_rc -ne 0 ||
+  -e "$lm_case/getty.d/lightxdm-autologin.conf" ||
+  "$(cat "$lm_case/etc/lightxdm/pam-keyring" 2>/dev/null || true)" != "gnome" ||
+  ! -f "$lm_case/etc/lightxdm/gnome-session-type.conf" ||
+  "$(cat "$lm_case/home/.wayland-session")" != "custom-edited-wayland" ]] ||
+  ! grep -Fq 'auth       optional   pam_gnome_keyring.so' "$lm_case/etc/pam.d/login" ||
+  ! grep -Fq 'session    optional   pam_gnome_keyring.so auto_start' "$lm_case/etc/pam.d/login"; then
+  lm_ok=0
+  lm_report+=" [sim-to-password-gnome rc=$lm_sim_pw_rc out=$lm_sim_pw_out pam=$(cat "$lm_case/etc/pam.d/login")]"
+fi
+
+# Idempotent re-run of password mode and custom sway --keyring kwallet switch
+set +e
+lm_sim_pw2_out="$(run_lm_sim_cmd --login-mode password --non-interactive 2>&1)"
+lm_sim_pw2_rc=$?
+set -e
+if [[ $lm_sim_pw2_rc -ne 0 || "$lm_sim_pw2_out" != *"already exists. Skipping."* ]]; then
+  lm_ok=0
+  lm_report+=" [sim-password-idempotent rc=$lm_sim_pw2_rc out=$lm_sim_pw2_out]"
+fi
+
+printf '#!/bin/bash\nexec sway\n' >"$lm_case/home/.config/lightxdm/.wayland-session-sway"
+printf 'de=sway\nno_packages=1\n' >"$lm_case/home/.local/state/lightxdm/install-choices"
+cp "$lm_case/etc/pam.d/login.lightxdm.bak" "$lm_case/etc/pam.d/login"
+rm -f "$lm_case/etc/lightxdm/pam-keyring" "$lm_case/etc/lightxdm/gnome-session-type.conf"
+set +e
+lm_sim_sway_out="$(run_lm_sim_cmd --login-mode password --de sway --keyring kwallet --non-interactive 2>&1)"
+lm_sim_sway_rc=$?
+set -e
+if [[ $lm_sim_sway_rc -ne 0 ||
+  "$(cat "$lm_case/etc/lightxdm/pam-keyring" 2>/dev/null || true)" != "kwallet" ]] ||
+  ! grep -Fq 'pam_kwallet5.so' "$lm_case/etc/pam.d/login"; then
+  lm_ok=0
+  lm_report+=" [sim-custom-kwallet rc=$lm_sim_sway_rc out=$lm_sim_sway_out]"
+fi
+
+# Live round-trip with real uninstall.sh --keyring-only and enable-autologin.sh via unshare -r (if available)
+if unshare -r true >/dev/null 2>&1; then
+  rm -f "$lm_case/getty.d/lightxdm-autologin.conf"
+  cp "$lm_case/etc/pam.d/login.lightxdm.bak" "$lm_case/etc/pam.d/login"
+  cat >"$lm_case/etc/pam.d/login" <<EOF
+#%PAM-1.0
+# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)
+session    [success=2 default=ignore] pam_succeed_if.so quiet tty notin tty1:/dev/tty1
+session    [success=1 default=ignore] pam_succeed_if.so quiet user != testuser
+session    optional   pam_env.so readenv=0 user_readenv=0 conffile=$lm_case/etc/lightxdm/gnome-session-type.conf
+auth       include      system-local-login
+session    include      system-local-login
+auth       optional   pam_gnome_keyring.so
+session    optional   pam_gnome_keyring.so auto_start
+EOF
+  cp "$lm_case/etc/pam.d/login.lightxdm.bak" "$lm_case/etc/pam.d/login.lightxdm.bak"
+  printf 'XDG_SESSION_TYPE DEFAULT=wayland\n' >"$lm_case/etc/lightxdm/gnome-session-type.conf"
+  printf 'gnome\n' >"$lm_case/etc/lightxdm/pam-keyring"
+  printf 'custom-edited-wayland\n' >"$lm_case/home/.wayland-session"
+  chmod 755 "$lm_case/home/.wayland-session"
+
+  set +e
+  lm_live_auto_out="$(LM_USE_UNSHARE=1 run_lm_cmd --login-mode autologin --non-interactive 2>&1)"
+  lm_live_auto_rc=$?
+  set -e
+  if [[ $lm_live_auto_rc -ne 0 ||
+    ! -f "$lm_case/getty.d/lightxdm-autologin.conf" ||
+    -e "$lm_case/etc/lightxdm/pam-keyring" ||
+    ! -f "$lm_case/etc/lightxdm/gnome-session-type.conf" ||
+    "$(cat "$lm_case/home/.wayland-session")" != "custom-edited-wayland" ]] ||
+    grep -Fq 'pam_gnome_keyring.so' "$lm_case/etc/pam.d/login" ||
+    ! grep -Fq 'conffile='"$lm_case/etc/lightxdm/gnome-session-type.conf" "$lm_case/etc/pam.d/login"; then
+    lm_ok=0
+    lm_report+=" [live-to-autologin rc=$lm_live_auto_rc out=$lm_live_auto_out pam=$(cat "$lm_case/etc/pam.d/login")]"
+  fi
+
+  # Switch back from autologin -> password (auto-resolving de=gnome from install-choices)
+  set +e
+  lm_live_pw_out="$(LM_USE_UNSHARE=1 run_lm_cmd --login-mode password --non-interactive 2>&1)"
+  lm_live_pw_rc=$?
+  set -e
+  if [[ $lm_live_pw_rc -ne 0 ||
+    -e "$lm_case/getty.d/lightxdm-autologin.conf" ||
+    "$(cat "$lm_case/etc/lightxdm/pam-keyring" 2>/dev/null || true)" != "gnome" ||
+    ! -f "$lm_case/etc/lightxdm/gnome-session-type.conf" ||
+    "$(cat "$lm_case/home/.wayland-session")" != "custom-edited-wayland" ]] ||
+    ! grep -Fq 'auth       optional   pam_gnome_keyring.so' "$lm_case/etc/pam.d/login" ||
+    ! grep -Fq 'session    optional   pam_gnome_keyring.so auto_start' "$lm_case/etc/pam.d/login"; then
+    lm_ok=0
+    lm_report+=" [live-to-password-gnome rc=$lm_live_pw_rc out=$lm_live_pw_out pam=$(cat "$lm_case/etc/pam.d/login")]"
+  fi
+
+  # Custom session round-trip with --keyring kwallet
+  printf '#!/bin/bash\nexec sway\n' >"$lm_case/home/.config/lightxdm/.wayland-session-sway"
+  printf 'de=sway\nno_packages=1\n' >"$lm_case/home/.local/state/lightxdm/install-choices"
+  cp "$lm_case/etc/pam.d/login.lightxdm.bak" "$lm_case/etc/pam.d/login"
+  rm -f "$lm_case/etc/lightxdm/pam-keyring" "$lm_case/etc/lightxdm/gnome-session-type.conf"
+  set +e
+  lm_sway_pw_out="$(LM_USE_UNSHARE=1 run_lm_cmd --login-mode password --de sway --keyring kwallet --non-interactive 2>&1)"
+  lm_sway_pw_rc=$?
+  set -e
+  if [[ $lm_sway_pw_rc -ne 0 ||
+    "$(cat "$lm_case/etc/lightxdm/pam-keyring" 2>/dev/null || true)" != "kwallet" ]] ||
+    ! grep -Fq 'pam_kwallet5.so' "$lm_case/etc/pam.d/login"; then
+    lm_ok=0
+    lm_report+=" [live-custom-kwallet rc=$lm_sway_pw_rc out=$lm_sway_pw_out]"
+  fi
+
+  # Non-interactive root invocation refused without --dry-run
+  set +e
+  lm_root_out="$(env -u SUDO_USER HOME="$lm_case/home" USER=testuser unshare -r bash "$REPO_ROOT/install.sh" --login-mode autologin 2>&1)"
+  lm_root_rc=$?
+  set -e
+  if [[ $lm_root_rc -eq 0 || "$lm_root_out" != *"Do not run this script as root"* ]]; then
+    lm_ok=0
+    lm_report+=" [root-refused rc=$lm_root_rc out=$lm_root_out]"
+  fi
+fi
+
+if [[ $lm_ok -eq 1 ]]; then
+  pass "install.sh --login-mode <password|autologin> validation, dry-run, preflight guards, and round-trip switching"
+else
+  fail "install.sh --login-mode checks:$lm_report"
+fi
+
 if ! command -v python3 >/dev/null 2>&1; then
   skip "Python VM driver unit tests (python3 unavailable)"
 else

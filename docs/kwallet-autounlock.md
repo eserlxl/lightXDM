@@ -23,5 +23,5 @@ Custom sessions still require `--no-packages` and default to GNOME Keyring when 
 ## Troubleshooting
 - Make sure your wallet password matches your login password.
 - If the installer warns that `pam_kwallet5.so` is missing, install `kwallet-pam` before relying on automatic unlock.
-- If you enable passwordless autologin (`enable-autologin.sh`), PAM does not receive a login password, so KWallet will stay locked and ask for its password in the desktop unless its password is empty; to keep autologin, remove the keyring lines lightXDM added with `sudo bash uninstall.sh --keyring-only`.
+- If you enable passwordless autologin (`enable-autologin.sh`), PAM does not receive a login password, so KWallet will stay locked and ask for its password in the desktop unless its password is empty; to switch an existing install cleanly to autologin without keyring PAM lines, run `bash install.sh --login-mode autologin` (or `bash install.sh --login-mode password` to switch back, or manually `sudo bash uninstall.sh --keyring-only`).
 - If you use a custom PAM stack, adjust the `pam_kwallet5.so` lines in `/etc/pam.d/login` accordingly.
