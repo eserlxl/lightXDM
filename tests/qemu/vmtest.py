@@ -537,7 +537,10 @@ def main(argv=None):
     kept = False
     try:
         qmp = Qmp(QMP_SOCK)
-        check("VM boots and answers SSH", wait_ssh())
+        booted = wait_ssh()
+        check("VM boots and answers SSH", booted)
+        if not booted:
+            return 0
         if MODE == "package":
             with open(PACKAGE, "rb") as f:
                 rc, _, err = ssh("cat > /root/lightxdm.pkg.tar.zst", stdin=f.read())

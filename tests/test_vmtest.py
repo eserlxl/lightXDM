@@ -418,6 +418,31 @@ class HelpersAndMainBoundaryTests(unittest.TestCase):
         self.assertTrue(kept_lines[-1].endswith(" kept"))
         self.assertIn("fail=0 kept", kept_lines[-1])
 
+    def test_main_aborts_early_when_wait_ssh_fails(self):
+        with open(os.path.join(self.vm_dir, "host_key.pub"), "w", encoding="utf-8") as f:
+            f.write("ssh-ed25519 AAAATESTKEY\n")
+        for spec in ("xfce", "xfce+package"):
+            with self.subTest(spec=spec):
+                fake_proc = mock.MagicMock(pid=9998)
+                with mock.patch("vmtest.boot", return_value=fake_proc), \
+                        mock.patch("vmtest.Qmp"), \
+                        mock.patch("vmtest.wait_ssh", return_value=False), \
+                        mock.patch("vmtest.subprocess.run") as run_mock, \
+                        mock.patch("vmtest.ssh") as ssh_mock, \
+                        mock.patch.dict(os.environ, {"LIGHTXDM_VM_KEEP": "0"}):
+                    rc = vmtest.main([spec, self.repo_dir, self.vm_dir, "2231"])
+
+                self.assertEqual(rc, 0)
+                run_mock.assert_not_called()
+                ssh_mock.assert_called_once_with("systemctl poweroff", timeout=20)
+                fake_proc.wait.assert_called_once_with(timeout=60)
+                self.assertEqual(vmtest.results, [f"FAIL: {spec}: VM boots and answers SSH"])
+                with open(vmtest.RESULT, encoding="utf-8") as f:
+                    self.assertEqual(
+                        f.read().splitlines(),
+                        [f"FAIL: {spec}: VM boots and answers SSH", "DONE pass=0 fail=1"],
+                    )
+
 
 class VmPhaseHelpersTests(unittest.TestCase):
     def setUp(self):
