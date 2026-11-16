@@ -20340,7 +20340,29 @@ if [[ "$1" == "-Qq" && "$2" == "${FAKE_PACMAN_PKG:-}" ]]; then
 fi
 exit 1
 EOF
-chmod +x "$sg_case/bin/pinentry-gnome3" "$sg_case/bin/pinentry-qt" "$sg_case/bin/gpgconf" "$sg_case/bin/pacman"
+cat <<'EOF' >"$sg_case/bin/sudo"
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${SG_SUDO_LOG:-/dev/null}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -v | -k | -K | -n | -S) shift ;;
+    -p) shift 2 ;;
+    --)
+      shift
+      break
+      ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+if [[ $# -eq 0 ]]; then
+  exit 0
+fi
+"$@"
+EOF
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$sg_case/bin/sway"
+chmod +x "$sg_case/bin/pinentry-gnome3" "$sg_case/bin/pinentry-qt" "$sg_case/bin/gpgconf" "$sg_case/bin/pacman" "$sg_case/bin/sudo" "$sg_case/bin/sway"
+: >"$sg_case/sudo.log"
 printf '%s\n' '#%PAM-1.0' >"$sg_case/etc/pam.d/login"
 : >"$sg_case/gpgconf.log"
 
@@ -20610,6 +20632,110 @@ if [[ $sg_comb_dry_rc -ne 0 || "$sg_comb_dry_out" != *"GPG configuration (kwalle
   sg_ok=0
   sg_report+=" [combined-dry rc=$sg_comb_dry_rc out=$sg_comb_dry_out]"
 fi
+
+# --setup-gpg remove no-ops, unmanaged enable-ssh-support preservation, root refusal, and combined live installs
+rm -rf "$sg_case/home/.gnupg"
+set +e
+sg_rm_missing_out="$(run_sg_cmd --setup-gpg remove 2>&1)"
+sg_rm_missing_rc=$?
+set -e
+if [[ $sg_rm_missing_rc -ne 0 || "$sg_rm_missing_out" != *"No GPG configuration found"* || -e "$sg_case/home/.gnupg" ]]; then
+  sg_ok=0
+  sg_report+=" [remove-missing rc=$sg_rm_missing_rc out=$sg_rm_missing_out]"
+fi
+
+mkdir -m 0700 "$sg_case/home/.gnupg"
+printf 'default-cache-ttl 3600\n' >"$sg_conf"
+set +e
+sg_rm_unm_out="$(run_sg_cmd --setup-gpg remove 2>&1)"
+sg_rm_unm_rc=$?
+set -e
+if [[ $sg_rm_unm_rc -ne 0 || "$sg_rm_unm_out" != *"No managed lightXDM GPG block found"* ||
+  "$(cat "$sg_conf")" != "default-cache-ttl 3600" ]]; then
+  sg_ok=0
+  sg_report+=" [remove-unmanaged rc=$sg_rm_unm_rc out=$sg_rm_unm_out]"
+fi
+
+printf 'enable-ssh-support\n' >"$sg_conf"
+set +e
+sg_unm_ssh_out="$(run_sg_cmd --setup-gpg gnome --gpg-ssh 2>&1)"
+sg_unm_ssh_rc=$?
+set -e
+if [[ $sg_unm_ssh_rc -ne 0 || "$sg_unm_ssh_out" != *"enable-ssh-support already configured outside managed block"* ||
+  "$(grep -Fc 'enable-ssh-support' "$sg_conf")" -ne 1 ]] ||
+  ! grep -Fxq "pinentry-program $sg_case/bin/pinentry-gnome3" "$sg_conf"; then
+  sg_ok=0
+  sg_report+=" [unmanaged-ssh rc=$sg_unm_ssh_rc out=$sg_unm_ssh_out conf=$(cat "$sg_conf")]"
+fi
+
+if [[ $can_unshare -eq 1 ]]; then
+  set +e
+  sg_root_out="$(unshare -r env -u SUDO_USER -u GNUPGHOME PATH="$sg_case/bin:$PATH" HOME="$sg_case/home" USER=testuser \
+    PINENTRY_GNOME_BIN="$sg_case/bin/pinentry-gnome3" bash "$REPO_ROOT/install.sh" --setup-gpg gnome 2>&1)"
+  sg_root_rc=$?
+  set -e
+  if [[ $sg_root_rc -eq 0 || "$sg_root_out" != *"Do not run --setup-gpg standalone as root"* ]]; then
+    sg_ok=0
+    sg_report+=" [standalone-root rc=$sg_root_rc out=$sg_root_out]"
+  fi
+fi
+
+# Combined live --de plasma --no-packages --setup-gpg auto --gpg-ssh: pre-sudo failure aborts before sudo; valid pinentry applies both
+rm -rf "$sg_case/home/.gnupg" "$sg_case/home/.wayland-session" "$sg_case/home/.bash_profile"
+printf '%s\n%s\n%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$sg_case/etc/pam.d/login"
+: >"$sg_case/sudo.log"
+set +e
+sg_comb_presudo_out="$(SG_SUDO_LOG="$sg_case/sudo.log" PINENTRY_QT_BIN="$sg_case/no-such-pinentry-qt" \
+  run_sg_cmd --de plasma --no-packages --setup-gpg auto --gpg-ssh 2>&1)"
+sg_comb_presudo_rc=$?
+set -e
+if [[ $sg_comb_presudo_rc -eq 0 || "$sg_comb_presudo_out" != *"Pinentry executable not found"* ||
+  -s "$sg_case/sudo.log" || -e "$sg_case/home/.gnupg" || -e "$sg_case/home/.wayland-session" ]]; then
+  sg_ok=0
+  sg_report+=" [combined-presudo rc=$sg_comb_presudo_rc sudo=$(cat "$sg_case/sudo.log") out=$sg_comb_presudo_out]"
+fi
+
+: >"$sg_case/sudo.log"
+set +e
+sg_comb_live_out="$(SG_SUDO_LOG="$sg_case/sudo.log" run_sg_cmd --de plasma --no-packages --setup-gpg auto --gpg-ssh 2>&1)"
+sg_comb_live_rc=$?
+set -e
+if [[ $sg_comb_live_rc -ne 0 || ! -s "$sg_case/sudo.log" || ! -f "$sg_conf" ]] ||
+  ! grep -Fxq "pinentry-program $sg_case/bin/pinentry-qt" "$sg_conf" ||
+  ! grep -Fxq "enable-ssh-support" "$sg_conf" ||
+  ! grep -Fq "pam_kwallet5.so" "$sg_case/etc/pam.d/login"; then
+  sg_ok=0
+  sg_report+=" [combined-live rc=$sg_comb_live_rc out=$sg_comb_live_out]"
+fi
+
+# Combined live --install-session --keyring kwallet --setup-gpg auto resolves context_keyring over default gnome
+rm -rf "$sg_case/home/.gnupg" "$sg_case/home/.wayland-session" "$sg_case/home/.config" "$sg_case/etc/lightxdm/pam-keyring"
+mkdir -p "$sg_case/wayland-sessions"
+cat >"$sg_case/wayland-sessions/sway.desktop" <<'EOF'
+[Desktop Entry]
+Name=Sway
+Exec=sway
+DesktopNames=sway
+Type=Application
+EOF
+printf '%s\n%s\n%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$sg_case/etc/pam.d/login"
+set +e
+sg_isess_gpg_out="$(SG_SUDO_LOG="$sg_case/sudo.log" WAYLAND_SESSIONS_DIR="$sg_case/wayland-sessions" \
+  run_sg_cmd --install-session "$sg_case/wayland-sessions/sway.desktop" --keyring kwallet --setup-gpg auto 2>&1)"
+sg_isess_gpg_rc=$?
+set -e
+if [[ $sg_isess_gpg_rc -ne 0 || ! -f "$sg_conf" ]] ||
+  ! grep -Fxq "pinentry-program $sg_case/bin/pinentry-qt" "$sg_conf" ||
+  grep -Fq "enable-ssh-support" "$sg_conf" ||
+  ! grep -Fq "pam_kwallet5.so" "$sg_case/etc/pam.d/login"; then
+  sg_ok=0
+  sg_report+=" [install-session-gpg rc=$sg_isess_gpg_rc out=$sg_isess_gpg_out]"
+fi
+rm -rf "$sg_case/home/.gnupg" "$sg_case/home/.wayland-session" "$sg_case/home/.bash_profile" "$sg_case/home/.config" \
+  "$sg_case/home/.gpg-agent-gnome" "$sg_case/etc/lightxdm/pam-keyring" "$sg_case/etc/lightxdm/pam-login-base" \
+  "$sg_case/home/.local/state/lightxdm/install-choices" "$sg_case/home/.local/state/lightxdm/installed-dotfiles" \
+  "$sg_case/etc/pam.d/login.lightxdm.bak"
+printf '%s\n' '#%PAM-1.0' >"$sg_case/etc/pam.d/login"
 
 # Fallback to readable LOGIN_FILE pam_kwallet5.so when pam-keyring missing, and refuse directory pinentry
 rm -f "$sg_case/etc/lightxdm/pam-keyring" "$sg_case/home/.local/state/lightxdm/install-choices"
