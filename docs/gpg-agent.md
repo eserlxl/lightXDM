@@ -27,8 +27,8 @@ bash install.sh --setup-gpg auto --gpg-ssh   # also add enable-ssh-support insid
 bash install.sh --setup-gpg remove           # remove only lightXDM's fenced block and reload gpg-agent
 ```
 
-- Pass `gnome` (`/usr/bin/pinentry-gnome3`), `kwallet` (`/usr/bin/pinentry-qt`), or `auto` (resolves from active `--keyring`/`--de`, saved `install-choices`, `/etc/lightxdm/pam-keyring`, or detected Plasma vs other desktops), or combine `--setup-gpg` with an install command (`--de <id>` or `--install-session <path>`).
-- Updates write atomically inside `# >>> lightXDM GPG setup >>>` .. `# <<< lightXDM GPG setup <<<` (`0700` directory creation, `0600` config permissions), preserve existing unmanaged `pinentry-program` settings untouched, validate `pinentry` and in-`$HOME` `$GNUPGHOME` paths before modifying files, and reload via `gpgconf --kill gpg-agent` (leaving your personal GPG settings untouched on `uninstall.sh`).
+- Pass `gnome` (`/usr/bin/pinentry-gnome3`), `kwallet` (`/usr/bin/pinentry-qt`), or `auto` (resolves from active `--keyring`/`--de`, saved `install-choices`, readable `/etc/lightxdm/pam-keyring`, readable `/etc/pam.d/login` `pam_kwallet5.so` / `pam_gnome_keyring.so` lines, or detected Plasma vs other desktops), or combine `--setup-gpg` with an install command (`--de <id>` or `--install-session <path>`).
+- Updates write atomically inside `# >>> lightXDM GPG setup >>>` .. `# <<< lightXDM GPG setup <<<` (`0700` directory creation, `0600` config permissions), preserve existing unmanaged `pinentry-program` settings untouched, validate regular executable `pinentry` and in-`$HOME` `$GNUPGHOME` paths before modifying files, surface state and broken markers/pinentry paths in `install.sh --status [--json]` and `--doctor [--json]`, and reload via `gpgconf --kill gpg-agent` (leaving your personal GPG settings untouched on `uninstall.sh`).
 
 ### For KDE Plasma
 
