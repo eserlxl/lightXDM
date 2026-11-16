@@ -119,3 +119,5 @@ PY
   trap - EXIT
   echo "Python AST and bytecode checks completed for ${#py_files[@]} file(s)."
 fi
+
+PYTHONDONTWRITEBYTECODE=1 python3 -B "$SCRIPT_DIR/tests/check_repo_integrity.py"
