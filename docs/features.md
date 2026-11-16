@@ -36,7 +36,7 @@ lightXDM supports built-in and custom X11/Wayland desktop sessions, non-bash log
 
 ### Custom X11 & Wayland Sessions
 - **Session Discovery:** `--list-sessions [--json]` inspects installed X11 and Wayland `.desktop` session entries across system (`/usr/share`) and user (`~/.local/share` / `$XDG_DATA_HOME`) directories safely on the host, reporting validation details alongside ready `init:` (`--init-template`) and `install:` (`--install-session` / built-in `--de`) commands.
-- **Editable Templates:** `--init-template [--wayland] [--from-session <path>] --de <custom-id>` creates `~/.config/lightxdm/.xinitrc-<id>` (or `.wayland-session-<id>` when `--wayland` is passed or `<path>` is a Wayland entry) for manual customization before installing with `--no-packages --de <custom-id>`.
+- **Editable Templates:** `--init-template [--wayland] [--from-session <path>] --de <custom-id>` creates `~/.config/lightxdm/.xinitrc-<id>` (or `.wayland-session-<id>` when `--wayland` is passed; `--from-session` still requires `--wayland` for Wayland entries) for manual customization before installing with `--no-packages --de <custom-id>`.
 - **One-Command Session Provisioning:** `--install-session <path>` validates `TryExec`/`Exec` before privilege checks or home writes, infers Wayland mode when `--wayland` is set or `<path>` resides under `wayland-sessions/`, derives `--de <custom-id>` from the `.desktop` filename unless overridden, creates missing custom templates (preserving existing user templates on rerun), and installs with `--no-packages`.
 - **Keyring Selection:** Custom sessions default to GNOME Keyring (`--keyring gnome`), or use `--keyring kwallet` or `--no-keyring`.
 
