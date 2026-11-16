@@ -3776,8 +3776,9 @@ exec "$race_real_mv" "\$@"
 SHIM
   chmod +x "$race_dir/shim/mv"
   set +e
-  out_race="$(PATH="$race_dir/shim:$PATH" TARGET_HOME="$race_home" OVERRIDE_DIR="$race_dir/override" POLKIT_RULE="$race_dir/polkit.rules" \
+  out_race="$(env PATH="$race_dir/shim:$PATH" TARGET_HOME="$race_home" OVERRIDE_DIR="$race_dir/override" POLKIT_RULE="$race_dir/polkit.rules" \
     LOGIN_FILE="$race_dir/login" DM_STATE_FILE="$race_dir/dm-state" GNOME_SESSION_TYPE_DEST="$race_dir/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$race_dir/pam-keyring" PAM_LOGIN_BASE_STATE="$race_dir/pam-login-base" \
     unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status_race=$?
   set -e
@@ -3813,8 +3814,9 @@ exec "$restore_real_mv" "\$@"
 SHIM
   chmod +x "$restore_dir/shim/mv"
   set +e
-  out_restore="$(PATH="$restore_dir/shim:$PATH" TARGET_HOME="$restore_home" OVERRIDE_DIR="$restore_dir/override" POLKIT_RULE="$restore_dir/polkit.rules" \
+  out_restore="$(env PATH="$restore_dir/shim:$PATH" TARGET_HOME="$restore_home" OVERRIDE_DIR="$restore_dir/override" POLKIT_RULE="$restore_dir/polkit.rules" \
     LOGIN_FILE="$restore_dir/login" DM_STATE_FILE="$restore_dir/dm-state" GNOME_SESSION_TYPE_DEST="$restore_dir/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$restore_dir/pam-keyring" PAM_LOGIN_BASE_STATE="$restore_dir/pam-login-base" \
     unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   status_restore=$?
   set -e
@@ -11951,8 +11953,9 @@ exec "$u_sym_real_mv" "\$@"
 SHIM
   chmod +x "$u_sym_bak/shim/mv"
   set +e
-  u_sym_out="$(PATH="$u_sym_bak/shim:$PATH" TARGET_HOME="$u_sym_bak/home" LOGIN_FILE="$u_sym_bak/login" \
+  u_sym_out="$(env PATH="$u_sym_bak/shim:$PATH" TARGET_HOME="$u_sym_bak/home" LOGIN_FILE="$u_sym_bak/login" \
     DM_STATE_FILE="$u_sym_bak/dm" GNOME_SESSION_TYPE_DEST="$u_sym_bak/gnome.conf" \
+    PAM_KEYRING_STATE="$u_sym_bak/pam-keyring" PAM_LOGIN_BASE_STATE="$u_sym_bak/pam-login-base" \
     OVERRIDE_DIR="$u_sym_bak/getty.d" POLKIT_RULE="$u_sym_bak/polkit.rules" \
     unshare -r bash "$REPO_ROOT/uninstall.sh" 2>&1)"
   u_sym_rc=$?
@@ -12520,7 +12523,7 @@ else
   printf 'hello\n' >"$uninst_root/home/keep"
   set +e
   e2e_out="$(
-    PATH="$STUB_BIN:$PATH" \
+    env PATH="$STUB_BIN:$PATH" \
       TARGET_HOME="$uninst_root/home_link/" \
       LOGIN_FILE="$uninst_root/pam.d/login" \
       GNOME_SESSION_TYPE_DEST="$uninst_root/state/gnome-session-type.conf" \
@@ -12547,7 +12550,7 @@ else
   : >"$uninst_root/home/.bash_profile.lightxdm.absent"
   set +e
   e2e_out2="$(
-    PATH="$STUB_BIN:$PATH" \
+    env PATH="$STUB_BIN:$PATH" \
       TARGET_HOME="$uninst_root/home" \
       LOGIN_FILE="$uninst_root/pam.d/login" \
       GNOME_SESSION_TYPE_DEST="$uninst_root/state/gnome-session-type.conf" \
