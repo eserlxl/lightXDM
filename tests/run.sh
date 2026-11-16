@@ -19865,6 +19865,227 @@ else
   fail "install.sh --login-mode checks:$lm_report"
 fi
 
+# --dotfile-updates <diff|accept|dismiss|interactive>: option validation, diff, dry-run, accept, dismiss, interactive, and safety checks
+du_case="$TMP_DIR/dotfile_updates"
+mkdir -p "$du_case/home/.config/autostart" "$du_case/home/.local/state/lightxdm" "$du_case/nodiff_bin"
+du_ok=1
+du_report=""
+
+run_du_cmd() {
+  env -u SUDO_USER \
+    HOME="$du_case/home" \
+    USER="testuser" \
+    XDG_STATE_HOME="$du_case/home/.local/state" \
+    bash "$REPO_ROOT/install.sh" "$@"
+}
+
+for bad_du in \
+  "--dotfile-updates" \
+  "--dotfile-updates bogus" \
+  "--dotfile-updates --dry-run" \
+  "--dotfile-updates diff --de xfce" \
+  "--dotfile-updates accept --json" \
+  "--dotfile-updates accept --update" \
+  "--dotfile-updates accept --login-mode password" \
+  "--status --dotfile-updates diff"; do
+  read -r -a bad_du_argv <<<"$bad_du"
+  set +e
+  bad_du_out="$(run_du_cmd "${bad_du_argv[@]}" 2>&1)"
+  bad_du_rc=$?
+  set -e
+  if [[ $bad_du_rc -eq 0 ]]; then
+    du_ok=0
+    du_report+=" [bad_combo($bad_du) rc=$bad_du_rc out=$bad_du_out]"
+  fi
+done
+
+# Empty state
+set +e
+du_empty_out="$(run_du_cmd --dotfile-updates diff 2>&1)"
+du_empty_rc=$?
+set -e
+if [[ $du_empty_rc -ne 0 || "$du_empty_out" != *"No pending *.lightxdm-new dotfile updates found."* ]]; then
+  du_ok=0
+  du_report+=" [empty rc=$du_empty_rc out=$du_empty_out]"
+fi
+
+# Setup edited dotfiles + pending .lightxdm-new files
+printf '#!/bin/bash\n# user edited xinitrc\nexec i3\n' >"$du_case/home/.xinitrc"
+printf '# original xinitrc\n' >"$du_case/home/.xinitrc.lightxdm.bak"
+printf '#!/bin/bash\n# new xinitrc template\nexec i3\n' >"$du_case/home/.xinitrc.lightxdm-new"
+printf '# user gpg\n' >"$du_case/home/.gpg-agent-gnome"
+printf '# new gpg\n' >"$du_case/home/.gpg-agent-gnome.lightxdm-new"
+printf '[Desktop Entry]\nName=new\n' >"$du_case/home/.config/autostart/lightxdm-gpg-agent-tty.desktop.lightxdm-new"
+
+set +e
+du_diff_out="$(run_du_cmd --dotfile-updates diff 2>&1)"
+du_diff_rc=$?
+set -e
+if [[ $du_diff_rc -ne 0 ||
+  "$du_diff_out" != *"+# new xinitrc template"* ||
+  "$du_diff_out" != *"current file missing"* ||
+  ! -f "$du_case/home/.xinitrc.lightxdm-new" ]]; then
+  du_ok=0
+  du_report+=" [diff rc=$du_diff_rc out=$du_diff_out]"
+fi
+
+# Fallback when diff binary is unavailable
+for tool in env bash cat chmod dirname grep id mkdir mktemp mv readlink rm sed sha256sum stat tr; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    ln -sf "$(command -v "$tool")" "$du_case/nodiff_bin/$tool"
+  fi
+done
+set +e
+du_nodiff_out="$(PATH="$du_case/nodiff_bin" run_du_cmd --dotfile-updates diff 2>&1)"
+du_nodiff_rc=$?
+set -e
+if [[ $du_nodiff_rc -ne 0 || "$du_nodiff_out" != *"differs from current file; diff unavailable"* ]]; then
+  du_ok=0
+  du_report+=" [nodiff rc=$du_nodiff_rc out=$du_nodiff_out]"
+fi
+
+# Accept --dry-run leaves everything untouched
+set +e
+du_acc_dry_out="$(run_du_cmd --dotfile-updates accept --dry-run 2>&1)"
+du_acc_dry_rc=$?
+set -e
+if [[ $du_acc_dry_rc -ne 0 ||
+  "$du_acc_dry_out" != *"Would adopt $du_case/home/.xinitrc.lightxdm-new"* ||
+  -e "$du_case/home/.xinitrc.lightxdm-edited" ||
+  ! -f "$du_case/home/.xinitrc.lightxdm-new" ]]; then
+  du_ok=0
+  du_report+=" [accept-dry rc=$du_acc_dry_rc out=$du_acc_dry_out]"
+fi
+
+# Bad bash syntax in .xinitrc.lightxdm-new aborts that file without clobbering .xinitrc
+printf '#!/bin/bash\nif true; then\n' >"$du_case/home/.xinitrc.lightxdm-new"
+set +e
+du_bad_syn_out="$(run_du_cmd --dotfile-updates accept 2>&1)"
+du_bad_syn_rc=$?
+set -e
+if [[ $du_bad_syn_rc -eq 0 ||
+  "$du_bad_syn_out" != *"Invalid Bash syntax"* ||
+  "$(cat "$du_case/home/.xinitrc")" != *"# user edited xinitrc"* ||
+  ! -f "$du_case/home/.xinitrc.lightxdm-new" ]]; then
+  du_ok=0
+  du_report+=" [bad-syntax rc=$du_bad_syn_rc out=$du_bad_syn_out]"
+fi
+
+# Live accept preserves .lightxdm-edited, sets exact modes (755/744/644), updates installed-dotfiles, and removes .lightxdm-new
+printf '#!/bin/bash\n# new xinitrc template\nexec i3\n' >"$du_case/home/.xinitrc.lightxdm-new"
+set +e
+du_acc_out="$(run_du_cmd --dotfile-updates accept 2>&1)"
+du_acc_rc=$?
+set -e
+du_rec_file="$du_case/home/.local/state/lightxdm/installed-dotfiles"
+if [[ $du_acc_rc -ne 0 ||
+  -e "$du_case/home/.xinitrc.lightxdm-new" ||
+  -e "$du_case/home/.gpg-agent-gnome.lightxdm-new" ||
+  -e "$du_case/home/.config/autostart/lightxdm-gpg-agent-tty.desktop.lightxdm-new" ||
+  "$(cat "$du_case/home/.xinitrc")" != *"# new xinitrc template"* ||
+  "$(cat "$du_case/home/.xinitrc.lightxdm-edited")" != *"# user edited xinitrc"* ||
+  "$(stat -c %a "$du_case/home/.xinitrc")" != "755" ||
+  "$(stat -c %a "$du_case/home/.gpg-agent-gnome")" != "744" ||
+  "$(stat -c %a "$du_case/home/.config/autostart/lightxdm-gpg-agent-tty.desktop")" != "644" ||
+  ! -f "$du_rec_file" ]] ||
+  ! grep -Fq "  .xinitrc" "$du_rec_file" ||
+  ! grep -Fq "  .gpg-agent-gnome" "$du_rec_file"; then
+  du_ok=0
+  du_report+=" [accept-live rc=$du_acc_rc out=$du_acc_out]"
+fi
+
+# Dismiss --dry-run and live dismiss
+printf '# custom bp\n' >"$du_case/home/.bash_profile"
+printf '# new bp\n' >"$du_case/home/.bash_profile.lightxdm-new"
+set +e
+du_dis_dry_out="$(run_du_cmd --dotfile-updates dismiss --dry-run 2>&1)"
+du_dis_dry_rc=$?
+set -e
+if [[ $du_dis_dry_rc -ne 0 || "$du_dis_dry_out" != *"Would dismiss $du_case/home/.bash_profile.lightxdm-new"* ||
+  ! -f "$du_case/home/.bash_profile.lightxdm-new" ]]; then
+  du_ok=0
+  du_report+=" [dismiss-dry rc=$du_dis_dry_rc out=$du_dis_dry_out]"
+fi
+
+set +e
+du_dis_out="$(run_du_cmd --dotfile-updates dismiss 2>&1)"
+du_dis_rc=$?
+set -e
+if [[ $du_dis_rc -ne 0 || -e "$du_case/home/.bash_profile.lightxdm-new" ||
+  "$(cat "$du_case/home/.bash_profile")" != "# custom bp" ]]; then
+  du_ok=0
+  du_report+=" [dismiss-live rc=$du_dis_rc out=$du_dis_out]"
+fi
+
+# Interactive mode: [a]dopt, [k]eep (dismiss), [s]kip, [q]uit + dry-run
+printf '# bp v1\n' >"$du_case/home/.bash_profile"
+printf '# bp v2\n' >"$du_case/home/.bash_profile.lightxdm-new"
+printf '#!/bin/bash\nexec sway\n' >"$du_case/home/.wayland-session.lightxdm-new"
+printf '# gpg v2\n' >"$du_case/home/.gpg-agent-gnome.lightxdm-new"
+printf '[Desktop Entry]\nName=v2\n' >"$du_case/home/.config/autostart/lightxdm-gpg-agent-tty.desktop.lightxdm-new"
+
+set +e
+du_int_dry_out="$(printf 'a\nk\ns\nq\n' | run_du_cmd --dotfile-updates interactive --dry-run 2>&1)"
+du_int_dry_rc=$?
+set -e
+if [[ $du_int_dry_rc -ne 0 ||
+  "$du_int_dry_out" != *"Would adopt $du_case/home/.bash_profile.lightxdm-new"* ||
+  "$du_int_dry_out" != *"Would dismiss $du_case/home/.wayland-session.lightxdm-new"* ||
+  ! -f "$du_case/home/.bash_profile.lightxdm-new" ||
+  ! -f "$du_case/home/.wayland-session.lightxdm-new" ]]; then
+  du_ok=0
+  du_report+=" [interactive-dry rc=$du_int_dry_rc out=$du_int_dry_out]"
+fi
+
+set +e
+du_int_out="$(printf 'invalid\na\nk\ns\nq\n' | run_du_cmd --dotfile-updates interactive 2>&1)"
+du_int_rc=$?
+set -e
+if [[ $du_int_rc -ne 0 ||
+  "$du_int_out" != *"Invalid choice (invalid)"* ||
+  "$(cat "$du_case/home/.bash_profile")" != "# bp v2" ||
+  -e "$du_case/home/.bash_profile.lightxdm-new" ||
+  -e "$du_case/home/.wayland-session.lightxdm-new" ||
+  -e "$du_case/home/.wayland-session" ||
+  ! -f "$du_case/home/.gpg-agent-gnome.lightxdm-new" ||
+  ! -f "$du_case/home/.config/autostart/lightxdm-gpg-agent-tty.desktop.lightxdm-new" ]]; then
+  du_ok=0
+  du_report+=" [interactive-live rc=$du_int_rc out=$du_int_out]"
+fi
+
+# Safety: symlinked .lightxdm-new, symlinked target, and symlinked ~/.config/autostart refused
+rm -f "$du_case/home/.gpg-agent-gnome.lightxdm-new" "$du_case/home/.config/autostart/lightxdm-gpg-agent-tty.desktop.lightxdm-new"
+ln -s "$du_case/home/.bash_profile" "$du_case/home/.bash_profile.lightxdm-new"
+set +e
+du_sym_new_out="$(run_du_cmd --dotfile-updates dismiss 2>&1)"
+du_sym_new_rc=$?
+set -e
+rm -f "$du_case/home/.bash_profile.lightxdm-new"
+if [[ $du_sym_new_rc -eq 0 || "$du_sym_new_out" != *"Refusing symlinked pending update file"* ]]; then
+  du_ok=0
+  du_report+=" [symlink-new rc=$du_sym_new_rc out=$du_sym_new_out]"
+fi
+
+mv "$du_case/home/.xinitrc" "$du_case/home/.xinitrc.real"
+ln -s "$du_case/home/.xinitrc.real" "$du_case/home/.xinitrc"
+printf '#!/bin/bash\nexec i3\n' >"$du_case/home/.xinitrc.lightxdm-new"
+set +e
+du_sym_tgt_out="$(run_du_cmd --dotfile-updates accept 2>&1)"
+du_sym_tgt_rc=$?
+set -e
+rm -f "$du_case/home/.xinitrc" "$du_case/home/.xinitrc.lightxdm-new"
+mv "$du_case/home/.xinitrc.real" "$du_case/home/.xinitrc"
+if [[ $du_sym_tgt_rc -eq 0 || "$du_sym_tgt_out" != *"Refusing to replace symlinked dotfile"* ]]; then
+  du_ok=0
+  du_report+=" [symlink-target rc=$du_sym_tgt_rc out=$du_sym_tgt_out]"
+fi
+
+if [[ $du_ok -eq 1 ]]; then
+  pass "install.sh --dotfile-updates <diff|accept|dismiss|interactive> resolution, dry-run, mode/backup/record handling, and symlink safety"
+else
+  fail "install.sh --dotfile-updates checks:$du_report"
+fi
+
 if ! command -v python3 >/dev/null 2>&1; then
   skip "Python VM driver unit tests (python3 unavailable)"
 else

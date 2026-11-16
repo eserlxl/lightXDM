@@ -4734,7 +4734,7 @@ run_doctor() {
     fi
   done
   if [[ ${#pending_files[@]} -gt 0 ]]; then
-    printf -v diag_msg '%s — review diff and merge' "${pending_files[*]}"
+    printf -v diag_msg '%s — review with: %s --dotfile-updates diff (or accept/dismiss/interactive)' "${pending_files[*]}" "$install_cmd"
     diag_record_check "$json_mode" "Pending dotfile updates" "warn" "$diag_msg"
     warnings=$((warnings + 1))
   fi
@@ -6734,6 +6734,245 @@ run_login_mode() {
   log "Login mode switched to password login with $resolved_keyring keyring unlock for $target_de (dotfiles, packages, shell hooks, and display managers unchanged)."
 }
 
+# Inspect, adopt, or dismiss pending *.lightxdm-new dotfile updates safely without sudo.
+run_dotfile_updates() {
+  local LC_ALL=C action="$1" preview="${2:-0}" home="${HOME%/}" had_error=0 pending_count=0
+  if [[ -z "${HOME:-}" ]]; then
+    log "ERROR: HOME is unset; cannot inspect pending dotfile updates."
+    return 1
+  fi
+  [[ -n "$home" ]] || home="/"
+  if [[ -L "$home" || ! -d "$home" ]]; then
+    log "ERROR: Refusing unsafe home directory: $HOME"
+    return 1
+  fi
+  if [[ ! -x "$home" ]]; then
+    log "ERROR: Home directory is unsearchable: $home"
+    return 1
+  fi
+  if [[ $EUID -eq 0 && $preview -eq 0 && "$action" != "diff" ]]; then
+    log "Do not run --dotfile-updates $action as root or with sudo; run it as the user who logs in."
+    return 1
+  fi
+
+  local -a targets=(
+    "$home/.bash_profile"
+    "$home/.wayland-session"
+    "$home/.xinitrc"
+    "$home/.gpg-agent-gnome"
+    "$home/.gpg-agent-kwallet"
+    "$home/.config/autostart/lightxdm-gpg-agent-tty.desktop"
+  )
+  local -a modes=(644 755 755 744 744 644)
+
+  _dotfile_update_parent_safe() {
+    local target="$1"
+    if ! home_target_parent_is_safe "$target"; then
+      return 1
+    fi
+    if [[ "$target" == "$home/.config/"* ]]; then
+      if [[ -d "$home/.config" && ! -x "$home/.config" ]]; then
+        return 2
+      fi
+      if [[ -d "$home/.config/autostart" && ! -x "$home/.config/autostart" ]]; then
+        return 2
+      fi
+    fi
+    return 0
+  }
+
+  _print_dotfile_update_diff() {
+    local target="$1" new_file="$2"
+    if [[ -L "$target" ]]; then
+      printf 'Pending update: %s -> %s (current file is a symlink -> %s)\n' \
+        "$new_file" "$target" "$(readlink "$target" 2>/dev/null || echo '?')"
+    elif [[ ! -e "$target" ]]; then
+      local -a new_lines=()
+      mapfile -t new_lines <"$new_file"
+      printf 'Pending update: %s -> %s (current file missing; new template has %d line(s))\n' \
+        "$new_file" "$target" "${#new_lines[@]}"
+    elif [[ ! -f "$target" ]]; then
+      printf 'Pending update: %s -> %s (current path is not a regular file)\n' "$new_file" "$target"
+    elif [[ ! -r "$target" ]]; then
+      printf 'Pending update: %s -> %s (current file is unreadable)\n' "$new_file" "$target"
+    elif [[ "$(sha256sum <"$target")" == "$(sha256sum <"$new_file")" ]]; then
+      printf 'Pending update: %s -> %s (contents match current file)\n' "$new_file" "$target"
+    elif command -v diff >/dev/null 2>&1; then
+      local diff_rc=0
+      diff -u -- "$target" "$new_file" || diff_rc=$?
+      if [[ $diff_rc -gt 1 ]]; then
+        return 1
+      fi
+    else
+      printf 'Pending update: %s -> %s (differs from current file; diff unavailable)\n' "$new_file" "$target"
+    fi
+    return 0
+  }
+
+  _adopt_dotfile_update() {
+    local target="$1" new_file="$2" mode="$3" is_preview="$4"
+    if [[ -L "$target" ]]; then
+      log "WARNING: Refusing to replace symlinked dotfile $target with $new_file."
+      return 1
+    fi
+    if [[ -e "$target" && ! -f "$target" ]]; then
+      log "WARNING: Refusing to replace non-regular path $target with $new_file."
+      return 1
+    fi
+    if [[ -f "$target" && ! -r "$target" ]]; then
+      log "WARNING: Cannot read $target to preserve edits before adopting $new_file."
+      return 1
+    fi
+    if [[ "$target" == "$home/.xinitrc" || "$target" == "$home/.wayland-session" ]]; then
+      check_template_syntax "$new_file" || return 1
+    fi
+    if [[ $is_preview -eq 1 ]]; then
+      if [[ -f "$target" ]] && [[ "$(sha256sum <"$target")" != "$(sha256sum <"$new_file")" ]]; then
+        printf 'Would adopt %s -> %s (mode %s; preserving existing file before replacing)\n' "$new_file" "$target" "$mode"
+      else
+        printf 'Would adopt %s -> %s (mode %s) and remove %s\n' "$new_file" "$target" "$mode" "$new_file"
+      fi
+      return 0
+    fi
+    local parent_dir="${target%/*}" tmp_dest=""
+    mkdir -p -- "$parent_dir" || return 1
+    if [[ ! -w "$parent_dir" ]]; then
+      log "WARNING: Cannot write parent directory $parent_dir for $target."
+      return 1
+    fi
+    if [[ -f "$target" ]]; then
+      preserve_dotfile "$target" "$new_file" || return 1
+    fi
+    tmp_dest="$(mktemp "${parent_dir}/.${target##*/}.lightxdm.XXXXXX")" || return 1
+    if ! { cat -- "$new_file" >"$tmp_dest" && chmod "$mode" -- "$tmp_dest" && mv -Tf -- "$tmp_dest" "$target"; }; then
+      rm -f -- "$tmp_dest" 2>/dev/null || true
+      log "ERROR: Failed adopting $new_file to $target."
+      return 1
+    fi
+    if state_path_is_safe "$(dotfile_record_file)"; then
+      record_dotfile "$target" || log "WARNING: Could not record $target in $(dotfile_record_file)."
+    else
+      log "WARNING: Unsafe dotfile record state path; skipped recording $target in $(dotfile_record_file)."
+    fi
+    rm -f -- "$new_file" || return 1
+    log "Adopted $new_file -> $target (mode $mode)."
+  }
+
+  _dismiss_dotfile_update() {
+    local target="$1" new_file="$2" is_preview="$3"
+    if [[ $is_preview -eq 1 ]]; then
+      printf 'Would dismiss %s (keeping %s unchanged)\n' "$new_file" "$target"
+      return 0
+    fi
+    local parent_dir="${new_file%/*}"
+    if [[ ! -w "$parent_dir" ]]; then
+      log "WARNING: Cannot write parent directory $parent_dir to dismiss $new_file."
+      return 1
+    fi
+    rm -f -- "$new_file" || return 1
+    log "Dismissed $new_file (kept $target unchanged)."
+  }
+
+  local -a pending_targets=() pending_news=() pending_modes=()
+  local idx=0 target="" new_file="" mode="" p_rc=0
+  for ((idx = 0; idx < ${#targets[@]}; idx++)); do
+    target="${targets[$idx]}"
+    new_file="${target}.lightxdm-new"
+    mode="${modes[$idx]}"
+    p_rc=0
+    _dotfile_update_parent_safe "$target" || p_rc=$?
+    if [[ $p_rc -ne 0 ]]; then
+      log "WARNING: Skipping pending update check for $target (unsafe or unsearchable parent directory)."
+      had_error=1
+      continue
+    fi
+    [[ -e "$new_file" || -L "$new_file" ]] || continue
+    pending_count=$((pending_count + 1))
+    if [[ -L "$new_file" ]]; then
+      log "WARNING: Refusing symlinked pending update file: $new_file"
+      had_error=1
+      continue
+    fi
+    if [[ ! -f "$new_file" ]]; then
+      log "WARNING: Refusing non-regular pending update file: $new_file"
+      had_error=1
+      continue
+    fi
+    if [[ ! -r "$new_file" ]]; then
+      log "WARNING: Cannot read pending update file: $new_file"
+      had_error=1
+      continue
+    fi
+    pending_targets+=("$target")
+    pending_news+=("$new_file")
+    pending_modes+=("$mode")
+  done
+
+  if [[ $pending_count -eq 0 ]]; then
+    if [[ $had_error -eq 0 ]]; then
+      printf 'No pending *.lightxdm-new dotfile updates found.\n'
+    fi
+    return "$had_error"
+  fi
+
+  if [[ $preview -eq 1 && "$action" != "diff" ]]; then
+    printf 'Dotfile updates (%s; dry run; no files changed):\n' "$action"
+  fi
+
+  local reply="" stopped=0
+  for ((idx = 0; idx < ${#pending_targets[@]}; idx++)); do
+    target="${pending_targets[$idx]}"
+    new_file="${pending_news[$idx]}"
+    mode="${pending_modes[$idx]}"
+    case "$action" in
+      diff)
+        _print_dotfile_update_diff "$target" "$new_file" || had_error=1
+        ;;
+      accept)
+        _adopt_dotfile_update "$target" "$new_file" "$mode" "$preview" || had_error=1
+        ;;
+      dismiss)
+        _dismiss_dotfile_update "$target" "$new_file" "$preview" || had_error=1
+        ;;
+      interactive)
+        _print_dotfile_update_diff "$target" "$new_file" || had_error=1
+        while true; do
+          printf 'Action for %s ([a]dopt new / [k]eep current / [s]kip / [q]uit): ' "$target"
+          if ! IFS= read -r reply; then
+            log "Input closed (EOF); remaining pending updates left untouched."
+            stopped=1
+            break
+          fi
+          case "$reply" in
+            a | A | adopt)
+              _adopt_dotfile_update "$target" "$new_file" "$mode" "$preview" || had_error=1
+              break
+              ;;
+            k | K | keep | d | D | dismiss)
+              _dismiss_dotfile_update "$target" "$new_file" "$preview" || had_error=1
+              break
+              ;;
+            s | S | skip | "")
+              printf 'Skipped %s\n' "$new_file"
+              break
+              ;;
+            q | Q | quit)
+              printf 'Stopped; remaining pending updates left untouched.\n'
+              stopped=1
+              break
+              ;;
+            *)
+              printf 'Invalid choice (%s); enter a, k, s, or q.\n' "$reply"
+              ;;
+          esac
+        done
+        [[ $stopped -eq 1 ]] && break
+        ;;
+    esac
+  done
+  return "$had_error"
+}
+
 # --- Main ---
 
 main() {
@@ -6771,7 +7010,8 @@ main() {
   local install_session_template_exists=0
   local pam_only=0
   local login_mode=""
-  local usage="Usage: bash $0 [-h|--help] [--guided [--dry-run]] [--status [--json]] [--list-sessions [--json]] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--preflight [--json]] [--doctor [--json]] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--fix [--dry-run] [--non-interactive] [--de <id>]] [--login-mode <password|autologin> [--dry-run] [--non-interactive] [--de <id>] [--keyring <gnome|kwallet>]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet> [--json]] [--no-keyring] [--autologin] [--update] [--pam-only]"
+  local dotfile_updates=""
+  local usage="Usage: bash $0 [-h|--help] [--guided [--dry-run]] [--status [--json]] [--list-sessions [--json]] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--preflight [--json]] [--doctor [--json]] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--fix [--dry-run] [--non-interactive] [--de <id>]] [--login-mode <password|autologin> [--dry-run] [--non-interactive] [--de <id>] [--keyring <gnome|kwallet>]] [--dotfile-updates <diff|accept|dismiss|interactive> [--dry-run]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet> [--json]] [--no-keyring] [--autologin] [--update] [--pam-only]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -6845,6 +7085,9 @@ Options:
   --login-mode <password|autologin> switch an existing setup between password login with PAM keyring unlock
                     and passwordless TTY1 autologin without touching dotfiles, packages, shell hooks, or display
                     managers (optional --dry-run, --non-interactive, and for password: --de <id>, --keyring <gnome|kwallet>)
+  --dotfile-updates <diff|accept|dismiss|interactive> inspect, adopt (preserving *.lightxdm-edited* backups,
+                    permissions, and installed-dotfiles hashes), or dismiss pending *.lightxdm-new updates
+                    left by --update without sudo (optional --dry-run)
 
 uninstall.sh reverts these changes; installed packages stay.
 EOF
@@ -6981,6 +7224,21 @@ EOF
         esac
         shift 2
         ;;
+      --dotfile-updates)
+        if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then
+          log "Missing argument for --dotfile-updates (valid actions: diff accept dismiss interactive)"
+          echo "$usage" >&2
+          exit 1
+        fi
+        case "$2" in
+          diff | accept | dismiss | interactive) dotfile_updates="$2" ;;
+          *)
+            log "Invalid action for --dotfile-updates: $2 (valid actions: diff accept dismiss interactive)"
+            exit 1
+            ;;
+        esac
+        shift 2
+        ;;
       --status)
         status_only=1
         shift
@@ -7045,7 +7303,7 @@ EOF
 
   if [[ $status_only -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || $dry_run -eq 1 ||
+      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || -n "$dotfile_updates" || $dry_run -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 ||
       -n "$from_session" || $pam_only -eq 1 ]]; then
@@ -7063,7 +7321,7 @@ EOF
 
   if [[ $list_sessions -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" ||
+      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || -n "$dotfile_updates" ||
       $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
       $update -eq 1 || $status_only -eq 1 || $init_template -eq 1 ||
@@ -7092,7 +7350,7 @@ EOF
 
   if [[ $preflight_only -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || $dry_run -eq 1 ||
+      -n "$install_session" || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || -n "$dotfile_updates" || $dry_run -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $status_only -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
@@ -7111,7 +7369,7 @@ EOF
 
   if [[ $doctor_only -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || $dry_run -eq 1 ||
+      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || -n "$dotfile_updates" || $dry_run -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $status_only -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
@@ -7130,7 +7388,7 @@ EOF
 
   if [[ $recover -eq 1 ]]; then
     if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$install_session" || $preflight_only -eq 1 ||
-      $guided -eq 1 || $doctor_only -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
+      $guided -eq 1 || $doctor_only -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || -n "$dotfile_updates" || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
       $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" ||
       $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
@@ -7154,7 +7412,7 @@ EOF
 
   if [[ $fix_mode -eq 1 ]]; then
     if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || -n "$login_mode" ||
+      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || -n "$login_mode" || -n "$dotfile_updates" ||
       $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
@@ -7178,7 +7436,7 @@ EOF
 
   if [[ $update -eq 1 ]]; then
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || -n "$install_session" ||
-      $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
+      $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || -n "$dotfile_updates" || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
       -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 ||
       $json_output -eq 1 ]]; then
@@ -7243,7 +7501,7 @@ EOF
 
   if [[ -n "$login_mode" ]]; then
     if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
-      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 ||
+      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$dotfile_updates" ||
       $no_packages -eq 1 || $no_keyring -eq 1 || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
@@ -7264,6 +7522,21 @@ EOF
     local login_mode_status=0
     run_login_mode "$login_mode" "$de" "$de_specified" "$keyring" "$dry_run" "$non_interactive" || login_mode_status=$?
     return "$login_mode_status"
+  fi
+
+  if [[ -n "$dotfile_updates" ]]; then
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
+      -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 ||
+      $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
+      $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 ||
+      $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
+      log "--dotfile-updates takes only optional --dry-run."
+      echo "$usage" >&2
+      exit 1
+    fi
+    local dotfile_updates_status=0
+    run_dotfile_updates "$dotfile_updates" "$dry_run" || dotfile_updates_status=$?
+    return "$dotfile_updates_status"
   fi
 
   if [[ -n "$from_session" ]]; then
