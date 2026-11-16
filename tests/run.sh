@@ -14564,6 +14564,38 @@ then
   js_report+=" [rich state: rc=$rich_js_rc err=$(cat "$js_dir/rich.err") out=$rich_js_out]"
 fi
 
+# 3b) --status --json never traverses symlinked ~/.config, ~/.config/lightxdm, or ~/.local state dirs
+sym_st_home="$js_dir/sym_status_home"
+sym_st_cfg="$js_dir/sym_status_cfg_target"
+sym_st_loc="$js_dir/sym_status_loc_target"
+mkdir -p "$sym_st_home" "$sym_st_cfg/lightxdm" "$sym_st_loc/state/lightxdm"
+ln -s "$sym_st_cfg" "$sym_st_home/.config"
+ln -s "$sym_st_loc" "$sym_st_home/.local"
+: >"$sym_st_cfg/lightxdm/no-autostart"
+: >"$sym_st_cfg/lightxdm/session-journal"
+printf '%s\n' "$(date +%s)" >"$sym_st_loc/state/lightxdm/startx-attempts"
+set +e
+sym_st_js_out="$(
+  env -u XDG_STATE_HOME USER="${USER:-tester}" HOME="$sym_st_home" PATH="$js_dir/bin:$STUB_BIN:$PATH" \
+    LOGIN_FILE="$js_dir/rich_etc/login" PAM_KEYRING_STATE="$js_dir/rich_etc/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$js_dir/rich_etc/pam-login-base" GNOME_SESSION_TYPE_DEST="$js_dir/rich_etc/gnome-session-type.conf" \
+    DM_STATE_FILE="$js_dir/rich_etc/disabled-display-managers" AUTOLOGIN_DROPIN_DIR="$js_dir/rich_getty" \
+    bash "$REPO_ROOT/install.sh" --status --json 2>"$js_dir/sym_status.err"
+)"
+sym_st_js_rc=$?
+set -e
+if [[ $sym_st_js_rc -ne 0 || -s "$js_dir/sym_status.err" ]] ||
+  ! JSON_OUT="$sym_st_js_out" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["tty1"]["autostart_paused"] is False, d
+assert d["tty1"]["session_journal"] is False, d
+assert d["tty1"]["recent_launch_attempts_30s"] == 0, d
+PY
+then
+  js_report+=" [symlink config/local status leak: rc=$sym_st_js_rc err=$(cat "$js_dir/sym_status.err") out=$sym_st_js_out]"
+fi
+
 # 4) Unreadable root-owned files emit unknown-needs-root + notes in JSON with zero stderr output
 if [[ $EUID -ne 0 ]]; then
   mkdir -p "$js_dir/priv_etc" "$js_dir/priv_getty"
@@ -16081,6 +16113,31 @@ if [[ $doc_rc -ne 1 || "$doc_out" != *"Display managers: FAIL"* || "$doc_out" !=
   doctor_report+=" doc-dm-gnome-dir-symlink rc=$doc_rc out=[$doc_out];"
 fi
 rm -rf "$doctor_etc/sym_etc_lightxdm" "$doctor_etc/real_dm_dir"
+
+reset_doctor_gnome_fixture
+mkdir -p "$doctor_dir/sym_lxdm_cfg_target"
+: >"$doctor_dir/sym_lxdm_cfg_target/no-autostart"
+rmdir "$doctor_home/.config/lightxdm"
+ln -s "$doctor_dir/sym_lxdm_cfg_target" "$doctor_home/.config/lightxdm"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+rm -rf "$doctor_home/.config/lightxdm" "$doctor_dir/sym_lxdm_cfg_target"
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Auto-start pause: FAIL"* || "$doc_out" == *"Doctor: PASS"* ]]; then
+  doctor_ok=0
+  doctor_report+=" doc-config-lightxdm-symlink rc=$doc_rc out=[$doc_out];"
+fi
+if [[ $EUID -ne 0 ]]; then
+  reset_doctor_gnome_fixture
+  : >"$doctor_home/.config/lightxdm/no-autostart"
+  chmod 000 "$doctor_home/.config/lightxdm"
+  doc_rc=0
+  doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+  chmod 755 "$doctor_home/.config/lightxdm"
+  if [[ $doc_rc -ne 1 || "$doc_out" != *"Auto-start pause: FAIL"* || "$doc_out" != *"is unsearchable"* || "$doc_out" == *"Doctor: PASS"* ]]; then
+    doctor_ok=0
+    doctor_report+=" doc-config-lightxdm-unsearchable rc=$doc_rc out=[$doc_out];"
+  fi
+fi
 
 reset_doctor_gnome_fixture
 

@@ -3169,16 +3169,18 @@ show_install_status() {
   fi
 
   local autostart_paused=0 session_journal=0
-  if [[ -e "$HOME/.config/lightxdm/no-autostart" || -L "$HOME/.config/lightxdm/no-autostart" ]]; then
+  if home_target_parent_is_safe "$HOME/.config/lightxdm/no-autostart" &&
+    [[ -e "$HOME/.config/lightxdm/no-autostart" || -L "$HOME/.config/lightxdm/no-autostart" ]]; then
     autostart_paused=1
   fi
-  if [[ -e "$HOME/.config/lightxdm/session-journal" || -L "$HOME/.config/lightxdm/session-journal" ]]; then
+  if home_target_parent_is_safe "$HOME/.config/lightxdm/session-journal" &&
+    [[ -e "$HOME/.config/lightxdm/session-journal" || -L "$HOME/.config/lightxdm/session-journal" ]]; then
     session_journal=1
   fi
 
   local attempts_file="${XDG_STATE_HOME:-$HOME/.local/state}/lightxdm/startx-attempts"
   local recent_count=0
-  if [[ -f "$attempts_file" && ! -L "$attempts_file" && -r "$attempts_file" ]]; then
+  if state_path_is_safe "$attempts_file" && [[ -f "$attempts_file" && ! -L "$attempts_file" && -r "$attempts_file" ]]; then
     local now attempt_lines=() attempt_ts
     printf -v now '%(%s)T' -1
     mapfile -t attempt_lines 2>/dev/null <"$attempts_file" || :
@@ -4682,7 +4684,19 @@ run_doctor() {
     esac
   fi
 
-  if [[ -e "$HOME/.config/lightxdm/no-autostart" || -L "$HOME/.config/lightxdm/no-autostart" ]]; then
+  if [[ -L "$HOME/.config" || ( -e "$HOME/.config" && ! -d "$HOME/.config" ) ]]; then
+    diag_record_check "$json_mode" "Auto-start pause" "fail" "$HOME/.config is not a real directory; lightXDM skips symlinks there"
+    issues=$((issues + 1))
+  elif [[ -d "$HOME/.config" && ! -x "$HOME/.config" ]]; then
+    diag_record_check "$json_mode" "Auto-start pause" "fail" "$HOME/.config is unsearchable — fix permissions (chmod u+rx ~/.config)"
+    issues=$((issues + 1))
+  elif [[ -L "$HOME/.config/lightxdm" || ( -e "$HOME/.config/lightxdm" && ! -d "$HOME/.config/lightxdm" ) ]]; then
+    diag_record_check "$json_mode" "Auto-start pause" "fail" "$HOME/.config/lightxdm is not a real directory; lightXDM skips symlinks there"
+    issues=$((issues + 1))
+  elif [[ -d "$HOME/.config/lightxdm" && ! -x "$HOME/.config/lightxdm" ]]; then
+    diag_record_check "$json_mode" "Auto-start pause" "fail" "$HOME/.config/lightxdm is unsearchable — fix permissions (chmod u+rx ~/.config/lightxdm)"
+    issues=$((issues + 1))
+  elif [[ -e "$HOME/.config/lightxdm/no-autostart" || -L "$HOME/.config/lightxdm/no-autostart" ]]; then
     # shellcheck disable=SC2088 # literal home-relative display path for user instructions
     diag_record_check "$json_mode" "Auto-start pause" "fail" "~/.config/lightxdm/no-autostart disables TTY1 auto-start — check logs: journalctl -b -t lightxdm, then resume: rm ~/.config/lightxdm/no-autostart"
     issues=$((issues + 1))
