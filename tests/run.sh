@@ -12803,6 +12803,91 @@ else
   fail "enable-autologin.sh simulated-root atomic writes:$atomic_autologin_report"
 fi
 
+# Simulated-root regression tests for enable-autologin.sh OVERRIDE_DIR/OVERRIDE_FILE path guards.
+auto_guard_dir="$TMP_DIR/autologin_path_guards"
+rm -rf "$auto_guard_dir"
+mkdir -p "$auto_guard_dir/target_dir" "$auto_guard_dir/pam.d"
+printf '%s\n' '#%PAM-1.0' >"$auto_guard_dir/pam.d/login"
+printf 'keep-dropin\n' >"$auto_guard_dir/target_dir/lightxdm-autologin.conf"
+# shellcheck disable=SC2016  # $TERM is literal systemd syntax
+printf '%s\n' '[Service]' 'ExecStart=' 'ExecStart=-/usr/bin/agetty --autologin testuser --noclear %I $TERM' >"$auto_guard_dir/target_dir/override.conf"
+chmod 700 "$auto_guard_dir/target_dir"
+ln -s "$auto_guard_dir/target_dir" "$auto_guard_dir/sym_dir"
+auto_guard_report=""
+
+set +e
+ag_sym_en_out="$(env PATH="$atomic_dir/priv/bin:$PATH" OVERRIDE_DIR="$auto_guard_dir/sym_dir/" LOGIN_FILE="$auto_guard_dir/pam.d/login" \
+  bash "$atomic_dir/sim_enable_autologin.sh" testuser 2>&1)"
+ag_sym_en_rc=$?
+set -e
+if [[ $ag_sym_en_rc -ne 1 || "$(stat -c %a -- "$auto_guard_dir/target_dir")" != "700" ||
+  "$(cat "$auto_guard_dir/target_dir/lightxdm-autologin.conf")" != "keep-dropin" ||
+  ! -f "$auto_guard_dir/target_dir/override.conf" || "$ag_sym_en_out" != *"must be a directory"* ]]; then
+  auto_guard_report+=" [symdir-enable: rc=$ag_sym_en_rc, mode=$(stat -c %a -- "$auto_guard_dir/target_dir"), out=$ag_sym_en_out]"
+fi
+
+set +e
+ag_sym_dis_out="$(env PATH="$atomic_dir/priv/bin:$PATH" OVERRIDE_DIR="$auto_guard_dir/sym_dir" LOGIN_FILE="$auto_guard_dir/pam.d/login" \
+  bash "$atomic_dir/sim_enable_autologin.sh" --disable 2>&1)"
+ag_sym_dis_rc=$?
+set -e
+chmod 755 "$auto_guard_dir/target_dir"
+if [[ $ag_sym_dis_rc -ne 1 || "$(cat "$auto_guard_dir/target_dir/lightxdm-autologin.conf")" != "keep-dropin" ||
+  ! -f "$auto_guard_dir/target_dir/override.conf" || "$ag_sym_dis_out" != *"must be a directory"* ]]; then
+  auto_guard_report+=" [symdir-disable: rc=$ag_sym_dis_rc, out=$ag_sym_dis_out]"
+fi
+
+printf 'not-a-dir\n' >"$auto_guard_dir/file_dir"
+set +e
+ag_file_dir_out="$(env PATH="$atomic_dir/priv/bin:$PATH" OVERRIDE_DIR="$auto_guard_dir/file_dir" LOGIN_FILE="$auto_guard_dir/pam.d/login" \
+  bash "$atomic_dir/sim_enable_autologin.sh" testuser 2>&1)"
+ag_file_dir_rc=$?
+set -e
+if [[ $ag_file_dir_rc -ne 1 || "$(cat "$auto_guard_dir/file_dir")" != "not-a-dir" ||
+  "$ag_file_dir_out" != *"must be a directory"* ]]; then
+  auto_guard_report+=" [nondir-enable: rc=$ag_file_dir_rc, out=$ag_file_dir_out]"
+fi
+
+mkdir -p "$auto_guard_dir/real_dir/lightxdm-autologin.conf"
+# shellcheck disable=SC2016  # $TERM is literal systemd syntax
+printf '%s\n' '[Service]' 'ExecStart=' 'ExecStart=-/usr/bin/agetty --autologin testuser --noclear %I $TERM' >"$auto_guard_dir/real_dir/override.conf"
+set +e
+ag_dropdir_en_out="$(env PATH="$atomic_dir/priv/bin:$PATH" OVERRIDE_DIR="$auto_guard_dir/real_dir" LOGIN_FILE="$auto_guard_dir/pam.d/login" \
+  bash "$atomic_dir/sim_enable_autologin.sh" testuser 2>&1)"
+ag_dropdir_en_rc=$?
+ag_dropdir_dis_out="$(env PATH="$atomic_dir/priv/bin:$PATH" OVERRIDE_DIR="$auto_guard_dir/real_dir" LOGIN_FILE="$auto_guard_dir/pam.d/login" \
+  bash "$atomic_dir/sim_enable_autologin.sh" --disable 2>&1)"
+ag_dropdir_dis_rc=$?
+set -e
+if [[ $ag_dropdir_en_rc -ne 1 || ! -d "$auto_guard_dir/real_dir/lightxdm-autologin.conf" ||
+  ! -f "$auto_guard_dir/real_dir/override.conf" || "$ag_dropdir_en_out" != *"is a directory"* ||
+  $ag_dropdir_dis_rc -ne 1 || "$ag_dropdir_dis_out" != *"is a directory"* ]]; then
+  auto_guard_report+=" [dropdir: en_rc=$ag_dropdir_en_rc dis_rc=$ag_dropdir_dis_rc en_out=$ag_dropdir_en_out dis_out=$ag_dropdir_dis_out]"
+fi
+
+rmdir "$auto_guard_dir/real_dir/lightxdm-autologin.conf"
+rm -f "$auto_guard_dir/real_dir/override.conf"
+mkdir -p "$auto_guard_dir/real_dir/override.conf"
+set +e
+ag_legdir_en_out="$(env PATH="$atomic_dir/priv/bin:$PATH" OVERRIDE_DIR="$auto_guard_dir/real_dir" LOGIN_FILE="$auto_guard_dir/pam.d/login" \
+  bash "$atomic_dir/sim_enable_autologin.sh" testuser 2>&1)"
+ag_legdir_en_rc=$?
+ag_absent_dis_out="$(env PATH="$atomic_dir/priv/bin:$PATH" OVERRIDE_DIR="$auto_guard_dir/absent_dir" LOGIN_FILE="$auto_guard_dir/pam.d/login" \
+  bash "$atomic_dir/sim_enable_autologin.sh" --disable 2>&1)"
+ag_absent_dis_rc=$?
+set -e
+if [[ $ag_legdir_en_rc -ne 1 || ! -d "$auto_guard_dir/real_dir/override.conf" ||
+  -e "$auto_guard_dir/real_dir/lightxdm-autologin.conf" || "$ag_legdir_en_out" != *"is a directory"* ||
+  $ag_absent_dis_rc -ne 0 ]]; then
+  auto_guard_report+=" [legdir/absent: leg_rc=$ag_legdir_en_rc dis_rc=$ag_absent_dis_rc leg_out=$ag_legdir_en_out dis_out=$ag_absent_dis_out]"
+fi
+
+if [[ -z "$auto_guard_report" ]]; then
+  pass "enable-autologin.sh refuses symlinked OVERRIDE_DIR and directory drop-in paths safely"
+else
+  fail "enable-autologin.sh path guards:$auto_guard_report"
+fi
+
 # Non-GNOME configure_gnome_session_type handles dangling symlinks at GNOME_SESSION_TYPE_DEST in preview and apply paths.
 gnome_sym_dir="$TMP_DIR/gnome_dangling_symlink"
 rm -rf "$gnome_sym_dir"

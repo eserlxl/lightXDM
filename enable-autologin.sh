@@ -254,6 +254,27 @@ show_status() {
   fi
 }
 
+validate_override_paths() {
+  local check_legacy="${1:-0}" clean_dir="$OVERRIDE_DIR"
+  while [[ "$clean_dir" != "/" && "$clean_dir" == */ ]]; do
+    clean_dir="${clean_dir%/}"
+  done
+  if [[ -L "$clean_dir" || ( -e "$clean_dir" && ! -d "$clean_dir" ) ]]; then
+    echo "Error: $clean_dir must be a directory (refusing symlink or non-directory path)." >&2
+    return 1
+  fi
+  if [[ -d "$clean_dir" ]]; then
+    if [[ -d "$OVERRIDE_FILE" && ! -L "$OVERRIDE_FILE" ]]; then
+      echo "Error: $OVERRIDE_FILE is a directory; expected a systemd drop-in file." >&2
+      return 1
+    fi
+    if [[ $check_legacy -eq 1 && -d "$LEGACY_OVERRIDE_FILE" && ! -L "$LEGACY_OVERRIDE_FILE" ]]; then
+      echo "Error: $LEGACY_OVERRIDE_FILE is a directory; expected a systemd drop-in file." >&2
+      return 1
+    fi
+  fi
+}
+
 main() {
   if [[ $# -eq 1 ]] && [[ "$1" == "-h" || "$1" == "--help" ]]; then
     show_help
@@ -302,6 +323,7 @@ main() {
   fi
 
   if [[ "$1" == "--disable" ]]; then
+    validate_override_paths 0 || exit 1
     echo "Disabling TTY1 autologin..."
     local removed=0
     if [[ -f "$OVERRIDE_FILE" || -L "$OVERRIDE_FILE" ]]; then
@@ -371,6 +393,7 @@ main() {
     exit 1
   fi
 
+  validate_override_paths 1 || exit 1
   # --status reads the drop-in without sudo, so never inherit a stricter root umask.
   umask 022
   mkdir -p "$OVERRIDE_DIR"
