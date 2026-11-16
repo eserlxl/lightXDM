@@ -5832,10 +5832,7 @@ run_fix() {
     if [[ ${#enabled_dms[@]} -gt 0 ]]; then
       need_disable_dms=1
     fi
-    if [[ -L "$(dirname -- "$DM_STATE_FILE")" || -L "$DM_STATE_FILE" ]]; then
-      log "ERROR: $DM_STATE_FILE or its directory is a symlink; lightXDM ignores symlinks."
-      return 1
-    fi
+    _login_mode_check_state_target "$DM_STATE_FILE" 0 || return 1
     if [[ -f "$DM_STATE_FILE" && -r "$DM_STATE_FILE" ]]; then
       dm_state_content="$(cat -- "$DM_STATE_FILE")"
       while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
@@ -5917,10 +5914,7 @@ run_fix() {
       inspect_fix_pam_state 0 "$target_de" "$real_user" || return 1
     fi
     if [[ $need_dm_state_probe -eq 1 ]]; then
-      if sudo test -L "$DM_STATE_FILE"; then
-        log "ERROR: $DM_STATE_FILE is a symlink; lightXDM ignores symlinks."
-        return 1
-      fi
+      _login_mode_check_state_target "$DM_STATE_FILE" 1 || return 1
       if sudo test -f "$DM_STATE_FILE"; then
         dm_state_content="$(sudo cat -- "$DM_STATE_FILE" 2>/dev/null)" || return 1
         while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do

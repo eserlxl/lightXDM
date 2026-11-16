@@ -18339,6 +18339,64 @@ EOF
     fix_ok=0
     fix_report+=" unreadable-dm-dir-live rc=$fx_rc out=[$fx_out];"
   fi
+
+  # Hidden directory DM_STATE_FILE behind 000 dm_priv aborts post-sudo probe before mutating home dotfiles.
+  reset_fix_fixture i3
+  mkdir -p "$fix_etc/dm_priv/disabled-display-managers" "$fix_priv_bin"
+  cat >"$fix_priv_bin/sudo" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$fix_sudo_log"
+if [[ "\${1:-}" == "-n" ]]; then
+  shift
+fi
+if [[ "\${1:-}" == "-v" ]]; then
+  chmod 755 "$fix_etc/dm_priv"
+  exit 0
+fi
+exec "\$@"
+EOF
+  chmod +x "$fix_priv_bin/sudo"
+  printf '# corrupted\n' >"$fix_home/.bash_profile"
+  : >"$fix_sudo_log"
+  chmod 000 "$fix_etc/dm_priv"
+  fx_rc=0
+  fx_out="$(FIX_DM_STATE_FILE="$fix_etc/dm_priv/disabled-display-managers" FIX_PATH_PREFIX="$fix_priv_bin" \
+    run_fix_cmd --fix --non-interactive 2>&1)" || fx_rc=$?
+  chmod 755 "$fix_etc/dm_priv"
+  rm -rf "$fix_priv_bin"
+  if [[ $fx_rc -eq 0 || "$(cat "$fix_home/.bash_profile")" != "# corrupted" ||
+    "$fx_out" != *"exists and is not a regular file"* ]]; then
+    fix_ok=0
+    fix_report+=" hidden-dm-isdir rc=$fx_rc out=[$fx_out];"
+  fi
+fi
+
+# Non-directory parent and directory-typed DM_STATE_FILE reject early in --fix --dry-run and live --fix without sudo or home mutations.
+reset_fix_fixture i3
+printf 'not-a-dir\n' >"$fix_etc/dm_nondir"
+: >"$fix_sudo_log"
+fx_rc=0
+fx_out="$(FIX_DM_STATE_FILE="$fix_etc/dm_nondir/disabled-display-managers" run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+if [[ $fx_rc -eq 0 || -s "$fix_sudo_log" || "$fx_out" != *"exists and is not a directory"* ]]; then
+  fix_ok=0
+  fix_report+=" dm-parent-nondir-dry rc=$fx_rc out=[$fx_out];"
+fi
+
+mkdir -p "$fix_etc/dm_isdir/disabled-display-managers"
+printf '# corrupted\n' >"$fix_home/.bash_profile"
+: >"$fix_sudo_log"
+fx_rc=0
+fx_out="$(FIX_DM_STATE_FILE="$fix_etc/dm_isdir/disabled-display-managers" run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+if [[ $fx_rc -eq 0 || -s "$fix_sudo_log" || "$fx_out" != *"exists and is not a regular file"* ]]; then
+  fix_ok=0
+  fix_report+=" dm-state-isdir-dry rc=$fx_rc out=[$fx_out];"
+fi
+fx_rc=0
+fx_out="$(FIX_DM_STATE_FILE="$fix_etc/dm_isdir/disabled-display-managers" run_fix_cmd --fix --non-interactive 2>&1)" || fx_rc=$?
+if [[ $fx_rc -eq 0 || -s "$fix_sudo_log" || "$(cat "$fix_home/.bash_profile")" != "# corrupted" ||
+  "$fx_out" != *"exists and is not a regular file"* ]]; then
+  fix_ok=0
+  fix_report+=" dm-state-isdir-live rc=$fx_rc out=[$fx_out];"
 fi
 
 reset_fix_fixture i3
