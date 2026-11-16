@@ -3,8 +3,8 @@
 How the repository is laid out and how to check a change before sending it.
 
 ```sh
-bash lint.sh               # ShellCheck on every script
-bash tests/run.sh          # behavior suite and Python VM driver unit tests (--strict also fails on skipped checks)
+bash lint.sh               # ShellCheck, template history, Python syntax, and repo integrity checks
+bash tests/run.sh          # behavior suite and Python unit tests (--strict also fails on skipped checks)
 bash tests/docker-arch.sh  # package lists and real PAM checks in an Arch container (needs Docker)
 bash tests/qemu-arch.sh    # real TTY1 password logins in QEMU VMs (needs Docker and KVM; slow)
 ```
@@ -16,7 +16,8 @@ Both `tests/docker-arch.sh` and `tests/qemu-arch.sh` accept `--strict` (or
 its sha256 in `dotfiles/template-history.sha256`, which lists every version of every bundled
 template, so the check also works in a copy without `.git`. After editing a template in
 `dotfiles/`, regenerate the list with `bash tests/template-history.sh > dotfiles/template-history.sha256`;
-`tests/run.sh` fails until the list matches the git history.
+`bash tests/template-history.sh --check` (run by `lint.sh` and `tests/run.sh`) fails until the list
+matches the git history.
 
 ## Project Structure
 ```
@@ -59,14 +60,16 @@ lightXDM/
 │   ├── polkit-support.md
 │   └── startx-autologin.md
 ├── tests/
-│   ├── docker-arch.sh   # real PAM checks in an Arch container (needs Docker)
-│   ├── qemu-arch.sh     # real TTY1 logins in QEMU VMs (needs Docker and KVM)
+│   ├── check_repo_integrity.py  # verifies aurgen manifest, ALPM hook, frozen SHA-256 files, and -B Python hygiene
+│   ├── docker-arch.sh     # real PAM checks in an Arch container (needs Docker)
+│   ├── qemu-arch.sh       # real TTY1 logins in QEMU VMs (needs Docker and KVM)
 │   ├── qemu/
 │   │   ├── build-image.sh  # builds the VM image in a privileged Arch container
 │   │   └── vmtest.py       # boots one VM, installs, types the TTY1 login, checks the session
-│   ├── run.sh           # behavior suite (--strict fails on skipped checks; --help)
-│   ├── template-history.sh  # prints dotfiles/template-history.sha256 from the git history
-│   └── test_vmtest.py   # host-side unit tests for qemu/vmtest.py (run by tests/run.sh, or python3 -B)
+│   ├── run.sh             # behavior suite and Python unit tests (--strict fails on skipped checks; --help)
+│   ├── template-history.sh  # prints or --check-verifies dotfiles/template-history.sha256 from git history
+│   ├── test_repo_checks.py  # unit tests for check_repo_integrity.py (run by tests/run.sh, or python3 -B -m unittest)
+│   └── test_vmtest.py     # host-side unit tests for qemu/vmtest.py (run by tests/run.sh, or python3 -B -m unittest)
 └── LICENSE
 ```
 
