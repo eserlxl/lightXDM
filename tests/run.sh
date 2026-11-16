@@ -20175,7 +20175,7 @@ if [[ $du_int_rc -ne 0 ||
   du_report+=" [interactive-live rc=$du_int_rc out=$du_int_out]"
 fi
 
-# Safety: symlinked .lightxdm-new, symlinked target, and symlinked ~/.config/autostart refused
+# Safety: symlinked .lightxdm-new, non-regular .lightxdm-new, symlinked/unreadable targets, symlinked ~/.config/autostart, and root gating
 rm -f "$du_case/home/.gpg-agent-gnome.lightxdm-new" "$du_case/home/.config/autostart/lightxdm-gpg-agent-tty.desktop.lightxdm-new"
 ln -s "$du_case/home/.bash_profile" "$du_case/home/.bash_profile.lightxdm-new"
 set +e
@@ -20188,18 +20188,85 @@ if [[ $du_sym_new_rc -eq 0 || "$du_sym_new_out" != *"Refusing symlinked pending 
   du_report+=" [symlink-new rc=$du_sym_new_rc out=$du_sym_new_out]"
 fi
 
+mkdir -p "$du_case/home/.bash_profile.lightxdm-new"
+set +e
+du_dir_new_out="$(run_du_cmd --dotfile-updates dismiss 2>&1)"
+du_dir_new_rc=$?
+set -e
+rmdir "$du_case/home/.bash_profile.lightxdm-new"
+if [[ $du_dir_new_rc -eq 0 || "$du_dir_new_out" != *"Refusing non-regular pending update file"* ]]; then
+  du_ok=0
+  du_report+=" [nonregular-new rc=$du_dir_new_rc out=$du_dir_new_out]"
+fi
+
+mkdir -p "$du_case/outside_autostart"
+printf '[Desktop Entry]\nName=outside\n' >"$du_case/outside_autostart/lightxdm-gpg-agent-tty.desktop.lightxdm-new"
+rm -rf "$du_case/home/.config/autostart"
+ln -s "$du_case/outside_autostart" "$du_case/home/.config/autostart"
+set +e
+du_sym_dir_out="$(run_du_cmd --dotfile-updates accept 2>&1)"
+du_sym_dir_rc=$?
+set -e
+rm -f "$du_case/home/.config/autostart"
+mkdir -p "$du_case/home/.config/autostart"
+if [[ $du_sym_dir_rc -eq 0 || "$du_sym_dir_out" != *"unsafe or unsearchable parent directory"* ||
+  -e "$du_case/outside_autostart/lightxdm-gpg-agent-tty.desktop" ||
+  ! -f "$du_case/outside_autostart/lightxdm-gpg-agent-tty.desktop.lightxdm-new" ]]; then
+  du_ok=0
+  du_report+=" [symlink-autostart rc=$du_sym_dir_rc out=$du_sym_dir_out]"
+fi
+
 mv "$du_case/home/.xinitrc" "$du_case/home/.xinitrc.real"
 ln -s "$du_case/home/.xinitrc.real" "$du_case/home/.xinitrc"
 printf '#!/bin/bash\nexec i3\n' >"$du_case/home/.xinitrc.lightxdm-new"
 set +e
+du_sym_diff_out="$(run_du_cmd --dotfile-updates diff 2>&1)"
+du_sym_diff_rc=$?
 du_sym_tgt_out="$(run_du_cmd --dotfile-updates accept 2>&1)"
 du_sym_tgt_rc=$?
 set -e
 rm -f "$du_case/home/.xinitrc" "$du_case/home/.xinitrc.lightxdm-new"
 mv "$du_case/home/.xinitrc.real" "$du_case/home/.xinitrc"
-if [[ $du_sym_tgt_rc -eq 0 || "$du_sym_tgt_out" != *"Refusing to replace symlinked dotfile"* ]]; then
+if [[ $du_sym_diff_rc -ne 0 || "$du_sym_diff_out" != *"current file is a symlink -> $du_case/home/.xinitrc.real"* ||
+  $du_sym_tgt_rc -eq 0 || "$du_sym_tgt_out" != *"Refusing to replace symlinked dotfile"* ]]; then
   du_ok=0
-  du_report+=" [symlink-target rc=$du_sym_tgt_rc out=$du_sym_tgt_out]"
+  du_report+=" [symlink-target rc=$du_sym_diff_rc/$du_sym_tgt_rc out=$du_sym_diff_out|$du_sym_tgt_out]"
+fi
+
+if [[ $EUID -ne 0 ]]; then
+  chmod 000 "$du_case/home/.xinitrc"
+  printf '#!/bin/bash\nexec i3\n' >"$du_case/home/.xinitrc.lightxdm-new"
+  set +e
+  du_unr_diff_out="$(run_du_cmd --dotfile-updates diff 2>&1)"
+  du_unr_diff_rc=$?
+  du_unr_acc_out="$(run_du_cmd --dotfile-updates accept 2>&1)"
+  du_unr_acc_rc=$?
+  set -e
+  chmod 755 "$du_case/home/.xinitrc"
+  rm -f "$du_case/home/.xinitrc.lightxdm-new"
+  if [[ $du_unr_diff_rc -ne 0 || "$du_unr_diff_out" != *"current file is unreadable"* ||
+    $du_unr_acc_rc -eq 0 || "$du_unr_acc_out" != *"Cannot read $du_case/home/.xinitrc to preserve edits"* ]]; then
+    du_ok=0
+    du_report+=" [unreadable-diff-accept rc=$du_unr_diff_rc/$du_unr_acc_rc out=$du_unr_diff_out|$du_unr_acc_out]"
+  fi
+fi
+
+if [[ $can_unshare -eq 1 ]]; then
+  printf '#!/bin/bash\nexec i3\n' >"$du_case/home/.xinitrc.lightxdm-new"
+  set +e
+  du_root_acc_out="$(unshare -r env -u SUDO_USER HOME="$du_case/home" USER="testuser" XDG_STATE_HOME="$du_case/home/.local/state" \
+    bash "$REPO_ROOT/install.sh" --dotfile-updates accept 2>&1)"
+  du_root_acc_rc=$?
+  du_root_diff_out="$(unshare -r env -u SUDO_USER HOME="$du_case/home" USER="testuser" XDG_STATE_HOME="$du_case/home/.local/state" \
+    bash "$REPO_ROOT/install.sh" --dotfile-updates diff 2>&1)"
+  du_root_diff_rc=$?
+  set -e
+  rm -f "$du_case/home/.xinitrc.lightxdm-new"
+  if [[ $du_root_acc_rc -eq 0 || "$du_root_acc_out" != *"Do not run --dotfile-updates accept as root"* ||
+    $du_root_diff_rc -ne 0 || ( "$du_root_diff_out" != *"+++"* && "$du_root_diff_out" != *"Pending update:"* ) ]]; then
+    du_ok=0
+    du_report+=" [root-gate rc=$du_root_acc_rc/$du_root_diff_rc out=$du_root_acc_out|$du_root_diff_out]"
+  fi
 fi
 
 # Missing-target adoption writes .lightxdm.absent, .gpg-agent-* syntax check runs, empty dry-run header omitted, trailing-slash HOME normalized
