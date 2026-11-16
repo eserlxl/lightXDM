@@ -5938,19 +5938,20 @@ resolve_setup_shell() {
   esac
 }
 
-check_shell_hook_path_safe() {
-  local home="${HOME%/}" rel="$1" preview="${2:-0}" target parent="" seg segs=() writable_parent=""
+_check_home_relpath_safe() {
+  local home="${HOME%/}" rel="$1" preview="${2:-0}" dir_label="${3:-shell hook}" file_label="${4:-shell configuration file}"
+  local target parent="" seg segs=() writable_parent=""
   if [[ -z "${HOME:-}" ]]; then
-    log "HOME is unset; cannot locate shell configuration file."
+    log "HOME is unset; cannot locate ${file_label}."
     return 1
   fi
   [[ -n "$home" ]] || home="/"
   if [[ -L "$home" || ! -d "$home" ]]; then
-    log "Refusing unsafe home directory for shell hook: $HOME"
+    log "Refusing unsafe home directory for ${dir_label}: $HOME"
     return 1
   fi
   if [[ ! -x "$home" ]]; then
-    log "Cannot search home directory for shell hook: $home"
+    log "Cannot search home directory for ${dir_label}: $home"
     return 1
   fi
   writable_parent="$home"
@@ -5962,16 +5963,16 @@ check_shell_hook_path_safe() {
       local check_dir
       [[ "$home" == "/" ]] && check_dir="$parent" || check_dir="${home}${parent}"
       if [[ -L "$check_dir" ]]; then
-        log "Refusing symlinked directory for shell hook: $check_dir"
+        log "Refusing symlinked directory for ${dir_label}: $check_dir"
         return 1
       fi
       if [[ -e "$check_dir" && ! -d "$check_dir" ]]; then
-        log "Refusing non-directory path for shell hook: $check_dir"
+        log "Refusing non-directory path for ${dir_label}: $check_dir"
         return 1
       fi
       if [[ -d "$check_dir" ]]; then
         if [[ ! -x "$check_dir" ]]; then
-          log "Cannot search directory for shell hook: $check_dir"
+          log "Cannot search directory for ${dir_label}: $check_dir"
           return 1
         fi
         writable_parent="$check_dir"
@@ -5980,36 +5981,41 @@ check_shell_hook_path_safe() {
   fi
   [[ "$home" == "/" ]] && target="/${rel}" || target="${home}/${rel}"
   if [[ -L "$target" ]]; then
-    log "Refusing symlinked shell configuration file: $target"
+    log "Refusing symlinked ${file_label}: $target"
     return 1
   fi
   if [[ -e "$target" && ! -f "$target" ]]; then
-    log "Refusing non-regular shell configuration file: $target"
+    log "Refusing non-regular ${file_label}: $target"
     return 1
   fi
   if [[ -f "$target" && ! -r "$target" ]]; then
-    log "Cannot read existing shell configuration file: $target"
+    log "Cannot read existing ${file_label}: $target"
     return 1
   fi
   if [[ $preview -eq 0 && -f "$target" && ! -w "$target" ]]; then
-    log "Cannot write shell configuration file: $target"
+    log "Cannot write ${file_label}: $target"
     return 1
   fi
   if [[ $preview -eq 0 && ! -w "$writable_parent" ]]; then
-    log "Cannot write directory for shell hook: $writable_parent"
+    log "Cannot write directory for ${dir_label}: $writable_parent"
     return 1
   fi
   return 0
 }
 
-check_shell_hook_markers() {
-  local target="$1" quiet="${2:-0}" line="" nr=0 bc=0 ec=0 bl=0 el=0
+check_shell_hook_path_safe() {
+  _check_home_relpath_safe "$1" "${2:-0}" "shell hook" "shell configuration file"
+}
+
+_check_fenced_block_markers() {
+  local target="$1" begin_marker="$2" end_marker="$3" quiet="${4:-0}" err_msg="${5:-}"
+  local line="" nr=0 bc=0 ec=0 bl=0 el=0
   while IFS= read -r line || [[ -n "$line" ]]; do
     nr=$((nr + 1))
-    if [[ "$line" == "$SHELL_HOOK_BEGIN" ]]; then
+    if [[ "$line" == "$begin_marker" ]]; then
       bc=$((bc + 1))
       [[ $bl -eq 0 ]] && bl=$nr
-    elif [[ "$line" == "$SHELL_HOOK_END" ]]; then
+    elif [[ "$line" == "$end_marker" ]]; then
       ec=$((ec + 1))
       [[ $el -eq 0 ]] && el=$nr
     fi
@@ -6018,10 +6024,16 @@ check_shell_hook_markers() {
     return 0
   fi
   if [[ $bc -ne 1 || $ec -ne 1 || $bl -ge $el ]]; then
-    [[ $quiet -eq 1 ]] || log "Found incomplete lightXDM hook markers in $target; remove them before rerunning --setup-shell."
+    [[ $quiet -eq 1 ]] || log "$err_msg"
     return 1
   fi
   return 2
+}
+
+check_shell_hook_markers() {
+  local target="$1" quiet="${2:-0}"
+  _check_fenced_block_markers "$target" "$SHELL_HOOK_BEGIN" "$SHELL_HOOK_END" "$quiet" \
+    "Found incomplete lightXDM hook markers in $target; remove them before rerunning --setup-shell."
 }
 
 validate_setup_shell() {
@@ -6055,23 +6067,30 @@ _is_safe_shell_hook_relpath() {
   return 0
 }
 
-# Replace the fenced lightXDM shell-hook block inside $1 using block file $2, writing result to $3.
-_write_managed_shell_hook_block() {
-  local target="$1" block_file="$2" out_file="$3" line="" b_line="" skip=0
+# Replace (or remove when block file is empty) a fenced block inside $1, writing result to $5.
+_write_managed_fenced_block() {
+  local target="$1" begin_marker="$2" end_marker="$3" block_file="$4" out_file="$5" line="" b_line="" skip=0
   : >"$out_file" || return 1
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" == "$SHELL_HOOK_BEGIN" ]]; then
-      while IFS= read -r b_line || [[ -n "$b_line" ]]; do
-        printf '%s\n' "$b_line"
-      done <"$block_file" || return 1
+    if [[ "$line" == "$begin_marker" ]]; then
+      if [[ -n "$block_file" && -s "$block_file" ]]; then
+        while IFS= read -r b_line || [[ -n "$b_line" ]]; do
+          printf '%s\n' "$b_line"
+        done <"$block_file" || return 1
+      fi
       skip=1
       continue
-    elif [[ "$line" == "$SHELL_HOOK_END" ]]; then
+    elif [[ "$line" == "$end_marker" ]]; then
       skip=0
       continue
     fi
     [[ $skip -eq 0 ]] && printf '%s\n' "$line"
   done <"$target" >"$out_file" || return 1
+}
+
+# Replace the fenced lightXDM shell-hook block inside $1 using block file $2, writing result to $3.
+_write_managed_shell_hook_block() {
+  _write_managed_fenced_block "$1" "$SHELL_HOOK_BEGIN" "$SHELL_HOOK_END" "$2" "$3"
 }
 
 _infer_managed_shell_hook_kind() {
@@ -6470,6 +6489,368 @@ apply_shell_hook() {
   rm -f -- "$block_file"
   record_shell_hook "$rel"
   log "Installed lightXDM shell hook ($resolved) in $target."
+  return 0
+}
+
+GPG_CONF_BEGIN="# >>> lightXDM GPG setup >>>"
+GPG_CONF_END="# <<< lightXDM GPG setup <<<"
+
+_gpg_conf_relpath() {
+  if [[ -n "${GNUPGHOME:-}" && "$GNUPGHOME" != /* ]]; then
+    log "Refusing relative GNUPGHOME path ($GNUPGHOME): expected an absolute path inside HOME."
+    return 1
+  fi
+  _resolve_env_shell_hook_relpath "${GNUPGHOME:-}" "GNUPGHOME" ".gnupg/gpg-agent.conf" "gpg-agent.conf" 1
+}
+
+_gpg_pinentry_bin() {
+  case "$1" in
+    gnome) printf '%s\n' "${PINENTRY_GNOME_BIN:-/usr/bin/pinentry-gnome3}" ;;
+    kwallet) printf '%s\n' "${PINENTRY_QT_BIN:-/usr/bin/pinentry-qt}" ;;
+    *) return 1 ;;
+  esac
+}
+
+resolve_setup_gpg() {
+  local spec="$1" context_de="${2:-}" context_keyring="${3:-}"
+  case "$spec" in
+    gnome | kwallet | remove)
+      printf '%s\n' "$spec"
+      return 0
+      ;;
+    auto)
+      if [[ "$context_keyring" == "gnome" || "$context_keyring" == "kwallet" ]]; then
+        printf '%s\n' "$context_keyring"
+        return 0
+      fi
+      if [[ -n "$context_de" ]]; then
+        local de_backend=""
+        if de_backend="$(builtin_de_keyring_backend "$context_de")"; then
+          printf '%s\n' "$de_backend"
+        else
+          printf 'gnome\n'
+        fi
+        return 0
+      fi
+      local choices_file="" saved_de="" line="" pam_state=""
+      choices_file="$(install_choices_file)"
+      if install_choices_readable "$choices_file"; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+          case "$line" in
+            de=*) saved_de="${line#de=}" ;;
+          esac
+        done <"$choices_file"
+      fi
+      if [[ -n "$saved_de" ]]; then
+        if builtin_de_keyring_backend "$saved_de"; then
+          return 0
+        fi
+        pam_state="$(read_pam_state_file "$PAM_KEYRING_STATE" 1 2>/dev/null || true)"
+        if [[ "$pam_state" == "kwallet" ]]; then
+          printf 'kwallet\n'
+        else
+          printf 'gnome\n'
+        fi
+        return 0
+      fi
+      pam_state="$(read_pam_state_file "$PAM_KEYRING_STATE" 1 2>/dev/null || true)"
+      if [[ "$pam_state" == "kwallet" || "$pam_state" == "gnome" ]]; then
+        printf '%s\n' "$pam_state"
+        return 0
+      fi
+      if command -v pacman >/dev/null 2>&1; then
+        local -a detected_des=()
+        mapfile -t detected_des < <(detect_de 2>/dev/null || true)
+        if [[ ${#detected_des[@]} -eq 1 && "${detected_des[0]}" == "plasma" ]]; then
+          printf 'kwallet\n'
+          return 0
+        fi
+      fi
+      printf 'gnome\n'
+      return 0
+      ;;
+    *)
+      log "Invalid option for --setup-gpg: $spec (valid options: gnome kwallet auto remove)"
+      return 1
+      ;;
+  esac
+}
+
+_reload_gpg_agent() {
+  if command -v gpgconf >/dev/null 2>&1; then
+    if gpgconf --kill gpg-agent >/dev/null 2>&1; then
+      log "Reloaded gpg-agent."
+    else
+      log "WARNING: Could not reload gpg-agent; run 'gpgconf --kill gpg-agent' manually."
+    fi
+  else
+    log "Note: gpgconf not found; run 'gpgconf --kill gpg-agent' once gnupg is installed."
+  fi
+}
+
+validate_setup_gpg() {
+  local spec="$1" preview="${2:-0}" gpg_ssh="${3:-0}" context_de="${4:-}" context_keyring="${5:-}"
+  local resolved="" pinentry_bin="" rel="" home="${HOME%/}" target="" marker_rc=0
+  case "$spec" in
+    gnome | kwallet | auto | remove) ;;
+    *)
+      log "Invalid option for --setup-gpg: $spec (valid options: gnome kwallet auto remove)"
+      return 1
+      ;;
+  esac
+  if [[ "$spec" == "remove" && $gpg_ssh -eq 1 ]]; then
+    log "--gpg-ssh cannot be combined with --setup-gpg remove."
+    return 1
+  fi
+  rel="$(_gpg_conf_relpath)" || return 1
+  _check_home_relpath_safe "$rel" "$preview" "GPG configuration" "GPG agent config" || return 1
+  [[ -n "$home" ]] || home="/"
+  [[ "$home" == "/" ]] && target="/${rel}" || target="${home}/${rel}"
+  if [[ -f "$target" ]]; then
+    _check_fenced_block_markers "$target" "$GPG_CONF_BEGIN" "$GPG_CONF_END" 0 \
+      "Found incomplete lightXDM GPG markers in $target; remove them before rerunning --setup-gpg." || marker_rc=$?
+    [[ $marker_rc -ne 1 ]] || return 1
+  fi
+  if [[ "$spec" != "remove" ]]; then
+    resolved="$(resolve_setup_gpg "$spec" "$context_de" "$context_keyring")" || return 1
+    pinentry_bin="$(_gpg_pinentry_bin "$resolved")" || return 1
+    if [[ -z "$pinentry_bin" || "$pinentry_bin" == *$'\n'* || "$pinentry_bin" == *[[:space:]]* ]]; then
+      log "ERROR: Invalid pinentry executable path: $pinentry_bin"
+      return 1
+    fi
+    if [[ $preview -eq 0 && ! -x "$pinentry_bin" ]]; then
+      log "ERROR: Pinentry executable not found or not executable: $pinentry_bin. Install 'pinentry' (for example: sudo pacman -S pinentry) and re-run."
+      return 1
+    fi
+  fi
+  return 0
+}
+
+apply_gpg_setup() {
+  local spec="$1" preview="${2:-0}" gpg_ssh="${3:-0}" context_de="${4:-}" context_keyring="${5:-}"
+  local resolved="" pinentry_bin="" rel="" home="${HOME%/}" target="" parent_dir="" marker_rc=0
+  validate_setup_gpg "$spec" "$preview" "$gpg_ssh" "$context_de" "$context_keyring" || return 1
+  rel="$(_gpg_conf_relpath)" || return 1
+  [[ -n "$home" ]] || home="/"
+  [[ "$home" == "/" ]] && target="/${rel}" || target="${home}/${rel}"
+  parent_dir="${target%/*}"
+
+  if [[ "$spec" == "remove" ]]; then
+    if [[ ! -f "$target" ]]; then
+      if [[ $preview -eq 1 ]]; then
+        printf 'GPG configuration: no %s found (nothing to remove)\n' "$target"
+      else
+        log "No GPG configuration found at $target; nothing to remove."
+      fi
+      return 0
+    fi
+    _check_fenced_block_markers "$target" "$GPG_CONF_BEGIN" "$GPG_CONF_END" 0 \
+      "Found incomplete lightXDM GPG markers in $target; remove them before rerunning --setup-gpg." || marker_rc=$?
+    if [[ $marker_rc -eq 0 ]]; then
+      if [[ $preview -eq 1 ]]; then
+        printf 'GPG configuration: no managed lightXDM block in %s (leaving untouched)\n' "$target"
+      else
+        log "No managed lightXDM GPG block found in $target; leaving untouched."
+      fi
+      return 0
+    fi
+    [[ $marker_rc -eq 2 ]] || return 1
+    local rm_tmp="" dest_tmp=""
+    rm_tmp="$(mktemp)" || return 1
+    if ! _write_managed_fenced_block "$target" "$GPG_CONF_BEGIN" "$GPG_CONF_END" "" "$rm_tmp"; then
+      rm -f -- "$rm_tmp"
+      return 1
+    fi
+    if ! grep -Eq '[^[:space:]]' "$rm_tmp"; then
+      rm -f -- "$rm_tmp"
+      if [[ $preview -eq 1 ]]; then
+        printf 'GPG configuration: would remove %s (only managed lightXDM block present)\n' "$target"
+        return 0
+      fi
+      rm -f -- "$target" || return 1
+      _reload_gpg_agent
+      log "Removed lightXDM GPG configuration ($target removed cleanly)."
+      return 0
+    fi
+    if [[ $preview -eq 1 ]]; then
+      rm -f -- "$rm_tmp"
+      printf 'GPG configuration: would remove managed lightXDM block from %s\n' "$target"
+      return 0
+    fi
+    dest_tmp="$(mktemp "${parent_dir}/.${target##*/}.lightxdm.XXXXXX")" || {
+      rm -f -- "$rm_tmp"
+      return 1
+    }
+    if ! { cat "$rm_tmp" >"$dest_tmp" && chmod --reference="$target" -- "$dest_tmp" && mv -Tf -- "$dest_tmp" "$target"; }; then
+      rm -f -- "$rm_tmp" "$dest_tmp"
+      log "Failed removing lightXDM GPG block from $target."
+      return 1
+    fi
+    rm -f -- "$rm_tmp"
+    _reload_gpg_agent
+    log "Removed lightXDM GPG setup block from $target."
+    return 0
+  fi
+
+  resolved="$(resolve_setup_gpg "$spec" "$context_de" "$context_keyring")" || return 1
+  pinentry_bin="$(_gpg_pinentry_bin "$resolved")" || return 1
+  if [[ $preview -eq 1 && ! -x "$pinentry_bin" ]]; then
+    log "WARNING: Pinentry executable not found: $pinentry_bin (install 'pinentry' before applying)."
+  fi
+
+  local unmanaged_pinentry=0 unmanaged_ssh=0 line="" inside=0
+  if [[ -f "$target" ]]; then
+    _check_fenced_block_markers "$target" "$GPG_CONF_BEGIN" "$GPG_CONF_END" 0 \
+      "Found incomplete lightXDM GPG markers in $target; remove them before rerunning --setup-gpg." || marker_rc=$?
+    [[ $marker_rc -ne 1 ]] || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" == "$GPG_CONF_BEGIN" ]]; then
+        inside=1
+        continue
+      elif [[ "$line" == "$GPG_CONF_END" ]]; then
+        inside=0
+        continue
+      fi
+      if [[ $inside -eq 0 ]]; then
+        if [[ "$line" =~ ^[[:space:]]*pinentry-program([[:space:]]|$) ]]; then
+          unmanaged_pinentry=1
+        fi
+        if [[ "$line" =~ ^[[:space:]]*enable-ssh-support([[:space:]#]|$) ]]; then
+          unmanaged_ssh=1
+        fi
+      fi
+    done <"$target"
+    if [[ $unmanaged_pinentry -eq 1 ]]; then
+      if [[ $preview -eq 1 ]]; then
+        printf 'GPG configuration (%s): existing unmanaged pinentry-program found in %s (leaving untouched)\n' "$resolved" "$target"
+      else
+        log "Existing unmanaged pinentry-program already configured in $target; leaving untouched."
+      fi
+      return 0
+    fi
+  fi
+
+  local include_ssh=0 ssh_note=""
+  if [[ $gpg_ssh -eq 1 ]]; then
+    if [[ $unmanaged_ssh -eq 1 ]]; then
+      ssh_note=" (enable-ssh-support already configured outside managed block)"
+    else
+      include_ssh=1
+      ssh_note=" + enable-ssh-support"
+    fi
+  fi
+
+  local block_file="" tmp="" dest_tmp=""
+  block_file="$(mktemp)" || return 1
+  if ! {
+    printf '%s\n' "$GPG_CONF_BEGIN"
+    printf 'pinentry-program %s\n' "$pinentry_bin"
+    if [[ $include_ssh -eq 1 ]]; then
+      printf 'enable-ssh-support\n'
+    fi
+    printf '%s\n' "$GPG_CONF_END"
+  } >"$block_file"; then
+    rm -f -- "$block_file"
+    return 1
+  fi
+
+  if [[ -f "$target" ]]; then
+    if [[ $marker_rc -eq 2 ]]; then
+      tmp="$(mktemp)" || {
+        rm -f -- "$block_file"
+        return 1
+      }
+      if ! _write_managed_fenced_block "$target" "$GPG_CONF_BEGIN" "$GPG_CONF_END" "$block_file" "$tmp"; then
+        rm -f -- "$block_file" "$tmp"
+        log "Failed updating GPG configuration in $target."
+        return 1
+      fi
+      if [[ "$(sha256sum <"$tmp")" == "$(sha256sum <"$target")" ]]; then
+        rm -f -- "$block_file" "$tmp"
+        if [[ $preview -eq 1 ]]; then
+          printf 'GPG configuration (%s): already up to date in %s (%s%s)\n' "$resolved" "$target" "$pinentry_bin" "$ssh_note"
+        else
+          log "GPG configuration ($resolved) is already up to date in $target."
+        fi
+        return 0
+      fi
+      if [[ $preview -eq 1 ]]; then
+        rm -f -- "$block_file" "$tmp"
+        printf 'GPG configuration (%s): would update managed block in %s (%s%s)\n' "$resolved" "$target" "$pinentry_bin" "$ssh_note"
+        return 0
+      fi
+      dest_tmp="$(mktemp "${parent_dir}/.${target##*/}.lightxdm.XXXXXX")" || {
+        rm -f -- "$block_file" "$tmp"
+        return 1
+      }
+      if ! { cat "$tmp" >"$dest_tmp" && chmod 600 -- "$dest_tmp" && mv -Tf -- "$dest_tmp" "$target"; }; then
+        rm -f -- "$block_file" "$tmp" "$dest_tmp"
+        log "Failed writing updated GPG configuration to $target."
+        return 1
+      fi
+      rm -f -- "$block_file" "$tmp"
+      _reload_gpg_agent
+      log "Updated lightXDM GPG setup ($resolved: $pinentry_bin${ssh_note}) in $target."
+      return 0
+    fi
+
+    if [[ $preview -eq 1 ]]; then
+      rm -f -- "$block_file"
+      printf 'GPG configuration (%s): would append managed block to %s (%s%s)\n' "$resolved" "$target" "$pinentry_bin" "$ssh_note"
+      return 0
+    fi
+    dest_tmp="$(mktemp "${parent_dir}/.${target##*/}.lightxdm.XXXXXX")" || {
+      rm -f -- "$block_file"
+      return 1
+    }
+    if ! {
+      cat "$target" >"$dest_tmp"
+      if [[ -s "$target" && "$(tail -c 1 "$target" | wc -l)" -eq 0 ]]; then
+        printf '\n' >>"$dest_tmp"
+      fi
+      cat "$block_file" >>"$dest_tmp"
+      chmod 600 -- "$dest_tmp"
+      mv -Tf -- "$dest_tmp" "$target"
+    }; then
+      rm -f -- "$block_file" "$dest_tmp"
+      log "Failed writing GPG configuration to $target."
+      return 1
+    fi
+    rm -f -- "$block_file"
+    _reload_gpg_agent
+    log "Configured lightXDM GPG setup ($resolved: $pinentry_bin${ssh_note}) in $target."
+    return 0
+  fi
+
+  if [[ $preview -eq 1 ]]; then
+    rm -f -- "$block_file"
+    printf 'GPG configuration (%s): would create %s (%s%s)\n' "$resolved" "$target" "$pinentry_bin" "$ssh_note"
+    return 0
+  fi
+  if [[ -n "$parent_dir" && ! -d "$parent_dir" ]]; then
+    if [[ "$parent_dir" == */* ]]; then
+      mkdir -p -- "${parent_dir%/*}" || {
+        rm -f -- "$block_file"
+        return 1
+      }
+    fi
+    mkdir -m 0700 -- "$parent_dir" || {
+      rm -f -- "$block_file"
+      return 1
+    }
+  fi
+  dest_tmp="$(mktemp "${parent_dir}/.${target##*/}.lightxdm.XXXXXX")" || {
+    rm -f -- "$block_file"
+    return 1
+  }
+  if ! { cat "$block_file" >"$dest_tmp" && chmod 600 -- "$dest_tmp" && mv -Tf -- "$dest_tmp" "$target"; }; then
+    rm -f -- "$block_file" "$dest_tmp"
+    log "Failed writing GPG configuration to $target."
+    return 1
+  fi
+  rm -f -- "$block_file"
+  _reload_gpg_agent
+  log "Configured lightXDM GPG setup ($resolved: $pinentry_bin${ssh_note}) in $target."
   return 0
 }
 
@@ -6996,6 +7377,8 @@ main() {
   local list_sessions=0
   local shell_snippet=""
   local setup_shell=""
+  local setup_gpg=""
+  local gpg_ssh=0
   local preflight_only=0
   local guided=0
   local doctor_only=0
@@ -7011,7 +7394,7 @@ main() {
   local pam_only=0
   local login_mode=""
   local dotfile_updates=""
-  local usage="Usage: bash $0 [-h|--help] [--guided [--dry-run]] [--status [--json]] [--list-sessions [--json]] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--preflight [--json]] [--doctor [--json]] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--fix [--dry-run] [--non-interactive] [--de <id>]] [--login-mode <password|autologin> [--dry-run] [--non-interactive] [--de <id>] [--keyring <gnome|kwallet>]] [--dotfile-updates <diff|accept|dismiss|interactive> [--dry-run]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet> [--json]] [--no-keyring] [--autologin] [--update] [--pam-only]"
+  local usage="Usage: bash $0 [-h|--help] [--guided [--dry-run]] [--status [--json]] [--list-sessions [--json]] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--setup-gpg <gnome|kwallet|auto|remove> [--gpg-ssh] [--dry-run]] [--preflight [--json]] [--doctor [--json]] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--fix [--dry-run] [--non-interactive] [--de <id>]] [--login-mode <password|autologin> [--dry-run] [--non-interactive] [--de <id>] [--keyring <gnome|kwallet>]] [--dotfile-updates <diff|accept|dismiss|interactive> [--dry-run]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet> [--json]] [--no-keyring] [--autologin] [--update] [--pam-only]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -7040,7 +7423,7 @@ Options:
                     (literal arguments or plain double-quoted words only; no field codes or backslash escapes)
   --install-session <path> validate a custom X11/Wayland .desktop entry, create ~/.config/lightxdm/ template if missing,
                     and run the custom install (--no-packages implied; infers Wayland for wayland-sessions or --wayland;
-                    optional --de <custom-id>, --wayland, --dry-run, --non-interactive, --keyring, --no-keyring, --autologin, --setup-shell)
+                    optional --de <custom-id>, --wayland, --dry-run, --non-interactive, --keyring, --no-keyring, --autologin, --setup-shell, --setup-gpg, --gpg-ssh)
   --wayland         with --init-template --de <custom-id>, create a minimal Wayland template (default command: exec <id>); also accepted with --install-session <path>
   --no-packages     skip package installation
   --keyring <gnome|kwallet> choose the PAM keyring backend for a custom id (requires --no-packages;
@@ -7067,6 +7450,10 @@ Options:
   --setup-shell <zsh|fish|auto> install or update the managed TTY1 auto-start hook in ~/.zprofile ($ZDOTDIR/.zprofile) or
                     ~/.config/fish/config.fish ($XDG_CONFIG_HOME/fish/config.fish), when inside $HOME
                     (standalone with optional --dry-run, or combined with install / --recover)
+  --setup-gpg <gnome|kwallet|auto|remove> configure (or remove) a fenced keyring-backed pinentry-program block in
+                    ~/.gnupg/gpg-agent.conf ($GNUPGHOME/gpg-agent.conf when inside $HOME) and reload gpg-agent
+                    (standalone with optional --gpg-ssh and --dry-run, or combined with install)
+  --gpg-ssh         with --setup-gpg <gnome|kwallet|auto>, also write enable-ssh-support in the managed block
   --preflight       check user/sudo, pacman/systemctl, getty@tty1.service, display managers, login shell,
                     and installed desktops without sudo or changes, then suggest the next command (use alone, or with --json)
   --guided          interactive first-run onboarding wizard: runs --preflight first, helps pick a detected or custom
@@ -7142,6 +7529,25 @@ EOF
             ;;
         esac
         shift 2
+        ;;
+      --setup-gpg)
+        if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then
+          log "Missing argument for --setup-gpg (valid options: gnome kwallet auto remove)"
+          echo "$usage" >&2
+          exit 1
+        fi
+        case "$2" in
+          gnome | kwallet | auto | remove) setup_gpg="$2" ;;
+          *)
+            log "Invalid option for --setup-gpg: $2 (valid options: gnome kwallet auto remove)"
+            exit 1
+            ;;
+        esac
+        shift 2
+        ;;
+      --gpg-ssh)
+        gpg_ssh=1
+        shift
         ;;
       --dry-run)
         dry_run=1
@@ -7301,8 +7707,14 @@ EOF
     exit 1
   fi
 
+  if [[ $gpg_ssh -eq 1 && ( -z "$setup_gpg" || "$setup_gpg" == "remove" ) ]]; then
+    log "--gpg-ssh requires --setup-gpg <gnome|kwallet|auto>."
+    echo "$usage" >&2
+    exit 1
+  fi
+
   if [[ $status_only -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || -n "$setup_gpg" || $gpg_ssh -eq 1 ||
       -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || -n "$dotfile_updates" || $dry_run -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 ||
@@ -7320,7 +7732,7 @@ EOF
   fi
 
   if [[ $list_sessions -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || -n "$setup_gpg" || $gpg_ssh -eq 1 ||
       -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || -n "$dotfile_updates" ||
       $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
@@ -7349,7 +7761,7 @@ EOF
   fi
 
   if [[ $preflight_only -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || -n "$setup_gpg" || $gpg_ssh -eq 1 ||
       -n "$install_session" || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || -n "$dotfile_updates" || $dry_run -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $status_only -eq 1 || $init_template -eq 1 ||
@@ -7368,7 +7780,7 @@ EOF
   fi
 
   if [[ $doctor_only -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || -n "$setup_gpg" || $gpg_ssh -eq 1 ||
       -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || -n "$dotfile_updates" || $dry_run -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $status_only -eq 1 || $init_template -eq 1 ||
@@ -7387,7 +7799,7 @@ EOF
   fi
 
   if [[ $recover -eq 1 ]]; then
-    if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$install_session" || $preflight_only -eq 1 ||
+    if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_gpg" || $gpg_ssh -eq 1 || -n "$install_session" || $preflight_only -eq 1 ||
       $guided -eq 1 || $doctor_only -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || -n "$dotfile_updates" || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
       $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" ||
@@ -7411,7 +7823,7 @@ EOF
   fi
 
   if [[ $fix_mode -eq 1 ]]; then
-    if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
+    if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || -n "$setup_gpg" || $gpg_ssh -eq 1 ||
       -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || -n "$login_mode" || -n "$dotfile_updates" ||
       $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 ||
@@ -7435,7 +7847,7 @@ EOF
   fi
 
   if [[ $update -eq 1 ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || -n "$install_session" ||
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || -n "$setup_gpg" || $gpg_ssh -eq 1 || -n "$install_session" ||
       $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || -n "$dotfile_updates" || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
       -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $init_template -eq 1 ||
       $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 ||
@@ -7500,7 +7912,7 @@ EOF
   fi
 
   if [[ -n "$login_mode" ]]; then
-    if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
+    if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || -n "$setup_gpg" || $gpg_ssh -eq 1 ||
       -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$dotfile_updates" ||
       $no_packages -eq 1 || $no_keyring -eq 1 || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 ||
@@ -7525,7 +7937,7 @@ EOF
   fi
 
   if [[ -n "$dotfile_updates" ]]; then
-    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" ||
+    if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || -n "$setup_gpg" || $gpg_ssh -eq 1 ||
       -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 ||
@@ -7566,8 +7978,8 @@ EOF
   fi
 
   if [[ $pam_only -eq 1 ]]; then
-    if [[ $autologin -eq 1 || $list_only -eq 1 || $init_template -eq 1 || -n "$setup_shell" || -n "$install_session" ]]; then
-      log "--pam-only changes only $LOGIN_FILE and cannot be combined with --autologin, --list-packages, --init-template, --setup-shell or --install-session."
+    if [[ $autologin -eq 1 || $list_only -eq 1 || $init_template -eq 1 || -n "$setup_shell" || -n "$setup_gpg" || $gpg_ssh -eq 1 || -n "$install_session" ]]; then
+      log "--pam-only changes only $LOGIN_FILE and cannot be combined with --autologin, --list-packages, --init-template, --setup-shell, --setup-gpg or --install-session."
       echo "$usage" >&2
       exit 1
     fi
@@ -7581,7 +7993,7 @@ EOF
   fi
 
   if [[ $init_template -eq 1 ]]; then
-    if [[ $list_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || -n "$setup_shell" || -n "$install_session" ]]; then
+    if [[ $list_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || -n "$setup_shell" || -n "$setup_gpg" || $gpg_ssh -eq 1 || -n "$install_session" ]]; then
       log "--init-template takes only --de <id> and optional --wayland and --from-session <path> for custom ids; it creates the template and exits without installing."
       echo "$usage" >&2
       exit 1
@@ -7648,7 +8060,7 @@ EOF
   fi
 
   if [[ -n "$setup_shell" && $de_specified -eq 0 ]]; then
-    if [[ $list_only -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || $no_polkit_rule -eq 1 ]]; then
+    if [[ $list_only -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || $no_polkit_rule -eq 1 || -n "$setup_gpg" || $gpg_ssh -eq 1 ]]; then
       log "Standalone --setup-shell takes only optional --dry-run (or combine with --recover or --de <id>)."
       echo "$usage" >&2
       exit 1
@@ -7660,6 +8072,34 @@ EOF
     local setup_shell_status=0
     apply_shell_hook "$setup_shell" "$dry_run" || setup_shell_status=$?
     return "$setup_shell_status"
+  fi
+
+  if [[ -n "$setup_gpg" && $de_specified -eq 0 ]]; then
+    if [[ $list_only -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $wayland -eq 1 || -n "$from_session" ]]; then
+      log "Standalone --setup-gpg takes only optional --gpg-ssh and --dry-run (or combine with --de <id> / --install-session)."
+      echo "$usage" >&2
+      exit 1
+    fi
+    if [[ $EUID -eq 0 && $dry_run -eq 0 ]]; then
+      log "Do not run --setup-gpg standalone as root or with sudo; run it as the user who logs in."
+      exit 1
+    fi
+    local setup_gpg_status=0
+    apply_gpg_setup "$setup_gpg" "$dry_run" "$gpg_ssh" "" "" || setup_gpg_status=$?
+    return "$setup_gpg_status"
+  fi
+
+  if [[ -n "$setup_gpg" ]]; then
+    if [[ "$setup_gpg" == "remove" ]]; then
+      log "--setup-gpg remove must be run standalone (not combined with install)."
+      echo "$usage" >&2
+      exit 1
+    fi
+    if [[ $no_keyring -eq 1 && "$setup_gpg" == "auto" ]]; then
+      log "--setup-gpg auto cannot be combined with --no-keyring; remove --no-keyring or pass --setup-gpg gnome/kwallet explicitly."
+      echo "$usage" >&2
+      exit 1
+    fi
   fi
 
   if [[ $dry_run -eq 1 ]]; then
@@ -7675,8 +8115,8 @@ EOF
   fi
 
   if [[ $list_only -eq 1 ]]; then
-    if [[ -n "$setup_shell" ]]; then
-      log "--list-packages cannot be combined with --setup-shell."
+    if [[ -n "$setup_shell" || -n "$setup_gpg" || $gpg_ssh -eq 1 ]]; then
+      log "--list-packages cannot be combined with --setup-shell or --setup-gpg."
       echo "$usage" >&2
       exit 1
     fi
@@ -7758,10 +8198,16 @@ EOF
       if [[ -n "$setup_shell" ]]; then
         apply_shell_hook "$setup_shell" 1 || return $?
       fi
+      if [[ -n "$setup_gpg" ]]; then
+        apply_gpg_setup "$setup_gpg" 1 "$gpg_ssh" "$de" "$keyring" || return $?
+      fi
     else
       preview_install "$de" "$no_packages" "$no_keyring" "$autologin" "$keyring" || return $?
       if [[ -n "$setup_shell" ]]; then
         apply_shell_hook "$setup_shell" 1 || return $?
+      fi
+      if [[ -n "$setup_gpg" ]]; then
+        apply_gpg_setup "$setup_gpg" 1 "$gpg_ssh" "$de" "$keyring" || return $?
       fi
     fi
     return $?
@@ -7769,6 +8215,9 @@ EOF
 
   if [[ -n "$setup_shell" ]]; then
     validate_setup_shell "$setup_shell" || exit 1
+  fi
+  if [[ -n "$setup_gpg" ]]; then
+    validate_setup_gpg "$setup_gpg" 0 "$gpg_ssh" "$de" "$keyring" || exit 1
   fi
 
   local real_user
@@ -7913,6 +8362,11 @@ EOF
     install_step="apply_shell_hook"
     apply_shell_hook "$setup_shell" 0 || exit 1
     resolved_setup_shell="$(resolve_setup_shell "$setup_shell")" || exit 1
+    completed_steps+=("$install_step")
+  fi
+  if [[ -n "$setup_gpg" ]]; then
+    install_step="apply_gpg_setup"
+    apply_gpg_setup "$setup_gpg" 0 "$gpg_ssh" "$de" "$keyring" || exit 1
     completed_steps+=("$install_step")
   fi
   local login_shell shell_profile="" shell_hint="docs/startx-autologin.md" shell_hook_configured=0

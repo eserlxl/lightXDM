@@ -20086,6 +20086,299 @@ else
   fail "install.sh --dotfile-updates checks:$du_report"
 fi
 
+# --setup-gpg <gnome|kwallet|auto|remove> [--gpg-ssh]: validation, auto resolution, permissions, reload, remove, and safety
+sg_case="$TMP_DIR/setup_gpg"
+mkdir -p "$sg_case/home/.local/state/lightxdm" "$sg_case/etc/lightxdm" "$sg_case/etc/pam.d" "$sg_case/bin"
+sg_ok=1
+sg_report=""
+
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$sg_case/bin/pinentry-gnome3"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$sg_case/bin/pinentry-qt"
+printf '%s\n' '#!/usr/bin/env bash' "printf '%s\n' \"\$*\" >>\"$sg_case/gpgconf.log\"" 'exit 0' >"$sg_case/bin/gpgconf"
+cat <<'EOF' >"$sg_case/bin/pacman"
+#!/usr/bin/env bash
+if [[ "$1" == "-Qq" && "$2" == "${FAKE_PACMAN_PKG:-}" ]]; then
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$sg_case/bin/pinentry-gnome3" "$sg_case/bin/pinentry-qt" "$sg_case/bin/gpgconf" "$sg_case/bin/pacman"
+printf '%s\n' '#%PAM-1.0' >"$sg_case/etc/pam.d/login"
+: >"$sg_case/gpgconf.log"
+
+run_sg_cmd() {
+  env -u SUDO_USER -u GNUPGHOME \
+    PATH="$sg_case/bin:$PATH" \
+    HOME="$sg_case/home" \
+    USER="testuser" \
+    XDG_STATE_HOME="$sg_case/home/.local/state" \
+    LOGIN_FILE="$sg_case/etc/pam.d/login" \
+    PAM_KEYRING_STATE="$sg_case/etc/lightxdm/pam-keyring" \
+    PAM_LOGIN_BASE_STATE="$sg_case/etc/lightxdm/pam-login-base" \
+    DM_STATE_FILE="$sg_case/etc/lightxdm/disabled-display-managers" \
+    GNOME_SESSION_TYPE_DEST="$sg_case/etc/lightxdm/gnome-session-type.conf" \
+    DISPLAY_MANAGER_LINK="$sg_case/etc/systemd/system/display-manager.service" \
+    AUTOLOGIN_DROPIN_DIR="$sg_case/etc/systemd/system/getty@tty1.service.d" \
+    SYSTEMD_RUN_DIR="$sg_case/run/systemd" \
+    PINENTRY_GNOME_BIN="${PINENTRY_GNOME_BIN:-$sg_case/bin/pinentry-gnome3}" \
+    PINENTRY_QT_BIN="${PINENTRY_QT_BIN:-$sg_case/bin/pinentry-qt}" \
+    bash "$REPO_ROOT/install.sh" "$@"
+}
+
+for bad_sg in \
+  "--setup-gpg" \
+  "--setup-gpg bogus" \
+  "--gpg-ssh" \
+  "--setup-gpg remove --gpg-ssh" \
+  "--status --setup-gpg gnome" \
+  "--doctor --setup-gpg gnome" \
+  "--setup-shell zsh --setup-gpg gnome" \
+  "--pam-only --de i3 --setup-gpg gnome" \
+  "--list-packages --de plasma --setup-gpg gnome" \
+  "--de i3 --setup-gpg remove" \
+  "--de i3 --no-keyring --setup-gpg auto"; do
+  read -r -a bad_sg_argv <<<"$bad_sg"
+  set +e
+  bad_sg_out="$(run_sg_cmd "${bad_sg_argv[@]}" 2>&1)"
+  bad_sg_rc=$?
+  set -e
+  if [[ $bad_sg_rc -eq 0 ]]; then
+    sg_ok=0
+    sg_report+=" [bad_combo($bad_sg) rc=$bad_sg_rc out=$bad_sg_out]"
+  fi
+done
+
+# Missing pinentry fails live before touching ~/.gnupg; --dry-run warns cleanly without creating ~/.gnupg
+set +e
+sg_miss_out="$(PINENTRY_GNOME_BIN="$sg_case/no-such-pinentry" run_sg_cmd --setup-gpg gnome 2>&1)"
+sg_miss_rc=$?
+set -e
+if [[ $sg_miss_rc -eq 0 || "$sg_miss_out" != *"Pinentry executable not found"* || -e "$sg_case/home/.gnupg" || -s "$sg_case/gpgconf.log" ]]; then
+  sg_ok=0
+  sg_report+=" [missing-live rc=$sg_miss_rc out=$sg_miss_out]"
+fi
+
+set +e
+sg_miss_dry_out="$(PINENTRY_GNOME_BIN="$sg_case/no-such-pinentry" run_sg_cmd --setup-gpg gnome --dry-run 2>&1)"
+sg_miss_dry_rc=$?
+set -e
+if [[ $sg_miss_dry_rc -ne 0 || "$sg_miss_dry_out" != *"WARNING: Pinentry executable not found"* || "$sg_miss_dry_out" != *"would create"* || -e "$sg_case/home/.gnupg" ]]; then
+  sg_ok=0
+  sg_report+=" [missing-dry rc=$sg_miss_dry_rc out=$sg_miss_dry_out]"
+fi
+
+# Live create, 0700/0600 permissions, reload, and idempotent rerun
+set +e
+sg_cr_out="$(run_sg_cmd --setup-gpg gnome 2>&1)"
+sg_cr_rc=$?
+set -e
+sg_conf="$sg_case/home/.gnupg/gpg-agent.conf"
+if [[ $sg_cr_rc -ne 0 || ! -f "$sg_conf" ||
+  "$(stat -c %a "$sg_case/home/.gnupg")" != "700" ||
+  "$(stat -c %a "$sg_conf")" != "600" ||
+  "$(wc -l <"$sg_case/gpgconf.log")" -ne 1 ]] ||
+  ! grep -Fxq "pinentry-program $sg_case/bin/pinentry-gnome3" "$sg_conf" ||
+  grep -Fq "enable-ssh-support" "$sg_conf"; then
+  sg_ok=0
+  sg_report+=" [create rc=$sg_cr_rc out=$sg_cr_out]"
+fi
+
+set +e
+sg_idem_out="$(run_sg_cmd --setup-gpg gnome 2>&1)"
+sg_idem_rc=$?
+set -e
+if [[ $sg_idem_rc -ne 0 || "$sg_idem_out" != *"already up to date"* || "$(wc -l <"$sg_case/gpgconf.log")" -ne 1 ]]; then
+  sg_ok=0
+  sg_report+=" [idempotent rc=$sg_idem_rc out=$sg_idem_out]"
+fi
+
+# Switch to kwallet + --gpg-ssh, then drop --gpg-ssh declaratively
+set +e
+sg_kw_out="$(run_sg_cmd --setup-gpg kwallet --gpg-ssh 2>&1)"
+sg_kw_rc=$?
+set -e
+if [[ $sg_kw_rc -ne 0 || "$(wc -l <"$sg_case/gpgconf.log")" -ne 2 ]] ||
+  ! grep -Fxq "pinentry-program $sg_case/bin/pinentry-qt" "$sg_conf" ||
+  ! grep -Fxq "enable-ssh-support" "$sg_conf" ||
+  grep -Fq "pinentry-gnome3" "$sg_conf"; then
+  sg_ok=0
+  sg_report+=" [kwallet-ssh rc=$sg_kw_rc out=$sg_kw_out]"
+fi
+
+set +e
+sg_nossh_out="$(run_sg_cmd --setup-gpg kwallet 2>&1)"
+sg_nossh_rc=$?
+set -e
+if [[ $sg_nossh_rc -ne 0 || "$(wc -l <"$sg_case/gpgconf.log")" -ne 3 ]] ||
+  grep -Fq "enable-ssh-support" "$sg_conf"; then
+  sg_ok=0
+  sg_report+=" [drop-ssh rc=$sg_nossh_rc out=$sg_nossh_out]"
+fi
+
+# Auto resolution via install-choices / pam-keyring / pacman
+printf 'de=plasma\n' >"$sg_case/home/.local/state/lightxdm/install-choices"
+set +e
+sg_auto_pl_out="$(run_sg_cmd --setup-gpg auto --dry-run 2>&1)"
+sg_auto_pl_rc=$?
+set -e
+printf 'de=sway\n' >"$sg_case/home/.local/state/lightxdm/install-choices"
+printf 'kwallet\n' >"$sg_case/etc/lightxdm/pam-keyring"
+set +e
+sg_auto_ck_out="$(run_sg_cmd --setup-gpg auto --dry-run 2>&1)"
+sg_auto_ck_rc=$?
+set -e
+printf 'gnome\n' >"$sg_case/etc/lightxdm/pam-keyring"
+set +e
+sg_auto_cg_out="$(run_sg_cmd --setup-gpg auto --dry-run 2>&1)"
+sg_auto_cg_rc=$?
+set -e
+rm -f "$sg_case/home/.local/state/lightxdm/install-choices" "$sg_case/etc/lightxdm/pam-keyring"
+set +e
+sg_auto_pac_out="$(FAKE_PACMAN_PKG=plasma-desktop run_sg_cmd --setup-gpg auto --dry-run 2>&1)"
+sg_auto_pac_rc=$?
+set -e
+if [[ $sg_auto_pl_rc -ne 0 || "$sg_auto_pl_out" != *"GPG configuration (kwallet):"* ||
+  $sg_auto_ck_rc -ne 0 || "$sg_auto_ck_out" != *"GPG configuration (kwallet):"* ||
+  $sg_auto_cg_rc -ne 0 || "$sg_auto_cg_out" != *"GPG configuration (gnome):"* ||
+  $sg_auto_pac_rc -ne 0 || "$sg_auto_pac_out" != *"GPG configuration (kwallet):"* ]]; then
+  sg_ok=0
+  sg_report+=" [auto pl=$sg_auto_pl_rc ck=$sg_auto_ck_rc cg=$sg_auto_cg_rc pac=$sg_auto_pac_rc]"
+fi
+
+# Preserve non-managed lines on update and remove, plus complete unlink when file had only managed block
+printf 'default-cache-ttl 3600\n' >"$sg_conf"
+set +e
+sg_app_out="$(run_sg_cmd --setup-gpg gnome 2>&1)"
+sg_app_rc=$?
+set -e
+if [[ $sg_app_rc -ne 0 || "$(wc -l <"$sg_case/gpgconf.log")" -ne 4 ]] ||
+  ! grep -Fxq "default-cache-ttl 3600" "$sg_conf" ||
+  ! grep -Fxq "pinentry-program $sg_case/bin/pinentry-gnome3" "$sg_conf"; then
+  sg_ok=0
+  sg_report+=" [append rc=$sg_app_rc out=$sg_app_out]"
+fi
+
+set +e
+sg_rm_dry_out="$(run_sg_cmd --setup-gpg remove --dry-run 2>&1)"
+sg_rm_dry_rc=$?
+set -e
+if [[ $sg_rm_dry_rc -ne 0 || "$sg_rm_dry_out" != *"would remove managed lightXDM block"* || "$(wc -l <"$sg_case/gpgconf.log")" -ne 4 ]]; then
+  sg_ok=0
+  sg_report+=" [remove-dry rc=$sg_rm_dry_rc out=$sg_rm_dry_out]"
+fi
+
+set +e
+sg_rm_out="$(run_sg_cmd --setup-gpg remove 2>&1)"
+sg_rm_rc=$?
+set -e
+if [[ $sg_rm_rc -ne 0 || ! -f "$sg_conf" || "$(wc -l <"$sg_case/gpgconf.log")" -ne 5 ]] ||
+  ! grep -Fxq "default-cache-ttl 3600" "$sg_conf" ||
+  grep -Fq "pinentry-program" "$sg_conf"; then
+  sg_ok=0
+  sg_report+=" [remove-partial rc=$sg_rm_rc out=$sg_rm_out]"
+fi
+
+rm -f "$sg_conf"
+run_sg_cmd --setup-gpg gnome >/dev/null 2>&1
+set +e
+sg_rm_full_out="$(run_sg_cmd --setup-gpg remove 2>&1)"
+sg_rm_full_rc=$?
+set -e
+if [[ $sg_rm_full_rc -ne 0 || -e "$sg_conf" || "$(wc -l <"$sg_case/gpgconf.log")" -ne 7 ]]; then
+  sg_ok=0
+  sg_report+=" [remove-full rc=$sg_rm_full_rc out=$sg_rm_full_out]"
+fi
+
+# Unmanaged pinentry-program stays untouched; malformed markers refused
+printf 'pinentry-program /usr/bin/pinentry-curses\n' >"$sg_conf"
+set +e
+sg_unm_out="$(run_sg_cmd --setup-gpg gnome 2>&1)"
+sg_unm_rc=$?
+set -e
+if [[ $sg_unm_rc -ne 0 || "$sg_unm_out" != *"Existing unmanaged pinentry-program already configured"* ||
+  "$(cat "$sg_conf")" != "pinentry-program /usr/bin/pinentry-curses" ||
+  "$(wc -l <"$sg_case/gpgconf.log")" -ne 7 ]]; then
+  sg_ok=0
+  sg_report+=" [unmanaged rc=$sg_unm_rc out=$sg_unm_out]"
+fi
+
+printf '# >>> lightXDM GPG setup >>>\npinentry-program /usr/bin/pinentry-qt\n' >"$sg_conf"
+set +e
+sg_mal_out="$(run_sg_cmd --setup-gpg gnome 2>&1)"
+sg_mal_rc=$?
+set -e
+if [[ $sg_mal_rc -eq 0 || "$sg_mal_out" != *"incomplete lightXDM GPG markers"* ]]; then
+  sg_ok=0
+  sg_report+=" [malformed rc=$sg_mal_rc out=$sg_mal_out]"
+fi
+rm -f "$sg_conf"
+
+# GNUPGHOME containment & symlink safety
+for bad_gnupg in "gnupg" "/tmp/outside-gnupg" "$sg_case/home/.gnupg/../other"; do
+  set +e
+  sg_env_out="$(GNUPGHOME="$bad_gnupg" PATH="$sg_case/bin:$PATH" HOME="$sg_case/home" USER=testuser \
+    PINENTRY_GNOME_BIN="$sg_case/bin/pinentry-gnome3" bash "$REPO_ROOT/install.sh" --setup-gpg gnome 2>&1)"
+  sg_env_rc=$?
+  set -e
+  if [[ $sg_env_rc -eq 0 ]]; then
+    sg_ok=0
+    sg_report+=" [bad_gnupg($bad_gnupg) rc=$sg_env_rc out=$sg_env_out]"
+  fi
+done
+
+set +e
+sg_custom_dir_out="$(GNUPGHOME="$sg_case/home/.config/custom-gnupg" PATH="$sg_case/bin:$PATH" HOME="$sg_case/home" USER=testuser \
+  PINENTRY_GNOME_BIN="$sg_case/bin/pinentry-gnome3" bash "$REPO_ROOT/install.sh" --setup-gpg gnome 2>&1)"
+sg_custom_dir_rc=$?
+set -e
+if [[ $sg_custom_dir_rc -ne 0 ||
+  "$(stat -c %a "$sg_case/home/.config/custom-gnupg")" != "700" ||
+  "$(stat -c %a "$sg_case/home/.config/custom-gnupg/gpg-agent.conf")" != "600" ]]; then
+  sg_ok=0
+  sg_report+=" [custom-gnupghome rc=$sg_custom_dir_rc out=$sg_custom_dir_out]"
+fi
+
+printf 'keep\n' >"$sg_case/symlink-target"
+ln -s "$sg_case/symlink-target" "$sg_conf"
+set +e
+sg_sym_f_out="$(run_sg_cmd --setup-gpg gnome 2>&1)"
+sg_sym_f_rc=$?
+set -e
+rm -f "$sg_conf"
+if [[ $sg_sym_f_rc -eq 0 || "$sg_sym_f_out" != *"Refusing symlinked GPG agent config"* || "$(cat "$sg_case/symlink-target")" != "keep" ]]; then
+  sg_ok=0
+  sg_report+=" [symlink-file rc=$sg_sym_f_rc out=$sg_sym_f_out]"
+fi
+
+rmdir "$sg_case/home/.gnupg"
+ln -s "$sg_case/bin" "$sg_case/home/.gnupg"
+set +e
+sg_sym_d_out="$(run_sg_cmd --setup-gpg gnome 2>&1)"
+sg_sym_d_rc=$?
+set -e
+rm -f "$sg_case/home/.gnupg"
+if [[ $sg_sym_d_rc -eq 0 || "$sg_sym_d_out" != *"Refusing symlinked directory for GPG configuration"* ]]; then
+  sg_ok=0
+  sg_report+=" [symlink-dir rc=$sg_sym_d_rc out=$sg_sym_d_out]"
+fi
+
+# Combined --dry-run --de plasma --setup-gpg auto --gpg-ssh previews without side effects
+set +e
+sg_comb_dry_out="$(run_sg_cmd --dry-run --de plasma --setup-gpg auto --gpg-ssh 2>&1)"
+sg_comb_dry_rc=$?
+set -e
+if [[ $sg_comb_dry_rc -ne 0 || "$sg_comb_dry_out" != *"GPG configuration (kwallet): would create"* ||
+  "$sg_comb_dry_out" != *"+ enable-ssh-support"* || -e "$sg_case/home/.gnupg" ]]; then
+  sg_ok=0
+  sg_report+=" [combined-dry rc=$sg_comb_dry_rc out=$sg_comb_dry_out]"
+fi
+
+if [[ $sg_ok -eq 1 ]]; then
+  pass "install.sh --setup-gpg <gnome|kwallet|auto|remove> [--gpg-ssh] resolution, permissions, reload, and symlink safety"
+else
+  fail "install.sh --setup-gpg checks:$sg_report"
+fi
+
 if ! command -v python3 >/dev/null 2>&1; then
   skip "Python VM driver unit tests (python3 unavailable)"
 else

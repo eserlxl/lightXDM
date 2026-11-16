@@ -55,7 +55,7 @@ lightXDM supports built-in and custom X11/Wayland desktop sessions, non-bash log
 ### System Integration
 - **Polkit & PAM:** Power actions use systemd's own Polkit defaults (lightXDM installs no rule) and USB mounting uses `udisks2` defaults; the installer appends PAM lines to `/etc/pam.d/login` (with a one-time backup `/etc/pam.d/login.lightxdm.bak`; `uninstall.sh` removes only the lines lightXDM added and keeps the backup for review if you changed anything else, and `--dry-run [--json]` previews every rollback action without root) for keyring auto-unlock (`pam_kwallet5.so` on Plasma, `pam_gnome_keyring.so` elsewhere).
 - **GNOME session type:** A separate PAM block in `/etc/pam.d/login` reads `/etc/lightxdm/gnome-session-type.conf` to register a Wayland login only for the installing user on TTY1, including with `--no-keyring`. Installing another desktop or uninstalling removes it and the config; `--keyring-only` keeps them. See [the block and its purpose](installation.md#gnome-session-requirements).
-- **GPG Agent Integration**: Starts `gpg-agent` at session startup, points `SSH_AUTH_SOCK` at it when `enable-ssh-support` is set in `~/.gnupg/gpg-agent.conf`, and refreshes its startup tty (see [gpg-agent.md](gpg-agent.md) for optional keyring-backed `pinentry` setup).
+- **GPG Agent Integration**: Starts `gpg-agent` at session startup, points `SSH_AUTH_SOCK` at it when `enable-ssh-support` is set in `~/.gnupg/gpg-agent.conf`, and refreshes its startup tty; `install.sh --setup-gpg <gnome|kwallet|auto|remove> [--gpg-ssh] [--dry-run]` automates fenced keyring-backed `pinentry-program` and optional SSH-agent configuration plus `gpgconf --kill gpg-agent` reloads (see [gpg-agent.md](gpg-agent.md)).
 - **Documentation:** See [installation.md](installation.md) for full CLI and option details, [startx-autologin.md](startx-autologin.md) for TTY1 auto-start, autologin, `zsh`/`fish`, and recovery, [kwallet-autounlock.md](kwallet-autounlock.md) for KWallet unlock, [polkit-support.md](polkit-support.md) for Polkit integration, [gpg-agent.md](gpg-agent.md) for GPG/SSH setup, and [development.md](development.md) for tests and packaging.
 
 ### Feature Overview
@@ -79,7 +79,7 @@ lightXDM supports built-in and custom X11/Wayland desktop sessions, non-bash log
 | Diagnostics & recovery         | `--preflight [--json]`, `--status [--json]`, `--doctor [--json]`, `--recover`, `--fix`, automatic crash-loop pause (`no-autostart`), `session-journal` |
 | Polkit integration             | systemd's defaults for power actions, `udisks2` defaults for USB, correct agent for each DE |
 | PAM integration                | appends `pam_kwallet5.so` (Plasma) or `pam_gnome_keyring.so` to `/etc/pam.d/login` with one-time backup; custom sessions choose with `--keyring gnome` (default) or `--keyring kwallet` |
-| GPG Agent Integration          | starts `gpg-agent`, sets `SSH_AUTH_SOCK` when `enable-ssh-support` is set, and refreshes its tty via `~/.gpg-agent-kwallet` (Plasma) or `~/.gpg-agent-gnome` |
+| GPG Agent Integration          | starts `gpg-agent`, sets `SSH_AUTH_SOCK` when `enable-ssh-support` is set, refreshes tty via `~/.gpg-agent-*`, and automates pinentry/SSH config via `--setup-gpg` |
 | Documentation                  | `README.md`, [installation.md](installation.md), [startx-autologin.md](startx-autologin.md), [kwallet-autounlock.md](kwallet-autounlock.md), [polkit-support.md](polkit-support.md), [gpg-agent.md](gpg-agent.md), [development.md](development.md) |
 
 ---
