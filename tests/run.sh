@@ -5174,6 +5174,100 @@ else
   skip "lint.sh file-list coverage (not a git checkout)"
 fi
 
+# tests/template-history.sh --help, non-git skip, and --check drift detection
+th_test_dir="$TMP_DIR/template_history_checks"
+rm -rf -- "$th_test_dir"
+mkdir -p "$th_test_dir/nogit/tests"
+cp -- "$REPO_ROOT/tests/template-history.sh" "$th_test_dir/nogit/tests/template-history.sh"
+set +e
+th_help_out="$(bash "$REPO_ROOT/tests/template-history.sh" --help 2>&1)"
+th_help_rc=$?
+th_nogit_out="$(bash "$th_test_dir/nogit/tests/template-history.sh" --check 2>&1)"
+th_nogit_rc=$?
+set -e
+th_ok=1
+th_report=""
+if [[ $th_help_rc -ne 0 || "$th_help_out" != *"--check"* || "$th_help_out" != *"Usage:"* ]]; then
+  th_ok=0
+  th_report+=" [help rc=$th_help_rc]"
+fi
+if [[ $th_nogit_rc -ne 0 || "$th_nogit_out" != *"Skipping"* ]]; then
+  th_ok=0
+  th_report+=" [nogit rc=$th_nogit_rc out=$th_nogit_out]"
+fi
+if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  set +e
+  th_sync_out="$(bash "$REPO_ROOT/tests/template-history.sh" --check 2>&1)"
+  th_sync_rc=$?
+  set -e
+  if [[ $th_sync_rc -ne 0 ]]; then
+    th_ok=0
+    th_report+=" [sync rc=$th_sync_rc out=$th_sync_out]"
+  fi
+  th_git_repo="$th_test_dir/git_repo"
+  mkdir -p "$th_git_repo/tests" "$th_git_repo/dotfiles"
+  cp -- "$REPO_ROOT/tests/template-history.sh" "$th_git_repo/tests/template-history.sh"
+  printf '#!/usr/bin/env bash\necho test\n' >"$th_git_repo/dotfiles/.bash_profile"
+  git -C "$th_git_repo" init -q
+  git -C "$th_git_repo" add -- dotfiles/.bash_profile tests/template-history.sh
+  git -C "$th_git_repo" -c user.name=Test -c user.email=test@example.com commit -q -m init
+  bash "$th_git_repo/tests/template-history.sh" >"$th_git_repo/dotfiles/template-history.sha256"
+  set +e
+  th_fit_out="$(bash "$th_git_repo/tests/template-history.sh" --check 2>&1)"
+  th_fit_rc=$?
+  printf '0000000000000000000000000000000000000000000000000000000000000000  dotfiles/.bash_profile\n' >>"$th_git_repo/dotfiles/template-history.sha256"
+  th_drift_out="$(bash "$th_git_repo/tests/template-history.sh" --check 2>&1)"
+  th_drift_rc=$?
+  set -e
+  if [[ $th_fit_rc -ne 0 ]]; then
+    th_ok=0
+    th_report+=" [fixture-sync rc=$th_fit_rc out=$th_fit_out]"
+  fi
+  if [[ $th_drift_rc -ne 1 || "$th_drift_out" != *"regenerate"* ]]; then
+    th_ok=0
+    th_report+=" [drift rc=$th_drift_rc out=$th_drift_out]"
+  fi
+fi
+if [[ $th_ok -eq 1 ]]; then
+  pass "tests/template-history.sh --help, non-git skip, and --check drift detection"
+else
+  fail "tests/template-history.sh --check checks:$th_report"
+fi
+
+# lint.sh rejects Python syntax errors in tests/ without leaving __pycache__ or *.pyc
+if ! command -v python3 >/dev/null 2>&1; then
+  skip "lint.sh Python syntax-error rejection (python3 unavailable)"
+else
+  lint_py_dir="$TMP_DIR/lint_py_fixture"
+  rm -rf -- "$lint_py_dir"
+  mkdir -p "$lint_py_dir/tests" "$lint_py_dir/stub_bin"
+  cp -- "$REPO_ROOT/lint.sh" "$lint_py_dir/lint.sh"
+  cp -- "$REPO_ROOT/tests/template-history.sh" "$lint_py_dir/tests/template-history.sh"
+  while IFS= read -r lint_stub_rel; do
+    [[ -z "$lint_stub_rel" || "$lint_stub_rel" == "lint.sh" || "$lint_stub_rel" == "tests/template-history.sh" ]] && continue
+    mkdir -p "$lint_py_dir/$(dirname -- "$lint_stub_rel")"
+    printf '#!/usr/bin/env bash\ntrue\n' >"$lint_py_dir/$lint_stub_rel"
+  done < <(sed -n '/^scripts=(/,/^)/p' "$REPO_ROOT/lint.sh" | sed -e '1d' -e '$d' -e 's/^[[:space:]]*//')
+  printf 'def valid_helper():\n    return 1\n' >"$lint_py_dir/tests/a_good.py"
+  printf 'def broken_syntax(:\n    pass\n' >"$lint_py_dir/tests/z_bad.py"
+  lint_path="$PATH"
+  if ! command -v shellcheck >/dev/null 2>&1; then
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$lint_py_dir/stub_bin/shellcheck"
+    chmod +x "$lint_py_dir/stub_bin/shellcheck"
+    lint_path="$lint_py_dir/stub_bin:$PATH"
+  fi
+  set +e
+  lint_py_out="$(PATH="$lint_path" bash "$lint_py_dir/lint.sh" 2>&1)"
+  lint_py_rc=$?
+  set -e
+  lint_py_cache="$(find "$lint_py_dir" \( -name '__pycache__' -o -name '*.pyc' \) 2>/dev/null || true)"
+  if [[ $lint_py_rc -ne 0 && "$lint_py_out" == *"tests/z_bad.py"* && -z "$lint_py_cache" ]]; then
+    pass "lint.sh rejects synthetic Python syntax error with zero __pycache__ or *.pyc"
+  else
+    fail "lint.sh Python syntax-error rejection (rc=$lint_py_rc, cache=$lint_py_cache, output=$lint_py_out)"
+  fi
+fi
+
 # Case 57: .xinitrc-* templates merge X resources/keymaps, export session vars, source xinitrc.d before gpg-agent, manage activation/polkit per DE, and exec the session command
 xinit_test_dir="$TMP_DIR/xinitrc_templates"
 xinit_home="$xinit_test_dir/home"
