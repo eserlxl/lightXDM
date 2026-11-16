@@ -2845,7 +2845,7 @@ dotfile_status_line() {
 # Inspect GNOME TTY1 pam_env status against $LOGIN_FILE ($1) and desktop user ($2) into GNOME_PAM_STATUS_*.
 inspect_gnome_pam_status() {
   local login_content="$1" real_user="$2"
-  local gnome_marker gnome_tty_gate gnome_env_line has_gnome_block=0
+  local gnome_marker gnome_tty_gate gnome_env_line has_gnome_block=0 gnome_dest_dir=""
   local gnome_block=()
   mapfile -t gnome_block < <(gnome_session_type_block "$real_user")
   gnome_marker="${gnome_block[0]}"
@@ -2853,6 +2853,23 @@ inspect_gnome_pam_status() {
   gnome_env_line="${gnome_block[3]}"
   GNOME_PAM_STATUS_ID="not-configured"
   GNOME_PAM_STATUS_MSG="not configured"
+
+  gnome_dest_dir="$(dirname -- "$GNOME_SESSION_TYPE_DEST")"
+  if [[ -L "$gnome_dest_dir" || -L "$GNOME_SESSION_TYPE_DEST" ]]; then
+    GNOME_PAM_STATUS_ID="symlink-ignored"
+    GNOME_PAM_STATUS_MSG="symlink ignored ($GNOME_SESSION_TYPE_DEST)"
+    return 0
+  fi
+  if [[ -e "$gnome_dest_dir" && ! -d "$gnome_dest_dir" ]]; then
+    GNOME_PAM_STATUS_ID="not-regular"
+    GNOME_PAM_STATUS_MSG="$gnome_dest_dir is not a directory"
+    return 0
+  fi
+  if [[ -e "$GNOME_SESSION_TYPE_DEST" && ! -f "$GNOME_SESSION_TYPE_DEST" ]]; then
+    GNOME_PAM_STATUS_ID="not-regular"
+    GNOME_PAM_STATUS_MSG="$GNOME_SESSION_TYPE_DEST is not a regular file"
+    return 0
+  fi
 
   if grep -Fxq -- "$gnome_marker" <<<"$login_content"; then
     has_gnome_block=1
@@ -4927,6 +4944,15 @@ run_doctor() {
       configured)
         diag_record_check "$json_mode" "PAM GNOME session type" "ok" "$GNOME_SESSION_TYPE_DEST"
         ;;
+      symlink-ignored)
+        printf -v diag_msg '%s or its directory is a symlink; lightXDM ignores symlinks' "$GNOME_SESSION_TYPE_DEST"
+        diag_record_check "$json_mode" "PAM GNOME session type" "fail" "$diag_msg"
+        issues=$((issues + 1))
+        ;;
+      not-regular)
+        diag_record_check "$json_mode" "PAM GNOME session type" "fail" "$GNOME_PAM_STATUS_MSG"
+        issues=$((issues + 1))
+        ;;
       block-present-needs-root)
         diag_record_check "$json_mode" "PAM GNOME session type" "warn" "$GNOME_PAM_STATUS_MSG"
         warnings=$((warnings + 1))
@@ -5026,24 +5052,37 @@ run_doctor() {
         ;;
     esac
 
-    local enabled_dms=() dm_unit dm_state_content dm_state_unreadable=0
+    local enabled_dms=() dm_unit dm_state_content dm_state_unreadable=0 dm_state_bad="" dm_state_dir=""
+    dm_state_dir="$(dirname -- "$DM_STATE_FILE")"
     mapfile -t enabled_dms < <(detect_enabled_dms)
-    if [[ ! -L "$(dirname -- "$DM_STATE_FILE")" && ! -L "$DM_STATE_FILE" ]]; then
-      if [[ -f "$DM_STATE_FILE" && -r "$DM_STATE_FILE" ]]; then
-        dm_state_content="$(cat -- "$DM_STATE_FILE")"
-        while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
-          [[ -n "$dm_unit" ]] || continue
-          local dm_short="${dm_unit%.service}"
-          if [[ " ${enabled_dms[*]} " != *" $dm_short "* ]] &&
-            [[ "$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)" == "enabled" ]]; then
-            enabled_dms+=("$dm_short")
-          fi
-        done <<<"$dm_state_content"
-      elif pam_path_needs_sudo "$DM_STATE_FILE" 1; then
-        dm_state_unreadable=1
-      fi
+    if [[ -L "$dm_state_dir" || -L "$DM_STATE_FILE" ]]; then
+      dm_state_bad="$DM_STATE_FILE or its directory is a symlink; lightXDM ignores symlinks"
+    elif [[ -e "$dm_state_dir" && ! -d "$dm_state_dir" ]]; then
+      dm_state_bad="$dm_state_dir is not a directory"
+    elif [[ -e "$DM_STATE_FILE" && ! -f "$DM_STATE_FILE" ]]; then
+      dm_state_bad="$DM_STATE_FILE is not a regular file"
+    elif [[ -f "$DM_STATE_FILE" && -r "$DM_STATE_FILE" ]]; then
+      dm_state_content="$(cat -- "$DM_STATE_FILE")"
+      while IFS= read -r dm_unit || [[ -n "$dm_unit" ]]; do
+        [[ -n "$dm_unit" ]] || continue
+        local dm_short="${dm_unit%.service}"
+        if [[ " ${enabled_dms[*]} " != *" $dm_short "* ]] &&
+          [[ "$(systemctl is-enabled "$dm_unit" 2>/dev/null || true)" == "enabled" ]]; then
+          enabled_dms+=("$dm_short")
+        fi
+      done <<<"$dm_state_content"
+    elif pam_path_needs_sudo "$DM_STATE_FILE" 1; then
+      dm_state_unreadable=1
     fi
-    if [[ ${#enabled_dms[@]} -gt 0 ]]; then
+    if [[ -n "$dm_state_bad" ]]; then
+      if [[ ${#enabled_dms[@]} -gt 0 ]]; then
+        printf -v diag_msg '%s enabled (%s)' "${enabled_dms[*]}" "$dm_state_bad"
+      else
+        diag_msg="$dm_state_bad"
+      fi
+      diag_record_check "$json_mode" "Display managers" "fail" "$diag_msg"
+      issues=$((issues + 1))
+    elif [[ ${#enabled_dms[@]} -gt 0 ]]; then
       printf -v diag_msg '%s enabled — disable with: sudo systemctl disable %s.service' "${enabled_dms[*]}" "${enabled_dms[0]}"
       diag_record_check "$json_mode" "Display managers" "fail" "$diag_msg"
       issues=$((issues + 1))
@@ -5395,6 +5434,10 @@ inspect_fix_pam_state() {
         ;;
       edited-block)
         log "ERROR: Edited lightXDM GNOME block in $LOGIN_FILE; remove lightXDM's GNOME lines by hand or restore ${LOGIN_FILE}.lightxdm.bak."
+        return 1
+        ;;
+      not-regular)
+        log "ERROR: $GNOME_PAM_STATUS_MSG; inspect or remove it before running --fix."
         return 1
         ;;
       file-without-block)

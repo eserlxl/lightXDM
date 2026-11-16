@@ -16051,6 +16051,38 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 reset_doctor_gnome_fixture
+rm -f "$doctor_etc/lightxdm/disabled-display-managers" "$doctor_etc/lightxdm/gnome-session-type.conf"
+ln -s "$doctor_etc/sym_dm_target" "$doctor_etc/lightxdm/disabled-display-managers"
+ln -s "$doctor_etc/sym_gnome_target" "$doctor_etc/lightxdm/gnome-session-type.conf"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Display managers: FAIL"* || "$doc_out" != *"PAM GNOME session type: FAIL"* || "$doc_out" == *"Doctor: PASS"* ]]; then
+  doctor_ok=0
+  doctor_report+=" doc-dm-gnome-symlink rc=$doc_rc out=[$doc_out];"
+fi
+mkdir -p "$doctor_etc/real_dm_dir"
+printf 'custom.service\n' >"$doctor_etc/real_dm_dir/disabled-display-managers"
+printf 'WAYLAND=gnome\n' >"$doctor_etc/real_dm_dir/gnome-session-type.conf"
+ln -s "$doctor_etc/real_dm_dir" "$doctor_etc/sym_etc_lightxdm"
+doc_rc=0
+doc_out="$(
+  DOCTOR_DM_STATE_FILE="$doctor_etc/sym_etc_lightxdm/disabled-display-managers" \
+    env -u SUDO_USER -u DISPLAY -u WAYLAND_DISPLAY \
+    HOME="$doctor_home" USER="testuser" XDG_STATE_HOME="$doctor_state" SESSION_ROOT="$doctor_root" \
+    LOGIN_FILE="$doctor_etc/pam.d/login" GNOME_SESSION_TYPE_DEST="$doctor_etc/sym_etc_lightxdm/gnome-session-type.conf" \
+    PAM_KEYRING_STATE="$doctor_etc/lightxdm/pam-keyring" PAM_LOGIN_BASE_STATE="$doctor_etc/lightxdm/pam-login-base" \
+    DM_STATE_FILE="$doctor_etc/sym_etc_lightxdm/disabled-display-managers" \
+    DISPLAY_MANAGER_LINK="$doctor_etc/systemd/system/display-manager.service" \
+    AUTOLOGIN_DROPIN_DIR="$doctor_etc/getty@tty1.service.d" DOCTOR_SUDO_LOG="$doctor_dir/sudo.log" \
+    PATH="$doctor_bin:/usr/bin:/bin" bash "$REPO_ROOT/install.sh" --doctor 2>&1
+)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Display managers: FAIL"* || "$doc_out" != *"PAM GNOME session type: FAIL"* || "$doc_out" == *"Doctor: PASS"* ]]; then
+  doctor_ok=0
+  doctor_report+=" doc-dm-gnome-dir-symlink rc=$doc_rc out=[$doc_out];"
+fi
+rm -rf "$doctor_etc/sym_etc_lightxdm" "$doctor_etc/real_dm_dir"
+
+reset_doctor_gnome_fixture
 
 if [[ -e "$doctor_dir/sudo.log" ]]; then
   doctor_ok=0
