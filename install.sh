@@ -2356,6 +2356,11 @@ check_tty1_getty() {
     log "Run sudo systemctl unmask getty@tty1.service and re-run the installer."
     return 1
   fi
+  if [[ "$state" == disabled ]]; then
+    log "getty@tty1.service is disabled; the next boot would have no TTY1 login."
+    log "Run sudo systemctl enable getty@tty1.service and re-run the installer."
+    return 1
+  fi
   return 0
 }
 
@@ -3935,6 +3940,9 @@ run_preflight() {
     getty_state="$(systemctl is-enabled getty@tty1.service 2>/dev/null || true)"
     if [[ "$getty_state" == masked ]]; then
       diag_record_check "$json_mode" "getty@tty1.service" "fail" "masked — unmask with: sudo systemctl unmask getty@tty1.service"
+      blockers=$((blockers + 1))
+    elif [[ "$getty_state" == disabled ]]; then
+      diag_record_check "$json_mode" "getty@tty1.service" "fail" "disabled — enable with: sudo systemctl enable getty@tty1.service"
       blockers=$((blockers + 1))
     else
       diag_record_check "$json_mode" "getty@tty1.service" "ok" "${getty_state:-unknown}"

@@ -400,6 +400,11 @@ main() {
     echo "Run systemctl unmask getty@tty1.service and re-run this script." >&2
     exit 1
   fi
+  if [[ "$state" == disabled ]]; then
+    echo "getty@tty1.service is disabled; autologin cannot start a TTY1 login." >&2
+    echo "Run systemctl enable getty@tty1.service and re-run this script." >&2
+    exit 1
+  fi
 
   validate_override_paths 1 || exit 1
   # --status reads the drop-in without sudo, so never inherit a stricter root umask.

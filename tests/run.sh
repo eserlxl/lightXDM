@@ -495,7 +495,7 @@ run_main_with_stubs() (
   main "$@"
 )
 
-# A persistent getty mask must stop the handover before any install step.
+# A persistent getty mask or disabled state must stop the handover before any install step.
 tty1_bin="$TMP_DIR/tty1_bin"
 tty1_home="$TMP_DIR/tty1_home"
 mkdir -p "$tty1_bin" "$tty1_home"
@@ -505,7 +505,7 @@ if [[ "$*" == 'is-enabled getty@tty1.service' ]]; then
   printf '%s\n' "$*" >>"$TTY1_CHECK_LOG"
   printf '%s\n' "$STUB_TTY1_STATE"
   case "$STUB_TTY1_STATE" in
-    masked | masked-runtime) exit 1 ;;
+    masked | masked-runtime | disabled) exit 1 ;;
     *) exit 0 ;;
   esac
 fi
@@ -517,7 +517,7 @@ case "${1:-}" in
 esac
 EOF
 chmod +x "$tty1_bin/systemctl"
-for tty1_state in masked masked-runtime enabled static; do
+for tty1_state in masked disabled masked-runtime enabled static; do
   : >"$STUB_LOG"
   : >"$TMP_DIR/tty1-check.log"
   set +e
@@ -528,7 +528,7 @@ for tty1_state in masked masked-runtime enabled static; do
   set -e
   log_content="$(cat "$STUB_LOG")"
   tty1_expected_log="sudo -v"
-  if [[ "$tty1_state" != masked ]]; then
+  if [[ "$tty1_state" != masked && "$tty1_state" != disabled ]]; then
     tty1_expected_log+=$'\ninstall_packages i3\ncopy_dotfiles i3\nconfigure_pam i3\nconfigure_gnome_session_type i3 '"${USER:-testuser}"$'\ndisable_display_managers'
   fi
   if [[ "$(cat "$TMP_DIR/tty1-check.log")" == 'is-enabled getty@tty1.service' &&
@@ -538,9 +538,14 @@ for tty1_state in masked masked-runtime enabled static; do
          "$output" == *'next boot would have no TTY1 login'* &&
          "$output" == *'sudo systemctl unmask getty@tty1.service'* &&
          "$output" != *'lightXDM install complete!'* ]] ||
-      [[ "$tty1_state" != masked && $status -eq 0 &&
+      [[ "$tty1_state" == disabled && $status -eq 1 &&
+         "$output" == *'getty@tty1.service is disabled'* &&
+         "$output" == *'next boot would have no TTY1 login'* &&
+         "$output" == *'sudo systemctl enable getty@tty1.service'* &&
+         "$output" != *'lightXDM install complete!'* ]] ||
+      [[ "$tty1_state" != masked && "$tty1_state" != disabled && $status -eq 0 &&
          "$output" == *'lightXDM install complete!'* ]]; }; then
-    pass "main refuses only a persistent TTY1 getty mask ($tty1_state) before install steps"
+    pass "main refuses a persistent TTY1 getty mask or disabled state ($tty1_state) before install steps"
   else
     fail "main TTY1 getty check ($tty1_state, status=$status, log=$log_content, output=$output)"
   fi
@@ -559,8 +564,12 @@ for tty1_state in masked masked-runtime enabled static; do
          "$output" == *'getty@tty1.service is masked'* &&
          "$output" == *'sudo systemctl unmask getty@tty1.service'* &&
          "$output" != *'Desktop:'* ]] ||
-      [[ "$tty1_state" != masked && $status -eq 0 && "$output" == *'Desktop: i3'* ]]; }; then
-    pass "--dry-run refuses only a persistent TTY1 getty mask ($tty1_state) without changes"
+      [[ "$tty1_state" == disabled && $status -eq 1 && ! -s "$STUB_LOG" &&
+         "$output" == *'getty@tty1.service is disabled'* &&
+         "$output" == *'sudo systemctl enable getty@tty1.service'* &&
+         "$output" != *'Desktop:'* ]] ||
+      [[ "$tty1_state" != masked && "$tty1_state" != disabled && $status -eq 0 && "$output" == *'Desktop: i3'* ]]; }; then
+    pass "--dry-run refuses a persistent TTY1 getty mask or disabled state ($tty1_state) without changes"
   else
     fail "--dry-run TTY1 getty check ($tty1_state, status=$status, log=$(cat "$STUB_LOG"), output=$output)"
   fi
@@ -6721,16 +6730,16 @@ EOF
 #!/usr/bin/env bash
 if [[ "$*" == 'is-enabled getty@tty1.service' ]]; then
   echo "$GETTY_STATE"
-  # Like the real systemctl, report masked states with a failing exit status.
+  # Like the real systemctl, report masked/disabled states with a failing exit status.
   case "$GETTY_STATE" in
-    masked | masked-runtime) exit 1 ;;
+    masked | masked-runtime | disabled) exit 1 ;;
   esac
 else
   echo "$*" >>"$GETTY_LOG"
 fi
 EOF
   chmod +x "$masked_bin/getent" "$masked_bin/systemctl"
-  for getty_state in masked masked-runtime enabled; do
+  for getty_state in masked disabled masked-runtime enabled; do
     masked_dir="$TMP_DIR/getty_state_$getty_state"
     mkdir -p "$masked_dir"
     : >"$masked_dir/log"
@@ -6743,6 +6752,12 @@ EOF
         pass "enable-autologin.sh refuses a masked getty without changes"
       else
         fail "enable-autologin.sh masked getty (status=$status, output=$output)"
+      fi
+    elif [[ "$getty_state" == disabled ]]; then
+      if [[ $status -eq 1 && "$output" == *"getty@tty1.service is disabled"* && "$output" == *"systemctl enable getty@tty1.service"* && ! -e "$masked_dir/getty.d" && ! -s "$masked_dir/log" ]]; then
+        pass "enable-autologin.sh refuses a disabled getty without changes"
+      else
+        fail "enable-autologin.sh disabled getty (status=$status, output=$output)"
       fi
     elif [[ $status -eq 0 && -f "$masked_dir/getty.d/lightxdm-autologin.conf" && "$(cat "$masked_dir/log")" == daemon-reload && "$output" == *"Autologin enabled for user testuser"* ]]; then
       pass "enable-autologin.sh enables autologin with getty $getty_state"
@@ -12864,6 +12879,10 @@ case "${1:-}" in
     exit 0
     ;;
   is-enabled)
+    if [[ "${2:-}" == "getty@tty1.service" ]]; then
+      echo "enabled"
+      exit 0
+    fi
     echo "disabled"
     exit 0
     ;;
@@ -15404,6 +15423,19 @@ if [[ $pf_rc -ne 1 || "$pf_masked" != *"getty@tty1.service: FAIL (masked"* ||
   preflight_report+=" [masked getty rc=$pf_rc out=$pf_masked]"
 fi
 
+set +e
+pf_disabled="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_GETTY=disabled PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_rc=$?
+set -e
+if [[ $pf_rc -ne 1 || "$pf_disabled" != *"getty@tty1.service: FAIL (disabled — enable with: sudo systemctl enable getty@tty1.service)"* ||
+  "$pf_disabled" != *"Detected desktop(s): xfce"* || "$pf_disabled" == *"Next step:"* ||
+  "$pf_disabled" != *"Preflight: FAIL (1 blocker(s)"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [disabled getty rc=$pf_rc out=$pf_disabled]"
+fi
+
 preflight_no_sudo="$preflight_dir/no_sudo_bin"
 mkdir -p "$preflight_no_sudo"
 for b in cut dirname grep readlink id getent pacman systemctl; do
@@ -15544,6 +15576,10 @@ pf_js_masked="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin
   PREFLIGHT_GETTY=masked PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_masked.err")"
 pf_js_masked_rc=$?
+pf_js_disabled="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_GETTY=disabled PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_disabled.err")"
+pf_js_disabled_rc=$?
 set -e
 if [[ $pf_js_pass_rc -ne 0 || -s "$preflight_dir/js_pass.err" ]] ||
   ! JSON_OUT="$pf_js_pass" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
@@ -15583,6 +15619,21 @@ PY
 then
   preflight_ok=0
   preflight_report+=" [json masked rc=$pf_js_masked_rc err=$(<"$preflight_dir/js_masked.err") out=$pf_js_masked]"
+fi
+if [[ $pf_js_disabled_rc -ne 1 || -s "$preflight_dir/js_disabled.err" ]] ||
+  ! JSON_OUT="$pf_js_disabled" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["ready"] is False and d["status"] == "fail" and d["blockers"] == 1
+assert d["detected_desktops"] == ["xfce"] and d["next_step"] is None
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["getty@tty1.service"]["status"] == "fail"
+assert "sudo systemctl enable getty@tty1.service" in checks["getty@tty1.service"]["detail"]
+assert checks["Detected desktop(s)"]["status"] == "info"
+PY
+then
+  preflight_ok=0
+  preflight_report+=" [json disabled rc=$pf_js_disabled_rc err=$(<"$preflight_dir/js_disabled.err") out=$pf_js_disabled]"
 fi
 
 for bad_pf_js in "--preflight --json --dry-run" "--preflight --doctor --json" "--status --preflight --json"; do
@@ -20129,15 +20180,21 @@ if [[ $lm_dry_pw_rc -ne 0 || -s "$lm_sudo_log" ||
 fi
 rm -f "$lm_case/getty.d/00-foreign.conf"
 
-# Masked getty@tty1.service aborts before touching PAM or autologin
+# Masked or disabled getty@tty1.service aborts before touching PAM or autologin
 : >"$lm_sudo_log"
 set +e
 lm_masked_out="$(LM_GETTY_STATE=masked run_lm_cmd --login-mode autologin 2>&1)"
 lm_masked_rc=$?
+lm_disabled_out="$(LM_GETTY_STATE=disabled run_lm_cmd --login-mode autologin 2>&1)"
+lm_disabled_rc=$?
 set -e
 if [[ $lm_masked_rc -eq 0 || -s "$lm_sudo_log" || "$lm_masked_out" != *"getty@tty1.service is masked"* ]]; then
   lm_ok=0
   lm_report+=" [masked-getty rc=$lm_masked_rc out=$lm_masked_out]"
+fi
+if [[ $lm_disabled_rc -eq 0 || -s "$lm_sudo_log" || "$lm_disabled_out" != *"getty@tty1.service is disabled"* || "$lm_disabled_out" != *"sudo systemctl enable getty@tty1.service"* ]]; then
+  lm_ok=0
+  lm_report+=" [disabled-getty rc=$lm_disabled_rc out=$lm_disabled_out]"
 fi
 
 # Non-interactive sudo failure aborts cleanly without mutating PAM or autologin
