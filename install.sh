@@ -2701,7 +2701,7 @@ saved_install_args() {
     gnome | kwallet) ;;
     *) record="" ;;
   esac
-  if [[ "$no_keyring" == 1 && -z "$record" ]]; then
+  if [[ "$no_keyring" == 1 ]]; then
     printf '%s\n' --no-keyring
     return 0
   fi
@@ -8729,9 +8729,10 @@ EOF
       log "Skipping keyring PAM configuration (--no-keyring)."
     else
       configure_pam "$de" 0 "$keyring"
+      update_install_choices_keyring "$(builtin_de_keyring_backend "$de" 2>/dev/null || printf '%s\n' "${keyring:-gnome}")" 0
     fi
     configure_gnome_session_type "$de" "$real_user"
-    log "Done (--pam-only): only $LOGIN_FILE and GNOME's session-type file were set up; packages, dotfiles, display managers and saved choices are unchanged."
+    log "Done (--pam-only): only $LOGIN_FILE and GNOME's session-type file were set up; packages, dotfiles and display managers are unchanged, and the saved choices change only to record the keyring now in use."
     return 0
   fi
 

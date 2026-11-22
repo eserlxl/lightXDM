@@ -11086,18 +11086,28 @@ if [[ "$output" != *"Updating with the saved choices: --de custom --no-packages 
   record_ok=0
   record_report+=" [kwallet record for a custom id: output=$output]"
 fi
-# A --no-keyring install that later turns unlock on with --pam-only keeps no_keyring=1 in install-choices,
-# and --update still restores the recorded keyring lines after a .pacnew merge replaces the login file.
+# A --no-keyring install that later turns unlock on with --pam-only records keyring= and no_keyring=0
+# in install-choices (while --pam-only --no-keyring leaves them alone), and --update still restores the
+# recorded keyring lines after a .pacnew merge replaces the login file.
 set +e
 output="$(PATH="$sudo_pw_dir:$PATH" update_run "$update_home" --no-packages --no-keyring --de i3)"
 status=$?
+pam_nk_out="$(PATH="$sudo_pw_dir:$PATH" update_run "$update_home" --pam-only --no-keyring --de i3)"
+pam_nk_rc=$?
 set -e
+if [[ $status -ne 0 || $pam_nk_rc -ne 0 ||
+  "$(cat "$update_choices" 2>/dev/null)" != $'de=i3\nno_packages=1\nno_keyring=1' ]]; then
+  record_ok=0
+  record_report+=" [no_keyring=1 then --pam-only --no-keyring: status=$status/$pam_nk_rc, choices=$(cat "$update_choices" 2>&1), output=$pam_nk_out]"
+fi
 rm -f -- "$update_record" "$update_base"
 printf '%s\n' "# the login stack before the .pacnew merge" >"$update_login"
 cp -- "$update_login" "$update_backup"
 set +e
 pam_out="$(PATH="$sudo_pw_dir:$PATH" update_run "$update_home" --pam-only --de i3)"
 pam_rc=$?
+pam_nk2_out="$(PATH="$sudo_pw_dir:$PATH" update_run "$update_home" --pam-only --no-keyring --de i3)"
+pam_nk2_rc=$?
 set -e
 printf '%s\n' "# stock login stack after a .pacnew merge" >"$update_login"
 set +e
@@ -11105,14 +11115,14 @@ output="$(STUB_PACMAN_OWNER=util-linux STUB_PACMAN_BACKUP="$update_login [unmodi
   update_run "$update_home" --update --dry-run)"
 upd_rc=$?
 set -e
-if [[ $status -ne 0 || $pam_rc -ne 0 || $upd_rc -ne 0 ||
-  "$(cat "$update_choices" 2>/dev/null)" != $'de=i3\nno_packages=1\nno_keyring=1' ||
+if [[ $status -ne 0 || $pam_rc -ne 0 || $pam_nk2_rc -ne 0 || $upd_rc -ne 0 ||
+  "$(cat "$update_choices" 2>/dev/null)" != $'de=i3\nno_packages=1\nkeyring=gnome\nno_keyring=0' ||
   "$(cat "$update_record" 2>/dev/null)" != "gnome" ||
   "$output" != *"Updating with the saved choices: --de i3 --no-packages --dry-run"* ||
   "$output" != *"lightXDM's gnome keyring lines are missing from $update_login, which a .pacnew merge replaced"* ||
   "$output" != *"PAM keyring: $update_login"* ]]; then
   record_ok=0
-  record_report+=" [no_keyring=1 then --pam-only then replaced login file: status=$status/$pam_rc/$upd_rc, choices=$(cat "$update_choices" 2>&1), record=$(cat "$update_record" 2>&1), pam_out=$pam_out, output=$output]"
+  record_report+=" [no_keyring=1 then --pam-only then replaced login file: status=$status/$pam_rc/$pam_nk2_rc/$upd_rc, choices=$(cat "$update_choices" 2>&1), record=$(cat "$update_record" 2>&1), pam_out=$pam_out/$pam_nk2_out, output=$output]"
 fi
 # --update leaves out a GNOME block the user removed (from an edited file, or back to the original) and
 # puts it back into a file a .pacnew merge replaced; an explicit install still adds it.
@@ -11421,7 +11431,7 @@ nk_upd_run() {
     LOGIN_FILE="$nk_upd_login" PAM_KEYRING_STATE="$nk_upd_record" PAM_LOGIN_BASE_STATE="$nk_upd_dir/pam-login-base" \
     GNOME_SESSION_TYPE_DEST="$nk_upd_dir/gnome-session-type.conf" DM_STATE_FILE="$nk_upd_dir/dm-state" \
     DISPLAY_MANAGER_LINK="$nk_upd_dir/display-manager.service" AUTOLOGIN_DROPIN_DIR="$nk_upd_dir/getty.d" \
-    bash -c 'source "$1/install.sh"; shift; check_root() { :; }; main "$@"' _ "$REPO_ROOT" "$@" 2>&1
+    bash -c 'source "$1/install.sh"; shift; check_root() { :; }; enable_autologin() { echo "enable_autologin $1" >>"$STUB_LOG"; }; main "$@"' _ "$REPO_ROOT" "$@" 2>&1
 }
 nk_inst_out="$(nk_upd_run --no-keyring --de xfce)" || pkg_report+=" [nk install failed: $nk_inst_out]"
 if ! grep -Fxq -- 'no_keyring=1' "$nk_upd_choices" || grep -q -- '^keyring=' "$nk_upd_choices" ||
@@ -11436,6 +11446,30 @@ if [[ "$nk_upd_out" != *"Updating with the saved choices: --de xfce --no-keyring
   ! grep -Fxq -- 'no_keyring=1' "$nk_upd_choices" ||
   [[ -e "$nk_upd_record" ]]; then
   pkg_report+=" [nk update with user pam_gnome_keyring: out=$nk_upd_out log=$(cat "$nk_upd_log") choices=$(cat "$nk_upd_choices" 2>&1)]"
+fi
+# A keyring install followed by an explicit --no-keyring --autologin reinstall leaves the old pam-keyring
+# record in place, yet --update still passes --no-keyring, installs no keyring package, and restores no
+# keyring lines after a .pacnew merge replaces the login file.
+printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$nk_upd_login"
+rm -f -- "$nk_upd_login.lightxdm.bak" "$nk_upd_record" "$nk_upd_dir/pam-login-base"
+nk_kr_out="$(nk_upd_run --de xfce)" || pkg_report+=" [kr install before autologin reinstall failed: $nk_kr_out]"
+nk_reinst_out="$(nk_upd_run --no-keyring --autologin --de xfce)" || pkg_report+=" [nk autologin reinstall failed: $nk_reinst_out]"
+if [[ "$(cat "$nk_upd_record" 2>/dev/null)" != "gnome" ]] ||
+  ! grep -Fxq -- 'no_keyring=1' "$nk_upd_choices" ||
+  grep -q -- '^keyring=' "$nk_upd_choices" ||
+  grep -Fq -- 'gnome-keyring' "$nk_upd_choices" ||
+  ! grep -Fxq -- 'enable_autologin tester' "$nk_upd_log"; then
+  pkg_report+=" [nk autologin reinstall state: rec=$(cat "$nk_upd_record" 2>&1) choices=$(cat "$nk_upd_choices" 2>&1) log=$(cat "$nk_upd_log")]"
+fi
+printf '%s\n' '#%PAM-1.0' '# stock login stack after a .pacnew merge' 'auth       include      system-local-login' 'session    include      system-local-login' >"$nk_upd_login"
+nk_reinst_upd_out="$(STUB_PACMAN_OWNER=util-linux STUB_PACMAN_BACKUP="$nk_upd_login [unmodified]" \
+  STUB_PACMAN_MISSING="gnome-keyring" nk_upd_run --update)" || pkg_report+=" [nk autologin update failed: $nk_reinst_upd_out]"
+if [[ "$nk_reinst_upd_out" != *"Updating with the saved choices: --de xfce --no-keyring"* ]] ||
+  grep -Fq -- 'gnome-keyring' "$nk_upd_log" ||
+  grep -Fq -- 'gnome-keyring' "$nk_upd_choices" ||
+  ! grep -Fxq -- 'no_keyring=1' "$nk_upd_choices" ||
+  grep -Fq -- 'pam_gnome_keyring.so' "$nk_upd_login"; then
+  pkg_report+=" [nk autologin update with old record: out=$nk_reinst_upd_out log=$(cat "$nk_upd_log") choices=$(cat "$nk_upd_choices" 2>&1) login=$(cat "$nk_upd_login")]"
 fi
 # saved_install_args reads an unterminated final line and honors a later no_packages=0 override.
 printf 'de=i3\nno_packages=1' >"$pkg_choices"
