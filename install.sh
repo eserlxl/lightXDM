@@ -3565,6 +3565,28 @@ show_install_status() {
   local autologin_out
   autologin_out="$(env OVERRIDE_DIR="$AUTOLOGIN_DROPIN_DIR" LOGIN_FILE="$LOGIN_FILE" bash "$SCRIPT_DIR/enable-autologin.sh" --status 2>&1 || true)"
 
+  # The install command that makes the saved choices again: the arguments --update reruns with
+  # (read-only preview, no sudo), plus --autologin when this user's lightXDM autologin drop-in is
+  # active and keyring unlock is off (install.sh refuses --autologin without --no-keyring).
+  local reproduce_output="" reproduce_text="" reproduce_arg reproduce_line reproduce_no_keyring=0
+  local reproduce_args=()
+  if [[ "$choices_kind" == readable && -n "$de" ]] &&
+    reproduce_output="$(saved_install_args 1 2>/dev/null)" && [[ -n "$reproduce_output" ]]; then
+    mapfile -t reproduce_args <<<"$reproduce_output"
+    for reproduce_arg in "${reproduce_args[@]}"; do
+      [[ "$reproduce_arg" == --no-keyring ]] && reproduce_no_keyring=1
+    done
+    if [[ $reproduce_no_keyring -eq 1 ]]; then
+      while IFS= read -r reproduce_line || [[ -n "$reproduce_line" ]]; do
+        if [[ "$reproduce_line" =~ ^enabled\ for\ ([^[:space:]]+)\ \((.*)\)$ && "${BASH_REMATCH[1]}" == "$real_user" ]]; then
+          reproduce_args+=(--autologin)
+          break
+        fi
+      done <<<"$autologin_out"
+    fi
+    printf -v reproduce_text ' %q' "${reproduce_args[@]}"
+  fi
+
   if [[ $json_mode -eq 1 ]]; then
     local no_pkg_json="null" autostart_json="false" journal_json="false"
     local pacnew_json="false" pacnew_replaced_json="false"
@@ -3606,7 +3628,18 @@ show_install_status() {
     printf '    "file": %s,\n' "$(json_str "$choices_file")"
     printf '    "state": %s,\n' "$(json_str "$choices_kind")"
     printf '    "de": %s,\n' "$(json_str_or_null "$de")"
-    printf '    "no_packages": %s\n' "$no_pkg_json"
+    printf '    "no_packages": %s,\n' "$no_pkg_json"
+    if [[ ${#reproduce_args[@]} -gt 0 ]]; then
+      printf '    "reproduce_args": ['
+      local reproduce_idx
+      for ((reproduce_idx = 0; reproduce_idx < ${#reproduce_args[@]}; reproduce_idx++)); do
+        [[ $reproduce_idx -gt 0 ]] && printf ', '
+        json_str "${reproduce_args[$reproduce_idx]}"
+      done
+      printf ']\n'
+    else
+      printf '    "reproduce_args": null\n'
+    fi
     printf '  },\n'
 
     printf '  "session_template": {\n'
@@ -3707,6 +3740,7 @@ show_install_status() {
   fi
 
   printf 'Install choices: %s (%s)\n' "$choices_state" "$choices_file"
+  [[ -z "$reproduce_text" ]] || printf 'Reproduce with: bash install.sh%s\n' "$reproduce_text"
   [[ -z "$de" ]] || printf 'Session template: %s\n' "$template_text"
   printf 'TTY1 launcher: %s\n' "$launcher"
   if [[ $autostart_paused -eq 1 ]]; then

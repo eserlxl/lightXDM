@@ -13614,7 +13614,8 @@ if [[ $status_fresh_rc -ne 0 || -s "$status_sudo_log" ||
   "$status_fresh_out" != *"PAM GNOME session type: not configured"* ||
   "$status_fresh_out" != *"getty@tty1.service: enabled"* ||
   "$status_fresh_out" != *"Disabled display managers: none recorded"* ||
-  "$status_fresh_out" != *"TTY1 autologin: disabled"* ]]; then
+  "$status_fresh_out" != *"TTY1 autologin: disabled"* ||
+  "$status_fresh_out" == *"Reproduce with:"* ]]; then
   status_cmd_report+=" [fresh: rc=$status_fresh_rc, sudo=$(cat "$status_sudo_log"), out=$status_fresh_out]"
 fi
 
@@ -13676,6 +13677,7 @@ status_active_rc=$?
 set -e
 if [[ $status_active_rc -ne 0 || -s "$status_sudo_log" ||
   "$status_active_out" != *"Install choices: de=gnome, --no-packages"* ||
+  "$status_active_out" != *$'\n'"Reproduce with: bash install.sh --de gnome --no-packages"$'\n'* ||
   "$status_active_out" != *"Session template: $status_cmd_dir/active_home/.config/lightxdm/.wayland-session-gnome (user template)"* ||
   "$status_active_out" != *"TTY1 launcher: $status_cmd_dir/active_home/.wayland-session (Wayland)"* ||
   "$status_active_out" != *"TTY1 auto-start: paused"* ||
@@ -13730,6 +13732,59 @@ for status_update_case in "with-update|$status_cmd_dir/update_bin:$status_no_upd
   fi
   if [[ "$status_update_name" == without-update && "$status_update_out" == *"run lightxdm-update"* ]]; then
     status_cmd_report+=" [pacnew without-update still names lightxdm-update: out=$status_update_out]"
+  fi
+done
+
+# 2c) A --no-keyring --autologin install: the Reproduce line and reproduce_args carry --no-keyring
+# and --autologin (this user's drop-in is active); a drop-in for another user adds no --autologin.
+mkdir -p "$status_cmd_dir/nokey_home/.local/state/lightxdm" "$status_cmd_dir/other_getty.d"
+printf '%s\n' 'de=xfce' 'no_packages=1' 'no_keyring=1' >"$status_cmd_dir/nokey_home/.local/state/lightxdm/install-choices"
+sed 's/statususer/otheruser/' "$status_cmd_dir/getty.d/lightxdm-autologin.conf" >"$status_cmd_dir/other_getty.d/lightxdm-autologin.conf"
+for status_nokey_case in "own|$status_cmd_dir/getty.d| --autologin" "other|$status_cmd_dir/other_getty.d|"; do
+  IFS='|' read -r status_nokey_name status_nokey_getty status_nokey_tail <<<"$status_nokey_case"
+  status_nokey_out=""
+  status_nokey_json=""
+  : >"$status_sudo_log"
+  set +e
+  for status_nokey_flags in "--status" "--status --json"; do
+    read -r -a status_nokey_argv <<<"$status_nokey_flags"
+    status_nokey_one="$(
+      env -u XDG_STATE_HOME -u STATUS_GETTY_STATE -u STATUS_DM_STATE \
+        HOME="$status_cmd_dir/nokey_home" \
+        USER=statususer \
+        PATH="$status_cmd_dir/bin:$STUB_BIN:$PATH" \
+        STATUS_SUDO_LOG="$status_sudo_log" \
+        LOGIN_FILE="$status_cmd_dir/fresh_login" \
+        GNOME_SESSION_TYPE_DEST="$status_cmd_dir/missing-gnome.conf" \
+        PAM_KEYRING_STATE="$status_cmd_dir/missing-pam-keyring" \
+        PAM_LOGIN_BASE_STATE="$status_cmd_dir/missing-pam-login-base" \
+        DM_STATE_FILE="$status_cmd_dir/missing-dm-state" \
+        AUTOLOGIN_DROPIN_DIR="$status_nokey_getty" \
+        bash "$REPO_ROOT/install.sh" "${status_nokey_argv[@]}" 2>/dev/null
+    )"
+    status_nokey_rc=$?
+    if [[ $status_nokey_rc -ne 0 ]]; then
+      status_cmd_report+=" [no-keyring $status_nokey_name '$status_nokey_flags': rc=$status_nokey_rc]"
+    fi
+    if [[ "$status_nokey_flags" == --status ]]; then
+      status_nokey_out="$status_nokey_one"
+    else
+      status_nokey_json="$status_nokey_one"
+    fi
+  done
+  set -e
+  if [[ -s "$status_sudo_log" ||
+    "$status_nokey_out" != *$'\n'"Reproduce with: bash install.sh --de xfce --no-packages --no-keyring$status_nokey_tail"$'\n'* ]]; then
+    status_cmd_report+=" [no-keyring $status_nokey_name text: sudo=$(cat "$status_sudo_log"), out=$status_nokey_out]"
+  fi
+  if ! JSON_OUT="$status_nokey_json" NOKEY_TAIL="$status_nokey_tail" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+expected = ["--de", "xfce", "--no-packages", "--no-keyring"] + os.environ["NOKEY_TAIL"].split()
+assert d["install_choices"]["reproduce_args"] == expected, d["install_choices"]
+PY
+  then
+    status_cmd_report+=" [no-keyring $status_nokey_name json: out=$status_nokey_json]"
   fi
 done
 
@@ -15089,6 +15144,7 @@ d = json.loads(os.environ["JSON_OUT"])
 assert d["install_choices"]["state"] == "not-recorded"
 assert d["install_choices"]["de"] is None
 assert d["install_choices"]["no_packages"] is None
+assert d["install_choices"]["reproduce_args"] is None
 assert d["session_template"] == {"de": None, "source": None, "path": None, "dotfile": None}
 assert d["tty1"]["autostart_paused"] is False
 assert d["tty1"]["session_journal"] is False
@@ -15172,6 +15228,7 @@ assert d["install_choices"] == {
     "state": "readable",
     "de": "gnome",
     "no_packages": True,
+    "reproduce_args": ["--de", "gnome", "--no-packages"],
 }
 assert d["session_template"] == {
     "de": "gnome",
