@@ -11035,6 +11035,34 @@ if [[ "$output" != *"Updating with the saved choices: --de custom --no-packages 
   record_ok=0
   record_report+=" [kwallet record for a custom id: output=$output]"
 fi
+# A --no-keyring install that later turns unlock on with --pam-only keeps no_keyring=1 in install-choices,
+# and --update still restores the recorded keyring lines after a .pacnew merge replaces the login file.
+set +e
+output="$(PATH="$sudo_pw_dir:$PATH" update_run "$update_home" --no-packages --no-keyring --de i3)"
+status=$?
+set -e
+rm -f -- "$update_record" "$update_base"
+printf '%s\n' "# the login stack before the .pacnew merge" >"$update_login"
+cp -- "$update_login" "$update_backup"
+set +e
+pam_out="$(PATH="$sudo_pw_dir:$PATH" update_run "$update_home" --pam-only --de i3)"
+pam_rc=$?
+set -e
+printf '%s\n' "# stock login stack after a .pacnew merge" >"$update_login"
+set +e
+output="$(STUB_PACMAN_OWNER=util-linux STUB_PACMAN_BACKUP="$update_login [unmodified]" \
+  update_run "$update_home" --update --dry-run)"
+upd_rc=$?
+set -e
+if [[ $status -ne 0 || $pam_rc -ne 0 || $upd_rc -ne 0 ||
+  "$(cat "$update_choices" 2>/dev/null)" != $'de=i3\nno_packages=1\nno_keyring=1' ||
+  "$(cat "$update_record" 2>/dev/null)" != "gnome" ||
+  "$output" != *"Updating with the saved choices: --de i3 --no-packages --dry-run"* ||
+  "$output" != *"lightXDM's gnome keyring lines are missing from $update_login, which a .pacnew merge replaced"* ||
+  "$output" != *"PAM keyring: $update_login"* ]]; then
+  record_ok=0
+  record_report+=" [no_keyring=1 then --pam-only then replaced login file: status=$status/$pam_rc/$upd_rc, choices=$(cat "$update_choices" 2>&1), record=$(cat "$update_record" 2>&1), pam_out=$pam_out, output=$output]"
+fi
 # --update leaves out a GNOME block the user removed (from an edited file, or back to the original) and
 # puts it back into a file a .pacnew merge replaced; an explicit install still adds it.
 gnome_marker='# lightXDM: GNOME on TTY1 needs a wayland session type (uninstall.sh removes this)'
@@ -20464,6 +20492,25 @@ if [[ $lm_sim_sway_auto_rc -ne 0 || $lm_sim_sway_pw_rc -ne 0 ||
   ! grep -Fq 'session    optional   pam_kwallet5.so force_run' "$lm_case/etc/pam.d/login"; then
   lm_ok=0
   lm_report+=" [sim-custom-kwallet-roundtrip auto_rc=$lm_sim_sway_auto_rc pw_rc=$lm_sim_sway_pw_rc choices=$(cat "$lm_case/home/.local/state/lightxdm/install-choices" 2>&1) pam=$(cat "$lm_case/etc/pam.d/login") auto_out=$lm_sim_sway_auto_out out=$lm_sim_sway_pw_out]"
+fi
+# Old install-choices without keyring= plus a kwallet record keeps KWallet across autologin then password.
+printf 'de=sway\nno_packages=1\n' >"$lm_case/home/.local/state/lightxdm/install-choices"
+printf 'kwallet\n' >"$lm_case/etc/lightxdm/pam-keyring"
+set +e
+lm_sim_old_kw_auto_out="$(run_lm_sim_cmd --login-mode autologin --non-interactive 2>&1)"
+lm_sim_old_kw_auto_rc=$?
+lm_sim_old_kw_pw_out="$(run_lm_sim_cmd --login-mode password --non-interactive 2>&1)"
+lm_sim_old_kw_pw_rc=$?
+set -e
+if [[ $lm_sim_old_kw_auto_rc -ne 0 || $lm_sim_old_kw_pw_rc -ne 0 ||
+  -e "$lm_case/getty.d/lightxdm-autologin.conf" ||
+  "$(cat "$lm_case/home/.local/state/lightxdm/install-choices" 2>/dev/null || true)" != $'de=sway\nno_packages=1\nkeyring=kwallet\nno_keyring=0' ||
+  "$(cat "$lm_case/etc/lightxdm/pam-keyring" 2>/dev/null || true)" != "kwallet" ]] ||
+  grep -Fq 'pam_gnome_keyring.so' "$lm_case/etc/pam.d/login" ||
+  ! grep -Fq 'auth       optional   pam_kwallet5.so' "$lm_case/etc/pam.d/login" ||
+  ! grep -Fq 'session    optional   pam_kwallet5.so force_run' "$lm_case/etc/pam.d/login"; then
+  lm_ok=0
+  lm_report+=" [sim-old-choices-kwallet-record-roundtrip auto_rc=$lm_sim_old_kw_auto_rc pw_rc=$lm_sim_old_kw_pw_rc choices=$(cat "$lm_case/home/.local/state/lightxdm/install-choices" 2>&1) pam=$(cat "$lm_case/etc/pam.d/login") auto_out=$lm_sim_old_kw_auto_out out=$lm_sim_old_kw_pw_out]"
 fi
 # Old install-choices without keyring= / no_keyring= still falls back to gnome when PAM has no kwallet record or lines.
 printf 'de=sway\nno_packages=1\n' >"$lm_case/home/.local/state/lightxdm/install-choices"

@@ -2689,7 +2689,13 @@ saved_install_args() {
   if [[ $no_packages -eq 1 ]]; then
     printf '%s\n' --no-packages
   fi
-  if [[ "$no_keyring" == 1 ]]; then
+  local record="" backend="" module auth_line session_line builtin_backend=""
+  record="$(read_pam_state_file "$PAM_KEYRING_STATE" "$preview" 2>/dev/null)" || record=""
+  case "$record" in
+    gnome | kwallet) ;;
+    *) record="" ;;
+  esac
+  if [[ "$no_keyring" == 1 && -z "$record" ]]; then
     printf '%s\n' --no-keyring
     return 0
   fi
@@ -2710,9 +2716,7 @@ saved_install_args() {
   fi
   # The record tells keyring lines a .pacnew merge dropped from lines removed with uninstall.sh
   # --keyring-only; installs from before the record fall back to the lines themselves.
-  local record="" backend="" module auth_line session_line builtin_backend=""
   builtin_backend="$(builtin_de_keyring_backend "$de" 2>/dev/null || true)"
-  record="$(read_pam_state_file "$PAM_KEYRING_STATE" "$preview" 2>/dev/null)" || record=""
   case "$record" in
     gnome | kwallet)
       if [[ -n "$builtin_backend" && "$record" != "$builtin_backend" ]]; then
@@ -7351,13 +7355,19 @@ run_login_mode() {
       log "ERROR: $PAM_KEYRING_STATE is a directory; expected a regular state file."
       return 1
     fi
+    local prior_keyring=""
+    prior_keyring="$(read_pam_state_file "$PAM_KEYRING_STATE" 0 2>/dev/null || true)"
+    case "$prior_keyring" in
+      gnome | kwallet) ;;
+      *) prior_keyring="" ;;
+    esac
     _login_mode_sudo_script "$SCRIPT_DIR/uninstall.sh" --keyring-only || return 1
     if _login_mode_has_custom_env; then
       _login_mode_sudo_script "$SCRIPT_DIR/enable-autologin.sh" "$real_user" || return 1
     else
       enable_autologin "$real_user" || return 1
     fi
-    update_install_choices_keyring "" 1
+    update_install_choices_keyring "$prior_keyring" 1
     log "Login mode switched to autologin for $real_user (dotfiles, packages, shell hooks, and display managers unchanged)."
     return 0
   fi
