@@ -3247,7 +3247,7 @@ managed_shell_hook_is_current() {
 # Inspect the regular user's GPG agent pinentry/SSH configuration into GPG_SETUP_STATUS_* without writing or using sudo.
 inspect_gpg_setup_status() {
   local rel="" home="${HOME%/}" target="" parent="" seg segs=() dir_check="" marker_rc=0
-  local line="" inside=0
+  local line="" inside=0 gnome_pin="" qt_pin=""
   GPG_SETUP_STATUS_PATH=""
   # shellcheck disable=SC2088 # literal home-relative display path for user instructions
   GPG_SETUP_STATUS_DISPLAY="~/.gnupg/gpg-agent.conf"
@@ -3255,6 +3255,7 @@ inspect_gpg_setup_status() {
   GPG_SETUP_STATUS_PINENTRY=""
   GPG_SETUP_STATUS_PINENTRY_OK="null"
   GPG_SETUP_STATUS_SSH="null"
+  GPG_SETUP_STATUS_BACKEND=""
   GPG_SETUP_STATUS_TEXT="not configured ($GPG_SETUP_STATUS_DISPLAY)"
 
   if ! rel="$(_gpg_conf_relpath 0)"; then
@@ -3356,6 +3357,13 @@ inspect_gpg_setup_status() {
     else
       GPG_SETUP_STATUS_PINENTRY_OK="false"
     fi
+    gnome_pin="${PINENTRY_GNOME_BIN:-/usr/bin/pinentry-gnome3}"
+    qt_pin="${PINENTRY_QT_BIN:-/usr/bin/pinentry-qt}"
+    if [[ "$GPG_SETUP_STATUS_PINENTRY" == "$qt_pin" || "$GPG_SETUP_STATUS_PINENTRY" == *pinentry-qt* || "$GPG_SETUP_STATUS_PINENTRY" == *kwallet* ]]; then
+      GPG_SETUP_STATUS_BACKEND="kwallet"
+    elif [[ "$GPG_SETUP_STATUS_PINENTRY" == "$gnome_pin" || "$GPG_SETUP_STATUS_PINENTRY" == *pinentry-gnome* ]]; then
+      GPG_SETUP_STATUS_BACKEND="gnome"
+    fi
   fi
 
   if [[ $marker_rc -eq 1 ]]; then
@@ -3388,7 +3396,7 @@ show_install_status() {
 
   local GPG_SETUP_STATUS_PATH="" GPG_SETUP_STATUS_DISPLAY="" GPG_SETUP_STATUS_STATE=""
   local GPG_SETUP_STATUS_PINENTRY="" GPG_SETUP_STATUS_PINENTRY_OK="null" GPG_SETUP_STATUS_SSH="null"
-  local GPG_SETUP_STATUS_TEXT=""
+  local GPG_SETUP_STATUS_TEXT="" GPG_SETUP_STATUS_BACKEND=""
   inspect_gpg_setup_status
 
   local choices_file line de="" no_packages="" choices_kind="not-recorded" choices_state="not recorded"
@@ -3616,7 +3624,9 @@ show_install_status() {
 
   # The install command that makes the saved choices again: the arguments --update reruns with
   # (read-only preview, no sudo), plus --autologin when this user's lightXDM autologin drop-in is
-  # active and keyring unlock is off (install.sh refuses --autologin without --no-keyring).
+  # active and keyring unlock is off (install.sh refuses --autologin without --no-keyring),
+  # --setup-shell <zsh|fish> when the shell hook state is managed, and --setup-gpg <backend>
+  # (plus --gpg-ssh when ssh support is on) when the GPG block is lightXDM-managed.
   local reproduce_output="" reproduce_text="" reproduce_arg reproduce_line reproduce_no_keyring=0
   local reproduce_args=()
   if [[ "$choices_kind" == readable && -n "$de" ]] &&
@@ -3632,6 +3642,15 @@ show_install_status() {
           break
         fi
       done <<<"$autologin_out"
+    fi
+    if [[ "$SHELL_HOOK_STATUS_STATE" == "managed" && ( "$SHELL_HOOK_STATUS_KIND" == "zsh" || "$SHELL_HOOK_STATUS_KIND" == "fish" ) ]]; then
+      reproduce_args+=(--setup-shell "$SHELL_HOOK_STATUS_KIND")
+    fi
+    if [[ "$GPG_SETUP_STATUS_STATE" == "managed" && -n "$GPG_SETUP_STATUS_BACKEND" ]]; then
+      reproduce_args+=(--setup-gpg "$GPG_SETUP_STATUS_BACKEND")
+      if [[ "$GPG_SETUP_STATUS_SSH" == "true" ]]; then
+        reproduce_args+=(--gpg-ssh)
+      fi
     fi
     printf -v reproduce_text ' %q' "${reproduce_args[@]}"
   fi
@@ -5166,7 +5185,7 @@ run_doctor() {
 
   local GPG_SETUP_STATUS_PATH="" GPG_SETUP_STATUS_DISPLAY="" GPG_SETUP_STATUS_STATE=""
   local GPG_SETUP_STATUS_PINENTRY="" GPG_SETUP_STATUS_PINENTRY_OK="null" GPG_SETUP_STATUS_SSH="null"
-  local GPG_SETUP_STATUS_TEXT=""
+  local GPG_SETUP_STATUS_TEXT="" GPG_SETUP_STATUS_BACKEND=""
   inspect_gpg_setup_status
   case "$GPG_SETUP_STATUS_STATE" in
     managed)

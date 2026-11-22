@@ -13942,6 +13942,112 @@ if [[ $st_unk_rc -ne 0 || "$st_unk_out" != *"Login shell: unknown"* ]]; then
   status_cmd_report+=" [shell unknown: rc=$st_unk_rc out=$st_unk_out]"
 fi
 
+# 3b) Managed shell hook and managed GPG block in --status: Reproduce line and reproduce_args append
+# --setup-shell <zsh|fish> and --setup-gpg <backend> [--gpg-ssh].
+cat >"$status_cmd_dir/plasma_login" <<'EOF'
+#%PAM-1.0
+auth       include      system-local-login
+auth       optional   pam_kwallet5.so
+session    include      system-local-login
+session    optional   pam_kwallet5.so auto_start
+EOF
+printf 'kwallet\n' >"$status_cmd_dir/state/pam-keyring-kwallet"
+
+mkdir -p "$status_cmd_dir/managed_home/.local/state/lightxdm" "$status_cmd_dir/managed_home/.gnupg"
+printf '%s\n' 'de=gnome' 'no_packages=1' >"$status_cmd_dir/managed_home/.local/state/lightxdm/install-choices"
+cat >"$status_cmd_dir/managed_home/.zprofile" <<'EOF'
+# >>> lightXDM TTY1 auto-start >>>
+[[ -z "${DISPLAY:-}" && "${XDG_VTNR:-}" -eq 1 ]] && exec startx
+# <<< lightXDM TTY1 auto-start <<<
+EOF
+cat >"$status_cmd_dir/managed_home/.gnupg/gpg-agent.conf" <<'EOF'
+# >>> lightXDM GPG setup >>>
+pinentry-program /usr/bin/pinentry-gnome3
+# <<< lightXDM GPG setup <<<
+EOF
+
+mkdir -p "$status_cmd_dir/managed_ssh_home/.local/state/lightxdm" "$status_cmd_dir/managed_ssh_home/.gnupg"
+printf '%s\n' 'de=plasma' 'no_packages=1' >"$status_cmd_dir/managed_ssh_home/.local/state/lightxdm/install-choices"
+cat >"$status_cmd_dir/managed_ssh_home/.zprofile" <<'EOF'
+# >>> lightXDM TTY1 auto-start >>>
+[[ -z "${DISPLAY:-}" && "${XDG_VTNR:-}" -eq 1 ]] && exec startx
+# <<< lightXDM TTY1 auto-start <<<
+EOF
+cat >"$status_cmd_dir/managed_ssh_home/.gnupg/gpg-agent.conf" <<'EOF'
+# >>> lightXDM GPG setup >>>
+pinentry-program /usr/bin/pinentry-qt
+enable-ssh-support
+# <<< lightXDM GPG setup <<<
+EOF
+
+mkdir -p "$status_cmd_dir/managed_fish_home/.local/state/lightxdm" "$status_cmd_dir/managed_fish_home/.config/fish" \
+  "$status_cmd_dir/managed_fish_home/.gnupg"
+printf '%s\n' 'de=i3' 'no_packages=1' >"$status_cmd_dir/managed_fish_home/.local/state/lightxdm/install-choices"
+cat >"$status_cmd_dir/managed_fish_home/.config/fish/config.fish" <<'EOF'
+# >>> lightXDM TTY1 auto-start >>>
+if status is-login; and test (tty) = /dev/tty1; and test -z "$DISPLAY"
+    exec startx
+end
+# <<< lightXDM TTY1 auto-start <<<
+EOF
+cat >"$status_cmd_dir/managed_fish_home/.gnupg/gpg-agent.conf" <<'EOF'
+# >>> lightXDM GPG setup >>>
+pinentry-program /usr/bin/pinentry-gnome3
+# <<< lightXDM GPG setup <<<
+EOF
+
+for status_m_case in \
+  "gnome|$status_cmd_dir/managed_home|/usr/bin/zsh|$status_cmd_dir/active_login|$status_cmd_dir/state/pam-keyring|--de gnome --no-packages --setup-shell zsh --setup-gpg gnome|--de gnome --no-packages --setup-shell zsh --setup-gpg gnome" \
+  "kwallet-ssh|$status_cmd_dir/managed_ssh_home|/usr/bin/zsh|$status_cmd_dir/plasma_login|$status_cmd_dir/state/pam-keyring-kwallet|--de plasma --no-packages --setup-shell zsh --setup-gpg kwallet --gpg-ssh|--de plasma --no-packages --setup-shell zsh --setup-gpg kwallet --gpg-ssh" \
+  "fish-gnome|$status_cmd_dir/managed_fish_home|/usr/bin/fish|$status_cmd_dir/active_login|$status_cmd_dir/state/pam-keyring|--de i3 --no-packages --setup-shell fish --setup-gpg gnome|--de i3 --no-packages --setup-shell fish --setup-gpg gnome"; do
+  IFS='|' read -r status_m_name status_m_home status_m_shell status_m_login status_m_pam status_m_expected_str status_m_expected_args <<<"$status_m_case"
+  status_m_out=""
+  status_m_json=""
+  : >"$status_sudo_log"
+  set +e
+  for status_m_flags in "--status" "--status --json"; do
+    read -r -a status_m_argv <<<"$status_m_flags"
+    status_m_one="$(
+      env -u SUDO_USER -u XDG_STATE_HOME -u XDG_CONFIG_HOME -u ZDOTDIR -u STATUS_GETTY_STATE -u STATUS_DM_STATE \
+        HOME="$status_m_home" \
+        USER=statususer \
+        STATUS_LOGIN_SHELL="$status_m_shell" \
+        PATH="$status_cmd_dir/shell_bin:$STUB_BIN:$PATH" \
+        STATUS_SUDO_LOG="$status_sudo_log" \
+        LOGIN_FILE="$status_m_login" \
+        GNOME_SESSION_TYPE_DEST="$status_cmd_dir/missing-gnome.conf" \
+        PAM_KEYRING_STATE="$status_m_pam" \
+        PAM_LOGIN_BASE_STATE="$status_cmd_dir/missing-pam-login-base" \
+        DM_STATE_FILE="$status_cmd_dir/missing-dm-state" \
+        AUTOLOGIN_DROPIN_DIR="$status_cmd_dir/missing-getty.d" \
+        bash "$REPO_ROOT/install.sh" "${status_m_argv[@]}" 2>/dev/null
+    )"
+    status_m_rc=$?
+    if [[ $status_m_rc -ne 0 ]]; then
+      status_cmd_report+=" [managed-reproduce $status_m_name '$status_m_flags': rc=$status_m_rc]"
+    fi
+    if [[ "$status_m_flags" == --status ]]; then
+      status_m_out="$status_m_one"
+    else
+      status_m_json="$status_m_one"
+    fi
+  done
+  set -e
+  if [[ -s "$status_sudo_log" ||
+    "$status_m_out" != *$'\n'"Reproduce with: bash install.sh $status_m_expected_str"$'\n'* ]]; then
+    status_cmd_report+=" [managed-reproduce $status_m_name text: sudo=$(cat "$status_sudo_log"), out=$status_m_out]"
+  fi
+  if ! JSON_OUT="$status_m_json" EXPECTED_ARGS="$status_m_expected_args" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+expected = os.environ["EXPECTED_ARGS"].split()
+assert d["install_choices"]["reproduce_args"] == expected, d["install_choices"]
+PY
+  then
+    status_cmd_report+=" [managed-reproduce $status_m_name json: out=$status_m_json]"
+  fi
+done
+
 # 4) Reject incompatible combinations and document --status in --help.
 for bad_status_args in "--status --de i3" "--status --update" "--update --status" "--status --dry-run"; do
   set +e
