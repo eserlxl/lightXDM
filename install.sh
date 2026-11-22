@@ -1020,6 +1020,25 @@ list_desktop_sessions() {
   fi
 }
 
+# Refuse a missing or symlinked $HOME and a symlinked or non-directory ~/.config or
+# ~/.config/lightxdm, so a user session template is never written outside $HOME.
+check_user_template_dirs() {
+  local home="${HOME%/}"
+  [[ -n "$home" ]] || home="/"
+  if [[ -z "${HOME:-}" || -L "$home" || ! -d "$home" ]]; then
+    log "Refusing unsafe home directory: ${HOME:-<unset>}"
+    return 1
+  fi
+  if [[ -L "$home/.config" ]] || [[ -e "$home/.config" && ! -d "$home/.config" ]]; then
+    log "Refusing unsafe directory path: $home/.config"
+    return 1
+  fi
+  if [[ -L "$home/.config/lightxdm" ]] || [[ -e "$home/.config/lightxdm" && ! -d "$home/.config/lightxdm" ]]; then
+    log "Refusing unsafe directory path: $home/.config/lightxdm"
+    return 1
+  fi
+}
+
 # Create ~/.config/lightxdm/.xinitrc-<id> (or .wayland-session-<id>) to edit: a copy of the
 # built-in template, or a custom X11 (from i3) or minimal Wayland template.
 init_xinitrc_template() {
@@ -1061,6 +1080,7 @@ init_xinitrc_template() {
   if [[ -n "$dest_override" ]]; then
     dest="$dest_override"
   else
+    check_user_template_dirs || return 1
     if [[ -e "$dest" || -L "$dest" ]]; then
       log "$dest already exists; edit it, or remove it to start over."
       return 1
@@ -1212,20 +1232,7 @@ prepare_install_session() {
     sibling="$HOME/.config/lightxdm/.wayland-session-$target_de"
   fi
 
-  local home="${HOME%/}"
-  [[ -n "$home" ]] || home="/"
-  if [[ -z "${HOME:-}" || -L "$home" || ! -d "$home" ]]; then
-    log "Refusing unsafe home directory: ${HOME:-<unset>}"
-    return 1
-  fi
-  if [[ -L "$home/.config" ]] || [[ -e "$home/.config" && ! -d "$home/.config" ]]; then
-    log "Refusing unsafe directory path: $home/.config"
-    return 1
-  fi
-  if [[ -L "$home/.config/lightxdm" ]] || [[ -e "$home/.config/lightxdm" && ! -d "$home/.config/lightxdm" ]]; then
-    log "Refusing unsafe directory path: $home/.config/lightxdm"
-    return 1
-  fi
+  check_user_template_dirs || return 1
   if [[ -e "$sibling" || -L "$sibling" ]]; then
     log "$sibling already exists for $target_de; a custom id uses one session template: edit it, or remove it to switch."
     return 1

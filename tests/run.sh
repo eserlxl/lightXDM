@@ -8802,6 +8802,45 @@ else
   fail "install.sh --init-template with --list-packages (status=$status_mixed, output=$out_mixed)"
 fi
 
+# --init-template refuses a symlinked or non-directory ~/.config or ~/.config/lightxdm, like --install-session
+unsafe_init_home="$TMP_DIR/unsafe_init_home"
+unsafe_init_target="$TMP_DIR/unsafe_init_target"
+for unsafe_init_case in lightxdm-link config-link lightxdm-file; do
+  rm -rf "$unsafe_init_home" "$unsafe_init_target"
+  mkdir -p "$unsafe_init_home" "$unsafe_init_target"
+  case "$unsafe_init_case" in
+    lightxdm-link)
+      mkdir -p "$unsafe_init_home/.config"
+      ln -s "$unsafe_init_target" "$unsafe_init_home/.config/lightxdm"
+      unsafe_init_path="$unsafe_init_home/.config/lightxdm"
+      unsafe_init_written="$unsafe_init_target/.xinitrc-i3"
+      ;;
+    config-link)
+      ln -s "$unsafe_init_target" "$unsafe_init_home/.config"
+      unsafe_init_path="$unsafe_init_home/.config"
+      unsafe_init_written="$unsafe_init_target/lightxdm"
+      ;;
+    lightxdm-file)
+      mkdir -p "$unsafe_init_home/.config"
+      : >"$unsafe_init_home/.config/lightxdm"
+      unsafe_init_path="$unsafe_init_home/.config/lightxdm"
+      unsafe_init_written="$unsafe_init_home/.config/lightxdm/.xinitrc-i3"
+      ;;
+  esac
+  : >"$STUB_LOG"
+  set +e
+  out_unsafe_init="$(HOME="$unsafe_init_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --de i3 2>&1)"
+  status_unsafe_init=$?
+  set -e
+  if [[ $status_unsafe_init -ne 0 && "$out_unsafe_init" == *"Refusing unsafe directory path: $unsafe_init_path"* &&
+    ! -e "$unsafe_init_written" && ! -L "$unsafe_init_written" && -z "$(ls -A "$unsafe_init_target")" && ! -s "$STUB_LOG" ]]; then
+    pass "install.sh --init-template refuses an unsafe ~/.config path ($unsafe_init_case) and writes nothing"
+  else
+    fail "install.sh --init-template unsafe ~/.config path ($unsafe_init_case, status=$status_unsafe_init, output=$out_unsafe_init, target=$(ls -A "$unsafe_init_target"))"
+  fi
+done
+rm -rf "$unsafe_init_home" "$unsafe_init_target"
+
 # --from-session imports only [Desktop Entry], retaining literal arguments and the first desktop name.
 init_session_home="$TMP_DIR/init_session_home"
 mkdir -p "$init_session_home"
