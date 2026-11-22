@@ -401,6 +401,34 @@ class RepoIntegrityTests(unittest.TestCase):
             self.assertIn("__pycache__", proc_dirty.stderr)
             self.assertIn(".pyc", proc_dirty.stderr)
 
+    def test_bytecode_artifacts_ignored_local_dirs_pass(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            _create_valid_fixture(root)
+            (root / "work" / "__pycache__").mkdir(parents=True)
+            (root / ".remember" / "__pycache__").mkdir(parents=True)
+            proc_clean = _run_integrity(root)
+            self.assertEqual(proc_clean.returncode, 0, proc_clean.stderr)
+
+            bad_cache = root / "tests" / "__pycache__"
+            bad_cache.mkdir(parents=True)
+            (bad_cache / "stale.pyc").write_bytes(b"pyc")
+            proc_dirty = _run_integrity(root)
+            self.assertNotEqual(proc_dirty.returncode, 0)
+            self.assertIn("__pycache__", proc_dirty.stderr)
+            self.assertIn(".pyc", proc_dirty.stderr)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            _create_valid_fixture(root)
+            deep_cache = root / "tests" / "work" / "__pycache__"
+            deep_cache.mkdir(parents=True)
+            (deep_cache / "stale.pyc").write_bytes(b"pyc")
+            proc_deep = _run_integrity(root)
+            self.assertNotEqual(proc_deep.returncode, 0)
+            self.assertIn("__pycache__", proc_deep.stderr)
+            self.assertIn(".pyc", proc_deep.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

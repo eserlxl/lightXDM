@@ -706,9 +706,13 @@ def check_python_invocations(root: Path, errors: list[str]) -> None:
 
 def check_no_bytecode_artifacts(root: Path, errors: list[str]) -> None:
     """Assert zero __pycache__ directories or *.py[cod] files exist under repo root."""
-    excluded_dirs = {".git", ".qb", ".planwright"}
+    excluded_dirs = {".git", ".qb", ".planwright", "work", ".remember"}
+    top_level_only = {"work", ".remember"}
+    repo_root = root.resolve()
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in sorted(dirnames) if d not in excluded_dirs]
+        is_root = Path(dirpath).resolve() == repo_root
+        active_excluded = excluded_dirs if is_root else (excluded_dirs - top_level_only)
+        dirnames[:] = [d for d in sorted(dirnames) if d not in active_excluded]
         for dname in dirnames:
             if dname == "__pycache__":
                 rel = Path(dirpath, dname).relative_to(root)
