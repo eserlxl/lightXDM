@@ -18146,6 +18146,197 @@ else
   fail "install.sh --doctor empty-de launcher checks:$doc_node_report"
 fi
 
+# ---------------------------------------------------------------------------
+# install.sh --doctor default keyring / wallet mismatch warnings and quiet matches
+# ---------------------------------------------------------------------------
+doctor_default_ok=1
+doctor_default_report=""
+
+# 1) GNOME backend: absent ~/.local/share/keyrings/default adds no warning
+reset_doctor_gnome_fixture
+rm -rf "$doctor_home/.local/share/keyrings"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" == *"Default keyring"* || "$doc_out" == *"WARN"* ]]; then
+  doctor_default_ok=0
+  doctor_default_report+=" gnome-absent rc=$doc_rc out=[$doc_out];"
+fi
+
+# 2) GNOME backend: matching 'login' collection stays quiet (no warning)
+reset_doctor_gnome_fixture
+mkdir -p "$doctor_home/.local/share/keyrings"
+printf 'login\n' >"$doctor_home/.local/share/keyrings/default"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" == *"Default keyring"* || "$doc_out" == *"WARN"* ]]; then
+  doctor_default_ok=0
+  doctor_default_report+=" gnome-match rc=$doc_rc out=[$doc_out];"
+fi
+
+# 3) GNOME backend: mismatched default keyring emits WARN with fix instructions
+printf 'Default_keyring\n' >"$doctor_home/.local/share/keyrings/default"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"Default keyring: WARN"* ||
+  "$doc_out" != *"default keyring is \"Default_keyring\""* ||
+  "$doc_out" != *"PAM unlocks login"* ||
+  "$doc_out" != *"seahorse"* ||
+  "$doc_out" != *"echo login > $doctor_home/.local/share/keyrings/default"* ||
+  "$doc_out" != *"Doctor: PASS (0 issue(s), 1 warning(s))"* ]]; then
+  doctor_default_ok=0
+  doctor_default_report+=" gnome-mismatch rc=$doc_rc out=[$doc_out];"
+fi
+
+# 4) GNOME backend with custom XDG_DATA_HOME: mismatched keyring respects XDG_DATA_HOME
+mkdir -p "$doctor_dir/custom_data/keyrings"
+printf 'other_keyring\n' >"$doctor_dir/custom_data/keyrings/default"
+doc_rc=0
+doc_out="$( ( export XDG_DATA_HOME="$doctor_dir/custom_data"; run_doctor_cmd --doctor 2>&1 ) )" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"Default keyring: WARN"* ||
+  "$doc_out" != *"default keyring is \"other_keyring\""* ||
+  "$doc_out" != *"echo login > $doctor_dir/custom_data/keyrings/default"* ]]; then
+  doctor_default_ok=0
+  doctor_default_report+=" gnome-xdg-mismatch rc=$doc_rc out=[$doc_out];"
+fi
+
+# 5) GNOME backend --doctor --json structured output
+doc_rc=0
+doc_js="$(run_doctor_cmd --doctor --json 2>"$doctor_dir/doc_js_gnome.err")" || doc_rc=$?
+if [[ $doc_rc -ne 0 || -s "$doctor_dir/doc_js_gnome.err" ]] ||
+  ! JSON_OUT="$doc_js" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["healthy"] is True
+assert d["warnings"] == 1
+assert d["issues"] == 0
+checks = {c["name"]: c for c in d["checks"]}
+assert "Default keyring" in checks
+assert checks["Default keyring"]["status"] == "warn"
+assert "seahorse" in checks["Default keyring"]["detail"]
+assert "echo login >" in checks["Default keyring"]["detail"]
+PY
+then
+  doctor_default_ok=0
+  doctor_default_report+=" gnome-json rc=$doc_rc err=$(cat "$doctor_dir/doc_js_gnome.err" 2>/dev/null) out=[$doc_js];"
+fi
+
+# Helper to set up clean KWallet fixture
+reset_doctor_gnome_fixture
+rm -f "$doctor_home/.wayland-session" "$doctor_etc/lightxdm/gnome-session-type.conf"
+printf 'de=plasma\nno_packages=1\n' >"$doctor_state/lightxdm/install-choices"
+cp "$REPO_ROOT/dotfiles/.wayland-session-plasma" "$doctor_home/.wayland-session"
+chmod 755 "$doctor_home/.wayland-session"
+mkdir -p "$doctor_root/usr/lib"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$doctor_root/usr/lib/plasma-dbus-run-session-if-needed"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$doctor_root/usr/bin/startplasma-wayland"
+chmod +x "$doctor_root/usr/lib/plasma-dbus-run-session-if-needed" "$doctor_root/usr/bin/startplasma-wayland"
+: >"$doctor_root/usr/lib/security/pam_kwallet5.so"
+printf 'kwallet\n' >"$doctor_etc/lightxdm/pam-keyring"
+cat >"$doctor_etc/pam.d/login" <<EOF
+#%PAM-1.0
+auth       include      system-local-login
+$PAM_KWALLET_AUTH
+session    include      system-local-login
+$PAM_KWALLET_SESSION
+EOF
+
+# 6) KWallet backend: absent ~/.config/kwalletrc adds no warning
+rm -f "$doctor_home/.config/kwalletrc"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" == *"Default keyring"* || "$doc_out" == *"WARN"* ]]; then
+  doctor_default_ok=0
+  doctor_default_report+=" kwallet-absent rc=$doc_rc out=[$doc_out];"
+fi
+
+# 7) KWallet backend: kwalletrc without Default Wallet stays quiet
+cat >"$doctor_home/.config/kwalletrc" <<'EOF'
+[Wallet]
+First Use=false
+EOF
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" == *"Default keyring"* || "$doc_out" == *"WARN"* ]]; then
+  doctor_default_ok=0
+  doctor_default_report+=" kwallet-no-key rc=$doc_rc out=[$doc_out];"
+fi
+
+# 8) KWallet backend: matching 'Default Wallet=kdewallet' stays quiet
+cat >"$doctor_home/.config/kwalletrc" <<'EOF'
+[Wallet]
+Default Wallet=kdewallet
+First Use=false
+EOF
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" == *"Default keyring"* || "$doc_out" == *"WARN"* ]]; then
+  doctor_default_ok=0
+  doctor_default_report+=" kwallet-match rc=$doc_rc out=[$doc_out];"
+fi
+
+# 9) KWallet backend: mismatched 'Default Wallet=mywallet' emits WARN with fix instructions
+cat >"$doctor_home/.config/kwalletrc" <<'EOF'
+[Wallet]
+Default Wallet=mywallet
+First Use=false
+EOF
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"Default keyring: WARN"* ||
+  "$doc_out" != *"default wallet is \"mywallet\""* ||
+  "$doc_out" != *"PAM unlocks kdewallet"* ||
+  "$doc_out" != *"kwalletmanager"* ||
+  "$doc_out" != *"set Default Wallet=kdewallet in $doctor_home/.config/kwalletrc"* ||
+  "$doc_out" != *"Doctor: PASS (0 issue(s), 1 warning(s))"* ]]; then
+  doctor_default_ok=0
+  doctor_default_report+=" kwallet-mismatch rc=$doc_rc out=[$doc_out];"
+fi
+
+# 10) KWallet backend with custom XDG_CONFIG_HOME: mismatched wallet respects XDG_CONFIG_HOME
+mkdir -p "$doctor_dir/custom_conf"
+cat >"$doctor_dir/custom_conf/kwalletrc" <<'EOF'
+[Wallet]
+Default Wallet=otherwallet
+EOF
+doc_rc=0
+doc_out="$( ( export XDG_CONFIG_HOME="$doctor_dir/custom_conf"; run_doctor_cmd --doctor 2>&1 ) )" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"Default keyring: WARN"* ||
+  "$doc_out" != *"default wallet is \"otherwallet\""* ||
+  "$doc_out" != *"set Default Wallet=kdewallet in $doctor_dir/custom_conf/kwalletrc"* ]]; then
+  doctor_default_ok=0
+  doctor_default_report+=" kwallet-xdg-mismatch rc=$doc_rc out=[$doc_out];"
+fi
+
+# 11) KWallet backend --doctor --json structured output
+doc_rc=0
+doc_js="$(run_doctor_cmd --doctor --json 2>"$doctor_dir/doc_js_kwallet.err")" || doc_rc=$?
+if [[ $doc_rc -ne 0 || -s "$doctor_dir/doc_js_kwallet.err" ]] ||
+  ! JSON_OUT="$doc_js" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["healthy"] is True
+assert d["warnings"] == 1
+assert d["issues"] == 0
+checks = {c["name"]: c for c in d["checks"]}
+assert "Default keyring" in checks
+assert checks["Default keyring"]["status"] == "warn"
+assert "kwalletmanager" in checks["Default keyring"]["detail"]
+assert "Default Wallet=kdewallet" in checks["Default keyring"]["detail"]
+PY
+then
+  doctor_default_ok=0
+  doctor_default_report+=" kwallet-json rc=$doc_rc err=$(cat "$doctor_dir/doc_js_kwallet.err" 2>/dev/null) out=[$doc_js];"
+fi
+
+# Cleanup custom test directories
+rm -rf "$doctor_dir/custom_data" "$doctor_dir/custom_conf"
+
+if [[ $doctor_default_ok -eq 1 ]]; then
+  pass "install.sh --doctor warns when default GNOME keyring or KWallet wallet differs from PAM unlock collection"
+else
+  fail "install.sh --doctor default keyring/wallet checks:$doctor_default_report"
+fi
+
 # --- install.sh --setup-shell and uninstall.sh hook cleanup ---
 setup_shell_dir="$TMP_DIR/setup_shell_test"
 setup_shell_home="$setup_shell_dir/home"

@@ -4835,7 +4835,7 @@ run_doctor() {
     real_user="$(id -un 2>/dev/null || true)"
   fi
 
-  local choices_file line de="" no_packages="" choices_kind="not-recorded" choices_parent_rc=0
+  local choices_file line de="" no_packages="" saved_keyring="" choices_no_keyring=0 choices_kind="not-recorded" choices_parent_rc=0
   choices_file="$(install_choices_file)"
   state_path_is_safe "$choices_file" || choices_parent_rc=$?
   if install_choices_readable "$choices_file"; then
@@ -4843,6 +4843,8 @@ run_doctor() {
     while IFS= read -r line || [[ -n "$line" ]]; do
       case "$line" in
         de=*) de="${line#de=}" ;;
+        keyring=*) saved_keyring="${line#keyring=}" ;;
+        no_keyring=1) choices_no_keyring=1 ;;
         no_packages=1) no_packages=1 ;;
         no_packages=0) no_packages=0 ;;
       esac
@@ -5457,6 +5459,61 @@ run_doctor() {
     fi
     if [[ $keyring_issue -eq 0 && $keyring_configured -eq 1 ]]; then
       diag_record_check "$json_mode" "PAM keyring" "ok" "$LOGIN_FILE"
+    fi
+
+    local expected_backend=""
+    if [[ "${choices_no_keyring:-0}" -ne 1 ]]; then
+      expected_backend="${pam_expected:-${saved_keyring:-$builtin_backend}}"
+      if [[ -z "$expected_backend" ]]; then
+        if [[ $has_kwallet_line -eq 1 && $has_gnome_line -eq 0 ]]; then
+          expected_backend="kwallet"
+        elif [[ $has_gnome_line -eq 1 && $has_kwallet_line -eq 0 ]]; then
+          expected_backend="gnome"
+        fi
+      fi
+    elif [[ -n "$pam_expected" ]]; then
+      expected_backend="$pam_expected"
+    fi
+    if [[ "$expected_backend" == gnome ]]; then
+      local gnome_default_file="${XDG_DATA_HOME:-$HOME/.local/share}/keyrings/default"
+      if [[ -e "$gnome_default_file" || -L "$gnome_default_file" ]]; then
+        local gnome_def=""
+        if [[ -f "$gnome_default_file" && -r "$gnome_default_file" ]]; then
+          IFS=$' \t\r\n' read -r gnome_def <"$gnome_default_file" || true
+        fi
+        if [[ "$gnome_def" != "login" ]]; then
+          printf -v diag_msg 'default keyring is "%s" (PAM unlocks login) — make login the default (seahorse, or echo login > %s)' \
+            "${gnome_def:-empty}" "$gnome_default_file"
+          diag_record_check "$json_mode" "Default keyring" "warn" "$diag_msg"
+          warnings=$((warnings + 1))
+        fi
+      fi
+    elif [[ "$expected_backend" == kwallet ]]; then
+      local kwallet_rc="${XDG_CONFIG_HOME:-$HOME/.config}/kwalletrc"
+      if [[ -f "$kwallet_rc" && -r "$kwallet_rc" ]]; then
+        local in_wallet=0 kwallet_def="" has_kwallet_def=0 kline=""
+        while IFS= read -r kline || [[ -n "$kline" ]]; do
+          kline="${kline%$'\r'}"
+          case "$kline" in
+            "[Wallet]"* | "[wallet]"*) in_wallet=1 ;;
+            "["*"]"*) in_wallet=0 ;;
+            "Default Wallet="* | "Default Wallet ="* | "default wallet="* | "default wallet ="*)
+              if [[ $in_wallet -eq 1 ]]; then
+                has_kwallet_def=1
+                kwallet_def="${kline#*=}"
+                kwallet_def="${kwallet_def#"${kwallet_def%%[![:space:]]*}"}"
+                kwallet_def="${kwallet_def%"${kwallet_def##*[![:space:]]}"}"
+              fi
+              ;;
+          esac
+        done <"$kwallet_rc"
+        if [[ $has_kwallet_def -eq 1 && "$kwallet_def" != "kdewallet" ]]; then
+          printf -v diag_msg 'default wallet is "%s" (PAM unlocks kdewallet) — make kdewallet the default (kwalletmanager, or set Default Wallet=kdewallet in %s)' \
+            "${kwallet_def:-empty}" "$kwallet_rc"
+          diag_record_check "$json_mode" "Default keyring" "warn" "$diag_msg"
+          warnings=$((warnings + 1))
+        fi
+      fi
     fi
 
     local GNOME_PAM_STATUS_ID="" GNOME_PAM_STATUS_MSG=""
