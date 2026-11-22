@@ -208,6 +208,8 @@ export PACMAN_DB_DIR="$TMP_DIR/pacman_db"
 # --preflight and --doctor read /etc/locale.conf; keep every run off the host file.
 mkdir -p "$TMP_DIR/etc" && : >"$TMP_DIR/etc/locale.conf"
 export LOCALE_CONF="$TMP_DIR/etc/locale.conf"
+# --preflight and --doctor read nvidia_drm modeset parameter; keep every run off host /sys.
+export NVIDIA_DRM_MODESET="$TMP_DIR/nonexistent-nvidia-drm-modeset"
 
 # shellcheck source=install.sh disable=SC1091
 source "$REPO_ROOT/install.sh"
@@ -16919,6 +16921,121 @@ for quiet_conf in "$preflight_loc_dir/locale_c.conf" "$preflight_loc_dir/locale_
   fi
 done
 
+preflight_nvidia_dir="$preflight_dir/nvidia_fixtures"
+mkdir -p "$preflight_nvidia_dir"
+printf 'N\n' >"$preflight_nvidia_dir/modeset_n"
+printf '0\n' >"$preflight_nvidia_dir/modeset_0"
+printf 'Y\n' >"$preflight_nvidia_dir/modeset_y"
+
+set +e
+pf_nv_warn="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=plasma-desktop PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  LOCALE_CONF="$preflight_loc_dir/locale_en.conf" \
+  PREFLIGHT_LOCALE_A="$(printf 'C\nPOSIX\nen_us.utf8\n')" \
+  NVIDIA_DRM_MODESET="$preflight_nvidia_dir/modeset_n" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_nv_warn_rc=$?
+set -e
+if [[ $pf_nv_warn_rc -ne 0 || "$pf_nv_warn" != *"NVIDIA DRM modeset: WARN"* ||
+  "$pf_nv_warn" != *"nvidia_drm.modeset=1 to the kernel command line or an options line in /etc/modprobe.d"* ||
+  "$pf_nv_warn" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [wayland nvidia modeset=N preflight prose rc=$pf_nv_warn_rc out=$pf_nv_warn]"
+fi
+
+set +e
+pf_nv_warn_js="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=plasma-desktop PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  LOCALE_CONF="$preflight_loc_dir/locale_en.conf" \
+  PREFLIGHT_LOCALE_A="$(printf 'C\nPOSIX\nen_us.utf8\n')" \
+  NVIDIA_DRM_MODESET="$preflight_nvidia_dir/modeset_n" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_nv_warn.err")"
+pf_nv_warn_js_rc=$?
+set -e
+if [[ $pf_nv_warn_js_rc -ne 0 || -s "$preflight_dir/js_nv_warn.err" ]] ||
+  ! JSON_OUT="$pf_nv_warn_js" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["mode"] == "preflight"
+assert d["ready"] is True
+assert d["status"] == "warn"
+assert d["blockers"] == 0
+assert d["warnings"] == 1
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["NVIDIA DRM modeset"]["status"] == "warn"
+assert "nvidia_drm.modeset=1 to the kernel command line or an options line in /etc/modprobe.d" in checks["NVIDIA DRM modeset"]["detail"]
+PY
+then
+  preflight_ok=0
+  preflight_report+=" [wayland nvidia modeset=N preflight json rc=$pf_nv_warn_js_rc err=$(<"$preflight_dir/js_nv_warn.err") out=$pf_nv_warn_js]"
+fi
+
+set +e
+pf_nv_0="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=gnome-shell PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  LOCALE_CONF="$preflight_loc_dir/locale_en.conf" \
+  PREFLIGHT_LOCALE_A="$(printf 'C\nPOSIX\nen_us.utf8\n')" \
+  NVIDIA_DRM_MODESET="$preflight_nvidia_dir/modeset_0" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_nv_0_rc=$?
+set -e
+if [[ $pf_nv_0_rc -ne 0 || "$pf_nv_0" != *"NVIDIA DRM modeset: WARN"* ||
+  "$pf_nv_0" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [wayland nvidia modeset=0 preflight rc=$pf_nv_0_rc out=$pf_nv_0]"
+fi
+
+set +e
+pf_nv_y="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=plasma-desktop PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  LOCALE_CONF="$preflight_loc_dir/locale_en.conf" \
+  PREFLIGHT_LOCALE_A="$(printf 'C\nPOSIX\nen_us.utf8\n')" \
+  NVIDIA_DRM_MODESET="$preflight_nvidia_dir/modeset_y" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_nv_y_rc=$?
+set -e
+if [[ $pf_nv_y_rc -ne 0 || "$pf_nv_y" == *"NVIDIA DRM modeset"* ||
+  "$pf_nv_y" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [wayland nvidia modeset=Y preflight rc=$pf_nv_y_rc out=$pf_nv_y]"
+fi
+
+set +e
+pf_nv_absent="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=plasma-desktop PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  LOCALE_CONF="$preflight_loc_dir/locale_en.conf" \
+  PREFLIGHT_LOCALE_A="$(printf 'C\nPOSIX\nen_us.utf8\n')" \
+  NVIDIA_DRM_MODESET="$preflight_nvidia_dir/nonexistent" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_nv_absent_rc=$?
+set -e
+if [[ $pf_nv_absent_rc -ne 0 || "$pf_nv_absent" == *"NVIDIA DRM modeset"* ||
+  "$pf_nv_absent" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [wayland nvidia modeset absent preflight rc=$pf_nv_absent_rc out=$pf_nv_absent]"
+fi
+
+set +e
+pf_nv_x11="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  LOCALE_CONF="$preflight_loc_dir/locale_en.conf" \
+  PREFLIGHT_LOCALE_A="$(printf 'C\nPOSIX\nen_us.utf8\n')" \
+  NVIDIA_DRM_MODESET="$preflight_nvidia_dir/modeset_n" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_nv_x11_rc=$?
+set -e
+if [[ $pf_nv_x11_rc -ne 0 || "$pf_nv_x11" == *"NVIDIA DRM modeset"* ||
+  "$pf_nv_x11" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [x11 nvidia modeset=N preflight rc=$pf_nv_x11_rc out=$pf_nv_x11]"
+fi
+
 if [[ $preflight_ok -eq 1 ]]; then
   pass "install.sh --preflight validates host readiness, shell hints, and next steps cleanly without sudo or side effects"
 else
@@ -17012,6 +17129,7 @@ run_doctor_cmd() {
     AUTOLOGIN_DROPIN_DIR="$doctor_etc/getty@tty1.service.d" \
     DOCTOR_SUDO_LOG="$doctor_dir/sudo.log" \
     LOCALE_CONF="${DOCTOR_LOCALE_CONF:-$LOCALE_CONF}" \
+    NVIDIA_DRM_MODESET="${DOCTOR_NVIDIA_DRM_MODESET:-$NVIDIA_DRM_MODESET}" \
     PATH="$doctor_bin:/usr/bin:/bin" \
     bash "$REPO_ROOT/install.sh" "$@"
 }
@@ -17911,6 +18029,96 @@ if [[ $doc_rc -ne 0 || "$doc_out" == *"System locale"* || "$doc_out" != *"Doctor
   doctor_ok=0
   doctor_report+=" doc-locale-absent rc=$doc_rc out=[$doc_out];"
 fi
+
+doctor_nvidia_dir="$doctor_dir/nvidia_fixtures"
+mkdir -p "$doctor_nvidia_dir"
+printf 'N\n' >"$doctor_nvidia_dir/modeset_n"
+printf '0\n' >"$doctor_nvidia_dir/modeset_0"
+printf 'Y\n' >"$doctor_nvidia_dir/modeset_y"
+
+reset_doctor_gnome_fixture
+doc_rc=0
+doc_out="$(DOCTOR_NVIDIA_DRM_MODESET="$doctor_nvidia_dir/modeset_n" run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"NVIDIA DRM modeset: WARN"* ||
+  "$doc_out" != *"nvidia_drm.modeset=1 to the kernel command line or an options line in /etc/modprobe.d"* ||
+  "$doc_out" != *"Doctor: PASS (0 issue(s), 1 warning(s))"* ]]; then
+  doctor_ok=0
+  doctor_report+=" doc-nvidia-warn rc=$doc_rc out=[$doc_out];"
+fi
+
+doc_rc=0
+doc_nv_js="$(DOCTOR_NVIDIA_DRM_MODESET="$doctor_nvidia_dir/modeset_n" run_doctor_cmd --doctor --json 2>"$doctor_dir/doc_nv_js.err")" || doc_rc=$?
+if [[ $doc_rc -ne 0 || -s "$doctor_dir/doc_nv_js.err" ]] ||
+  ! JSON_OUT="$doc_nv_js" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["mode"] == "doctor"
+assert d["healthy"] is True
+assert d["status"] == "warn"
+assert d["issues"] == 0
+assert d["warnings"] == 1
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["NVIDIA DRM modeset"]["status"] == "warn"
+assert "nvidia_drm.modeset=1 to the kernel command line or an options line in /etc/modprobe.d" in checks["NVIDIA DRM modeset"]["detail"]
+PY
+then
+  doctor_ok=0
+  doctor_report+=" doc-nvidia-warn-js rc=$doc_rc err=$(cat "$doctor_dir/doc_nv_js.err") out=[$doc_nv_js];"
+fi
+
+doc_rc=0
+doc_out="$(DOCTOR_NVIDIA_DRM_MODESET="$doctor_nvidia_dir/modeset_0" run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"NVIDIA DRM modeset: WARN"* ||
+  "$doc_out" != *"Doctor: PASS (0 issue(s), 1 warning(s))"* ]]; then
+  doctor_ok=0
+  doctor_report+=" doc-nvidia-0 rc=$doc_rc out=[$doc_out];"
+fi
+
+doc_rc=0
+doc_out="$(DOCTOR_NVIDIA_DRM_MODESET="$doctor_nvidia_dir/modeset_y" run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" == *"NVIDIA DRM modeset"* || "$doc_out" != *"Doctor: PASS"* || "$doc_out" == *"warning(s)"* ]]; then
+  doctor_ok=0
+  doctor_report+=" doc-nvidia-y rc=$doc_rc out=[$doc_out];"
+fi
+
+doc_rc=0
+doc_out="$(DOCTOR_NVIDIA_DRM_MODESET="$doctor_nvidia_dir/nonexistent" run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" == *"NVIDIA DRM modeset"* || "$doc_out" != *"Doctor: PASS"* || "$doc_out" == *"warning(s)"* ]]; then
+  doctor_ok=0
+  doctor_report+=" doc-nvidia-absent rc=$doc_rc out=[$doc_out];"
+fi
+
+# X11 desktop (xfce) with modeset=N is quiet
+rm -f "$doctor_home/.wayland-session" "$doctor_etc/lightxdm/pam-keyring" "$doctor_etc/lightxdm/gnome-session-type.conf"
+cat >"$doctor_etc/pam.d/login" <<'EOF'
+#%PAM-1.0
+auth       include      system-local-login
+session    include      system-local-login
+EOF
+printf 'de=xfce\nno_packages=1\n' >"$doctor_state/lightxdm/install-choices"
+cp "$REPO_ROOT/dotfiles/.xinitrc-xfce" "$doctor_home/.xinitrc"
+chmod 755 "$doctor_home/.xinitrc"
+doc_rc=0
+doc_out="$(DOCTOR_NVIDIA_DRM_MODESET="$doctor_nvidia_dir/modeset_n" run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" == *"NVIDIA DRM modeset"* || "$doc_out" != *"Doctor: PASS"* || "$doc_out" == *"warning(s)"* ]]; then
+  doctor_ok=0
+  doctor_report+=" doc-nvidia-x11 rc=$doc_rc out=[$doc_out];"
+fi
+
+# Custom Wayland session with modeset=N warns
+mkdir -p "$doctor_home/.config/lightxdm"
+printf 'de=swaycustom\nno_packages=1\n' >"$doctor_state/lightxdm/install-choices"
+printf '#!/bin/sh\nexit 0\n' >"$doctor_home/.config/lightxdm/.wayland-session-swaycustom"
+chmod 755 "$doctor_home/.config/lightxdm/.wayland-session-swaycustom"
+cp "$doctor_home/.config/lightxdm/.wayland-session-swaycustom" "$doctor_home/.wayland-session"
+doc_rc=0
+doc_out="$(DOCTOR_NVIDIA_DRM_MODESET="$doctor_nvidia_dir/modeset_n" run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"NVIDIA DRM modeset: WARN"* ||
+  "$doc_out" != *"Doctor: PASS (0 issue(s), 1 warning(s))"* ]]; then
+  doctor_ok=0
+  doctor_report+=" doc-nvidia-custom-wayland rc=$doc_rc out=[$doc_out];"
+fi
+rm -f "$doctor_home/.config/lightxdm/.wayland-session-swaycustom"
 
 reset_doctor_gnome_fixture
 

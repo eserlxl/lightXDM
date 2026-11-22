@@ -4180,6 +4180,61 @@ check_system_locale() {
   return 1
 }
 
+# Return 0 when $1 is a Wayland target: built-in plasma/gnome/budgie or a custom id with a .wayland-session template.
+is_wayland_target() {
+  local target="${1:-}"
+  [[ -n "$target" ]] || return 1
+  case "$target" in
+    plasma | gnome | budgie) return 0 ;;
+  esac
+  is_builtin_de_id "$target" && return 1
+  local tmpl=""
+  if tmpl="$(xinitrc_template "$target" 2>/dev/null)"; then
+    if [[ "${tmpl##*/}" == .wayland-session-* ]]; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# Resolve whether a Wayland target is active:
+# 1) $1 (existing_de) when non-empty
+# 2) any candidate in "$@" (e.g. detected_des)
+# 3) an existing ~/.config/lightxdm/.wayland-session-* template when no candidates are provided
+resolve_wayland_target() {
+  local existing="$1"
+  shift || true
+  if [[ -n "$existing" ]]; then
+    is_wayland_target "$existing" && return 0
+    return 1
+  fi
+  local cand
+  for cand in "$@"; do
+    is_wayland_target "$cand" && return 0
+  done
+  if [[ $# -eq 0 ]]; then
+    local tmpl_file
+    for tmpl_file in "$HOME/.config/lightxdm"/.wayland-session-*; do
+      [[ -f "$tmpl_file" ]] && return 0
+    done
+  fi
+  return 1
+}
+
+# Check whether nvidia_drm modesetting is off: reads N or 0 from parameter file.
+# Returns 0 when modeset parameter file exists and reads N or 0; 1 otherwise.
+nvidia_drm_modeset_is_off() {
+  local modeset_file="${NVIDIA_DRM_MODESET:-/sys/module/nvidia_drm/parameters/modeset}"
+  [[ -f "$modeset_file" && -r "$modeset_file" ]] || return 1
+
+  local val=""
+  read -r val <"$modeset_file" || true
+  case "$val" in
+    N | n | 0) return 0 ;;
+  esac
+  return 1
+}
+
 # Run pre-install onboarding readiness checks cleanly without sudo or side effects
 run_preflight() {
   local json_mode=0
@@ -4477,12 +4532,32 @@ run_preflight() {
       fi
     fi
     [[ -n "$custom_summary" ]] && diag_record_check "$json_mode" "Detected custom session(s)" "info" "$custom_summary" "$custom_summary"
+    local pf_wayland_target=0
+    resolve_wayland_target "$existing_de" "${detected_des[@]}" && pf_wayland_target=1
+    if [[ $pf_wayland_target -eq 0 && -z "$existing_de" && ${#detected_des[@]} -eq 0 && "$first_custom_type" == wayland ]]; then
+      pf_wayland_target=1
+    fi
+    if [[ $pf_wayland_target -eq 1 ]] && nvidia_drm_modeset_is_off; then
+      printf -v diag_msg 'nvidia_drm modeset is off — add nvidia_drm.modeset=1 to the kernel command line or an options line in /etc/modprobe.d'
+      diag_record_check "$json_mode" "NVIDIA DRM modeset" "warn" "$diag_msg"
+      warnings=$((warnings + 1))
+    fi
     if [[ $json_mode -eq 0 && -n "$next_step" ]]; then
       printf 'Next step: %s\n' "$next_step"
     fi
   else
     [[ -n "$custom_summary" ]] && diag_record_check "$json_mode" "Detected custom session(s)" "info" "$custom_summary" "$custom_summary"
     diag_record_check "$json_mode" "Detected desktop(s)" "skipped" "pacman unavailable"
+    local pf_wayland_target=0
+    resolve_wayland_target "$existing_de" && pf_wayland_target=1
+    if [[ $pf_wayland_target -eq 0 && -z "$existing_de" && "$first_custom_type" == wayland ]]; then
+      pf_wayland_target=1
+    fi
+    if [[ $pf_wayland_target -eq 1 ]] && nvidia_drm_modeset_is_off; then
+      printf -v diag_msg 'nvidia_drm modeset is off — add nvidia_drm.modeset=1 to the kernel command line or an options line in /etc/modprobe.d'
+      diag_record_check "$json_mode" "NVIDIA DRM modeset" "warn" "$diag_msg"
+      warnings=$((warnings + 1))
+    fi
   fi
 
   local summary_msg=""
@@ -5844,6 +5919,18 @@ run_doctor() {
   if ! check_system_locale missing_locale; then
     printf -v diag_msg "locale '%s' not generated — uncomment it in /etc/locale.gen, then sudo locale-gen" "$missing_locale"
     diag_record_check "$json_mode" "System locale" "warn" "$diag_msg"
+    warnings=$((warnings + 1))
+  fi
+
+  local doctor_wayland_target=0
+  if [[ -n "$de" ]]; then
+    is_wayland_target "$de" && doctor_wayland_target=1
+  elif [[ "$expected_mode" == wayland ]]; then
+    doctor_wayland_target=1
+  fi
+  if [[ $doctor_wayland_target -eq 1 ]] && nvidia_drm_modeset_is_off; then
+    printf -v diag_msg 'nvidia_drm modeset is off — add nvidia_drm.modeset=1 to the kernel command line or an options line in /etc/modprobe.d'
+    diag_record_check "$json_mode" "NVIDIA DRM modeset" "warn" "$diag_msg"
     warnings=$((warnings + 1))
   fi
 
