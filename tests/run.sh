@@ -11099,6 +11099,66 @@ if [[ -z "$gnome_report" ]]; then
 else
   fail "install.sh --update GNOME block:$gnome_report"
 fi
+# A user back on ly (ly@tty1 enabled, getty@tty1 disabled) can still run --update: it hands nothing
+# over, so it notes the disabled getty and names ly@tty1 with its disable command; an explicit install
+# still refuses the disabled getty.
+ly_upd_home="$TMP_DIR/update_ly_home"
+ly_upd_bin="$TMP_DIR/update_ly_bin"
+mkdir -p "$ly_upd_home" "$ly_upd_bin"
+cat >"$ly_upd_bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  'is-enabled getty@tty1.service') echo disabled; exit 1 ;;
+  'is-enabled ly@tty1.service') echo enabled; exit 0 ;;
+esac
+echo "systemctl $*" >>"${STUB_LOG:-/dev/null}"
+case "${1:-}" in
+  is-enabled) echo disabled; exit 1 ;;
+  list-unit-files) exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$ly_upd_bin/systemctl"
+ly_upd_report=""
+printf '%s\n' '#%PAM-1.0' 'session    include      system-local-login' >"$update_login"
+rm -f -- "$update_record" "$update_base"
+set +e
+ly_upd_out="$(PATH="$sudo_pw_dir:$PATH" update_run "$ly_upd_home" --no-packages --no-keyring --de i3)"
+ly_upd_rc=$?
+set -e
+[[ $ly_upd_rc -eq 0 ]] || ly_upd_report+=" [install with getty enabled: status=$ly_upd_rc, output=$ly_upd_out]"
+for ly_upd_mode in update dry-run; do
+  ly_upd_args=(--update)
+  [[ "$ly_upd_mode" == update ]] || ly_upd_args+=(--dry-run)
+  : >"$STUB_LOG"
+  set +e
+  ly_upd_out="$(PATH="$ly_upd_bin:$sudo_pw_dir:$PATH" update_run "$ly_upd_home" "${ly_upd_args[@]}")"
+  ly_upd_rc=$?
+  set -e
+  if [[ $ly_upd_rc -ne 0 || "$ly_upd_out" != *"Note: getty@tty1.service is disabled; --update leaves it as it is."* ||
+    "$ly_upd_out" == *"next boot would have no TTY1 login"* || "$ly_upd_out" == *"systemctl enable getty@tty1.service"* ]] ||
+    grep -Eq '^systemctl (disable|enable|mask|unmask) ' "$STUB_LOG"; then
+    ly_upd_report+=" [$ly_upd_mode: status=$ly_upd_rc, log=$(cat "$STUB_LOG"), output=$ly_upd_out]"
+  elif [[ "$ly_upd_mode" == update &&
+    "$ly_upd_out" != *"ly@tty1.service is enabled, so --update leaves it alone"*"run: sudo systemctl disable ly@tty1.service"* ]]; then
+    ly_upd_report+=" [update lacks the ly@tty1 note: output=$ly_upd_out]"
+  elif [[ "$ly_upd_mode" == dry-run && "$ly_upd_out" != *"Display manager: ly@tty1.service (stays enabled: --update)"* ]]; then
+    ly_upd_report+=" [dry-run lacks the ly@tty1 line: output=$ly_upd_out]"
+  fi
+done
+set +e
+ly_upd_out="$(PATH="$ly_upd_bin:$sudo_pw_dir:$PATH" update_run "$ly_upd_home" --dry-run --no-packages --no-keyring --de i3)"
+ly_upd_rc=$?
+set -e
+if [[ $ly_upd_rc -ne 1 || "$ly_upd_out" != *"getty@tty1.service is disabled; the next boot would have no TTY1 login."* ||
+  "$ly_upd_out" != *"sudo systemctl enable getty@tty1.service"* || "$ly_upd_out" == *"--update leaves it as it is"* ]]; then
+  ly_upd_report+=" [explicit install: status=$ly_upd_rc, output=$ly_upd_out]"
+fi
+if [[ -z "$ly_upd_report" ]]; then
+  pass "install.sh --update and --update --dry-run run with getty@tty1 disabled and ly@tty1 enabled; an explicit install still refuses"
+else
+  fail "install.sh --update with a disabled getty@tty1:$ly_upd_report"
+fi
 # The real run decides before configure_pam changes the file: once the keyring lines are back, pacman
 # calls the file modified, yet the GNOME block must follow them; the merged version is then recorded,
 # so removing lightXDM's lines by hand afterwards stays.

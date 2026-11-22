@@ -2367,6 +2367,12 @@ check_tty1_getty() {
     return 1
   fi
   if [[ "$state" == disabled ]]; then
+    # --update hands nothing over (it disables no display manager), so a getty@tty1 disabled for
+    # another tty1 login such as ly@tty1 is left as it is.
+    if [[ "${UPDATE_RUN:-0}" == 1 ]]; then
+      log "Note: getty@tty1.service is disabled; --update leaves it as it is."
+      return 0
+    fi
     log "getty@tty1.service is disabled; the next boot would have no TTY1 login."
     log "Run sudo systemctl enable getty@tty1.service and re-run the installer."
     return 1
