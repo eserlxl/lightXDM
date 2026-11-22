@@ -1152,6 +1152,17 @@ else
   fail "enable-autologin.sh --disble as normal user (status=$status, output=$output)"
 fi
 
+# Case 12d: a name systemd would expand in ExecStart is rejected before any root check
+set +e
+output="$(bash "$REPO_ROOT/enable-autologin.sh" 'bob%i' 2>&1)"
+status=$?
+set -e
+if [[ $status -ne 0 && "$output" == *"Invalid username: 'bob%i'"* && "$output" == *"Usage:"* && "$output" != *"Please run as root"* ]]; then
+  pass "enable-autologin.sh rejects a user name with systemd specifier characters"
+else
+  fail "enable-autologin.sh 'bob%i' as normal user (status=$status, output=$output)"
+fi
+
 # Case 13: enable-autologin.sh rejects dash-prefixed and unknown usernames
 if [[ $can_unshare -eq 0 ]]; then
   skip "enable-autologin.sh rejects dash-prefixed and unknown usernames (unshare -r unavailable)"

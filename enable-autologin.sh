@@ -317,6 +317,14 @@ main() {
     usage
   fi
 
+  # The name lands verbatim in the agetty ExecStart line, where systemd
+  # expands '%' specifiers and '$' variables; allow only the portable
+  # passwd-name set (spelled out so a locale-aware range cannot miss I/i).
+  if [[ "$1" == *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]* ]]; then
+    echo "Invalid username: '$1'." >&2
+    usage
+  fi
+
   if [[ $EUID -ne 0 ]]; then
     echo "Please run as root (with sudo)."
     exit 1
