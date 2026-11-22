@@ -16882,6 +16882,23 @@ if [[ $pf_loc_warn_rc -ne 0 || "$pf_loc_warn" != *"System locale: WARN"* ||
   preflight_report+=" [missing locale preflight prose rc=$pf_loc_warn_rc out=$pf_loc_warn]"
 fi
 
+# A generated locale whose codeset has a hyphen (ISO-8859-1) matches locale -a's iso88591 spelling.
+printf 'LANG=en_US.ISO-8859-1\n' >"$preflight_loc_dir/locale_iso.conf"
+set +e
+pf_loc_iso="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
+  LOCALE_CONF="$preflight_loc_dir/locale_iso.conf" \
+  PREFLIGHT_LOCALE_A="$(printf 'C\nPOSIX\nen_US.iso88591\n')" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_loc_iso_rc=$?
+set -e
+if [[ $pf_loc_iso_rc -ne 0 || "$pf_loc_iso" == *"System locale"* || "$pf_loc_iso" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [hyphenated codeset locale rc=$pf_loc_iso_rc out=$pf_loc_iso]"
+fi
+
 set +e
 pf_loc_warn_js="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \

@@ -4156,7 +4156,7 @@ check_system_locale() {
 
   [[ -z "$lang" ]] && return 0
   local target="${lang,,}"
-  target="${target//utf-8/utf8}"
+  target="${target//-/}"
   target="${target//[[:space:]]/}"
   case "$target" in
     c | posix | c.utf8 | posix.utf8) return 0 ;;
@@ -4167,7 +4167,7 @@ check_system_locale() {
   local loc
   while IFS= read -r loc || [[ -n "$loc" ]]; do
     loc="${loc,,}"
-    loc="${loc//utf-8/utf8}"
+    loc="${loc//-/}"
     loc="${loc//[[:space:]]/}"
     [[ "$loc" == "$target" ]] && return 0
   done < <(locale -a 2>/dev/null || true)
