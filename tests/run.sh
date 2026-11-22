@@ -17295,6 +17295,7 @@ for bad_ss in \
   fi
 done
 
+reset_setup_shell_fixture
 if [[ $can_unshare -eq 1 ]]; then
   ss_rc=0
   HOME="$setup_shell_home" PATH="$setup_shell_bin:/usr/bin:/bin" unshare -r bash "$REPO_ROOT/install.sh" --setup-shell zsh >/dev/null 2>&1 || ss_rc=$?
@@ -20067,7 +20068,6 @@ session    include      system-local-login
 auth       optional   pam_gnome_keyring.so
 session    optional   pam_gnome_keyring.so auto_start
 EOF
-  cp "$lm_case/etc/pam.d/login.lightxdm.bak" "$lm_case/etc/pam.d/login.lightxdm.bak"
   printf 'XDG_SESSION_TYPE DEFAULT=wayland\n' >"$lm_case/etc/lightxdm/gnome-session-type.conf"
   printf 'gnome\n' >"$lm_case/etc/lightxdm/pam-keyring"
   printf 'custom-edited-wayland\n' >"$lm_case/home/.wayland-session"
@@ -20122,7 +20122,7 @@ EOF
 
   # Non-interactive root invocation refused without --dry-run
   set +e
-  lm_root_out="$(env -u SUDO_USER HOME="$lm_case/home" USER=testuser unshare -r bash "$REPO_ROOT/install.sh" --login-mode autologin 2>&1)"
+  lm_root_out="$(env -u SUDO_USER HOME="$lm_case/home" USER="$(PATH=/usr/bin:/bin id -un)" unshare -r bash "$REPO_ROOT/install.sh" --login-mode autologin 2>&1)"
   lm_root_rc=$?
   set -e
   if [[ $lm_root_rc -eq 0 || "$lm_root_out" != *"Do not run this script as root"* ]]; then
