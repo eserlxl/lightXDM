@@ -3630,7 +3630,16 @@ show_install_status() {
   local reproduce_output="" reproduce_text="" reproduce_arg reproduce_line reproduce_no_keyring=0
   local reproduce_args=()
   if [[ "$choices_kind" == readable && -n "$de" ]] &&
-    reproduce_output="$(saved_install_args 1 2>/dev/null)" && [[ -n "$reproduce_output" ]]; then
+    reproduce_output="$(
+      (
+        UPDATE_RESTORE_PAM=0
+        capture_replaced_login_sum 1 || true
+        if [[ -n "$UPDATE_LOGIN_SUM" ]]; then
+          UPDATE_RESTORE_PAM=1
+        fi
+        saved_install_args 1
+      ) 2>/dev/null
+    )" && [[ -n "$reproduce_output" ]]; then
     mapfile -t reproduce_args <<<"$reproduce_output"
     for reproduce_arg in "${reproduce_args[@]}"; do
       [[ "$reproduce_arg" == --no-keyring ]] && reproduce_no_keyring=1

@@ -13788,6 +13788,73 @@ PY
   fi
 done
 
+# 2d) A login file a .pacnew merge replaced: Reproduce line and reproduce_args match what --update
+# would run (no --no-keyring); a hand removal without a merge still prints --no-keyring.
+mkdir -p "$status_cmd_dir/pacnew_home/.local/state/lightxdm" \
+  "$status_cmd_dir/pacnew_plasma_home/.local/state/lightxdm"
+printf '%s\n' 'de=i3' 'no_packages=1' >"$status_cmd_dir/pacnew_home/.local/state/lightxdm/install-choices"
+printf '%s\n' 'de=plasma' 'no_packages=1' >"$status_cmd_dir/pacnew_plasma_home/.local/state/lightxdm/install-choices"
+printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$status_cmd_dir/pacnew_login.lightxdm.bak"
+printf 'kwallet\n' >"$status_cmd_dir/state/pam-keyring-kwallet"
+chmod 644 "$status_cmd_dir/state/pam-keyring-kwallet"
+printf '%s\n' '#%PAM-1.0' '# stock login stack after a .pacnew merge' 'auth       include      system-local-login' 'session    include      system-local-login' >"$status_cmd_dir/pacnew_login"
+for status_pac_case in \
+  "gnome-merge|$status_cmd_dir/pacnew_home|$status_cmd_dir/state/pam-keyring|$status_cmd_dir/pacnew_login [unmodified]|--de i3 --no-packages|--de i3 --no-packages" \
+  "gnome-hand|$status_cmd_dir/pacnew_home|$status_cmd_dir/state/pam-keyring|$status_cmd_dir/pacnew_login [modified]|--de i3 --no-packages --no-keyring|--de i3 --no-packages --no-keyring" \
+  "kwallet-merge|$status_cmd_dir/pacnew_plasma_home|$status_cmd_dir/state/pam-keyring-kwallet|$status_cmd_dir/pacnew_login [unmodified]|--de plasma --no-packages|--de plasma --no-packages" \
+  "kwallet-hand|$status_cmd_dir/pacnew_plasma_home|$status_cmd_dir/state/pam-keyring-kwallet|$status_cmd_dir/pacnew_login [modified]|--de plasma --no-packages --no-keyring|--de plasma --no-packages --no-keyring"; do
+  IFS='|' read -r status_pac_name status_pac_home status_pac_pam status_pac_backup status_pac_expected_str status_pac_expected_args <<<"$status_pac_case"
+  status_pac_out=""
+  status_pac_json=""
+  : >"$status_sudo_log"
+  set +e
+  for status_pac_flags in "--status" "--status --json"; do
+    read -r -a status_pac_argv <<<"$status_pac_flags"
+    status_pac_one="$(
+      env -u XDG_STATE_HOME -u STATUS_GETTY_STATE -u STATUS_DM_STATE \
+        HOME="$status_pac_home" \
+        USER=statususer \
+        PATH="$status_cmd_dir/bin:$STUB_BIN:$PATH" \
+        STATUS_SUDO_LOG="$status_sudo_log" \
+        LOGIN_FILE="$status_cmd_dir/pacnew_login" \
+        GNOME_SESSION_TYPE_DEST="$status_cmd_dir/missing-gnome.conf" \
+        PAM_KEYRING_STATE="$status_pac_pam" \
+        PAM_LOGIN_BASE_STATE="$status_cmd_dir/missing-pam-login-base" \
+        DM_STATE_FILE="$status_cmd_dir/missing-dm-state" \
+        AUTOLOGIN_DROPIN_DIR="$status_cmd_dir/missing-getty.d" \
+        STUB_PACMAN_OWNER=util-linux \
+        STUB_PACMAN_BACKUP="$status_pac_backup" \
+        bash "$REPO_ROOT/install.sh" "${status_pac_argv[@]}" 2>/dev/null
+    )"
+    status_pac_rc=$?
+    if [[ $status_pac_rc -ne 0 ]]; then
+      status_cmd_report+=" [pacnew-merge $status_pac_name '$status_pac_flags': rc=$status_pac_rc]"
+    fi
+    if [[ "$status_pac_flags" == --status ]]; then
+      status_pac_out="$status_pac_one"
+    else
+      status_pac_json="$status_pac_one"
+    fi
+  done
+  set -e
+  if [[ -s "$status_sudo_log" ||
+    "$status_pac_out" != *$'\n'"Reproduce with: bash install.sh $status_pac_expected_str"$'\n'* ]]; then
+    status_cmd_report+=" [pacnew-merge $status_pac_name text: sudo=$(cat "$status_sudo_log"), out=$status_pac_out]"
+  fi
+  if [[ "$status_pac_name" == *-merge && "$status_pac_out" == *" --no-keyring"* ]]; then
+    status_cmd_report+=" [pacnew-merge $status_pac_name unexpectedly has --no-keyring: out=$status_pac_out]"
+  fi
+  if ! JSON_OUT="$status_pac_json" EXPECTED_ARGS="$status_pac_expected_args" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+expected = os.environ["EXPECTED_ARGS"].split()
+assert d["install_choices"]["reproduce_args"] == expected, d["install_choices"]
+PY
+  then
+    status_cmd_report+=" [pacnew-merge $status_pac_name json: out=$status_pac_json]"
+  fi
+done
+
 # 3) Unreadable PAM and state files stay read-only without sudo or Permission denied.
 if [[ $EUID -ne 0 ]]; then
   mkdir -p "$status_cmd_dir/priv"
