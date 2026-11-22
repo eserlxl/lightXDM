@@ -18331,6 +18331,8 @@ fx_out="$(FAKE_SHELL=/usr/bin/zsh run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
 if [[ $fx_rc -ne 0 || -s "$fix_sudo_log" ||
   "$fx_out" != *"Fix plan for de=i3"* ||
   "$fx_out" != *"Shell hook (zsh):"* ||
+  "$fx_out" == *"Shell hook (zsh):"*$'\n'*"Shell hook (zsh):"* ||
+  "$fx_out" == *"--shell-snippet"* ||
   ! -e "$fix_home/.config/lightxdm/no-autostart" ||
   -e "$fix_home/.xinitrc" || -e "$fix_home/.zprofile" ]]; then
   fix_ok=0
@@ -18346,6 +18348,22 @@ if [[ $fx_rc -ne 0 || -s "$fix_sudo_log" ||
   ! grep -Fxq '# >>> lightXDM TTY1 auto-start >>>' "$fix_home/.zprofile"; then
   fix_ok=0
   fix_report+=" home-live rc=$fx_rc sudo=$(wc -l <"$fix_sudo_log") out=[$fx_out];"
+fi
+
+# 2b. Zsh user with missing template and no hook previews hook once without manual --shell-snippet note
+reset_fix_fixture i3
+rm -f "$fix_home/.xinitrc" "$fix_home/.zprofile"
+fx_rc=0
+fx_out="$(FAKE_SHELL=/usr/bin/zsh run_fix_cmd --fix --dry-run 2>&1)" || fx_rc=$?
+if [[ $fx_rc -ne 0 || -s "$fix_sudo_log" ||
+  "$fx_out" != *"Fix plan for de=i3"* ||
+  "$fx_out" != *"Dotfile: $fix_home/.xinitrc"* ||
+  "$fx_out" != *"Shell hook (zsh):"* ||
+  "$fx_out" == *"Shell hook (zsh):"*$'\n'*"Shell hook (zsh):"* ||
+  "$fx_out" == *"--shell-snippet"* ||
+  -e "$fix_home/.xinitrc" || -e "$fix_home/.zprofile" ]]; then
+  fix_ok=0
+  fix_report+=" zsh-missing-template-dry rc=$fx_rc out=[$fx_out];"
 fi
 
 # 3. System-only repair preserves valid user-edited ~/.xinitrc; failed --non-interactive sudo leaves $HOME & /etc untouched

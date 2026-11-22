@@ -5871,9 +5871,8 @@ run_fix() {
     fi
     printf 'Fix plan for de=%s (dry run; no files changed):\n' "$target_de"
     if [[ $need_home_recover -eq 1 ]]; then
-      run_recover "$target_de" 1 "" || return 1
-    fi
-    if [[ -n "$need_shell_hook" ]]; then
+      run_recover "$target_de" 1 "$need_shell_hook" || return 1
+    elif [[ -n "$need_shell_hook" ]]; then
       apply_shell_hook "$need_shell_hook" 1 || return 1
     fi
     if [[ $FIX_NEED_PAM_PROBE -eq 1 ]]; then
