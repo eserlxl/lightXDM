@@ -6806,6 +6806,7 @@ _gpg_pinentry_bin() {
 
 resolve_setup_gpg() {
   local spec="$1" context_de="${2:-}" context_keyring="${3:-}"
+  local SAVED_CHOICES_DE="" SAVED_CHOICES_NO_PACKAGES="" SAVED_CHOICES_PACKAGES="" SAVED_CHOICES_KEYRING="" SAVED_CHOICES_NO_KEYRING=""
   case "$spec" in
     gnome | kwallet | remove)
       printf '%s\n' "$spec"
@@ -6854,6 +6855,8 @@ resolve_setup_gpg() {
           printf 'kwallet\n'
         elif [[ "$pam_state" == "gnome" ]]; then
           printf 'gnome\n'
+        elif read_install_choices && [[ "$SAVED_CHOICES_KEYRING" == "gnome" || "$SAVED_CHOICES_KEYRING" == "kwallet" ]]; then
+          printf '%s\n' "$SAVED_CHOICES_KEYRING"
         elif [[ "$pam_login_backend" == "kwallet" ]]; then
           printf 'kwallet\n'
         else

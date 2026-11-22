@@ -8167,6 +8167,57 @@ PY
       fail "--check-keyring auto --json with saved $ck_saved_de (status=$ck_status, err=$(cat "$ck_dir/json.err"), out=$ck_output)"
     fi
   done
+
+  # auto resolves the saved keyring=kwallet choice for a custom desktop without PAM record or lines.
+  ck_saved_de=custom
+  ck_backend=kwallet
+  ck_collection=kdewallet
+  ck_auto_home="$ck_dir/auto-$ck_saved_de"
+  mkdir -p "$ck_auto_home/state/lightxdm"
+  printf 'de=%s\nno_packages=0\nkeyring=%s\n' "$ck_saved_de" "$ck_backend" >"$ck_auto_home/state/lightxdm/install-choices"
+  : >"$ck_dir/busctl.log"
+  : >"$STUB_LOG"
+  set +e
+  ck_output="$(env -u SHELLOPTS HOME="$ck_auto_home" XDG_STATE_HOME="$ck_auto_home/state" PATH="$ck_dir/bin:$PATH" \
+    LOGIN_FILE="$ck_auto_home/no-pam-login" PAM_KEYRING_STATE="$ck_auto_home/no-pam-keyring" \
+    KEYRING_CHECK_LOG="$ck_dir/busctl.log" KEYRING_CHECK_RESULT=locked \
+    bash "$REPO_ROOT/install.sh" --check-keyring auto 2>&1)"
+  ck_status=$?
+  set -e
+  ck_args="$(cat "$ck_dir/busctl.log")"
+  if [[ $ck_status -eq 1 && "$ck_output" == *"=> --check-keyring auto: using $ck_backend"* &&
+    "$ck_output" == *"collection '$ck_collection' is locked."* &&
+    "$ck_args" == "--user --auto-start=no get-property org.freedesktop.secrets /org/freedesktop/secrets/collection/$ck_collection org.freedesktop.Secret.Collection Locked" &&
+    ! -s "$STUB_LOG" ]]; then
+    pass "--check-keyring auto resolves $ck_backend from a saved $ck_saved_de choice and names it"
+  else
+    fail "--check-keyring auto with saved $ck_saved_de (status=$ck_status, output=$ck_output, args=$ck_args, log=$(cat "$STUB_LOG"))"
+  fi
+
+  : >"$ck_dir/busctl.log"
+  : >"$STUB_LOG"
+  set +e
+  ck_output="$(env -u SHELLOPTS HOME="$ck_auto_home" XDG_STATE_HOME="$ck_auto_home/state" PATH="$ck_dir/bin:$PATH" \
+    LOGIN_FILE="$ck_auto_home/no-pam-login" PAM_KEYRING_STATE="$ck_auto_home/no-pam-keyring" \
+    KEYRING_CHECK_LOG="$ck_dir/busctl.log" KEYRING_CHECK_RESULT=unlocked \
+    bash "$REPO_ROOT/install.sh" --check-keyring auto --json 2>"$ck_dir/json.err")"
+  ck_status=$?
+  set -e
+  if [[ $ck_status -eq 0 && "$(cat "$ck_dir/json.err")" == "=> --check-keyring auto: using $ck_backend" &&
+    ! -s "$STUB_LOG" ]] &&
+    CK_BACKEND="$ck_backend" CK_COLLECTION="$ck_collection" python3 - "$ck_output" <<'PY'
+import json, os, sys
+d = json.loads(sys.argv[1])
+assert d["mode"] == "check-keyring", d
+assert d["backend"] == os.environ["CK_BACKEND"], d
+assert d["collection"] == os.environ["CK_COLLECTION"], d
+assert d["state"] == "unlocked" and d["unlocked"] is True, d
+PY
+  then
+    pass "--check-keyring auto --json resolves $ck_backend from a saved $ck_saved_de choice with the note on stderr"
+  else
+    fail "--check-keyring auto --json with saved $ck_saved_de (status=$ck_status, err=$(cat "$ck_dir/json.err"), out=$ck_output)"
+  fi
 fi
 
 for ck_reject in missing flag-argument empty invalid combined combined-reversed duplicate \
