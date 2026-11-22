@@ -47,6 +47,45 @@ def _make_fake_qmp_socket(incoming_lines):
     return sock, raw_out
 
 
+def _package_only_check_names(session, gnome):
+    """Names of the checks vmtest.main runs only in its MODE == "package" branches."""
+    names = [
+        "package copied into the VM",
+        "pacman -U installs lightxdm and prints the post_install note",
+        "reinstalling lightxdm prints the post_upgrade note",
+        f"lightxdm-install made ~/{session} executable from the packaged template",
+        "util-linux package copied into the VM",
+        "reinstalling util-linux runs the lightXDM hook, quiet without login.pacnew",
+        "with /etc/pam.d/login.pacnew waiting, the hook reminds to run lightxdm-update",
+        f"edited ~/{session} by hand and enabled a display manager again",
+        f"lightxdm-update leaves the edited ~/{session} alone and puts the template beside it",
+        "lightxdm-update leaves the re-enabled display manager enabled and names the command",
+        "removed the stand-in display manager before the next login",
+        "removing lightXDM's lines by hand leaves /etc/pam.d/login as util-linux ships it",
+        "a simulated .pacnew merge left /etc/pam.d/login as util-linux ships it",
+        "lightxdm-update reruns the saved choices",
+        "lightxdm-update reports the keyring lines the merge removed",
+        "lightxdm-update added the keyring lines back",
+        "lightxdm-update recorded the version the .pacnew merge brought",
+        "removing lightXDM's lines after the merge leaves the merged version",
+        "lightxdm-install --pam-only puts lightXDM's PAM lines back and changes nothing else",
+        "sudo lightxdm-uninstall exits 0",
+        "lightxdm-uninstall left no keyring line in /etc/pam.d/login",
+        "lightxdm-uninstall removed the saved install choices",
+        f"lightxdm-uninstall removed ~/{session}.lightxdm-new",
+        "lightxdm-uninstall removed the merge record and left /etc/pam.d/login as util-linux ships it",
+        "pacman -R removes lightxdm and prints the pre_remove note",
+        "pacman -R left no lightxdm files",
+    ]
+    for attempt in ("hand-edit", "hand-edit-after-merge"):
+        names.append(f"{attempt}: lightxdm-update leaves out the keyring lines removed by hand and names --pam-only")
+        if gnome:
+            names.append(f"{attempt}: lightxdm-update leaves out the GNOME block removed by hand and names --pam-only")
+    if gnome:
+        names.append("lightxdm-update put the GNOME block back after the .pacnew merge")
+    return names
+
+
 class ImportHygieneTests(unittest.TestCase):
     def test_import_has_no_side_effects_when_argv_has_no_test_args(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1006,7 +1045,9 @@ class MainModeOrchestrationTests(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(vmtest.RUN, log_name)), log_name)
         with open(vmtest.RESULT, encoding="utf-8") as f:
             lines = f.read().splitlines()
-        self.assertTrue(lines[-1].startswith("DONE pass=") and lines[-1].endswith(" fail=0"), lines)
+        self.assertEqual(lines[-1], "DONE pass=37 fail=0", "\n".join(lines))
+        for name in _package_only_check_names(".wayland-session", gnome=True):
+            self.assertIn(f"PASS: gnome+package: {name}", lines)
 
     def test_main_upgrade_package_mode(self):
         pkgcache = os.path.join(self.vm_dir, "pkgcache")
@@ -1131,7 +1172,9 @@ class MainModeOrchestrationTests(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(vmtest.RUN, "install.log")))
         with open(vmtest.RESULT, encoding="utf-8") as f:
             lines = f.read().splitlines()
-        self.assertTrue(lines[-1].startswith("DONE pass=") and lines[-1].endswith(" fail=0"), lines)
+        self.assertEqual(lines[-1], "DONE pass=35 fail=0", "\n".join(lines))
+        for name in _package_only_check_names(".wayland-session", gnome=False):
+            self.assertIn(f"PASS: xfce:plasma+package: {name}", lines)
 
 
 if __name__ == "__main__":
