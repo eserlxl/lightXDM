@@ -1109,26 +1109,26 @@ init_xinitrc_template() {
     fi
   fi
   if [[ -n "$dest_override" ]]; then
-    mkdir -p -- "${dest%/*}"
+    mkdir -p -- "${dest%/*}" || return 1
   else
-    mkdir -p -- "$HOME/.config/lightxdm"
+    mkdir -p -- "$HOME/.config/lightxdm" || return 1
   fi
   case "$id" in
     plasma | gnome | budgie)
-      cp -- "$SCRIPT_DIR/dotfiles/.wayland-session-$id" "$dest"
-      chmod 755 "$dest"
+      cp -- "$SCRIPT_DIR/dotfiles/.wayland-session-$id" "$dest" || { rm -f -- "$dest"; return 1; }
+      chmod 755 "$dest" || { rm -f -- "$dest"; return 1; }
       [[ $quiet -eq 1 ]] || log "Created $dest from the built-in $id template. Edit it, then run: $(script_cmd install.sh) --de $id"
       ;;
     xfce | lxqt | lxde | mate | cinnamon | i3)
-      cp -- "$SCRIPT_DIR/dotfiles/.xinitrc-$id" "$dest"
-      chmod 755 "$dest"
+      cp -- "$SCRIPT_DIR/dotfiles/.xinitrc-$id" "$dest" || { rm -f -- "$dest"; return 1; }
+      chmod 755 "$dest" || { rm -f -- "$dest"; return 1; }
       [[ $quiet -eq 1 ]] || log "Created $dest from the built-in $id template. Edit it, then run: $(script_cmd install.sh) --de $id"
       ;;
     *)
       if [[ $wayland -eq 1 ]]; then
         local quoted_desktop
         printf -v quoted_desktop '%q' "$current_desktop"
-        cat >"$dest" <<EOF
+        cat >"$dest" <<EOF || { rm -f -- "$dest"; return 1; }
 #!/bin/bash
 # Wayland session for lightXDM: start $id
 
@@ -1156,9 +1156,9 @@ EOF
             'exec i3') printf '%s\n' "$exec_line" ;;
             *) printf '%s\n' "$template_line" ;;
           esac
-        done <"$SCRIPT_DIR/dotfiles/.xinitrc-i3" >"$dest"
+        done <"$SCRIPT_DIR/dotfiles/.xinitrc-i3" >"$dest" || { rm -f -- "$dest"; return 1; }
       fi
-      chmod 755 "$dest"
+      chmod 755 "$dest" || { rm -f -- "$dest"; return 1; }
       [[ $quiet -eq 1 ]] || log "Created $dest for $id. Check its exec line, then run: $(script_cmd install.sh) --no-packages --de $id"
       ;;
   esac

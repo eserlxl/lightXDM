@@ -18187,6 +18187,42 @@ else
   fail "install.sh --install-session:$is_report"
 fi
 
+# Read-only ~/.config/lightxdm makes template creation fail non-zero without logging "Created"
+if [[ $EUID -eq 0 ]]; then
+  skip "install.sh --install-session and --init-template fail on unwritable template dir without logging Created (running as root)"
+else
+  reset_isess_fixture
+  mkdir -p "$isess_home/.config/lightxdm"
+  chmod 555 "$isess_home/.config/lightxdm"
+  ro_tmpl_ok=1
+  ro_tmpl_report=""
+  for ro_cmd in \
+    "--install-session $isess_wl/sway.desktop" \
+    "--install-session $isess_xsess/openbox.desktop" \
+    "--init-template --de plasma" \
+    "--init-template --de xfce" \
+    "--init-template --de dwm" \
+    "--init-template --wayland --de sway"; do
+    ro_rc=0
+    read -r -a ro_args <<<"$ro_cmd"
+    ro_out="$(run_isess_cmd "${ro_args[@]}" 2>&1)" || ro_rc=$?
+    if [[ $ro_rc -eq 0 || "$ro_out" == *"Created "* || "$ro_out" == *"lightXDM install complete!"* ]]; then
+      ro_tmpl_ok=0
+      ro_tmpl_report+=" cmd($ro_cmd) rc=$ro_rc out=[$ro_out];"
+    fi
+  done
+  chmod 755 "$isess_home/.config/lightxdm"
+  if [[ -n "$(ls -A "$isess_home/.config/lightxdm")" || -e "$isess_home/.wayland-session" || -e "$isess_home/.xinitrc" ]]; then
+    ro_tmpl_ok=0
+    ro_tmpl_report+=" leftover-files;"
+  fi
+  if [[ $ro_tmpl_ok -eq 1 ]]; then
+    pass "install.sh --install-session and --init-template exit non-zero without logging Created when template write fails"
+  else
+    fail "install.sh read-only template directory:$ro_tmpl_report"
+  fi
+fi
+
 # --- install.sh --fix ---
 fix_dir="$TMP_DIR/fix_test"
 fix_home="$fix_dir/home"
