@@ -205,6 +205,9 @@ export PAM_LOGIN_BASE_STATE="$TMP_DIR/lightxdm/pam-login-base"
 # --preflight reads the pacman database; keep every run off the host's /var/lib/pacman.
 mkdir -p "$TMP_DIR/pacman_db/sync" && : >"$TMP_DIR/pacman_db/sync/core.db"
 export PACMAN_DB_DIR="$TMP_DIR/pacman_db"
+# --preflight and --doctor read /etc/locale.conf; keep every run off the host file.
+mkdir -p "$TMP_DIR/etc" && : >"$TMP_DIR/etc/locale.conf"
+export LOCALE_CONF="$TMP_DIR/etc/locale.conf"
 
 # shellcheck source=install.sh disable=SC1091
 source "$REPO_ROOT/install.sh"
@@ -15976,7 +15979,19 @@ case "${1:-}" in
     ;;
 esac
 EOF
-chmod +x "$preflight_bin"/{id,getent,sudo,pacman,systemctl}
+cat >"$preflight_bin/locale" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "-a" ]; then
+  if [ -n "${PREFLIGHT_LOCALE_A:-}" ]; then
+    printf '%s\n' "$PREFLIGHT_LOCALE_A"
+  else
+    printf 'C\nC.utf8\nPOSIX\nen_US.utf8\ntr_TR.utf8\n'
+  fi
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$preflight_bin"/{id,getent,sudo,pacman,systemctl,locale}
 
 preflight_bash="$(command -v bash)"
 preflight_ok=1
@@ -16037,7 +16052,7 @@ fi
 
 preflight_no_sudo="$preflight_dir/no_sudo_bin"
 mkdir -p "$preflight_no_sudo"
-for b in cut dirname grep readlink stat date find id getent pacman systemctl; do
+for b in cut dirname grep readlink stat date find id getent pacman systemctl locale; do
   ln -sf "$preflight_bin/$b" "$preflight_no_sudo/$b"
 done
 set +e
@@ -16054,7 +16069,7 @@ fi
 
 preflight_no_pacman="$preflight_dir/no_pacman_bin"
 mkdir -p "$preflight_no_pacman"
-for b in cut dirname grep readlink stat date find id getent sudo systemctl; do
+for b in cut dirname grep readlink stat date find id getent sudo systemctl locale; do
   ln -sf "$preflight_bin/$b" "$preflight_no_pacman/$b"
 done
 set +e
@@ -16819,6 +16834,91 @@ then
   preflight_report+=" [both locked and stale pacman db preflight json rc=$pf_db_both_js_rc err=$(<"$preflight_dir/js_db_both.err") out=$pf_db_both_js]"
 fi
 
+preflight_loc_dir="$preflight_dir/loc_fixtures"
+mkdir -p "$preflight_loc_dir"
+printf 'LANG=fr_FR.UTF-8\n' >"$preflight_loc_dir/locale_missing.conf"
+printf 'LANG="en_US.UTF-8"\n' >"$preflight_loc_dir/locale_en.conf"
+printf 'LANG=C\n' >"$preflight_loc_dir/locale_c.conf"
+printf 'LANG=POSIX\n' >"$preflight_loc_dir/locale_posix.conf"
+: >"$preflight_loc_dir/locale_empty.conf"
+
+set +e
+pf_loc_warn="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  LOCALE_CONF="$preflight_loc_dir/locale_missing.conf" \
+  PREFLIGHT_LOCALE_A="$(printf 'C\nC.utf8\nPOSIX\nen_US.utf8\n')" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_loc_warn_rc=$?
+set -e
+if [[ $pf_loc_warn_rc -ne 0 || "$pf_loc_warn" != *"System locale: WARN"* ||
+  "$pf_loc_warn" != *"locale 'fr_FR.UTF-8' not generated — uncomment it in /etc/locale.gen, then sudo locale-gen"* ||
+  "$pf_loc_warn" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [missing locale preflight prose rc=$pf_loc_warn_rc out=$pf_loc_warn]"
+fi
+
+set +e
+pf_loc_warn_js="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  LOCALE_CONF="$preflight_loc_dir/locale_missing.conf" \
+  PREFLIGHT_LOCALE_A="$(printf 'C\nC.utf8\nPOSIX\nen_US.utf8\n')" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_loc_warn.err")"
+pf_loc_warn_js_rc=$?
+set -e
+if [[ $pf_loc_warn_js_rc -ne 0 || -s "$preflight_dir/js_loc_warn.err" ]] ||
+  ! JSON_OUT="$pf_loc_warn_js" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["mode"] == "preflight"
+assert d["ready"] is True
+assert d["status"] == "warn"
+assert d["blockers"] == 0
+assert d["warnings"] == 1
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["System locale"]["status"] == "warn"
+assert "fr_FR.UTF-8" in checks["System locale"]["detail"]
+assert "uncomment it in /etc/locale.gen, then sudo locale-gen" in checks["System locale"]["detail"]
+PY
+then
+  preflight_ok=0
+  preflight_report+=" [missing locale preflight json rc=$pf_loc_warn_js_rc err=$(<"$preflight_dir/js_loc_warn.err") out=$pf_loc_warn_js]"
+fi
+
+set +e
+pf_loc_match="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  LOCALE_CONF="$preflight_loc_dir/locale_en.conf" \
+  PREFLIGHT_LOCALE_A="$(printf 'C\nC.utf8\nPOSIX\nen_us.utf8\n')" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_loc_match_rc=$?
+set -e
+if [[ $pf_loc_match_rc -ne 0 || "$pf_loc_match" == *"System locale"* ||
+  "$pf_loc_match" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [matching locale preflight rc=$pf_loc_match_rc out=$pf_loc_match]"
+fi
+
+for quiet_conf in "$preflight_loc_dir/locale_c.conf" "$preflight_loc_dir/locale_posix.conf" \
+  "$preflight_loc_dir/locale_empty.conf" "$preflight_loc_dir/nonexistent.conf"; do
+  set +e
+  pf_loc_quiet="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+    PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+    DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+    LOCALE_CONF="$quiet_conf" \
+    PREFLIGHT_LOCALE_A="$(printf 'C\nPOSIX\n')" \
+    "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+  pf_loc_quiet_rc=$?
+  set -e
+  if [[ $pf_loc_quiet_rc -ne 0 || "$pf_loc_quiet" == *"System locale"* ||
+    "$pf_loc_quiet" != *"Preflight: PASS"* ]]; then
+    preflight_ok=0
+    preflight_report+=" [quiet locale ($quiet_conf) preflight rc=$pf_loc_quiet_rc out=$pf_loc_quiet]"
+  fi
+done
+
 if [[ $preflight_ok -eq 1 ]]; then
   pass "install.sh --preflight validates host readiness, shell hints, and next steps cleanly without sudo or side effects"
 else
@@ -16883,7 +16983,19 @@ cat >"$doctor_root/usr/bin/gnome-session" <<'EOF'
 exit 0
 EOF
 touch "$doctor_root/usr/lib/security/pam_gnome_keyring.so"
-chmod +x "$doctor_bin/sudo" "$doctor_bin/systemctl" "$doctor_bin/getent" "$doctor_bin/pacman" "$doctor_bin/startx" "$doctor_bin/startxfce4" "$doctor_bin/homectl" "$doctor_root/usr/bin/gnome-session"
+cat >"$doctor_bin/locale" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-a" ]]; then
+  if [[ -n "${DOCTOR_LOCALE_A:-}" ]]; then
+    printf '%s\n' "$DOCTOR_LOCALE_A"
+  else
+    printf 'C\nC.utf8\nPOSIX\nen_US.utf8\ntr_TR.utf8\n'
+  fi
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$doctor_bin/sudo" "$doctor_bin/systemctl" "$doctor_bin/getent" "$doctor_bin/pacman" "$doctor_bin/startx" "$doctor_bin/startxfce4" "$doctor_bin/homectl" "$doctor_bin/locale" "$doctor_root/usr/bin/gnome-session"
 
 run_doctor_cmd() {
   env -u SUDO_USER -u DISPLAY -u WAYLAND_DISPLAY \
@@ -16899,6 +17011,7 @@ run_doctor_cmd() {
     DISPLAY_MANAGER_LINK="$doctor_etc/systemd/system/display-manager.service" \
     AUTOLOGIN_DROPIN_DIR="$doctor_etc/getty@tty1.service.d" \
     DOCTOR_SUDO_LOG="$doctor_dir/sudo.log" \
+    LOCALE_CONF="${DOCTOR_LOCALE_CONF:-$LOCALE_CONF}" \
     PATH="$doctor_bin:/usr/bin:/bin" \
     bash "$REPO_ROOT/install.sh" "$@"
 }
@@ -17736,6 +17849,67 @@ if [[ $EUID -ne 0 ]]; then
     doctor_ok=0
     doctor_report+=" doc-config-lightxdm-unsearchable rc=$doc_rc out=[$doc_out];"
   fi
+fi
+
+reset_doctor_gnome_fixture
+
+# Doctor warns on missing system locale
+doctor_loc_dir="$doctor_dir/loc_fixtures"
+mkdir -p "$doctor_loc_dir"
+printf 'LANG=fr_FR.UTF-8\n' >"$doctor_loc_dir/locale_missing.conf"
+printf 'LANG="en_US.UTF-8"\n' >"$doctor_loc_dir/locale_en.conf"
+printf 'LANG=C\n' >"$doctor_loc_dir/locale_c.conf"
+
+reset_doctor_gnome_fixture
+doc_rc=0
+doc_out="$(DOCTOR_LOCALE_CONF="$doctor_loc_dir/locale_missing.conf" DOCTOR_LOCALE_A="$(printf 'C\nC.utf8\nPOSIX\n')" run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" != *"System locale: WARN"* ||
+  "$doc_out" != *"locale 'fr_FR.UTF-8' not generated — uncomment it in /etc/locale.gen, then sudo locale-gen"* ||
+  "$doc_out" != *"Doctor: PASS (0 issue(s), 1 warning(s))"* ]]; then
+  doctor_ok=0
+  doctor_report+=" doc-locale-warn rc=$doc_rc out=[$doc_out];"
+fi
+
+doc_rc=0
+doc_loc_js="$(DOCTOR_LOCALE_CONF="$doctor_loc_dir/locale_missing.conf" DOCTOR_LOCALE_A="$(printf 'C\nC.utf8\nPOSIX\n')" run_doctor_cmd --doctor --json 2>"$doctor_dir/doc_loc_js.err")" || doc_rc=$?
+if [[ $doc_rc -ne 0 || -s "$doctor_dir/doc_loc_js.err" ]] ||
+  ! JSON_OUT="$doc_loc_js" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["mode"] == "doctor"
+assert d["healthy"] is True
+assert d["status"] == "warn"
+assert d["issues"] == 0
+assert d["warnings"] == 1
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["System locale"]["status"] == "warn"
+assert "fr_FR.UTF-8" in checks["System locale"]["detail"]
+assert "uncomment it in /etc/locale.gen, then sudo locale-gen" in checks["System locale"]["detail"]
+PY
+then
+  doctor_ok=0
+  doctor_report+=" doc-locale-warn-js rc=$doc_rc err=$(cat "$doctor_dir/doc_loc_js.err") out=[$doc_loc_js];"
+fi
+
+doc_rc=0
+doc_out="$(DOCTOR_LOCALE_CONF="$doctor_loc_dir/locale_en.conf" DOCTOR_LOCALE_A="$(printf 'C\nPOSIX\nen_us.utf8\n')" run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" == *"System locale"* || "$doc_out" != *"Doctor: PASS"* || "$doc_out" == *"warning(s)"* ]]; then
+  doctor_ok=0
+  doctor_report+=" doc-locale-match rc=$doc_rc out=[$doc_out];"
+fi
+
+doc_rc=0
+doc_out="$(DOCTOR_LOCALE_CONF="$doctor_loc_dir/locale_c.conf" DOCTOR_LOCALE_A="$(printf 'C\nPOSIX\n')" run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" == *"System locale"* || "$doc_out" != *"Doctor: PASS"* || "$doc_out" == *"warning(s)"* ]]; then
+  doctor_ok=0
+  doctor_report+=" doc-locale-c rc=$doc_rc out=[$doc_out];"
+fi
+
+doc_rc=0
+doc_out="$(DOCTOR_LOCALE_CONF="$doctor_loc_dir/nonexistent.conf" DOCTOR_LOCALE_A="$(printf 'C\nPOSIX\n')" run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" == *"System locale"* || "$doc_out" != *"Doctor: PASS"* || "$doc_out" == *"warning(s)"* ]]; then
+  doctor_ok=0
+  doctor_report+=" doc-locale-absent rc=$doc_rc out=[$doc_out];"
 fi
 
 reset_doctor_gnome_fixture

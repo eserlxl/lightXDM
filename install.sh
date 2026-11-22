@@ -4142,6 +4142,44 @@ collect_ready_custom_sessions() {
   done
 }
 
+# Check if LANG in /etc/locale.conf is generated in `locale -a`.
+# Sets $1 (or prints) the missing locale and returns 1 when not generated; returns 0 when valid, C/POSIX, or absent.
+check_system_locale() {
+  local LC_ALL=C
+  local locale_conf="${LOCALE_CONF:-/etc/locale.conf}"
+  [[ -f "$locale_conf" && -r "$locale_conf" ]] || return 0
+
+  local lang="" line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*LANG=[\"\']?([^\"\'[:space:]#;]+) ]] && lang="${BASH_REMATCH[1]}"
+  done <"$locale_conf"
+
+  [[ -z "$lang" ]] && return 0
+  local target="${lang,,}"
+  target="${target//utf-8/utf8}"
+  target="${target//[[:space:]]/}"
+  case "$target" in
+    c | posix | c.utf8 | posix.utf8) return 0 ;;
+  esac
+
+  command -v locale >/dev/null 2>&1 || return 0
+
+  local loc
+  while IFS= read -r loc || [[ -n "$loc" ]]; do
+    loc="${loc,,}"
+    loc="${loc//utf-8/utf8}"
+    loc="${loc//[[:space:]]/}"
+    [[ "$loc" == "$target" ]] && return 0
+  done < <(locale -a 2>/dev/null || true)
+
+  if [[ -n "${1:-}" ]]; then
+    printf -v "$1" '%s' "$lang"
+  else
+    printf '%s\n' "$lang"
+  fi
+  return 1
+}
+
 # Run pre-install onboarding readiness checks cleanly without sudo or side effects
 run_preflight() {
   local json_mode=0
@@ -4277,6 +4315,13 @@ run_preflight() {
       diag_record_check "$json_mode" "Console keymap" "warn" "$diag_msg"
       warnings=$((warnings + 1))
     fi
+  fi
+
+  local missing_locale=""
+  if ! check_system_locale missing_locale; then
+    printf -v diag_msg "locale '%s' not generated — uncomment it in /etc/locale.gen, then sudo locale-gen" "$missing_locale"
+    diag_record_check "$json_mode" "System locale" "warn" "$diag_msg"
+    warnings=$((warnings + 1))
   fi
 
   if [[ -n "${WAYLAND_DISPLAY:-}" || -n "${DISPLAY:-}" ]]; then
@@ -5793,6 +5838,13 @@ run_doctor() {
     else
       diag_record_check "$json_mode" "Autologin" "ok" "disabled"
     fi
+  fi
+
+  local missing_locale=""
+  if ! check_system_locale missing_locale; then
+    printf -v diag_msg "locale '%s' not generated — uncomment it in /etc/locale.gen, then sudo locale-gen" "$missing_locale"
+    diag_record_check "$json_mode" "System locale" "warn" "$diag_msg"
+    warnings=$((warnings + 1))
   fi
 
   local summary_msg=""
