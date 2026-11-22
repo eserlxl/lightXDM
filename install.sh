@@ -3648,10 +3648,17 @@ show_install_status() {
   printf 'PAM keyring (%s): %s\n' "$LOGIN_FILE" "$keyring_status"
   printf 'PAM GNOME session type: %s\n' "$gnome_status"
   if [[ $pacnew_waiting -eq 1 ]]; then
-    if [[ $pacnew_replaced -eq 1 ]]; then
-      printf 'PAM pacnew: %s.pacnew waiting; %s looks package-replaced (run lightxdm-update)\n' "$LOGIN_FILE" "$LOGIN_FILE"
+    # Name lightxdm-update only where the AUR package installed it; a git clone runs install.sh --update.
+    local pacnew_update_cmd
+    if command -v lightxdm-update >/dev/null 2>&1; then
+      pacnew_update_cmd="lightxdm-update"
     else
-      printf 'PAM pacnew: %s.pacnew waiting (run lightxdm-update after merging if needed)\n' "$LOGIN_FILE"
+      pacnew_update_cmd="$(script_cmd install.sh) --update"
+    fi
+    if [[ $pacnew_replaced -eq 1 ]]; then
+      printf 'PAM pacnew: %s.pacnew waiting; %s looks package-replaced (run %s)\n' "$LOGIN_FILE" "$LOGIN_FILE" "$pacnew_update_cmd"
+    else
+      printf 'PAM pacnew: %s.pacnew waiting (run %s after merging if needed)\n' "$LOGIN_FILE" "$pacnew_update_cmd"
     fi
   fi
   if [[ "$getty_state" == masked ]]; then

@@ -13345,6 +13345,46 @@ if [[ $status_active_rc -ne 0 || -s "$status_sudo_log" ||
   status_cmd_report+=" [active: rc=$status_active_rc, sudo=$(cat "$status_sudo_log"), out=$status_active_out]"
 fi
 
+# 2b) The .pacnew line names lightxdm-update only when it is on PATH; a git clone gets install.sh --update.
+mkdir -p "$status_cmd_dir/update_bin"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$status_cmd_dir/update_bin/lightxdm-update"
+chmod +x "$status_cmd_dir/update_bin/lightxdm-update"
+status_no_update_path=""
+IFS=':' read -r -a status_path_dirs <<<"$status_cmd_dir/bin:$STUB_BIN:$PATH"
+for status_path_dir in "${status_path_dirs[@]}"; do
+  [[ -n "$status_path_dir" && ! -e "$status_path_dir/lightxdm-update" ]] || continue
+  status_no_update_path+="${status_no_update_path:+:}$status_path_dir"
+done
+printf -v status_install_cmd 'bash %q --update' "$REPO_ROOT/install.sh"
+for status_update_case in "with-update|$status_cmd_dir/update_bin:$status_no_update_path|lightxdm-update" \
+  "without-update|$status_no_update_path|$status_install_cmd"; do
+  IFS='|' read -r status_update_name status_update_path status_update_expect <<<"$status_update_case"
+  set +e
+  status_update_out="$(
+    env -u XDG_STATE_HOME -u STATUS_GETTY_STATE -u STATUS_DM_STATE \
+      HOME="$status_cmd_dir/active_home" \
+      USER=statususer \
+      PATH="$status_update_path" \
+      STATUS_SUDO_LOG="$status_sudo_log" \
+      LOGIN_FILE="$status_cmd_dir/active_login" \
+      GNOME_SESSION_TYPE_DEST="$status_cmd_dir/state/gnome-session-type.conf" \
+      PAM_KEYRING_STATE="$status_cmd_dir/state/pam-keyring" \
+      PAM_LOGIN_BASE_STATE="$status_cmd_dir/state/pam-login-base" \
+      DM_STATE_FILE="$status_cmd_dir/state/disabled-display-managers" \
+      AUTOLOGIN_DROPIN_DIR="$status_cmd_dir/getty.d" \
+      bash "$REPO_ROOT/install.sh" --status 2>&1
+  )"
+  status_update_rc=$?
+  set -e
+  if [[ $status_update_rc -ne 0 ||
+    "$status_update_out" != *"PAM pacnew: $status_cmd_dir/active_login.pacnew waiting"*"(run $status_update_expect"* ]]; then
+    status_cmd_report+=" [pacnew $status_update_name: rc=$status_update_rc, out=$status_update_out]"
+  fi
+  if [[ "$status_update_name" == without-update && "$status_update_out" == *"run lightxdm-update"* ]]; then
+    status_cmd_report+=" [pacnew without-update still names lightxdm-update: out=$status_update_out]"
+  fi
+done
+
 # 3) Unreadable PAM and state files stay read-only without sudo or Permission denied.
 if [[ $EUID -ne 0 ]]; then
   mkdir -p "$status_cmd_dir/priv"
