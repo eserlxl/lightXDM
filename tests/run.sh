@@ -16421,12 +16421,21 @@ cat >"$doctor_bin/startxfce4" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
+# Shadows any real homectl: accounts are not homed unless DOCTOR_HOMECTL_HOMED=1.
+cat >"$doctor_bin/homectl" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${DOCTOR_HOMECTL_HOMED:-0}" == 1 && "$1" == inspect ]]; then
+  echo "User $2 (60001)"
+  exit 0
+fi
+exit 1
+EOF
 cat >"$doctor_root/usr/bin/gnome-session" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
 touch "$doctor_root/usr/lib/security/pam_gnome_keyring.so"
-chmod +x "$doctor_bin/sudo" "$doctor_bin/systemctl" "$doctor_bin/getent" "$doctor_bin/pacman" "$doctor_bin/startx" "$doctor_bin/startxfce4" "$doctor_root/usr/bin/gnome-session"
+chmod +x "$doctor_bin/sudo" "$doctor_bin/systemctl" "$doctor_bin/getent" "$doctor_bin/pacman" "$doctor_bin/startx" "$doctor_bin/startxfce4" "$doctor_bin/homectl" "$doctor_root/usr/bin/gnome-session"
 
 run_doctor_cmd() {
   env -u SUDO_USER -u DISPLAY -u WAYLAND_DISPLAY \
@@ -16705,6 +16714,46 @@ doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
 if [[ $doc_rc -ne 0 || "$doc_out" != *"Autologin: WARN"* || "$doc_out" != *"Doctor: PASS (0 issue(s), 1 warning(s))"* ]]; then
   doctor_ok=0
   doctor_report+=" autologin-warn rc=$doc_rc out=[$doc_out];"
+fi
+if [[ "$doc_out" == *"systemd-homed"* ]]; then
+  doctor_ok=0
+  doctor_report+=" autologin-non-homed-default rc=$doc_rc out=[$doc_out];"
+fi
+
+# Autologin for a systemd-homed account names homed and the --login-mode password switch
+doc_rc=0
+doc_out="$(DOCTOR_HOMECTL_HOMED=1 run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 ||
+  "$doc_out" != *"Autologin: WARN (enabled for testuser — "*"managed by systemd-homed; its home may not unlock with passwordless autologin — switch with: bash "*"install.sh --login-mode password"* ||
+  "$doc_out" != *"Doctor: PASS (0 issue(s), 1 warning(s))"* ]]; then
+  doctor_ok=0
+  doctor_report+=" autologin-homed-warn rc=$doc_rc out=[$doc_out];"
+fi
+
+# homectl present but inspect fails (not a homed account): autologin report unchanged
+doc_rc=0
+doc_out="$(DOCTOR_HOMECTL_HOMED=0 run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 0 || "$doc_out" == *"systemd-homed"* ||
+  "$doc_out" != *"Autologin: WARN (enabled for testuser"* ||
+  "$doc_out" != *"Doctor: PASS (0 issue(s), 1 warning(s))"* ]]; then
+  doctor_ok=0
+  doctor_report+=" autologin-non-homed rc=$doc_rc out=[$doc_out];"
+fi
+
+# Autologin with no PAM keyring configured: OK for a plain account, WARN for a homed one
+rm -f "$doctor_etc/lightxdm/pam-keyring"
+printf '#%%PAM-1.0\nauth include system-local-login\nsession include system-local-login\n' >"$doctor_etc/pam.d/login"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+doc_homed_rc=0
+doc_homed_out="$(DOCTOR_HOMECTL_HOMED=1 run_doctor_cmd --doctor 2>&1)" || doc_homed_rc=$?
+if [[ "$doc_out" != *"Autologin: ok (enabled for testuser)"* || "$doc_out" == *"systemd-homed"* ]]; then
+  doctor_ok=0
+  doctor_report+=" autologin-plain-no-keyring rc=$doc_rc out=[$doc_out];"
+fi
+if [[ "$doc_homed_out" != *"Autologin: WARN (enabled for testuser — managed by systemd-homed; its home may not unlock with passwordless autologin — switch with: bash "*"install.sh --login-mode password)"* ]]; then
+  doctor_ok=0
+  doctor_report+=" autologin-homed-no-keyring rc=$doc_homed_rc out=[$doc_homed_out];"
 fi
 
 # Root-only unreadable PAM/autologin degrade softly to unknown (needs root)

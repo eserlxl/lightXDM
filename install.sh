@@ -5630,6 +5630,12 @@ run_doctor() {
   done
   local auto_details=("${auto_warnings[@]}")
   if [[ "$auto_state" == enabled ]]; then
+    # An encrypted systemd-homed home is unlocked by the login password, which
+    # passwordless autologin never supplies; flag it even for drop-ins written
+    # before enable-autologin.sh learned to warn about it.
+    if [[ -n "$auto_user" ]] && command -v homectl >/dev/null 2>&1 && homectl inspect "$auto_user" >/dev/null 2>&1; then
+      auto_details+=("managed by systemd-homed; its home may not unlock with passwordless autologin — switch with: $(script_cmd install.sh) --login-mode password")
+    fi
     if [[ $has_keyring_auto_warn -eq 0 && ( -n "$pam_expected" || $keyring_configured -eq 1 ) ]]; then
       if [[ ${#auto_details[@]} -eq 0 && $auto_needs_root -eq 0 && ${#auto_other_notes[@]} -eq 0 ]]; then
         printf -v diag_msg 'enabled for %s while PAM keyring is configured; autologin leaves keyring locked — disable with: sudo %s --disable' "$auto_user" "$(script_cmd enable-autologin.sh)"
