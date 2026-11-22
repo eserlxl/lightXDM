@@ -1155,6 +1155,10 @@ init_xinitrc_template() {
       log "$SESSION_ENTRY_ERROR"
       return 1
     fi
+    if [[ $uwsm -eq 1 && ( "$SESSION_ENTRY_EXEC_CMD" == "uwsm" || "$SESSION_ENTRY_EXEC_CMD" == */uwsm ) ]]; then
+      log "Session entry already starts uwsm: $from_session (drop --uwsm)."
+      return 1
+    fi
     exec_line="$SESSION_ENTRY_EXEC_LINE"
     if [[ -n "$SESSION_ENTRY_DESKTOP" ]]; then
       current_desktop="$SESSION_ENTRY_DESKTOP"
@@ -1318,6 +1322,10 @@ prepare_install_session() {
     log "--uwsm is only for Wayland sessions; $entry is an X11 session entry (add --wayland if it starts a Wayland compositor)."
     return 1
   fi
+  if [[ $uwsm -eq 1 && ( "$SESSION_ENTRY_EXEC_CMD" == "uwsm" || "$SESSION_ENTRY_EXEC_CMD" == */uwsm ) ]]; then
+    log "Session entry already starts uwsm: $entry (drop --uwsm)."
+    return 1
+  fi
 
   check_user_template_dirs || return 1
   if [[ -e "$sibling" || -L "$sibling" ]]; then
@@ -1406,7 +1414,7 @@ check_template_not_self() {
 
 # Check startup commands before changing the user's session configuration
 check_session_commands() {
-  local template="$1" base="${1##*/}" line session_line="" session_command package
+  local template="$1" base="${1##*/}" line session_line="" session_command package is_uwsm=0
   if [[ ! -r "$template" ]]; then
     log "Cannot read $template; fix its permissions and re-run."
     return 1
@@ -1424,6 +1432,7 @@ check_session_commands() {
         return 1
       fi
       session_line="${session_line#uwsm start -- }"
+      is_uwsm=1
     fi
     local tokens=() token check_path
     # Escapes written by printf %q for imported paths must join words as the shell does when running the template.
@@ -1453,7 +1462,10 @@ check_session_commands() {
     done
     read -r session_command _ <<< "$session_line"
     # As with X11 templates, inspect only a literal command name.
-    if [[ "$session_command" =~ ^[[:alnum:]_][[:alnum:]_.+-]*$ ]] &&
+    # uwsm also takes a desktop-entry ID (*.desktop or *.desktop:*), which is not a PATH command.
+    if [[ $is_uwsm -eq 1 && ( "$session_command" == *.desktop || "$session_command" == *.desktop:* ) ]]; then
+      :
+    elif [[ "$session_command" =~ ^[[:alnum:]_][[:alnum:]_.+-]*$ ]] &&
       ! PATH="$HOME/.local/bin:$PATH" command -v "$session_command" >/dev/null 2>&1; then
       log "Missing command: $session_command. Install your session and ensure its command is on PATH, then re-run."
       return 1

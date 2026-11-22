@@ -19175,6 +19175,14 @@ if [[ $uw_rc -ne 1 || "$uw_out" != *"Missing command: definitely-missing-composi
   uw_ok=0
   uw_report+=" preflight-wrapped-missing rc=$uw_rc out=[$uw_out];"
 fi
+mkdir -p "$isess_home/.config/lightxdm"
+printf '%s\n' 'exec uwsm start -- hyprland.desktop' >"$isess_home/.config/lightxdm/.wayland-session-uwhd"
+uw_rc=0
+uw_out="$(HOME="$isess_home" PATH="$isess_bin:/usr/bin:/bin" bash -c 'source "$1/install.sh"; check_session_commands "$2"' bash "$REPO_ROOT" "$isess_home/.config/lightxdm/.wayland-session-uwhd" 2>&1)" || uw_rc=$?
+if [[ $uw_rc -ne 0 ]]; then
+  uw_ok=0
+  uw_report+=" preflight-desktop-id rc=$uw_rc out=[$uw_out];"
+fi
 
 # --install-session --uwsm previews, then installs, the wrapped session command.
 reset_isess_fixture
@@ -19206,7 +19214,17 @@ fi
 
 # X11 sessions, built-in ids and other modes refuse --uwsm before any change.
 reset_isess_fixture
+mkdir -p "$isess_wl"
+cat >"$isess_wl/hyprland-uwsm.desktop" <<'EOF'
+[Desktop Entry]
+Name=Hyprland (uwsm)
+Exec=uwsm start -- hyprland.desktop
+DesktopNames=Hyprland
+Type=Application
+EOF
 for uw_bad in \
+  "--install-session hyprland-uwsm --uwsm|already starts uwsm" \
+  "--init-template --wayland --de hyprland --from-session hyprland-uwsm --uwsm|already starts uwsm" \
   "--uwsm --no-packages --de sway|--uwsm requires --init-template --wayland" \
   "--init-template --de sway --uwsm|--uwsm with --init-template requires --wayland" \
   "--init-template --de sway --from-session openbox --uwsm|--uwsm with --init-template requires --wayland" \
@@ -19233,7 +19251,7 @@ if [[ -s "$isess_sudo_log" || -e "$isess_home/.config" ]]; then
   uw_ok=0
   uw_report+=" bad-touched-sudo-or-home;"
 fi
-rm -f "$isess_bin/uwsm"
+rm -f "$isess_bin/uwsm" "$isess_wl/hyprland-uwsm.desktop"
 reset_isess_fixture
 
 if [[ $uw_ok -eq 1 ]]; then
