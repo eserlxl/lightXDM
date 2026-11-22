@@ -4221,6 +4221,32 @@ run_preflight() {
     diag_record_check "$json_mode" "getty@tty1.service" "skipped" "systemctl unavailable"
   fi
 
+  # The TTY1 password is typed with the console keymap: compare it with the desktop layout.
+  local vconsole_file="${VCONSOLE_CONF:-/etc/vconsole.conf}"
+  local x11_file="${X11_KEYBOARD_CONF:-/etc/X11/xorg.conf.d/00-keyboard.conf}"
+  local console_keymap="" x11_layout="" kb_line
+  if [[ -f "$vconsole_file" && -r "$vconsole_file" ]]; then
+    while IFS= read -r kb_line || [[ -n "$kb_line" ]]; do
+      [[ "$kb_line" =~ ^[[:space:]]*KEYMAP=[\"\']?([^\"\'[:space:]#]+) ]] && console_keymap="${BASH_REMATCH[1]}"
+    done <"$vconsole_file"
+  fi
+  if [[ -f "$x11_file" && -r "$x11_file" ]]; then
+    while IFS= read -r kb_line || [[ -n "$kb_line" ]]; do
+      [[ "$kb_line" =~ ^[[:space:]]*Option[[:space:]]+\"XkbLayout\"[[:space:]]+\"([^\",]+) ]] && x11_layout="${BASH_REMATCH[1]}"
+    done <"$x11_file"
+  fi
+
+  if [[ -n "$x11_layout" ]]; then
+    local effective_keymap="${console_keymap:-us}"
+    # Console keymaps extend the layout name (trq for tr, de-latin1 for de): compare by prefix.
+    if [[ "$effective_keymap" != "$x11_layout"* ]]; then
+      printf -v diag_msg "console keymap '%s' differs from desktop layout '%s' — fix with: sudo localectl set-keymap %s" \
+        "$effective_keymap" "$x11_layout" "$x11_layout"
+      diag_record_check "$json_mode" "Console keymap" "warn" "$diag_msg"
+      warnings=$((warnings + 1))
+    fi
+  fi
+
   if [[ -n "${WAYLAND_DISPLAY:-}" || -n "${DISPLAY:-}" ]]; then
     printf -v diag_msg 'graphical (%s — safe to install; current session will stay running)' "${WAYLAND_DISPLAY:-$DISPLAY}"
     diag_record_check "$json_mode" "Current session" "info" "$diag_msg" "$diag_msg"
@@ -8079,8 +8105,8 @@ Options:
                     ~/.gnupg/gpg-agent.conf ($GNUPGHOME/gpg-agent.conf when inside $HOME) and reload gpg-agent
                     (standalone with optional --gpg-ssh and --dry-run, or combined with install)
   --gpg-ssh         with --setup-gpg <gnome|kwallet|auto>, also write enable-ssh-support in the managed block
-  --preflight       check user/sudo, pacman/systemctl, getty@tty1.service, display managers, login shell, systemd-homed account,
-                    and installed desktops without sudo or changes, then suggest the next command (use alone, or with --json)
+  --preflight       check user/sudo, pacman/systemctl, getty@tty1.service, display managers, console keymap vs X11 layout, login shell,
+                    systemd-homed account, and installed desktops without sudo or changes, then suggest the next command (use alone, or with --json)
   --guided          interactive first-run onboarding wizard: runs --preflight first, helps pick a detected or custom
                     .desktop session or built-in desktop, keyring/autologin mode, and zsh/fish shell hook, prints the
                     equivalent command and --dry-run preview, and asks confirmation before sudo/changes (optional --dry-run)

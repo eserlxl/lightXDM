@@ -16371,6 +16371,240 @@ then
   preflight_report+=" [homed preflight json rc=$pf_homed_js_rc err=$(<"$preflight_dir/js_homed.err") out=$pf_homed_js]"
 fi
 
+preflight_km_dir="$preflight_dir/keymaps"
+mkdir -p "$preflight_km_dir"
+
+cat >"$preflight_km_dir/vconsole_tr.conf" <<'EOF'
+KEYMAP="tr"
+FONT=lat9w-16
+EOF
+
+cat >"$preflight_km_dir/vconsole_de.conf" <<'EOF'
+KEYMAP='de'
+EOF
+
+cat >"$preflight_km_dir/vconsole_us.conf" <<'EOF'
+KEYMAP=us
+EOF
+
+cat >"$preflight_km_dir/vconsole_empty.conf" <<'EOF'
+# /etc/vconsole.conf on fresh Arch with no KEYMAP
+FONT=lat9w-16
+EOF
+
+cat >"$preflight_km_dir/x11_tr.conf" <<'EOF'
+Section "InputClass"
+    Identifier "system-keyboard"
+    MatchIsKeyboard "on"
+    Option "XkbLayout" "tr"
+EndSection
+EOF
+
+cat >"$preflight_km_dir/x11_us_tr.conf" <<'EOF'
+Section "InputClass"
+    Identifier "system-keyboard"
+    MatchIsKeyboard "on"
+    Option "XkbLayout" "us,tr"
+EndSection
+EOF
+
+cat >"$preflight_km_dir/x11_us.conf" <<'EOF'
+Section "InputClass"
+    Identifier "system-keyboard"
+    MatchIsKeyboard "on"
+    Option "XkbLayout" "us"
+EndSection
+EOF
+
+cat >"$preflight_km_dir/x11_none.conf" <<'EOF'
+Section "InputClass"
+    Identifier "system-keyboard"
+    MatchIsKeyboard "on"
+    Option "XkbModel" "pc105"
+EndSection
+EOF
+
+set +e
+pf_km_diff="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  VCONSOLE_CONF="$preflight_km_dir/vconsole_de.conf" \
+  X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_km_diff_rc=$?
+set -e
+if [[ $pf_km_diff_rc -ne 0 || "$pf_km_diff" != *"Console keymap: WARN"* ||
+  "$pf_km_diff" != *"console keymap 'de'"* || "$pf_km_diff" != *"desktop layout 'tr'"* ||
+  "$pf_km_diff" != *"sudo localectl set-keymap tr"* ||
+  "$pf_km_diff" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [diff keymap preflight rc=$pf_km_diff_rc out=$pf_km_diff]"
+fi
+
+set +e
+pf_km_absent_v="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  VCONSOLE_CONF="$preflight_km_dir/vconsole_empty.conf" \
+  X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_km_absent_v_rc=$?
+set -e
+if [[ $pf_km_absent_v_rc -ne 0 || "$pf_km_absent_v" != *"Console keymap: WARN"* ||
+  "$pf_km_absent_v" != *"console keymap 'us'"* || "$pf_km_absent_v" != *"desktop layout 'tr'"* ||
+  "$pf_km_absent_v" != *"sudo localectl set-keymap tr"* ||
+  "$pf_km_absent_v" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [absent vconsole keymap diff preflight rc=$pf_km_absent_v_rc out=$pf_km_absent_v]"
+fi
+
+set +e
+pf_km_match="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  VCONSOLE_CONF="$preflight_km_dir/vconsole_tr.conf" \
+  X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_km_match_rc=$?
+set -e
+if [[ $pf_km_match_rc -ne 0 || "$pf_km_match" == *"Console keymap"* ||
+  "$pf_km_match" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [matching keymap preflight rc=$pf_km_match_rc out=$pf_km_match]"
+fi
+
+# A console keymap that extends the layout name (trq for tr) counts as matching.
+printf 'KEYMAP=trq\n' >"$preflight_km_dir/vconsole_trq.conf"
+set +e
+pf_km_prefix="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  VCONSOLE_CONF="$preflight_km_dir/vconsole_trq.conf" \
+  X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_km_prefix_rc=$?
+set -e
+if [[ $pf_km_prefix_rc -ne 0 || "$pf_km_prefix" == *"Console keymap"* ||
+  "$pf_km_prefix" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [prefix keymap preflight rc=$pf_km_prefix_rc out=$pf_km_prefix]"
+fi
+
+set +e
+pf_km_comma="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  VCONSOLE_CONF="$preflight_km_dir/vconsole_us.conf" \
+  X11_KEYBOARD_CONF="$preflight_km_dir/x11_us_tr.conf" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_km_comma_rc=$?
+set -e
+if [[ $pf_km_comma_rc -ne 0 || "$pf_km_comma" == *"Console keymap"* ||
+  "$pf_km_comma" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [comma list matching keymap preflight rc=$pf_km_comma_rc out=$pf_km_comma]"
+fi
+
+set +e
+pf_km_absent_match="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  VCONSOLE_CONF="$preflight_km_dir/vconsole_empty.conf" \
+  X11_KEYBOARD_CONF="$preflight_km_dir/x11_us.conf" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_km_absent_match_rc=$?
+set -e
+if [[ $pf_km_absent_match_rc -ne 0 || "$pf_km_absent_match" == *"Console keymap"* ||
+  "$pf_km_absent_match" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [absent vconsole matching us keymap preflight rc=$pf_km_absent_match_rc out=$pf_km_absent_match]"
+fi
+
+set +e
+pf_km_nox="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  VCONSOLE_CONF="$preflight_km_dir/vconsole_de.conf" \
+  X11_KEYBOARD_CONF="$preflight_km_dir/x11_none.conf" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_km_nox_rc=$?
+set -e
+if [[ $pf_km_nox_rc -ne 0 || "$pf_km_nox" == *"Console keymap"* ||
+  "$pf_km_nox" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [no X11 layout silent preflight rc=$pf_km_nox_rc out=$pf_km_nox]"
+fi
+
+set +e
+pf_km_nonexistent="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  VCONSOLE_CONF="$preflight_km_dir/nonexistent_vconsole.conf" \
+  X11_KEYBOARD_CONF="$preflight_km_dir/nonexistent_x11.conf" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_km_nonexistent_rc=$?
+set -e
+if [[ $pf_km_nonexistent_rc -ne 0 || "$pf_km_nonexistent" == *"Console keymap"* ||
+  "$pf_km_nonexistent" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [nonexistent layout files preflight rc=$pf_km_nonexistent_rc out=$pf_km_nonexistent]"
+fi
+
+set +e
+pf_km_js="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  VCONSOLE_CONF="$preflight_km_dir/vconsole_empty.conf" \
+  X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_km.err")"
+pf_km_js_rc=$?
+set -e
+if [[ $pf_km_js_rc -ne 0 || -s "$preflight_dir/js_km.err" ]] ||
+  ! JSON_OUT="$pf_km_js" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["mode"] == "preflight"
+assert d["ready"] is True
+assert d["status"] == "warn"
+assert d["blockers"] == 0
+assert d["warnings"] == 1
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["Console keymap"]["status"] == "warn"
+assert "sudo localectl set-keymap tr" in checks["Console keymap"]["detail"]
+assert "console keymap 'us'" in checks["Console keymap"]["detail"]
+assert "desktop layout 'tr'" in checks["Console keymap"]["detail"]
+PY
+then
+  preflight_ok=0
+  preflight_report+=" [keymap diff preflight json rc=$pf_km_js_rc err=$(<"$preflight_dir/js_km.err") out=$pf_km_js]"
+fi
+
+set +e
+pf_km_js_match="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  VCONSOLE_CONF="$preflight_km_dir/vconsole_tr.conf" \
+  X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_km_match.err")"
+pf_km_js_match_rc=$?
+set -e
+if [[ $pf_km_js_match_rc -ne 0 || -s "$preflight_dir/js_km_match.err" ]] ||
+  ! JSON_OUT="$pf_km_js_match" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["mode"] == "preflight"
+assert d["ready"] is True
+assert d["status"] == "pass"
+assert d["blockers"] == 0
+assert d["warnings"] == 0
+checks = {c["name"]: c for c in d["checks"]}
+assert "Console keymap" not in checks
+PY
+then
+  preflight_ok=0
+  preflight_report+=" [keymap match preflight json rc=$pf_km_js_match_rc err=$(<"$preflight_dir/js_km_match.err") out=$pf_km_js_match]"
+fi
+
 if [[ $preflight_ok -eq 1 ]]; then
   pass "install.sh --preflight validates host readiness, shell hints, and next steps cleanly without sudo or side effects"
 else
