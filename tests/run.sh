@@ -9198,6 +9198,15 @@ cat >"$expected_sway_template" <<'EOF'
 #!/bin/bash
 # Wayland session for lightXDM: start sway
 
+# Session variables from ~/.config/environment.d, like a display manager session; lightXDM's own
+# exports below win.
+lightxdm_envgen=/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator
+if [ -x "$lightxdm_envgen" ]; then
+  set -a
+  eval "$("$lightxdm_envgen")"
+  set +a
+fi
+
 export DESKTOP_SESSION=sway
 export XDG_CURRENT_DESKTOP=sway
 export XDG_SESSION_TYPE=wayland
@@ -9234,6 +9243,47 @@ if [[ $status -eq 1 && "$output" == *"$init_sway already exists"* && ! -s "$STUB
   pass "--init-template --wayland refuses to overwrite an existing edited template"
 else
   fail "init custom Wayland overwrite refusal (status=$status, output=$output)"
+fi
+
+# Custom Wayland templates without --uwsm include guarded environment.d generator and pass bash -n; --uwsm templates do not include the generator.
+envgen_home="$TMP_DIR/envgen_wayland_home"
+mkdir -p "$envgen_home"
+set +e
+output="$(HOME="$envgen_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --wayland --de mywm 2>&1)"
+status=$?
+set -e
+mywm_tmpl="$envgen_home/.config/lightxdm/.wayland-session-mywm"
+mywm_syntax=0
+if [[ -f "$mywm_tmpl" ]]; then
+  bash -n "$mywm_tmpl" 2>/dev/null || mywm_syntax=$?
+fi
+
+uwsm_envgen_home="$TMP_DIR/uwsm_envgen_wayland_home"
+mkdir -p "$uwsm_envgen_home"
+set +e
+output_uwsm="$(HOME="$uwsm_envgen_home" PATH="$sudo_pw_dir:$PATH" bash "$REPO_ROOT/install.sh" --init-template --wayland --de mywm --uwsm 2>&1)"
+status_uwsm=$?
+set -e
+uwsm_mywm_tmpl="$uwsm_envgen_home/.config/lightxdm/.wayland-session-mywm"
+uwsm_mywm_syntax=0
+if [[ -f "$uwsm_mywm_tmpl" ]]; then
+  bash -n "$uwsm_mywm_tmpl" 2>/dev/null || uwsm_mywm_syntax=$?
+fi
+
+envgen_line='lightxdm_envgen=/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator'
+# shellcheck disable=SC2016  # the template lines are matched literally
+if [[ $status -eq 0 && -f "$mywm_tmpl" && $mywm_syntax -eq 0 &&
+  $status_uwsm -eq 0 && -f "$uwsm_mywm_tmpl" && $uwsm_mywm_syntax -eq 0 ]] &&
+  grep -Fxq "$envgen_line" "$mywm_tmpl" &&
+  grep -Fxq 'if [ -x "$lightxdm_envgen" ]; then' "$mywm_tmpl" &&
+  grep -Fxq '  set -a' "$mywm_tmpl" &&
+  grep -Fxq '  eval "$("$lightxdm_envgen")"' "$mywm_tmpl" &&
+  grep -Fxq '  set +a' "$mywm_tmpl" &&
+  grep -Fxq 'fi' "$mywm_tmpl" &&
+  ! grep -Fq "$envgen_line" "$uwsm_mywm_tmpl"; then
+  pass "custom Wayland template loads environment.d variables and passes bash -n, while --uwsm does not"
+else
+  fail "custom Wayland environment.d template check (status=$status, syntax=$mywm_syntax, uwsm_status=$status_uwsm, uwsm_syntax=$uwsm_mywm_syntax, uwsm_out=$output_uwsm)"
 fi
 
 # A custom id keeps one session template: --init-template refuses to add the sibling.
@@ -19105,7 +19155,8 @@ if [[ $uw_rc -ne 0 || $uw_syntax_rc -ne 0 || -s "$isess_sudo_log" || "$uw_out" =
   [[ "$(grep -c '^exec ' "$uw_tmpl")" != 1 ]] ||
   ! grep -Fxq 'export DESKTOP_SESSION=sway' "$uw_tmpl" ||
   ! grep -Fxq 'export XDG_CURRENT_DESKTOP=sway' "$uw_tmpl" ||
-  ! grep -Fxq 'export XDG_SESSION_TYPE=wayland' "$uw_tmpl"; then
+  ! grep -Fxq 'export XDG_SESSION_TYPE=wayland' "$uw_tmpl" ||
+  grep -Fq '30-systemd-environment-d-generator' "$uw_tmpl"; then
   uw_ok=0
   uw_report+=" init rc=$uw_rc syntax=$uw_syntax_rc out=[$uw_out];"
 fi

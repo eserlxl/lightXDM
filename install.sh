@@ -1186,8 +1186,7 @@ init_xinitrc_template() {
           if ! session_command_exists uwsm; then
             log "Warning: uwsm is not on PATH; install it (package uwsm) before logging in to $id."
           fi
-        fi
-        cat >"$dest" <<EOF || { rm -f -- "$dest"; return 1; }
+          cat >"$dest" <<EOF || { rm -f -- "$dest"; return 1; }
 #!/bin/bash
 # Wayland session for lightXDM: start $id
 
@@ -1201,6 +1200,31 @@ fi
 
 $exec_line
 EOF
+        else
+          cat >"$dest" <<EOF || { rm -f -- "$dest"; return 1; }
+#!/bin/bash
+# Wayland session for lightXDM: start $id
+
+# Session variables from ~/.config/environment.d, like a display manager session; lightXDM's own
+# exports below win.
+lightxdm_envgen=/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator
+if [ -x "\$lightxdm_envgen" ]; then
+  set -a
+  eval "\$("\$lightxdm_envgen")"
+  set +a
+fi
+
+export DESKTOP_SESSION=$id
+export XDG_CURRENT_DESKTOP=$quoted_desktop
+export XDG_SESSION_TYPE=wayland
+
+if [[ -f ~/.gpg-agent-gnome ]]; then
+  source ~/.gpg-agent-gnome
+fi
+
+$exec_line
+EOF
+        fi
       else
         local template_line
         while IFS= read -r template_line || [[ -n "$template_line" ]]; do
