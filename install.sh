@@ -1974,8 +1974,11 @@ configure_pam() {
     additions="$(pam_lines_to_add "$module" "$auth_line" "$session_line" "$removals" 1)"
     printf '%s\n' "${additions:-  no lines to add (already configured)}"
     printf '  record: %s (%s)\n' "$PAM_KEYRING_STATE" "$backend"
-    if [[ -n "$additions" && "${UPDATE_RESTORE_PAM:-0}" == 1 ]]; then
-      printf '  record: %s (the version the .pacnew merge brought)\n' "$PAM_LOGIN_BASE_STATE"
+    if [[ -n "$additions" ]]; then
+      prepare_login_base_record 1 || return 1
+      if [[ -n "${UPDATE_LOGIN_SUM:-}" ]]; then
+        printf '  record: %s (the version the .pacnew merge brought)\n' "$PAM_LOGIN_BASE_STATE"
+      fi
     fi
     return 0
   fi
@@ -1995,7 +1998,7 @@ configure_pam() {
     fi
   fi
   ensure_safe_state_dir "$PAM_KEYRING_STATE" || return 1
-  if [[ "${UPDATE_RESTORE_PAM:-0}" == 1 && -n "${UPDATE_LOGIN_SUM:-}" ]]; then
+  if [[ -n "${UPDATE_LOGIN_SUM:-}" ]]; then
     ensure_safe_state_dir "$PAM_LOGIN_BASE_STATE" || return 1
   fi
   adopt_legacy_pam_backup || return 1
@@ -2032,6 +2035,7 @@ configure_pam() {
   mapfile -t lines_to_add < <(pam_lines_to_add "$module" "$auth_line" "$session_line" "" 0)
 
   if [[ ${#lines_to_add[@]} -gt 0 ]]; then
+    prepare_login_base_record 0 || return 1
     backup_login_pam_file || return 1
     if [[ -n "$(read_pam_file "$LOGIN_FILE" 0 | tail -c 1)" ]]; then
       printf '\n' | sudo tee -a "$LOGIN_FILE" > /dev/null
@@ -2191,8 +2195,11 @@ configure_gnome_session_type() (
     elif [[ "$de" == gnome && ( "${UPDATE_RUN:-0}" != 1 || $login_readable -eq 1 ) ]]; then
       printf '%s\n' "${block[@]}"
       printf 'Session-type file: %s (from %s)\n' "$GNOME_SESSION_TYPE_DEST" "$SCRIPT_DIR/pam/gnome-session-type.conf"
-      if [[ $has_block -eq 0 && "${UPDATE_RESTORE_PAM:-0}" == 1 ]]; then
-        printf '  record: %s (the version the .pacnew merge brought)\n' "$PAM_LOGIN_BASE_STATE"
+      if [[ $has_block -eq 0 ]]; then
+        prepare_login_base_record 1 || return 1
+        if [[ -n "${UPDATE_LOGIN_SUM:-}" ]]; then
+          printf '  record: %s (the version the .pacnew merge brought)\n' "$PAM_LOGIN_BASE_STATE"
+        fi
       fi
     elif [[ "$de" != gnome ]]; then
       if [[ $has_block -eq 1 ]]; then
@@ -2277,8 +2284,11 @@ configure_gnome_session_type() (
   if [[ "$de" == gnome || -e "$GNOME_SESSION_TYPE_DEST" || -L "$GNOME_SESSION_TYPE_DEST" ]]; then
     ensure_safe_state_dir "$GNOME_SESSION_TYPE_DEST" || return 1
   fi
-  if [[ "$de" == gnome && "${UPDATE_RESTORE_PAM:-0}" == 1 && -n "${UPDATE_LOGIN_SUM:-}" ]]; then
+  if [[ "$de" == gnome && -n "${UPDATE_LOGIN_SUM:-}" ]]; then
     ensure_safe_state_dir "$PAM_LOGIN_BASE_STATE" || return 1
+  fi
+  if [[ "$de" == gnome && $has_block -eq 0 ]]; then
+    prepare_login_base_record 0 || return 1
   fi
   local changed=0
   if [[ "$(sha256sum < "$tmp")" != "$(sha256sum < "$login_src")" ]]; then
@@ -2537,24 +2547,48 @@ login_file_replaced_by_package() {
   fi
 }
 
+# Set UPDATE_LOGIN_SUM to the checksum of $LOGIN_FILE when a .pacnew merge replaced it
+# (login_file_replaced_by_package), else clear it; fail only when that file cannot be read again.
+capture_replaced_login_sum() {
+  local preview="${1:-0}" sum
+  UPDATE_LOGIN_SUM=""
+  login_file_replaced_by_package "$preview" || return 0
+  sum="$(set -o pipefail; read_pam_file "$LOGIN_FILE" "$preview" 2>/dev/null | sha256sum)" || return 1
+  UPDATE_LOGIN_SUM="${sum%% *}"
+}
+
 # --update decides once, before any step changes $LOGIN_FILE, whether a .pacnew merge replaced it;
 # only then do lightXDM's missing PAM lines go back in (saved_install_args, configure_gnome_session_type).
 start_update_run() {
-  local preview="${1:-0}" sum
+  local preview="${1:-0}"
   UPDATE_RUN=1
   UPDATE_RESTORE_PAM=0
-  UPDATE_LOGIN_SUM=""
-  if login_file_replaced_by_package "$preview"; then
-    sum="$(set -o pipefail; read_pam_file "$LOGIN_FILE" "$preview" 2>/dev/null | sha256sum)" || return 1
+  capture_replaced_login_sum "$preview" || return 1
+  if [[ -n "$UPDATE_LOGIN_SUM" ]]; then
     UPDATE_RESTORE_PAM=1
-    UPDATE_LOGIN_SUM="${sum%% *}"
+  fi
+}
+
+# Outside --update (install, --pam-only, --fix, --login-mode password), lightXDM's lines can go back
+# into a login file a .pacnew merge replaced too, for example when the user follows --update's own
+# --pam-only hint. Just before they go in, take that packaged version's checksum for
+# record_login_base, and check its state directory while $LOGIN_FILE is still unchanged. --update
+# decided this already (start_update_run), and a checksum taken earlier in this run is kept.
+prepare_login_base_record() {
+  local preview="${1:-0}"
+  [[ "${UPDATE_RUN:-0}" != 1 && -z "${UPDATE_LOGIN_SUM:-}" ]] || return 0
+  # A plain --dry-run queries no package owner; only the live run records the base.
+  [[ $preview -eq 0 ]] || return 0
+  capture_replaced_login_sum 0 || return 1
+  if [[ -n "$UPDATE_LOGIN_SUM" ]]; then
+    ensure_safe_state_dir "$PAM_LOGIN_BASE_STATE" || return 1
   fi
 }
 
 # After lightXDM's lines went back into a login file a .pacnew merge replaced, remember that packaged
 # version, so a later removal of the lines by hand is not taken for another merge.
 record_login_base() {
-  [[ "${UPDATE_RESTORE_PAM:-0}" == 1 && -n "${UPDATE_LOGIN_SUM:-}" ]] || return 0
+  [[ -n "${UPDATE_LOGIN_SUM:-}" ]] || return 0
   ensure_safe_state_dir "$PAM_LOGIN_BASE_STATE" || return 1
   if [[ ! -f "$PAM_LOGIN_BASE_STATE" || -L "$PAM_LOGIN_BASE_STATE" || ! -r "$PAM_LOGIN_BASE_STATE" ||
     "$(stat -c %a -- "$PAM_LOGIN_BASE_STATE" 2>/dev/null)" != 644 ||

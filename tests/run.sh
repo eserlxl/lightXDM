@@ -11322,6 +11322,61 @@ if [[ -z "$po_report" ]]; then
 else
   fail "install.sh --pam-only:$po_report"
 fi
+# --pam-only (the command --update suggests) puts lightXDM's lines back into a login file a .pacnew
+# merge replaced outside --update; it records the merged version too, so removing the lines by hand
+# afterwards is not taken for another merge and the next --update leaves them out.
+pr_dir="$TMP_DIR/pam_only_merge_restore"
+pr_home="$pr_dir/home"
+mkdir -p "$pr_home/.local/state/lightxdm"
+printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$pr_dir/stock"
+printf '%s\n' '#%PAM-1.0' '# a line an older util-linux shipped' 'auth       include      system-local-login' \
+  'session    include      system-local-login' >"$pr_dir/login.lightxdm.bak"
+cp -- "$pr_dir/stock" "$pr_dir/login"
+printf 'gnome\n' >"$pr_dir/pam-keyring"
+printf 'de=gnome\nno_packages=1\n' >"$pr_home/.local/state/lightxdm/install-choices"
+pr_run() {
+  # shellcheck disable=SC2016  # expand inside the child shell
+  env -u SHELLOPTS -u SUDO_USER HOME="$pr_home" USER=tester PATH="$sudo_pw_dir:$STUB_BIN:$PATH" STUB_LOG="$pr_dir/stub.log" \
+    LOGIN_FILE="$pr_dir/login" PAM_KEYRING_STATE="$pr_dir/pam-keyring" PAM_LOGIN_BASE_STATE="$pr_dir/pam-login-base" \
+    GNOME_SESSION_TYPE_DEST="$pr_dir/gnome-session-type.conf" DM_STATE_FILE="$pr_dir/dm-state" \
+    DISPLAY_MANAGER_LINK="$pr_dir/display-manager.service" AUTOLOGIN_DROPIN_DIR="$pr_dir/getty.d" \
+    STUB_PACMAN_OWNER=util-linux STUB_PACMAN_STOCK="$pr_dir/stock" \
+    bash -c 'source "$1/install.sh"; shift; check_root() { :; }; main "$@"' _ "$REPO_ROOT" "$@" 2>&1
+}
+pr_report=""
+pr_sum="$(sha256sum <"$pr_dir/stock")"
+# With the keyring the keyring step puts the lines in first; with --no-keyring only the GNOME block goes in.
+for pr_case in keyring no-keyring; do
+  pr_args=(--pam-only --de gnome)
+  [[ "$pr_case" == keyring ]] || pr_args+=(--no-keyring)
+  cp -- "$pr_dir/stock" "$pr_dir/login"
+  rm -f -- "$pr_dir/pam-login-base" "$pr_dir/gnome-session-type.conf"
+  : >"$pr_dir/stub.log"
+  pr_out="$(pr_run --dry-run "${pr_args[@]}")" || pr_report+=" [$pr_case dry-run failed: $pr_out]"
+  if [[ -e "$pr_dir/pam-login-base" ]] || grep -Eq '^(sudo |pacman )' "$pr_dir/stub.log" 2>/dev/null ||
+    ! cmp -s "$pr_dir/login" "$pr_dir/stock"; then
+    pr_report+=" [$pr_case dry-run: $pr_out]"
+  fi
+  pr_out="$(pr_run "${pr_args[@]}")" || pr_report+=" [$pr_case --pam-only failed: $pr_out]"
+  if ! grep -Fxq -- "$gnome_marker" "$pr_dir/login" ||
+    { [[ "$pr_case" == keyring ]] && ! grep -Fxq -- "$PAM_GNOME_KEYRING_AUTH" "$pr_dir/login"; } ||
+    [[ "$(cat "$pr_dir/pam-login-base" 2>/dev/null)" != "${pr_sum%% *}" ]]; then
+    pr_report+=" [$pr_case --pam-only restore: base=$(cat "$pr_dir/pam-login-base" 2>&1), login=$(cat "$pr_dir/login"), output=$pr_out]"
+  fi
+  # Removing lightXDM's lines by hand brings back the merged version, which pacman calls unmodified.
+  cp -- "$pr_dir/stock" "$pr_dir/login"
+  pr_out="$(pr_run --update)" || pr_report+=" [$pr_case --update failed: $pr_out]"
+  if ! cmp -s "$pr_dir/login" "$pr_dir/stock" ||
+    [[ "$pr_out" != *"Updating with the saved choices: --de gnome --no-packages --no-keyring"* ||
+      "$pr_out" != *"which has your own edits, so --update leaves it alone"* ]]; then
+    pr_report+=" [$pr_case --update after the hand removal: login=$(cat "$pr_dir/login"), output=$pr_out]"
+  fi
+done
+if [[ -z "$pr_report" ]]; then
+  pass "install.sh --pam-only records the merged version it restores lightXDM's lines into, so a later hand removal survives --update"
+else
+  fail "install.sh --pam-only after a .pacnew merge:$pr_report"
+fi
 # An update leaves a GNOME block the user edited (a line commented out) as it is and goes on; an
 # explicit install still refuses to touch it.
 ged_dir="$TMP_DIR/update_gnome_edited"
