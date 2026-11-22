@@ -5306,7 +5306,9 @@ run_doctor() {
       diag_record_check "$json_mode" "Display managers" "fail" "$diag_msg"
       issues=$((issues + 1))
     elif [[ ${#enabled_dms[@]} -gt 0 ]]; then
-      printf -v diag_msg '%s enabled — disable with: sudo systemctl disable %s.service' "${enabled_dms[*]}" "${enabled_dms[0]}"
+      local dm_disable_units=""
+      printf -v dm_disable_units '%s.service ' "${enabled_dms[@]}"
+      printf -v diag_msg '%s enabled — disable with: sudo systemctl disable %s' "${enabled_dms[*]}" "${dm_disable_units% }"
       diag_record_check "$json_mode" "Display managers" "fail" "$diag_msg"
       issues=$((issues + 1))
     elif [[ $dm_state_unreadable -eq 1 ]]; then

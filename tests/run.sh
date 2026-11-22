@@ -15625,7 +15625,8 @@ cat >"$doctor_bin/systemctl" <<'EOF'
 case "${1:-}:${2:-}" in
   is-enabled:getty@tty1.service) printf '%s\n' "${FAKE_GETTY_STATE:-enabled}" ;;
   is-enabled:sddm.service) printf '%s\n' "${FAKE_SDDM_STATE:-disabled}" ;;
-  list-unit-files:) printf 'getty@tty1.service enabled\nsddm.service disabled\n' ;;
+  is-enabled:lightdm.service) printf '%s\n' "${FAKE_LIGHTDM_STATE:-disabled}" ;;
+  list-unit-files:) printf 'getty@tty1.service enabled\nsddm.service disabled\nlightdm.service disabled\n' ;;
 esac
 EOF
 cat >"$doctor_bin/getent" <<'EOF'
@@ -15890,9 +15891,18 @@ fi
 reset_doctor_gnome_fixture
 doc_rc=0
 doc_out="$(FAKE_GETTY_STATE=masked FAKE_SDDM_STATE=enabled run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
-if [[ $doc_rc -ne 1 || "$doc_out" != *"getty@tty1.service: FAIL (masked"* || "$doc_out" != *"Display managers: FAIL (sddm enabled"* ]]; then
+if [[ $doc_rc -ne 1 || "$doc_out" != *"getty@tty1.service: FAIL (masked"* || "$doc_out" != *"Display managers: FAIL (sddm enabled — disable with: sudo systemctl disable sddm.service)"* ]]; then
   doctor_ok=0
   doctor_report+=" masked-getty-dm rc=$doc_rc out=[$doc_out];"
+fi
+
+# Two enabled display managers name all units in disable hint
+reset_doctor_gnome_fixture
+doc_rc=0
+doc_out="$(FAKE_SDDM_STATE=enabled FAKE_LIGHTDM_STATE=enabled run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"Display managers: FAIL (sddm lightdm enabled — disable with: sudo systemctl disable sddm.service lightdm.service)"* ]]; then
+  doctor_ok=0
+  doctor_report+=" two-dms-disable-hint rc=$doc_rc out=[$doc_out];"
 fi
 
 # Autologin enabled alongside configured PAM keyring emits warning
