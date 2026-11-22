@@ -1890,6 +1890,8 @@ pam_restore_hint() {
   hint="--pam-only --de $target_de"
   if [[ -n "$de" && -n "$backend" ]] && ! builtin_de_keyring_backend "$de" >/dev/null 2>&1; then
     hint+=" --keyring $backend"
+  elif [[ -n "$de" && -z "$backend" ]]; then
+    hint+=" --no-keyring"
   fi
   printf '%s\n' "$hint"
 }

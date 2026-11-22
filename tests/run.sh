@@ -15877,6 +15877,23 @@ if [[ $doc_rc -ne 1 || "$doc_out" != *"PAM .pacnew: FAIL"* || "$doc_out" != *"PA
   doctor_report+=" pacnew-replaced rc=$doc_rc out=[$doc_out];"
 fi
 
+# PAM login.pacnew package replacement without PAM keyring record (--no-keyring GNOME)
+reset_doctor_gnome_fixture
+rm -f "$doctor_etc/lightxdm/pam-keyring"
+cat >"$doctor_etc/pam.d/login" <<'EOF'
+#%PAM-1.0
+# updated pambase
+auth       include      system-local-login
+session    include      system-local-login
+EOF
+: >"$doctor_etc/pam.d/login.pacnew"
+doc_rc=0
+doc_out="$(run_doctor_cmd --doctor 2>&1)" || doc_rc=$?
+if [[ $doc_rc -ne 1 || "$doc_out" != *"PAM .pacnew: FAIL"* || "$doc_out" != *"PAM GNOME session type: FAIL"* || "$doc_out" != *"--pam-only --de gnome --no-keyring"* ]]; then
+  doctor_ok=0
+  doctor_report+=" pacnew-replaced-no-keyring rc=$doc_rc out=[$doc_out];"
+fi
+
 # Missing GNOME session-type conf file while block present
 reset_doctor_gnome_fixture
 rm -f "$doctor_etc/lightxdm/gnome-session-type.conf"
