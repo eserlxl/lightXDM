@@ -17217,6 +17217,17 @@ if [[ $ss_rc -ne 0 || "$ss_out" != *"leaving untouched"* || "$(cat "$setup_shell
   ss_report+=" zsh-unmanaged rc=$ss_rc out=[$ss_out];"
 fi
 
+# Commented startx mention does not count as an existing trigger; managed block is inserted
+cat >"$setup_shell_home/.zprofile" <<'EOF'
+# I sometimes run startx
+EOF
+ss_rc=0
+ss_out="$(run_setup_shell_cmd --setup-shell zsh 2>&1)" || ss_rc=$?
+if [[ $ss_rc -ne 0 ]] || ! grep -Fxq "# >>> lightXDM TTY1 auto-start >>>" "$setup_shell_home/.zprofile"; then
+  ss_ok=0
+  ss_report+=" zsh-commented-startx rc=$ss_rc out=[$ss_out];"
+fi
+
 # 2. Fish hook create + auto resolution (zsh, fish, bash no-op, unknown fail)
 reset_setup_shell_fixture
 ss_rc=0

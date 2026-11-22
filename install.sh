@@ -2938,6 +2938,12 @@ autologin_note_needs_root() {
   return 1
 }
 
+# Return 0 when shell profile file $1 has an uncommented .wayland-session or startx trigger line.
+shell_file_has_trigger() {
+  local file="$1"
+  grep -Ev '^[[:space:]]*#' "$file" 2>/dev/null | grep -Eq '\.wayland-session|startx'
+}
+
 # Inspect the regular user's login shell and TTY1 shell hook state into SHELL_HOOK_STATUS_*.
 inspect_shell_hook_status() {
   local shell_user="${1:-${SUDO_USER:-${USER:-}}}" passwd_line="" login_shell=""
@@ -3054,7 +3060,7 @@ inspect_shell_hook_status() {
     SHELL_HOOK_STATUS_STATE="unreadable"
     SHELL_HOOK_STATUS_TEXT="$login_shell — unreadable ($target)"
   elif [[ "$SHELL_HOOK_STATUS_KIND" == "bash" ]]; then
-    if grep -Eq '\.wayland-session|startx' "$target" 2>/dev/null; then
+    if shell_file_has_trigger "$target"; then
       SHELL_HOOK_STATUS_STATE="configured"
       SHELL_HOOK_STATUS_TEXT="$login_shell — configured ($SHELL_HOOK_STATUS_DISPLAY)"
     else
@@ -3069,7 +3075,7 @@ inspect_shell_hook_status() {
     elif [[ $marker_rc -eq 1 ]]; then
       SHELL_HOOK_STATUS_STATE="malformed"
       SHELL_HOOK_STATUS_TEXT="$login_shell — malformed markers ($SHELL_HOOK_STATUS_DISPLAY)"
-    elif grep -Eq '\.wayland-session|startx' "$target" 2>/dev/null; then
+    elif shell_file_has_trigger "$target"; then
       SHELL_HOOK_STATUS_STATE="custom"
       SHELL_HOOK_STATUS_TEXT="$login_shell — custom ($SHELL_HOOK_STATUS_DISPLAY)"
     else
@@ -3808,7 +3814,7 @@ shell_has_tty1_hook() {
   else
     target="/${rel}"
   fi
-  [[ -f "$target" && -r "$target" ]] && grep -Eq '\.wayland-session|startx' "$target" 2>/dev/null
+  [[ -f "$target" && -r "$target" ]] && shell_file_has_trigger "$target"
 }
 
 # Collect ready non-builtin custom .desktop sessions into _CUSTOM_SESSION_{ENTRIES,TYPES,NAMES,LABELS}.
@@ -6609,7 +6615,7 @@ apply_shell_hook() {
       return 0
     fi
 
-    if grep -Eq '\.wayland-session|startx' "$target"; then
+    if shell_file_has_trigger "$target"; then
       rm -f -- "$block_file"
       if [[ $preview -eq 1 ]]; then
         printf 'Shell hook (%s): existing TTY1 trigger found in %s (leaving untouched)\n' "$resolved" "$target"
