@@ -2509,22 +2509,61 @@ install_choices_readable() {
   local file="$1"
   state_path_is_safe "$file" && [[ -f "$file" && ! -L "$file" && -r "$file" ]]
 }
-# Save the desktop id ($1), the --no-packages choice ($2) and the packages the run asked for (the
-# rest; --update installs only ones missing from this list) of a finished install for --update
+read_install_choices() {
+  local file="${1:-$(install_choices_file)}" line
+  SAVED_CHOICES_DE=""
+  SAVED_CHOICES_NO_PACKAGES=""
+  SAVED_CHOICES_PACKAGES=""
+  SAVED_CHOICES_KEYRING=""
+  SAVED_CHOICES_NO_KEYRING=""
+  install_choices_readable "$file" || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      de=*) SAVED_CHOICES_DE="${line#de=}" ;;
+      no_packages=1) SAVED_CHOICES_NO_PACKAGES=1 ;;
+      no_packages=0) SAVED_CHOICES_NO_PACKAGES=0 ;;
+      packages=*) SAVED_CHOICES_PACKAGES="${line#packages=}" ;;
+      keyring=gnome | keyring=kwallet) SAVED_CHOICES_KEYRING="${line#keyring=}" ;;
+      keyring=*) SAVED_CHOICES_KEYRING="" ;;
+      no_keyring=1) SAVED_CHOICES_NO_KEYRING=1 ;;
+      no_keyring=0) SAVED_CHOICES_NO_KEYRING=0 ;;
+      no_keyring=*) SAVED_CHOICES_NO_KEYRING="" ;;
+    esac
+  done <"$file"
+}
+# Save the desktop id ($1), the --no-packages choice ($2), the resolved keyring backend ($3),
+# the --no-keyring choice ($4) and the packages the run asked for (the rest; --update installs
+# only ones missing from this list) of a finished install for --update
 save_install_choices() {
   local file dir content tmp=""
   file="$(install_choices_file)"
   dir="${file%/*}"
   printf -v content 'de=%s\nno_packages=%s\n' "$1" "$2"
-  if [[ $# -gt 2 ]]; then
-    content+="packages=${*:3}"$'\n'
+  if [[ $# -gt 4 ]]; then
+    content+="packages=${*:5}"$'\n'
   fi
+  [[ -z "${3:-}" ]] || content+="keyring=$3"$'\n'
+  [[ -z "${4:-}" ]] || content+="no_keyring=$4"$'\n'
   if ! { state_path_is_safe "$file" && mkdir -p -- "$dir" && state_path_is_safe "$file" &&
     tmp="$(mktemp "$dir/.install-choices.XXXXXX")" &&
     printf '%s' "$content" >"$tmp" && chmod 644 -- "$tmp" && mv -Tf -- "$tmp" "$file"; } 2>/dev/null; then
     [[ -z "$tmp" ]] || rm -f -- "$tmp" 2>/dev/null || true
     log "WARNING: Could not save the install choices for --update in $file."
   fi
+}
+# Update keyring= ($1 when non-empty, else keep existing) and no_keyring= ($2) in install-choices in place.
+update_install_choices_keyring() {
+  local new_keyring="${1:-}" new_no_keyring="${2:-}" file
+  local SAVED_CHOICES_DE="" SAVED_CHOICES_NO_PACKAGES="" SAVED_CHOICES_PACKAGES="" SAVED_CHOICES_KEYRING="" SAVED_CHOICES_NO_KEYRING=""
+  local -a saved_pkgs=()
+  file="$(install_choices_file)"
+  read_install_choices "$file" && [[ -n "$SAVED_CHOICES_DE" ]] || return 0
+  [[ -n "$new_keyring" ]] && SAVED_CHOICES_KEYRING="$new_keyring"
+  SAVED_CHOICES_NO_KEYRING="$new_no_keyring"
+  if [[ -n "$SAVED_CHOICES_PACKAGES" ]]; then
+    read -r -a saved_pkgs <<<"$SAVED_CHOICES_PACKAGES"
+  fi
+  save_install_choices "$SAVED_CHOICES_DE" "${SAVED_CHOICES_NO_PACKAGES:-0}" "$SAVED_CHOICES_KEYRING" "$SAVED_CHOICES_NO_KEYRING" "${saved_pkgs[@]}"
 }
 # True when a .pacnew merge replaced $LOGIN_FILE: pacman sees the version its package ships (an
 # unmodified backup file), and that version is neither lightXDM's backup of the original nor the
@@ -2598,20 +2637,14 @@ record_login_base() {
 }
 # Print the desktop id saved in install-choices, or fail with the --update guidance.
 saved_install_de() {
-  local file line de=""
+  local file SAVED_CHOICES_DE="" SAVED_CHOICES_NO_PACKAGES="" SAVED_CHOICES_PACKAGES="" SAVED_CHOICES_KEYRING="" SAVED_CHOICES_NO_KEYRING=""
   file="$(install_choices_file)"
-  if install_choices_readable "$file"; then
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      case "$line" in
-        de=*) de="${line#de=}" ;;
-      esac
-    done <"$file"
-  fi
-  if [[ -z "$de" ]]; then
+  read_install_choices "$file" || true
+  if [[ -z "$SAVED_CHOICES_DE" ]]; then
     log "No saved install choices in $file; run $(script_cmd install.sh) with your options first."
     return 1
   fi
-  printf '%s\n' "$de"
+  printf '%s\n' "$SAVED_CHOICES_DE"
 }
 
 # Check wheel membership and request sudo credentials upfront.
@@ -2638,18 +2671,15 @@ authenticate_sudo() {
 # keyring backend recorded in $PAM_KEYRING_STATE, else the one the active keyring lines in
 # $LOGIN_FILE use. Autologin is never passed.
 saved_install_args() {
-  local preview="${1:-0}" file line de="" no_packages=0 recorded_packages="" has_gnome=0 has_kwallet=0
+  local preview="${1:-0}" file de="" no_packages=0 recorded_packages="" no_keyring="" has_gnome=0 has_kwallet=0
   local login_content="" login_readable=0 login_absent=0
+  local SAVED_CHOICES_DE="" SAVED_CHOICES_NO_PACKAGES="" SAVED_CHOICES_PACKAGES="" SAVED_CHOICES_KEYRING="" SAVED_CHOICES_NO_KEYRING=""
   file="$(install_choices_file)"
-  if install_choices_readable "$file"; then
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      case "$line" in
-        de=*) de="${line#de=}" ;;
-        no_packages=1) no_packages=1 ;;
-        no_packages=0) no_packages=0 ;;
-        packages=*) recorded_packages="${line#packages=}" ;;
-      esac
-    done <"$file"
+  if read_install_choices "$file"; then
+    de="$SAVED_CHOICES_DE"
+    [[ -n "$SAVED_CHOICES_NO_PACKAGES" ]] && no_packages="$SAVED_CHOICES_NO_PACKAGES"
+    recorded_packages="$SAVED_CHOICES_PACKAGES"
+    no_keyring="$SAVED_CHOICES_NO_KEYRING"
   fi
   if [[ -z "$de" ]]; then
     log "No saved install choices in $file; run $(script_cmd install.sh) with your options first."
@@ -2658,6 +2688,10 @@ saved_install_args() {
   printf '%s\n' --de "$de"
   if [[ $no_packages -eq 1 ]]; then
     printf '%s\n' --no-packages
+  fi
+  if [[ "$no_keyring" == 1 ]]; then
+    printf '%s\n' --no-keyring
+    return 0
   fi
   if login_content="$(read_pam_file "$LOGIN_FILE" "$preview" 2>/dev/null)"; then
     login_readable=1
@@ -7323,6 +7357,7 @@ run_login_mode() {
     else
       enable_autologin "$real_user" || return 1
     fi
+    update_install_choices_keyring "" 1
     log "Login mode switched to autologin for $real_user (dotfiles, packages, shell hooks, and display managers unchanged)."
     return 0
   fi
@@ -7357,6 +7392,7 @@ run_login_mode() {
 
   _resolve_password_keyring_backend() {
     local probe_preview="${1:-1}" rec="" pam_txt=""
+    local SAVED_CHOICES_DE="" SAVED_CHOICES_NO_PACKAGES="" SAVED_CHOICES_PACKAGES="" SAVED_CHOICES_KEYRING="" SAVED_CHOICES_NO_KEYRING=""
     if [[ -n "$builtin_backend" ]]; then
       printf '%s\n' "$builtin_backend"
       return 0
@@ -7368,6 +7404,10 @@ run_login_mode() {
     rec="$(read_pam_state_file "$PAM_KEYRING_STATE" "$probe_preview" 2>/dev/null || true)"
     if [[ "$rec" == "gnome" || "$rec" == "kwallet" ]]; then
       printf '%s\n' "$rec"
+      return 0
+    fi
+    if read_install_choices && [[ -n "$SAVED_CHOICES_KEYRING" ]]; then
+      printf '%s\n' "$SAVED_CHOICES_KEYRING"
       return 0
     fi
     pam_txt="$(read_pam_file "$LOGIN_FILE" "$probe_preview" 2>/dev/null || true)"
@@ -7471,6 +7511,7 @@ run_login_mode() {
   if [[ "$target_de" == "gnome" ]]; then
     configure_gnome_session_type "$target_de" "$real_user" 0 0 || return 1
   fi
+  update_install_choices_keyring "$resolved_keyring" 0
   log "Login mode switched to password login with $resolved_keyring keyring unlock for $target_de (dotfiles, packages, shell hooks, and display managers unchanged)."
 }
 
@@ -8837,7 +8878,19 @@ EOF
   fi
 
   trap - EXIT
-  save_install_choices "$de" "$no_packages" "${RECORDED_PACKAGES[@]}"
+  local saved_keyring="" saved_no_keyring="$no_keyring"
+  if [[ "${UPDATE_RUN:-0}" == 1 ]]; then
+    local SAVED_CHOICES_DE="" SAVED_CHOICES_NO_PACKAGES="" SAVED_CHOICES_PACKAGES="" SAVED_CHOICES_KEYRING="" SAVED_CHOICES_NO_KEYRING=""
+    if read_install_choices; then
+      saved_keyring="$SAVED_CHOICES_KEYRING"
+      saved_no_keyring="$SAVED_CHOICES_NO_KEYRING"
+    else
+      saved_no_keyring=""
+    fi
+  elif [[ $no_keyring -eq 0 ]]; then
+    saved_keyring="$(builtin_de_keyring_backend "$de" 2>/dev/null || printf '%s\n' "${keyring:-gnome}")"
+  fi
+  save_install_choices "$de" "$no_packages" "$saved_keyring" "$saved_no_keyring" "${RECORDED_PACKAGES[@]}"
   if [[ -z "$shell_profile" && -e "$HOME/.config/lightxdm/no-autostart" ]]; then
     cat <<EOF
 

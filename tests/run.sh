@@ -10791,7 +10791,7 @@ set +e
 output="$(HOME="$update_home" run_main_with_stubs "$sudo_pw_dir" --no-packages --no-keyring --de i3 2>&1)"
 status=$?
 set -e
-if [[ $status -eq 0 && "$(cat "$update_choices" 2>/dev/null)" == $'de=i3\nno_packages=1' ]]; then
+if [[ $status -eq 0 && "$(cat "$update_choices" 2>/dev/null)" == $'de=i3\nno_packages=1\nno_keyring=1' ]]; then
   pass "a finished install saves its desktop and --no-packages choice for --update"
 else
   fail "install choices file (status=$status, file=$(cat "$update_choices" 2>&1), output=$output)"
@@ -10807,6 +10807,18 @@ update_run() {
 update_ok=1
 update_report=""
 rm -f -- "$update_record"
+printf '%s\n' "auth       optional   pam_gnome_keyring.so" "session    optional   pam_gnome_keyring.so auto_start" >"$update_login"
+set +e
+output="$(update_run "$update_home" --update --dry-run)"
+status=$?
+set -e
+if [[ $status -ne 0 || "$output" != *"Updating with the saved choices: --de i3 --no-packages --no-keyring --dry-run"* ||
+  "$output" != *"PAM keyring: skipped (--no-keyring)"* ]]; then
+  update_ok=0
+  update_report+=" [saved no_keyring=1 with user gnome keyring lines: status=$status, output=$output]"
+fi
+# Old install-choices without keyring= / no_keyring= keeps the pre-field PAM record/line fallback behaviour.
+printf 'de=i3\nno_packages=1\n' >"$update_choices"
 printf '%s\n' "# login stack without keyring lines" >"$update_login"
 set +e
 output="$(update_run "$update_home" --update --dry-run)"
@@ -11189,7 +11201,7 @@ pkg_run() {
   # shellcheck disable=SC2016  # expand inside the child shell
   env HOME="$pkg_home" STUB_LOG="$pkg_stub_log" STUB_PACMAN_MISSING="gvfs-afc xfce4" STUB_PACMAN_GROUPS="xfce4" \
     bash -c 'source "$1/install.sh" || exit 1; [[ "$2" == install ]] || UPDATE_RUN=1
-      install_packages xfce && save_install_choices xfce 0 "${RECORDED_PACKAGES[@]}"' _ "$REPO_ROOT" "$1" 2>&1
+      install_packages xfce && save_install_choices xfce 0 "" "" "${RECORDED_PACKAGES[@]}"' _ "$REPO_ROOT" "$1" 2>&1
 }
 pkg_report=""
 pkg_all="$(list_packages xfce | tr '\n' ' ')"
@@ -11230,7 +11242,7 @@ printf 'de=xfce\nno_packages=0\npackages=%s\n' "$pkg_all" >"$pkg_choices"
 # shellcheck disable=SC2016
 pkg_nk_log="$(env HOME="$pkg_home" STUB_LOG="$pkg_stub_log" STUB_PACMAN_MISSING="gnome-keyring" \
   bash -c 'source "$1/install.sh" && UPDATE_RUN=1 && install_packages xfce --no-keyring &&
-    save_install_choices xfce 0 "${RECORDED_PACKAGES[@]}"' _ "$REPO_ROOT" 2>&1)" ||
+    save_install_choices xfce 0 "" "" "${RECORDED_PACKAGES[@]}"' _ "$REPO_ROOT" 2>&1)" ||
   pkg_report+=" [--no-keyring update failed: $pkg_nk_log]"
 grep -Fq -- ' gnome-keyring' "$pkg_choices" ||
   pkg_report+=" [--no-keyring update dropped saved gnome-keyring: $(cat "$pkg_choices")]"
@@ -11238,7 +11250,7 @@ grep -Fq -- ' gnome-keyring' "$pkg_choices" ||
 # shellcheck disable=SC2016
 pkg_restore_log="$(env HOME="$pkg_home" STUB_LOG="$pkg_stub_log" STUB_PACMAN_MISSING="gnome-keyring" \
   bash -c 'source "$1/install.sh" && UPDATE_RUN=1 && install_packages xfce &&
-    save_install_choices xfce 0 "${RECORDED_PACKAGES[@]}"' _ "$REPO_ROOT" 2>&1)" ||
+    save_install_choices xfce 0 "" "" "${RECORDED_PACKAGES[@]}"' _ "$REPO_ROOT" 2>&1)" ||
   pkg_report+=" [restored PAM update failed: $pkg_restore_log]"
 if grep -q -- '-S ' "$pkg_stub_log" ||
   [[ "$pkg_restore_log" != *"Not installed, so --update leaves them out: gnome-keyring"* ]]; then
@@ -11249,10 +11261,43 @@ printf 'de=xfce\nno_packages=0\npackages=%s\n' "${pkg_all/ gnome-keyring/}" >"$p
 # shellcheck disable=SC2016
 env HOME="$pkg_home" STUB_LOG="$pkg_stub_log" \
   bash -c 'source "$1/install.sh" && UPDATE_RUN=1 && install_packages xfce --no-keyring &&
-    save_install_choices xfce 0 "${RECORDED_PACKAGES[@]}"' _ "$REPO_ROOT" >/dev/null 2>&1 ||
+    save_install_choices xfce 0 "" "" "${RECORDED_PACKAGES[@]}"' _ "$REPO_ROOT" >/dev/null 2>&1 ||
   pkg_report+=" [orig --no-keyring update failed]"
 ! grep -Fq -- 'gnome-keyring' "$pkg_choices" ||
   pkg_report+=" [orig --no-keyring added gnome-keyring: $(cat "$pkg_choices")]"
+# A --no-keyring install whose login file has user-added pam_gnome_keyring lines keeps --no-keyring on
+# live --update, installs no keyring package, and writes no pam-keyring record.
+nk_upd_dir="$TMP_DIR/update_no_keyring_user_pam"
+nk_upd_home="$nk_upd_dir/home"
+nk_upd_choices="$nk_upd_home/.local/state/lightxdm/install-choices"
+nk_upd_login="$nk_upd_dir/login"
+nk_upd_record="$nk_upd_dir/pam-keyring"
+nk_upd_log="$nk_upd_dir/stub.log"
+mkdir -p "$nk_upd_home"
+printf '%s\n' '#%PAM-1.0' 'auth       include      system-local-login' 'session    include      system-local-login' >"$nk_upd_login"
+nk_upd_run() {
+  : >"$nk_upd_log"
+  # shellcheck disable=SC2016
+  env -u SHELLOPTS -u SUDO_USER HOME="$nk_upd_home" USER=tester PATH="$sudo_pw_dir:$STUB_BIN:$PATH" STUB_LOG="$nk_upd_log" \
+    LOGIN_FILE="$nk_upd_login" PAM_KEYRING_STATE="$nk_upd_record" PAM_LOGIN_BASE_STATE="$nk_upd_dir/pam-login-base" \
+    GNOME_SESSION_TYPE_DEST="$nk_upd_dir/gnome-session-type.conf" DM_STATE_FILE="$nk_upd_dir/dm-state" \
+    DISPLAY_MANAGER_LINK="$nk_upd_dir/display-manager.service" AUTOLOGIN_DROPIN_DIR="$nk_upd_dir/getty.d" \
+    bash -c 'source "$1/install.sh"; shift; check_root() { :; }; main "$@"' _ "$REPO_ROOT" "$@" 2>&1
+}
+nk_inst_out="$(nk_upd_run --no-keyring --de xfce)" || pkg_report+=" [nk install failed: $nk_inst_out]"
+if ! grep -Fxq -- 'no_keyring=1' "$nk_upd_choices" || grep -q -- '^keyring=' "$nk_upd_choices" ||
+  grep -Fq -- 'gnome-keyring' "$nk_upd_choices" || [[ -e "$nk_upd_record" ]]; then
+  pkg_report+=" [nk install choices/record: choices=$(cat "$nk_upd_choices" 2>&1) rec_exists=$([[ -e "$nk_upd_record" ]] && echo 1 || echo 0)]"
+fi
+printf '%s\n' "$PAM_GNOME_KEYRING_AUTH" "$PAM_GNOME_KEYRING_SESSION" >>"$nk_upd_login"
+nk_upd_out="$(nk_upd_run --update)" || pkg_report+=" [nk update failed: $nk_upd_out]"
+if [[ "$nk_upd_out" != *"Updating with the saved choices: --de xfce --no-keyring"* ]] ||
+  grep -Fq -- 'gnome-keyring' "$nk_upd_log" ||
+  grep -Fq -- 'gnome-keyring' "$nk_upd_choices" ||
+  ! grep -Fxq -- 'no_keyring=1' "$nk_upd_choices" ||
+  [[ -e "$nk_upd_record" ]]; then
+  pkg_report+=" [nk update with user pam_gnome_keyring: out=$nk_upd_out log=$(cat "$nk_upd_log") choices=$(cat "$nk_upd_choices" 2>&1)]"
+fi
 # saved_install_args reads an unterminated final line and honors a later no_packages=0 override.
 printf 'de=i3\nno_packages=1' >"$pkg_choices"
 # shellcheck disable=SC2016
@@ -11935,7 +11980,7 @@ choices_pkg_plan="$(env HOME="$choices_safe_dir/home1" STUB_PACMAN_MISSING="" \
   bash -c 'source "$1/install.sh" && update_package_plan newpkg' _ "$REPO_ROOT" 2>&1)"
 [[ -z "$choices_pkg_plan" ]] || choices_safe_report+=" [update_package_plan read symlink: $choices_pkg_plan]"
 # shellcheck disable=SC2016
-env HOME="$choices_safe_dir/home1" bash -c 'source "$1/install.sh" && save_install_choices i3 0 i3 xterm' _ "$REPO_ROOT" >/dev/null 2>&1
+env HOME="$choices_safe_dir/home1" bash -c 'source "$1/install.sh" && save_install_choices i3 0 "" "" i3 xterm' _ "$REPO_ROOT" >/dev/null 2>&1
 [[ -f "$choices_safe_dir/home1/.local/state/lightxdm/install-choices" &&
   ! -L "$choices_safe_dir/home1/.local/state/lightxdm/install-choices" ]] ||
   choices_safe_report+=" [install-choices symlink not replaced]"
@@ -12873,7 +12918,7 @@ atomic_fail_out="$(
     rd_rc=0
     record_dotfile "$HOME/.bash_profile" || rd_rc=$?
     sc_rc=0
-    save_install_choices xfce 0 xfwm4 || sc_rc=$?
+    save_install_choices xfce 0 "" "" xfwm4 || sc_rc=$?
     printf "rd=%s sc=%s\n" "$rd_rc" "$sc_rc"
   ' 2>&1
 )"
@@ -20389,18 +20434,48 @@ if [[ $lm_sim_pw2_rc -ne 0 || "$lm_sim_pw2_out" != *"already exists. Skipping."*
 fi
 
 printf '#!/bin/bash\nexec sway\n' >"$lm_case/home/.config/lightxdm/.wayland-session-sway"
+ln -sf /bin/true "$lm_case/bin/sway"
+cp "$lm_case/etc/pam.d/login.lightxdm.bak" "$lm_case/etc/pam.d/login"
+rm -f "$lm_case/etc/lightxdm/pam-keyring" "$lm_case/etc/lightxdm/gnome-session-type.conf"
+set +e
+printf 'de=sway\nno_packages=1\n' >"$lm_case/home/.local/state/lightxdm/install-choices"
+lm_sim_sway_inst_out="$(run_lm_sim_cmd --login-mode password --de sway --keyring kwallet --non-interactive 2>&1)"
+lm_sim_sway_inst_rc=$?
+set -e
+if [[ $lm_sim_sway_inst_rc -ne 0 ||
+  "$(cat "$lm_case/home/.local/state/lightxdm/install-choices" 2>/dev/null || true)" != $'de=sway\nno_packages=1\nkeyring=kwallet\nno_keyring=0' ||
+  "$(cat "$lm_case/etc/lightxdm/pam-keyring" 2>/dev/null || true)" != "kwallet" ]] ||
+  ! grep -Fq 'pam_kwallet5.so' "$lm_case/etc/pam.d/login"; then
+  lm_ok=0
+  lm_report+=" [sim-custom-kwallet-setup rc=$lm_sim_sway_inst_rc choices=$(cat "$lm_case/home/.local/state/lightxdm/install-choices" 2>&1) out=$lm_sim_sway_inst_out]"
+fi
+set +e
+lm_sim_sway_auto_out="$(run_lm_sim_cmd --login-mode autologin --non-interactive 2>&1)"
+lm_sim_sway_auto_rc=$?
+lm_sim_sway_pw_out="$(run_lm_sim_cmd --login-mode password --non-interactive 2>&1)"
+lm_sim_sway_pw_rc=$?
+set -e
+if [[ $lm_sim_sway_auto_rc -ne 0 || $lm_sim_sway_pw_rc -ne 0 ||
+  -e "$lm_case/getty.d/lightxdm-autologin.conf" ||
+  "$(cat "$lm_case/home/.local/state/lightxdm/install-choices" 2>/dev/null || true)" != $'de=sway\nno_packages=1\nkeyring=kwallet\nno_keyring=0' ||
+  "$(cat "$lm_case/etc/lightxdm/pam-keyring" 2>/dev/null || true)" != "kwallet" ]] ||
+  grep -Fq 'pam_gnome_keyring.so' "$lm_case/etc/pam.d/login" ||
+  ! grep -Fq 'auth       optional   pam_kwallet5.so' "$lm_case/etc/pam.d/login" ||
+  ! grep -Fq 'session    optional   pam_kwallet5.so force_run' "$lm_case/etc/pam.d/login"; then
+  lm_ok=0
+  lm_report+=" [sim-custom-kwallet-roundtrip auto_rc=$lm_sim_sway_auto_rc pw_rc=$lm_sim_sway_pw_rc choices=$(cat "$lm_case/home/.local/state/lightxdm/install-choices" 2>&1) pam=$(cat "$lm_case/etc/pam.d/login") auto_out=$lm_sim_sway_auto_out out=$lm_sim_sway_pw_out]"
+fi
+# Old install-choices without keyring= / no_keyring= still falls back to gnome when PAM has no kwallet record or lines.
 printf 'de=sway\nno_packages=1\n' >"$lm_case/home/.local/state/lightxdm/install-choices"
 cp "$lm_case/etc/pam.d/login.lightxdm.bak" "$lm_case/etc/pam.d/login"
 rm -f "$lm_case/etc/lightxdm/pam-keyring" "$lm_case/etc/lightxdm/gnome-session-type.conf"
 set +e
-lm_sim_sway_out="$(run_lm_sim_cmd --login-mode password --de sway --keyring kwallet --non-interactive 2>&1)"
-lm_sim_sway_rc=$?
+lm_sim_old_out="$(run_lm_sim_cmd --login-mode password --dry-run 2>&1)"
+lm_sim_old_rc=$?
 set -e
-if [[ $lm_sim_sway_rc -ne 0 ||
-  "$(cat "$lm_case/etc/lightxdm/pam-keyring" 2>/dev/null || true)" != "kwallet" ]] ||
-  ! grep -Fq 'pam_kwallet5.so' "$lm_case/etc/pam.d/login"; then
+if [[ $lm_sim_old_rc -ne 0 || "$lm_sim_old_out" != *"Login mode: password (de=sway, keyring=gnome; dry run"* ]]; then
   lm_ok=0
-  lm_report+=" [sim-custom-kwallet rc=$lm_sim_sway_rc out=$lm_sim_sway_out]"
+  lm_report+=" [sim-old-choices-fallback rc=$lm_sim_old_rc out=$lm_sim_old_out]"
 fi
 
 # Live round-trip with real uninstall.sh --keyring-only and enable-autologin.sh via unshare -r (if available)
@@ -20420,6 +20495,7 @@ session    optional   pam_gnome_keyring.so auto_start
 EOF
   printf 'XDG_SESSION_TYPE DEFAULT=wayland\n' >"$lm_case/etc/lightxdm/gnome-session-type.conf"
   printf 'gnome\n' >"$lm_case/etc/lightxdm/pam-keyring"
+  printf 'de=gnome\nno_packages=1\n' >"$lm_case/home/.local/state/lightxdm/install-choices"
   printf 'custom-edited-wayland\n' >"$lm_case/home/.wayland-session"
   chmod 755 "$lm_case/home/.wayland-session"
 
@@ -20454,7 +20530,7 @@ EOF
     lm_report+=" [live-to-password-gnome rc=$lm_live_pw_rc out=$lm_live_pw_out pam=$(cat "$lm_case/etc/pam.d/login")]"
   fi
 
-  # Custom session round-trip with --keyring kwallet
+  # Custom session round-trip with --keyring kwallet -> autologin -> password (auto-resolving kwallet from install-choices)
   printf '#!/bin/bash\nexec sway\n' >"$lm_case/home/.config/lightxdm/.wayland-session-sway"
   printf 'de=sway\nno_packages=1\n' >"$lm_case/home/.local/state/lightxdm/install-choices"
   cp "$lm_case/etc/pam.d/login.lightxdm.bak" "$lm_case/etc/pam.d/login"
@@ -20462,12 +20538,19 @@ EOF
   set +e
   lm_sway_pw_out="$(LM_USE_UNSHARE=1 run_lm_cmd --login-mode password --de sway --keyring kwallet --non-interactive 2>&1)"
   lm_sway_pw_rc=$?
+  lm_sway_rt_auto_out="$(LM_USE_UNSHARE=1 run_lm_cmd --login-mode autologin --non-interactive 2>&1)"
+  lm_sway_rt_auto_rc=$?
+  lm_sway_rt_pw_out="$(LM_USE_UNSHARE=1 run_lm_cmd --login-mode password --non-interactive 2>&1)"
+  lm_sway_rt_pw_rc=$?
   set -e
-  if [[ $lm_sway_pw_rc -ne 0 ||
+  if [[ $lm_sway_pw_rc -ne 0 || $lm_sway_rt_auto_rc -ne 0 || $lm_sway_rt_pw_rc -ne 0 ||
+    -e "$lm_case/getty.d/lightxdm-autologin.conf" ||
+    "$(cat "$lm_case/home/.local/state/lightxdm/install-choices" 2>/dev/null || true)" != $'de=sway\nno_packages=1\nkeyring=kwallet\nno_keyring=0' ||
     "$(cat "$lm_case/etc/lightxdm/pam-keyring" 2>/dev/null || true)" != "kwallet" ]] ||
+    grep -Fq 'pam_gnome_keyring.so' "$lm_case/etc/pam.d/login" ||
     ! grep -Fq 'pam_kwallet5.so' "$lm_case/etc/pam.d/login"; then
     lm_ok=0
-    lm_report+=" [live-custom-kwallet rc=$lm_sway_pw_rc out=$lm_sway_pw_out]"
+    lm_report+=" [live-custom-kwallet pw_rc=$lm_sway_pw_rc auto_rc=$lm_sway_rt_auto_rc rt_pw_rc=$lm_sway_rt_pw_rc out=$lm_sway_pw_out/$lm_sway_rt_auto_out/$lm_sway_rt_pw_out]"
   fi
 
   # Non-interactive root invocation refused without --dry-run
