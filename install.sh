@@ -7720,7 +7720,7 @@ main() {
   local pam_only=0
   local login_mode=""
   local dotfile_updates=""
-  local usage="Usage: bash $0 [-h|--help] [--guided [--dry-run]] [--status [--json]] [--list-sessions [--json]] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--setup-gpg <gnome|kwallet|auto|remove> [--gpg-ssh] [--dry-run]] [--preflight [--json]] [--doctor [--json]] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--fix [--dry-run] [--non-interactive] [--de <id>]] [--login-mode <password|autologin> [--dry-run] [--non-interactive] [--de <id>] [--keyring <gnome|kwallet>]] [--dotfile-updates <diff|accept|dismiss|interactive> [--dry-run]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet> [--json]] [--no-keyring] [--autologin] [--update] [--pam-only]"
+  local usage="Usage: bash $0 [-h|--help] [--guided [--dry-run]] [--status [--json]] [--list-sessions [--json]] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--setup-gpg <gnome|kwallet|auto|remove> [--gpg-ssh] [--dry-run]] [--preflight [--json]] [--doctor [--json]] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--fix [--dry-run] [--non-interactive] [--de <id>]] [--login-mode <password|autologin> [--dry-run] [--non-interactive] [--de <id>] [--keyring <gnome|kwallet>]] [--dotfile-updates <diff|accept|dismiss|interactive> [--dry-run]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet|auto> [--json]] [--no-keyring] [--autologin] [--update] [--pam-only]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -7754,8 +7754,9 @@ Options:
   --no-packages     skip package installation
   --keyring <gnome|kwallet> choose the PAM keyring backend for a custom id (requires --no-packages;
                     cannot combine with --no-keyring or --init-template)
-  --check-keyring <gnome|kwallet> report the existing collection's state from your desktop session and exit
-                    (use alone or with --json, without sudo; no service activation or prompts; 0=unlocked, 1=locked, 2=unavailable)
+  --check-keyring <gnome|kwallet|auto> report the existing collection's state from your desktop session and exit
+                    (use alone or with --json, without sudo; no service activation or prompts; 0=unlocked, 1=locked, 2=unavailable;
+                    auto picks the backend as --setup-gpg auto does and names it on stderr)
   --no-keyring      skip keyring packages and keyring PAM lines (use with autologin)
   --autologin       also log in on TTY1 without a password (requires --no-keyring)
   --update          apply a newer lightXDM to the last finished install with its saved choices, changing
@@ -7908,14 +7909,14 @@ EOF
         ;;
       --check-keyring)
         if [[ $# -lt 2 || "$2" == -* ]]; then
-          log "Missing argument for --check-keyring (valid backends: gnome kwallet)"
+          log "Missing argument for --check-keyring (valid backends: gnome kwallet auto)"
           echo "$usage" >&2
           exit 1
         fi
         case "$2" in
-          gnome | kwallet) check_keyring="$2" ;;
+          gnome | kwallet | auto) check_keyring="$2" ;;
           *)
-            log "Invalid keyring backend: $2 (valid backends: gnome kwallet)"
+            log "Invalid keyring backend: $2 (valid backends: gnome kwallet auto)"
             exit 1
             ;;
         esac
@@ -8216,6 +8217,12 @@ EOF
     if [[ $EUID -eq 0 ]]; then
       log "Do not run --check-keyring as root or with sudo; run it in the desktop user's session."
       exit 1
+    fi
+    if [[ "$check_keyring" == "auto" ]]; then
+      # Same resolution as --setup-gpg auto: saved install choices, PAM state, then the detected
+      # desktop, falling back to gnome. The note goes to stderr so --json stdout stays valid JSON.
+      check_keyring="$(resolve_setup_gpg auto "" "")" || exit 1
+      log "--check-keyring auto: using $check_keyring"
     fi
     local check_status=0
     if [[ $json_output -eq 1 ]]; then
