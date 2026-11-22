@@ -4362,11 +4362,21 @@ run_preflight() {
   fi
 
   if [[ -n "$x11_layout" ]]; then
-    local effective_keymap="${console_keymap:-us}"
-    # Console keymaps extend the layout name (trq for tr, de-latin1 for de): compare by prefix.
-    if [[ "$effective_keymap" != "$x11_layout"* ]]; then
+    local effective_keymap="${console_keymap:-us}" suggest_keymap="$x11_layout" km_match=0 km_console km_layouts _
+    # Console keymaps extend the layout name (trq for tr, de-latin1 for de): compare by prefix, and
+    # accept the pairs systemd's kbd-model-map lists (uk for gb, sv-latin1 for se).
+    if [[ "$effective_keymap" == "$x11_layout"* ]]; then
+      km_match=1
+    elif [[ -r "${KBD_MODEL_MAP:-/usr/share/systemd/kbd-model-map}" ]]; then
+      while read -r km_console km_layouts _; do
+        [[ -n "$km_console" && "$km_console" != "#"* && "${km_layouts%%,*}" == "$x11_layout" ]] || continue
+        [[ "$km_console" == "$effective_keymap" ]] && km_match=1
+        [[ "$suggest_keymap" != "$x11_layout" ]] || suggest_keymap="$km_console"
+      done <"${KBD_MODEL_MAP:-/usr/share/systemd/kbd-model-map}"
+    fi
+    if [[ $km_match -eq 0 ]]; then
       printf -v diag_msg "console keymap '%s' differs from desktop layout '%s' — fix with: sudo localectl set-keymap %s" \
-        "$effective_keymap" "$x11_layout" "$x11_layout"
+        "$effective_keymap" "$x11_layout" "$suggest_keymap"
       diag_record_check "$json_mode" "Console keymap" "warn" "$diag_msg"
       warnings=$((warnings + 1))
     fi

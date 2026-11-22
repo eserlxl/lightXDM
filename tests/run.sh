@@ -205,6 +205,9 @@ export PAM_LOGIN_BASE_STATE="$TMP_DIR/lightxdm/pam-login-base"
 # --preflight reads the pacman database; keep every run off the host's /var/lib/pacman.
 mkdir -p "$TMP_DIR/pacman_db/sync" && : >"$TMP_DIR/pacman_db/sync/core.db"
 export PACMAN_DB_DIR="$TMP_DIR/pacman_db"
+# The console keymap check consults systemd's kbd-model-map; use a small fixture copy.
+printf 'uk\tgb\tpc105\t-\tterminate:ctrl_alt_bksp\nsv-latin1\tse\tpc105\t-\tterminate:ctrl_alt_bksp\n' >"$TMP_DIR/kbd-model-map"
+export KBD_MODEL_MAP="$TMP_DIR/kbd-model-map"
 # --preflight and --doctor read /etc/locale.conf; keep every run off the host file.
 mkdir -p "$TMP_DIR/etc" && : >"$TMP_DIR/etc/locale.conf"
 export LOCALE_CONF="$TMP_DIR/etc/locale.conf"
@@ -16001,7 +16004,7 @@ preflight_report=""
 set +e
 pf_out="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM=lightdm.service \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_rc=$?
 set -e
@@ -16016,7 +16019,7 @@ fi
 set +e
 pf_unknown="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG="" \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_rc=$?
 set -e
@@ -16028,7 +16031,7 @@ fi
 
 set +e
 pf_masked="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
-  PREFLIGHT_GETTY=masked PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  PREFLIGHT_GETTY=masked PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_rc=$?
 set -e
@@ -16041,7 +16044,7 @@ fi
 
 set +e
 pf_disabled="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
-  PREFLIGHT_GETTY=disabled PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  PREFLIGHT_GETTY=disabled PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_rc=$?
 set -e
@@ -16059,7 +16062,7 @@ for b in cut dirname grep readlink stat date find id getent pacman systemctl loc
 done
 set +e
 pf_nosudo="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_no_sudo" \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_rc=$?
 set -e
@@ -16076,7 +16079,7 @@ for b in cut dirname grep readlink stat date find id getent sudo systemctl local
 done
 set +e
 pf_nopac="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_no_pacman" \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_rc=$?
 set -e
@@ -16090,7 +16093,7 @@ fi
 
 for bad_pf in "--preflight --dry-run" "--status --preflight" "--list-sessions --preflight"; do
   # shellcheck disable=SC2086 # intentional word splitting over literal flag combinations
-  if env -i HOME="$preflight_home" PATH="$preflight_bin" PACMAN_DB_DIR="$preflight_pacman_db" "$preflight_bash" "$REPO_ROOT/install.sh" $bad_pf >/dev/null 2>&1; then
+  if env -i HOME="$preflight_home" PATH="$preflight_bin" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent "$preflight_bash" "$REPO_ROOT/install.sh" $bad_pf >/dev/null 2>&1; then
     preflight_ok=0
     preflight_report+=" [combined $bad_pf unexpectedly passed]"
   fi
@@ -16099,7 +16102,7 @@ done
 if [[ $can_unshare -eq 1 ]]; then
   set +e
   pf_root="$(unshare -r env -i HOME="$preflight_home" PATH="$preflight_bin" \
-    DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+    DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
     "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
   pf_rc=$?
   set -e
@@ -16121,17 +16124,17 @@ EOF
 set +e
 pf_zsh_hook="$(env -i HOME="$preflight_hook_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_zsh_hook_rc=$?
 pf_fish_hook="$(env -i HOME="$preflight_hook_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/usr/bin/fish PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_fish_hook_rc=$?
 pf_fish_nohook="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/usr/bin/fish PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_fish_nohook_rc=$?
 set -e
@@ -16151,7 +16154,7 @@ for pf_js_args in "--preflight --json" "--json --preflight"; do
   set +e
   pf_js_warn="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
     PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM=lightdm.service \
-    DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+    DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
     "$preflight_bash" "$REPO_ROOT/install.sh" "${pf_js_argv[@]}" 2>"$preflight_dir/js.err")"
   pf_js_rc=$?
   set -e
@@ -16182,19 +16185,19 @@ done
 set +e
 pf_js_pass="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_pass.err")"
 pf_js_pass_rc=$?
 pf_js_fail="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_no_pacman" \
-  PREFLIGHT_GETTY=masked DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  PREFLIGHT_GETTY=masked DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_fail.err")"
 pf_js_fail_rc=$?
 pf_js_masked="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
-  PREFLIGHT_GETTY=masked PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  PREFLIGHT_GETTY=masked PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_masked.err")"
 pf_js_masked_rc=$?
 pf_js_disabled="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
-  PREFLIGHT_GETTY=disabled PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  PREFLIGHT_GETTY=disabled PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_disabled.err")"
 pf_js_disabled_rc=$?
 set -e
@@ -16255,7 +16258,7 @@ fi
 
 for bad_pf_js in "--preflight --json --dry-run" "--preflight --doctor --json" "--status --preflight --json"; do
   # shellcheck disable=SC2086 # intentional word splitting over literal flag combinations
-  if env -i HOME="$preflight_home" PATH="$preflight_bin" PACMAN_DB_DIR="$preflight_pacman_db" "$preflight_bash" "$REPO_ROOT/install.sh" $bad_pf_js >/dev/null 2>&1; then
+  if env -i HOME="$preflight_home" PATH="$preflight_bin" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent "$preflight_bash" "$REPO_ROOT/install.sh" $bad_pf_js >/dev/null 2>&1; then
     preflight_ok=0
     preflight_report+=" [combined $bad_pf_js unexpectedly passed]"
   fi
@@ -16276,7 +16279,7 @@ EOF
 set +e
 pf_zsh_stale="$(env -i HOME="$preflight_adv_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_stale.err")"
 pf_zsh_stale_rc=$?
 set -e
@@ -16302,7 +16305,7 @@ EOF
 set +e
 pf_zsh_malformed="$(env -i HOME="$preflight_adv_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_zsh_malformed_rc=$?
 set -e
@@ -16312,7 +16315,7 @@ ln -s "$preflight_dir/sym_zprofile_target" "$preflight_adv_home/.zprofile"
 set +e
 pf_zsh_sym="$(env -i HOME="$preflight_adv_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_zsh_sym_rc=$?
 set -e
@@ -16345,7 +16348,7 @@ chmod +x "$preflight_homed_bin/homectl"
 set +e
 pf_homed="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_homed_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_homed_rc=$?
 set -e
@@ -16359,7 +16362,7 @@ fi
 set +e
 pf_unhomed="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_homed_bin" \
   PREFLIGHT_HOMECTL_FAIL=1 PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_unhomed_rc=$?
 set -e
@@ -16372,7 +16375,7 @@ fi
 set +e
 pf_homed_js="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_homed_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_homed.err")"
 pf_homed_js_rc=$?
 set -e
@@ -16450,7 +16453,7 @@ EOF
 set +e
 pf_km_diff="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_de.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16467,7 +16470,7 @@ fi
 set +e
 pf_km_absent_v="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_empty.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16484,7 +16487,7 @@ fi
 set +e
 pf_km_match="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_tr.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16501,7 +16504,7 @@ printf 'KEYMAP=trq\n' >"$preflight_km_dir/vconsole_trq.conf"
 set +e
 pf_km_prefix="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_trq.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16513,10 +16516,29 @@ if [[ $pf_km_prefix_rc -ne 0 || "$pf_km_prefix" == *"Console keymap"* ||
   preflight_report+=" [prefix keymap preflight rc=$pf_km_prefix_rc out=$pf_km_prefix]"
 fi
 
+# A pair systemd's kbd-model-map lists (uk for gb) counts as matching.
+printf 'KEYMAP=uk\n' >"$preflight_km_dir/vconsole_uk.conf"
+printf 'Section "InputClass"\n  Option "XkbLayout" "gb"\nEndSection\n' >"$preflight_km_dir/x11_gb.conf"
+set +e
+pf_km_map="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" \
+  VCONSOLE_CONF="$preflight_km_dir/vconsole_uk.conf" \
+  X11_KEYBOARD_CONF="$preflight_km_dir/x11_gb.conf" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_km_map_rc=$?
+set -e
+if [[ $pf_km_map_rc -ne 0 || "$pf_km_map" == *"Console keymap"* ||
+  "$pf_km_map" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [kbd-model-map keymap preflight rc=$pf_km_map_rc out=$pf_km_map]"
+fi
+
 set +e
 pf_km_comma="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_us.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_us_tr.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16531,7 +16553,7 @@ fi
 set +e
 pf_km_absent_match="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_empty.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_us.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16546,7 +16568,7 @@ fi
 set +e
 pf_km_nox="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_de.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_none.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16561,7 +16583,7 @@ fi
 set +e
 pf_km_nonexistent="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   VCONSOLE_CONF="$preflight_km_dir/nonexistent_vconsole.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/nonexistent_x11.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16576,7 +16598,7 @@ fi
 set +e
 pf_km_js="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_empty.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_km.err")"
@@ -16605,7 +16627,7 @@ fi
 set +e
 pf_km_js_match="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_tr.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_km_match.err")"
@@ -16847,7 +16869,7 @@ printf 'LANG=POSIX\n' >"$preflight_loc_dir/locale_posix.conf"
 set +e
 pf_loc_warn="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   LOCALE_CONF="$preflight_loc_dir/locale_missing.conf" \
   PREFLIGHT_LOCALE_A="$(printf 'C\nC.utf8\nPOSIX\nen_US.utf8\n')" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16863,7 +16885,7 @@ fi
 set +e
 pf_loc_warn_js="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   LOCALE_CONF="$preflight_loc_dir/locale_missing.conf" \
   PREFLIGHT_LOCALE_A="$(printf 'C\nC.utf8\nPOSIX\nen_US.utf8\n')" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_loc_warn.err")"
@@ -16891,7 +16913,7 @@ fi
 set +e
 pf_loc_match="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   LOCALE_CONF="$preflight_loc_dir/locale_en.conf" \
   PREFLIGHT_LOCALE_A="$(printf 'C\nC.utf8\nPOSIX\nen_us.utf8\n')" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16908,7 +16930,7 @@ for quiet_conf in "$preflight_loc_dir/locale_c.conf" "$preflight_loc_dir/locale_
   set +e
   pf_loc_quiet="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
     PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-    DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+    DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
     LOCALE_CONF="$quiet_conf" \
     PREFLIGHT_LOCALE_A="$(printf 'C\nPOSIX\n')" \
     "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16930,7 +16952,7 @@ printf 'Y\n' >"$preflight_nvidia_dir/modeset_y"
 set +e
 pf_nv_warn="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=plasma-desktop PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   LOCALE_CONF="$preflight_loc_dir/locale_en.conf" \
   PREFLIGHT_LOCALE_A="$(printf 'C\nPOSIX\nen_us.utf8\n')" \
   NVIDIA_DRM_MODESET="$preflight_nvidia_dir/modeset_n" \
@@ -16947,7 +16969,7 @@ fi
 set +e
 pf_nv_warn_js="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=plasma-desktop PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   LOCALE_CONF="$preflight_loc_dir/locale_en.conf" \
   PREFLIGHT_LOCALE_A="$(printf 'C\nPOSIX\nen_us.utf8\n')" \
   NVIDIA_DRM_MODESET="$preflight_nvidia_dir/modeset_n" \
@@ -16975,7 +16997,7 @@ fi
 set +e
 pf_nv_0="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=gnome-shell PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   LOCALE_CONF="$preflight_loc_dir/locale_en.conf" \
   PREFLIGHT_LOCALE_A="$(printf 'C\nPOSIX\nen_us.utf8\n')" \
   NVIDIA_DRM_MODESET="$preflight_nvidia_dir/modeset_0" \
@@ -16991,7 +17013,7 @@ fi
 set +e
 pf_nv_y="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=plasma-desktop PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   LOCALE_CONF="$preflight_loc_dir/locale_en.conf" \
   PREFLIGHT_LOCALE_A="$(printf 'C\nPOSIX\nen_us.utf8\n')" \
   NVIDIA_DRM_MODESET="$preflight_nvidia_dir/modeset_y" \
@@ -17007,7 +17029,7 @@ fi
 set +e
 pf_nv_absent="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=plasma-desktop PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   LOCALE_CONF="$preflight_loc_dir/locale_en.conf" \
   PREFLIGHT_LOCALE_A="$(printf 'C\nPOSIX\nen_us.utf8\n')" \
   NVIDIA_DRM_MODESET="$preflight_nvidia_dir/nonexistent" \
@@ -17023,7 +17045,7 @@ fi
 set +e
 pf_nv_x11="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" LOCALE_CONF="$LOCALE_CONF" NVIDIA_DRM_MODESET="$NVIDIA_DRM_MODESET" KBD_MODEL_MAP="$KBD_MODEL_MAP" VCONSOLE_CONF=/nonexistent X11_KEYBOARD_CONF=/nonexistent \
   LOCALE_CONF="$preflight_loc_dir/locale_en.conf" \
   PREFLIGHT_LOCALE_A="$(printf 'C\nPOSIX\nen_us.utf8\n')" \
   NVIDIA_DRM_MODESET="$preflight_nvidia_dir/modeset_n" \
