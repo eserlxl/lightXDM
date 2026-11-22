@@ -7980,7 +7980,8 @@ Options:
                     enabled stay enabled, PAM lines you removed stay removed (ones a .pacnew merge removed
                     come back); autologin stays as it is (combinable with --dry-run and --non-interactive)
   --pam-only        only add lightXDM's lines for --de <id> to /etc/pam.d/login (keyring unlock, and GNOME's
-                    session-type block); no packages, dotfiles, display managers or saved choices change
+                    session-type block); no packages, dotfiles or display managers change, and the saved
+                    choices only record the keyring it turns on
                     (with --no-keyring, only GNOME's block)
   --status          show the current lightXDM configuration, login-shell hook state, dotfile state, PAM state, disabled display
                     managers and TTY1 autologin status without sudo or changes (use alone, or with --json)
