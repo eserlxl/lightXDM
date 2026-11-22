@@ -21,6 +21,7 @@ BASE_YAML = """\
 package:
   name: lightxdm
   source: release
+  keep: [README.md, docs/, dotfiles/]
   post_package:
     - 'install -Dm644 -t "$pkgdir/usr/share/$pkgname" install.sh uninstall.sh enable-autologin.sh'
     - 'install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md'
@@ -148,6 +149,59 @@ class RepoIntegrityTests(unittest.TestCase):
             proc = _run_integrity(root)
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("enable-autologin.sh", proc.stderr)
+
+    def test_package_keep_list_must_keep_readme_docs_and_dotfiles(self):
+        full_keep = "  keep: [README.md, docs/, dotfiles/]\n"
+        self.assertIn(full_keep, BASE_YAML)
+        cases = {
+            "README.md": "  keep: [docs/, dotfiles/]\n",
+            "docs/": "  keep: [README.md, dotfiles/]\n",
+            "dotfiles/": "  keep: [README.md, docs/]\n",
+        }
+        for dropped, keep_line in cases.items():
+            with self.subTest(dropped=dropped):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    root = Path(tmpdir)
+                    _create_valid_fixture(root)
+                    yaml_path = root / "aur" / "aurgen.install.yaml"
+                    yaml_path.write_text(BASE_YAML.replace(full_keep, keep_line), encoding="utf-8")
+                    proc = _run_integrity(root)
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn(f"package.keep missing entry: {dropped}", proc.stderr)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            _create_valid_fixture(root)
+            yaml_path = root / "aur" / "aurgen.install.yaml"
+
+            # aurgen keeps a directory only through a trailing-slash prefix entry.
+            yaml_path.write_text(
+                BASE_YAML.replace(full_keep, "  keep: [README.md, docs, dotfiles/]\n"), encoding="utf-8"
+            )
+            no_slash = _run_integrity(root)
+            self.assertNotEqual(no_slash.returncode, 0)
+            self.assertIn("package.keep missing entry: docs/", no_slash.stderr)
+
+            yaml_path.write_text(BASE_YAML.replace(full_keep, ""), encoding="utf-8")
+            missing = _run_integrity(root)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("package.keep is missing", missing.stderr)
+
+            block_keep = "  keep:\n    - README.md\n    - 'docs/'\n    - dotfiles/\n"
+            yaml_path.write_text(BASE_YAML.replace(full_keep, block_keep), encoding="utf-8")
+            block = _run_integrity(root)
+            self.assertEqual(block.returncode, 0, block.stderr)
+
+            yaml_path.write_text(
+                BASE_YAML.replace(full_keep, "  keep:\n    - README.md\n    - docs/\n"), encoding="utf-8"
+            )
+            block_short = _run_integrity(root)
+            self.assertNotEqual(block_short.returncode, 0)
+            self.assertIn("package.keep missing entry: dotfiles/", block_short.stderr)
+
+            yaml_path.write_text(BASE_YAML, encoding="utf-8")
+            full = _run_integrity(root)
+            self.assertEqual(full.returncode, 0, full.stderr)
 
     def test_conditional_optional_dirs_fail_when_unmapped_and_pass_when_mapped(self):
         for rel_dir, yaml_block in CONDITIONAL_YAML_BLOCKS.items():

@@ -21,6 +21,9 @@ FROZEN_LICENSE_SHA256 = "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c
 
 MANDATORY_COPY_SOURCES = ("bin", "dotfiles", "pam", "alpm", "docs")
 MANDATORY_POST_PACKAGE_FILES = ("install.sh", "uninstall.sh", "enable-autologin.sh", "README.md")
+# aurgen's source filter drops hidden files and docs; package.keep must re-admit these paths.
+# A trailing slash makes aurgen keep a directory prefix, so "docs" alone would keep nothing.
+MANDATORY_KEEP_ENTRIES = ("README.md", "docs/", "dotfiles/")
 
 CONDITIONAL_MAPPINGS = {
     "lib": "usr/share/$pkgname/lib",
@@ -69,10 +72,10 @@ def _strip_yaml_comment(raw: str) -> str:
     return cleaned
 
 
-def parse_aurgen_yaml(yaml_path: Path) -> tuple[dict[str, dict[str, str]], list[str]]:
-    """Parse top-level sections (key/value scalars) and package.post_package entries."""
+def parse_aurgen_yaml(yaml_path: Path) -> tuple[dict[str, dict[str, str]], dict[str, list[str]]]:
+    """Parse top-level sections (key/value scalars) and package block-list entries by key."""
     sections: dict[str, dict[str, str]] = {}
-    post_package: list[str] = []
+    package_lists: dict[str, list[str]] = {}
 
     current_section: str | None = None
     section_child_indent: int | None = None
@@ -104,8 +107,8 @@ def parse_aurgen_yaml(yaml_path: Path) -> tuple[dict[str, dict[str, str]], list[
         if active_list_key is not None and active_list_indent is not None and indent > active_list_indent:
             list_match = LIST_ITEM_RE.match(stripped)
             if list_match:
-                if current_section == "package" and active_list_key == "post_package":
-                    post_package.append(_strip_yaml_comment(list_match.group(1)))
+                if current_section == "package":
+                    package_lists[active_list_key].append(_strip_yaml_comment(list_match.group(1)))
                 continue
 
         if indent == section_child_indent:
@@ -118,10 +121,27 @@ def parse_aurgen_yaml(yaml_path: Path) -> tuple[dict[str, dict[str, str]], list[
                 if cleaned_val == "":
                     active_list_key = key
                     active_list_indent = indent
+                    if current_section == "package":
+                        package_lists.setdefault(key, [])
                 else:
                     sections[current_section][key] = cleaned_val
 
-    return sections, post_package
+    return sections, package_lists
+
+
+def _parse_flow_list(raw: str) -> list[str] | None:
+    """Parse a one-line YAML flow list like "[a, 'b', c/]"; return None if raw is not one."""
+    text = raw.strip()
+    if not (text.startswith("[") and text.endswith("]")):
+        return None
+    items: list[str] = []
+    for part in text[1:-1].split(","):
+        item = part.strip()
+        if len(item) >= 2 and item[0] == item[-1] and item[0] in ("'", '"'):
+            item = item[1:-1]
+        if item:
+            items.append(item)
+    return items
 
 
 def _extract_post_package_sources(commands: list[str]) -> list[str]:
@@ -171,7 +191,8 @@ def check_aurgen_manifest(root: Path, errors: list[str]) -> tuple[str, str | Non
         errors.append("Missing packaging manifest: aur/aurgen.install.yaml")
         return "lightxdm", None, None
 
-    sections, post_package = parse_aurgen_yaml(yaml_path)
+    sections, package_lists = parse_aurgen_yaml(yaml_path)
+    post_package = package_lists.get("post_package", [])
     pkgname = sections.get("package", {}).get("name", "lightxdm")
 
     # Copy sections are top-level sections defining BOTH source: and destination:.
@@ -220,6 +241,25 @@ def check_aurgen_manifest(root: Path, errors: list[str]) -> tuple[str, str | Non
     for src_file in post_sources:
         if not _is_safe_rel_path(src_file) or not (root / src_file).is_file():
             errors.append(f"aur/aurgen.install.yaml package.post_package references missing file: {src_file}")
+
+    keep_raw = sections.get("package", {}).get("keep")
+    if keep_raw is not None:
+        keep_entries = _parse_flow_list(keep_raw)
+        if keep_entries is None:
+            errors.append(f"aur/aurgen.install.yaml package.keep is not a list: {keep_raw!r}")
+            keep_entries = []
+    else:
+        keep_entries = package_lists.get("keep")
+        if keep_entries is None:
+            errors.append(
+                "aur/aurgen.install.yaml package.keep is missing; aurgen's source filter would drop "
+                + ", ".join(MANDATORY_KEEP_ENTRIES)
+            )
+            keep_entries = []
+    if keep_raw is not None or "keep" in package_lists:
+        for req_entry in MANDATORY_KEEP_ENTRIES:
+            if req_entry not in keep_entries:
+                errors.append(f"aur/aurgen.install.yaml package.keep missing entry: {req_entry}")
 
     pam_fields = next((f for f in copy_sections.values() if f.get("source", "").rstrip("/") == "pam"), None)
     pam_source = pam_fields["source"].rstrip("/") if pam_fields else None
