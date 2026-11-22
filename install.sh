@@ -8344,13 +8344,15 @@ Options:
                     (standalone with optional --gpg-ssh and --dry-run, or combined with install)
   --gpg-ssh         with --setup-gpg <gnome|kwallet|auto>, also write enable-ssh-support in the managed block
   --preflight       check user/sudo, pacman/systemctl, pacman lock and sync database freshness, getty@tty1.service, display managers,
-                    console keymap vs X11 layout, login shell, systemd-homed account, and installed desktops without sudo or changes,
+                    console keymap vs X11 layout, system locale, NVIDIA modesetting for Wayland, login shell, systemd-homed
+                    account, and installed desktops without sudo or changes,
                     then suggest the next command (use alone, or with --json)
   --guided          interactive first-run onboarding wizard: runs --preflight first, helps pick a detected or custom
                     .desktop session or built-in desktop, keyring/autologin mode, and zsh/fish shell hook, prints the
                     equivalent command and --dry-run preview, and asks confirmation before sudo/changes (optional --dry-run)
-  --doctor          verify post-install session launcher, shell hooks, PAM keyring/GNOME rules, .pacnew drift,
-                    and systemd boot health without sudo or changes, with fix commands (use alone, or with --json)
+  --doctor          verify post-install session launcher, shell hooks, PAM keyring/GNOME rules, default keyring/wallet,
+                    .pacnew drift, system locale, NVIDIA modesetting for Wayland, and systemd boot health without sudo or
+                    changes, with fix commands (use alone, or with --json)
   --recover         restore broken or paused home session dotfiles from validated templates without sudo or
                     package/PAM/systemd changes, saving any edits as *.lightxdm-edited* and clearing
                     ~/.config/lightxdm/no-autostart (optional --dry-run, --de <id>, and --setup-shell <zsh|fish|auto>)
