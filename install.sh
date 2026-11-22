@@ -4190,6 +4190,38 @@ run_preflight() {
     blockers=$((blockers + 1))
   fi
 
+  local pacman_db_dir="${PACMAN_DB_DIR:-/var/lib/pacman}"
+  if [[ $have_pacman -eq 1 ]]; then
+    if [[ -e "$pacman_db_dir/db.lck" ]]; then
+      printf -v diag_msg "%s/db.lck exists (pacman busy or stale lock) — wait for pacman or remove lock, then run: sudo pacman -Syu" "$pacman_db_dir"
+      diag_record_check "$json_mode" "Pacman lock" "warn" "$diag_msg"
+      warnings=$((warnings + 1))
+    fi
+
+    local -a sync_dbs=()
+    local db_f
+    for db_f in "$pacman_db_dir/sync/"*.db; do
+      [[ -f "$db_f" ]] && sync_dbs+=("$db_f")
+    done
+    if [[ ${#sync_dbs[@]} -eq 0 ]]; then
+      printf -v diag_msg "sync database missing in %s/sync — run: sudo pacman -Syu" "$pacman_db_dir"
+      diag_record_check "$json_mode" "Pacman sync database" "warn" "$diag_msg"
+      warnings=$((warnings + 1))
+    else
+      local newest_mtime=0 db_mtime=0 now=0
+      for db_f in "${sync_dbs[@]}"; do
+        db_mtime="$(stat -c %Y "$db_f" 2>/dev/null || echo 0)"
+        (( db_mtime > newest_mtime )) && newest_mtime="$db_mtime"
+      done
+      now="$(date +%s 2>/dev/null || echo 0)"
+      if (( now > 0 && newest_mtime > 0 && now - newest_mtime > 604800 )); then
+        printf -v diag_msg "sync database in %s/sync is older than 7 days — run: sudo pacman -Syu" "$pacman_db_dir"
+        diag_record_check "$json_mode" "Pacman sync database" "warn" "$diag_msg"
+        warnings=$((warnings + 1))
+      fi
+    fi
+  fi
+
   local enabled_dms=()
   if [[ $have_systemctl -eq 1 ]]; then
     local getty_state=""
@@ -8162,8 +8194,9 @@ Options:
                     ~/.gnupg/gpg-agent.conf ($GNUPGHOME/gpg-agent.conf when inside $HOME) and reload gpg-agent
                     (standalone with optional --gpg-ssh and --dry-run, or combined with install)
   --gpg-ssh         with --setup-gpg <gnome|kwallet|auto>, also write enable-ssh-support in the managed block
-  --preflight       check user/sudo, pacman/systemctl, getty@tty1.service, display managers, console keymap vs X11 layout, login shell,
-                    systemd-homed account, and installed desktops without sudo or changes, then suggest the next command (use alone, or with --json)
+  --preflight       check user/sudo, pacman/systemctl, pacman lock and sync database freshness, getty@tty1.service, display managers,
+                    console keymap vs X11 layout, login shell, systemd-homed account, and installed desktops without sudo or changes,
+                    then suggest the next command (use alone, or with --json)
   --guided          interactive first-run onboarding wizard: runs --preflight first, helps pick a detected or custom
                     .desktop session or built-in desktop, keyring/autologin mode, and zsh/fish shell hook, prints the
                     equivalent command and --dry-run preview, and asks confirmation before sudo/changes (optional --dry-run)

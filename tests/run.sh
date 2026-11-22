@@ -202,6 +202,9 @@ export DISPLAY_MANAGER_LINK="$TMP_DIR/display-manager.service"
 export DM_STATE_FILE="$TMP_DIR/lightxdm/disabled-display-managers"
 export PAM_KEYRING_STATE="$TMP_DIR/lightxdm/pam-keyring"
 export PAM_LOGIN_BASE_STATE="$TMP_DIR/lightxdm/pam-login-base"
+# --preflight reads the pacman database; keep every run off the host's /var/lib/pacman.
+mkdir -p "$TMP_DIR/pacman_db/sync" && : >"$TMP_DIR/pacman_db/sync/core.db"
+export PACMAN_DB_DIR="$TMP_DIR/pacman_db"
 
 # shellcheck source=install.sh disable=SC1091
 source "$REPO_ROOT/install.sh"
@@ -15911,8 +15914,10 @@ preflight_home="$preflight_dir/home"
 preflight_bin="$preflight_dir/bin"
 preflight_log="$preflight_dir/sudo.log"
 preflight_dm_dir="$preflight_dir/systemd"
-mkdir -p "$preflight_home" "$preflight_bin" "$preflight_dm_dir"
-for core_cmd in cut dirname grep readlink; do
+preflight_pacman_db="$preflight_dir/pacman_db"
+mkdir -p "$preflight_home" "$preflight_bin" "$preflight_dm_dir" "$preflight_pacman_db/sync"
+touch "$preflight_pacman_db/sync/core.db"
+for core_cmd in cut dirname grep readlink stat date find; do
   ln -sf "$(command -v "$core_cmd")" "$preflight_bin/$core_cmd"
 done
 cat >"$preflight_bin/id" <<'EOF'
@@ -15979,7 +15984,7 @@ preflight_report=""
 set +e
 pf_out="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM=lightdm.service \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_rc=$?
 set -e
@@ -15994,7 +15999,7 @@ fi
 set +e
 pf_unknown="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG="" \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_rc=$?
 set -e
@@ -16006,7 +16011,7 @@ fi
 
 set +e
 pf_masked="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
-  PREFLIGHT_GETTY=masked PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  PREFLIGHT_GETTY=masked PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_rc=$?
 set -e
@@ -16019,7 +16024,7 @@ fi
 
 set +e
 pf_disabled="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
-  PREFLIGHT_GETTY=disabled PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  PREFLIGHT_GETTY=disabled PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_rc=$?
 set -e
@@ -16032,12 +16037,12 @@ fi
 
 preflight_no_sudo="$preflight_dir/no_sudo_bin"
 mkdir -p "$preflight_no_sudo"
-for b in cut dirname grep readlink id getent pacman systemctl; do
+for b in cut dirname grep readlink stat date find id getent pacman systemctl; do
   ln -sf "$preflight_bin/$b" "$preflight_no_sudo/$b"
 done
 set +e
 pf_nosudo="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_no_sudo" \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_rc=$?
 set -e
@@ -16049,17 +16054,18 @@ fi
 
 preflight_no_pacman="$preflight_dir/no_pacman_bin"
 mkdir -p "$preflight_no_pacman"
-for b in cut dirname grep readlink id getent sudo systemctl; do
+for b in cut dirname grep readlink stat date find id getent sudo systemctl; do
   ln -sf "$preflight_bin/$b" "$preflight_no_pacman/$b"
 done
 set +e
 pf_nopac="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_no_pacman" \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_rc=$?
 set -e
 if [[ $pf_rc -ne 1 || "$pf_nopac" != *"System tools: FAIL (missing: pacman)"* ||
   "$pf_nopac" != *"Detected desktop(s): skipped (pacman unavailable)"* ||
+  "$pf_nopac" == *"Pacman lock"* || "$pf_nopac" == *"Pacman sync database"* ||
   "$pf_nopac" != *"Preflight: FAIL (1 blocker(s)"* ]]; then
   preflight_ok=0
   preflight_report+=" [no pacman rc=$pf_rc out=$pf_nopac]"
@@ -16067,7 +16073,7 @@ fi
 
 for bad_pf in "--preflight --dry-run" "--status --preflight" "--list-sessions --preflight"; do
   # shellcheck disable=SC2086 # intentional word splitting over literal flag combinations
-  if env -i HOME="$preflight_home" PATH="$preflight_bin" "$preflight_bash" "$REPO_ROOT/install.sh" $bad_pf >/dev/null 2>&1; then
+  if env -i HOME="$preflight_home" PATH="$preflight_bin" PACMAN_DB_DIR="$preflight_pacman_db" "$preflight_bash" "$REPO_ROOT/install.sh" $bad_pf >/dev/null 2>&1; then
     preflight_ok=0
     preflight_report+=" [combined $bad_pf unexpectedly passed]"
   fi
@@ -16076,7 +16082,7 @@ done
 if [[ $can_unshare -eq 1 ]]; then
   set +e
   pf_root="$(unshare -r env -i HOME="$preflight_home" PATH="$preflight_bin" \
-    DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+    DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
     "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
   pf_rc=$?
   set -e
@@ -16098,17 +16104,17 @@ EOF
 set +e
 pf_zsh_hook="$(env -i HOME="$preflight_hook_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_zsh_hook_rc=$?
 pf_fish_hook="$(env -i HOME="$preflight_hook_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/usr/bin/fish PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_fish_hook_rc=$?
 pf_fish_nohook="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/usr/bin/fish PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_fish_nohook_rc=$?
 set -e
@@ -16128,7 +16134,7 @@ for pf_js_args in "--preflight --json" "--json --preflight"; do
   set +e
   pf_js_warn="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
     PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM=lightdm.service \
-    DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+    DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
     "$preflight_bash" "$REPO_ROOT/install.sh" "${pf_js_argv[@]}" 2>"$preflight_dir/js.err")"
   pf_js_rc=$?
   set -e
@@ -16159,19 +16165,19 @@ done
 set +e
 pf_js_pass="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_pass.err")"
 pf_js_pass_rc=$?
 pf_js_fail="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_no_pacman" \
-  PREFLIGHT_GETTY=masked DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  PREFLIGHT_GETTY=masked DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_fail.err")"
 pf_js_fail_rc=$?
 pf_js_masked="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
-  PREFLIGHT_GETTY=masked PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  PREFLIGHT_GETTY=masked PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_masked.err")"
 pf_js_masked_rc=$?
 pf_js_disabled="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
-  PREFLIGHT_GETTY=disabled PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  PREFLIGHT_GETTY=disabled PREFLIGHT_PKG=xfce4-session DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_disabled.err")"
 pf_js_disabled_rc=$?
 set -e
@@ -16232,7 +16238,7 @@ fi
 
 for bad_pf_js in "--preflight --json --dry-run" "--preflight --doctor --json" "--status --preflight --json"; do
   # shellcheck disable=SC2086 # intentional word splitting over literal flag combinations
-  if env -i HOME="$preflight_home" PATH="$preflight_bin" "$preflight_bash" "$REPO_ROOT/install.sh" $bad_pf_js >/dev/null 2>&1; then
+  if env -i HOME="$preflight_home" PATH="$preflight_bin" PACMAN_DB_DIR="$preflight_pacman_db" "$preflight_bash" "$REPO_ROOT/install.sh" $bad_pf_js >/dev/null 2>&1; then
     preflight_ok=0
     preflight_report+=" [combined $bad_pf_js unexpectedly passed]"
   fi
@@ -16253,7 +16259,7 @@ EOF
 set +e
 pf_zsh_stale="$(env -i HOME="$preflight_adv_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_stale.err")"
 pf_zsh_stale_rc=$?
 set -e
@@ -16279,7 +16285,7 @@ EOF
 set +e
 pf_zsh_malformed="$(env -i HOME="$preflight_adv_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_zsh_malformed_rc=$?
 set -e
@@ -16289,7 +16295,7 @@ ln -s "$preflight_dir/sym_zprofile_target" "$preflight_adv_home/.zprofile"
 set +e
 pf_zsh_sym="$(env -i HOME="$preflight_adv_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/usr/bin/zsh PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_zsh_sym_rc=$?
 set -e
@@ -16303,7 +16309,7 @@ fi
 
 preflight_homed_bin="$preflight_dir/homed_bin"
 mkdir -p "$preflight_homed_bin"
-for b in cut dirname grep readlink id getent sudo pacman systemctl; do
+for b in cut dirname grep readlink stat date find id getent sudo pacman systemctl; do
   ln -sf "$preflight_bin/$b" "$preflight_homed_bin/$b"
 done
 cat >"$preflight_homed_bin/homectl" <<'EOF'
@@ -16322,7 +16328,7 @@ chmod +x "$preflight_homed_bin/homectl"
 set +e
 pf_homed="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_homed_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_homed_rc=$?
 set -e
@@ -16336,7 +16342,7 @@ fi
 set +e
 pf_unhomed="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_homed_bin" \
   PREFLIGHT_HOMECTL_FAIL=1 PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 pf_unhomed_rc=$?
 set -e
@@ -16349,7 +16355,7 @@ fi
 set +e
 pf_homed_js="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_homed_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_homed.err")"
 pf_homed_js_rc=$?
 set -e
@@ -16427,7 +16433,7 @@ EOF
 set +e
 pf_km_diff="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_de.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16444,7 +16450,7 @@ fi
 set +e
 pf_km_absent_v="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_empty.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16461,7 +16467,7 @@ fi
 set +e
 pf_km_match="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_tr.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16478,7 +16484,7 @@ printf 'KEYMAP=trq\n' >"$preflight_km_dir/vconsole_trq.conf"
 set +e
 pf_km_prefix="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_trq.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16493,7 +16499,7 @@ fi
 set +e
 pf_km_comma="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_us.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_us_tr.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16508,7 +16514,7 @@ fi
 set +e
 pf_km_absent_match="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_empty.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_us.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16523,7 +16529,7 @@ fi
 set +e
 pf_km_nox="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_de.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_none.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16538,7 +16544,7 @@ fi
 set +e
 pf_km_nonexistent="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   VCONSOLE_CONF="$preflight_km_dir/nonexistent_vconsole.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/nonexistent_x11.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
@@ -16553,7 +16559,7 @@ fi
 set +e
 pf_km_js="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_empty.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_km.err")"
@@ -16582,7 +16588,7 @@ fi
 set +e
 pf_km_js_match="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
   PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
-  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$preflight_pacman_db" \
   VCONSOLE_CONF="$preflight_km_dir/vconsole_tr.conf" \
   X11_KEYBOARD_CONF="$preflight_km_dir/x11_tr.conf" \
   "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_km_match.err")"
@@ -16599,10 +16605,218 @@ assert d["blockers"] == 0
 assert d["warnings"] == 0
 checks = {c["name"]: c for c in d["checks"]}
 assert "Console keymap" not in checks
+assert "Pacman lock" not in checks
+assert "Pacman sync database" not in checks
 PY
 then
   preflight_ok=0
   preflight_report+=" [keymap match preflight json rc=$pf_km_js_match_rc err=$(<"$preflight_dir/js_km_match.err") out=$pf_km_js_match]"
+fi
+
+preflight_pacman_fixtures="$preflight_dir/pacman_fixtures"
+pf_db_fresh="$preflight_pacman_fixtures/fresh"
+pf_db_locked="$preflight_pacman_fixtures/locked"
+pf_db_stale="$preflight_pacman_fixtures/stale"
+pf_db_missing="$preflight_pacman_fixtures/missing"
+pf_db_both="$preflight_pacman_fixtures/both"
+mkdir -p "$pf_db_fresh/sync" "$pf_db_locked/sync" "$pf_db_stale/sync" "$pf_db_missing" "$pf_db_both/sync"
+touch "$pf_db_fresh/sync/core.db"
+touch "$pf_db_locked/sync/core.db" "$pf_db_locked/db.lck"
+touch -d "8 days ago" "$pf_db_stale/sync/core.db"
+touch "$pf_db_both/db.lck"
+touch -d "8 days ago" "$pf_db_both/sync/core.db"
+
+set +e
+pf_db_locked_out="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$pf_db_locked" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_db_locked_rc=$?
+set -e
+if [[ $pf_db_locked_rc -ne 0 || "$pf_db_locked_out" != *"Pacman lock: WARN"* ||
+  "$pf_db_locked_out" != *"db.lck exists (pacman busy or stale lock)"* ||
+  "$pf_db_locked_out" != *"sudo pacman -Syu"* ||
+  "$pf_db_locked_out" == *"Pacman sync database"* ||
+  "$pf_db_locked_out" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [pacman lock preflight prose rc=$pf_db_locked_rc out=$pf_db_locked_out]"
+fi
+
+set +e
+pf_db_locked_js="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$pf_db_locked" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_db_locked.err")"
+pf_db_locked_js_rc=$?
+set -e
+if [[ $pf_db_locked_js_rc -ne 0 || -s "$preflight_dir/js_db_locked.err" ]] ||
+  ! JSON_OUT="$pf_db_locked_js" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["mode"] == "preflight"
+assert d["ready"] is True
+assert d["status"] == "warn"
+assert d["blockers"] == 0
+assert d["warnings"] == 1
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["Pacman lock"]["status"] == "warn"
+assert "db.lck exists (pacman busy or stale lock)" in checks["Pacman lock"]["detail"]
+assert "sudo pacman -Syu" in checks["Pacman lock"]["detail"]
+assert "Pacman sync database" not in checks
+PY
+then
+  preflight_ok=0
+  preflight_report+=" [pacman lock preflight json rc=$pf_db_locked_js_rc err=$(<"$preflight_dir/js_db_locked.err") out=$pf_db_locked_js]"
+fi
+
+set +e
+pf_db_stale_out="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$pf_db_stale" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_db_stale_rc=$?
+set -e
+if [[ $pf_db_stale_rc -ne 0 || "$pf_db_stale_out" != *"Pacman sync database: WARN"* ||
+  "$pf_db_stale_out" != *"older than 7 days"* ||
+  "$pf_db_stale_out" != *"sudo pacman -Syu"* ||
+  "$pf_db_stale_out" == *"Pacman lock"* ||
+  "$pf_db_stale_out" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [pacman stale db preflight prose rc=$pf_db_stale_rc out=$pf_db_stale_out]"
+fi
+
+set +e
+pf_db_stale_js="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$pf_db_stale" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_db_stale.err")"
+pf_db_stale_js_rc=$?
+set -e
+if [[ $pf_db_stale_js_rc -ne 0 || -s "$preflight_dir/js_db_stale.err" ]] ||
+  ! JSON_OUT="$pf_db_stale_js" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["mode"] == "preflight"
+assert d["ready"] is True
+assert d["status"] == "warn"
+assert d["blockers"] == 0
+assert d["warnings"] == 1
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["Pacman sync database"]["status"] == "warn"
+assert "older than 7 days" in checks["Pacman sync database"]["detail"]
+assert "sudo pacman -Syu" in checks["Pacman sync database"]["detail"]
+assert "Pacman lock" not in checks
+PY
+then
+  preflight_ok=0
+  preflight_report+=" [pacman stale db preflight json rc=$pf_db_stale_js_rc err=$(<"$preflight_dir/js_db_stale.err") out=$pf_db_stale_js]"
+fi
+
+set +e
+pf_db_missing_out="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$pf_db_missing" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_db_missing_rc=$?
+set -e
+if [[ $pf_db_missing_rc -ne 0 || "$pf_db_missing_out" != *"Pacman sync database: WARN"* ||
+  "$pf_db_missing_out" != *"sync database missing"* ||
+  "$pf_db_missing_out" != *"sudo pacman -Syu"* ||
+  "$pf_db_missing_out" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [pacman missing db preflight prose rc=$pf_db_missing_rc out=$pf_db_missing_out]"
+fi
+
+set +e
+pf_db_missing_js="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$pf_db_missing" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_db_missing.err")"
+pf_db_missing_js_rc=$?
+set -e
+if [[ $pf_db_missing_js_rc -ne 0 || -s "$preflight_dir/js_db_missing.err" ]] ||
+  ! JSON_OUT="$pf_db_missing_js" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["mode"] == "preflight"
+assert d["ready"] is True
+assert d["status"] == "warn"
+assert d["blockers"] == 0
+assert d["warnings"] == 1
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["Pacman sync database"]["status"] == "warn"
+assert "sync database missing" in checks["Pacman sync database"]["detail"]
+assert "sudo pacman -Syu" in checks["Pacman sync database"]["detail"]
+PY
+then
+  preflight_ok=0
+  preflight_report+=" [pacman missing db preflight json rc=$pf_db_missing_js_rc err=$(<"$preflight_dir/js_db_missing.err") out=$pf_db_missing_js]"
+fi
+
+set +e
+pf_db_fresh_out="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$pf_db_fresh" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_db_fresh_rc=$?
+set -e
+if [[ $pf_db_fresh_rc -ne 0 || "$pf_db_fresh_out" == *"Pacman lock"* ||
+  "$pf_db_fresh_out" == *"Pacman sync database"* ||
+  "$pf_db_fresh_out" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [fresh pacman db preflight quiet prose rc=$pf_db_fresh_rc out=$pf_db_fresh_out]"
+fi
+
+set +e
+pf_db_fresh_js="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$pf_db_fresh" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_db_fresh.err")"
+pf_db_fresh_js_rc=$?
+set -e
+if [[ $pf_db_fresh_js_rc -ne 0 || -s "$preflight_dir/js_db_fresh.err" ]] ||
+  ! JSON_OUT="$pf_db_fresh_js" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["mode"] == "preflight"
+assert d["ready"] is True
+assert d["status"] == "pass"
+assert d["blockers"] == 0
+assert d["warnings"] == 0
+checks = {c["name"]: c for c in d["checks"]}
+assert "Pacman lock" not in checks
+assert "Pacman sync database" not in checks
+PY
+then
+  preflight_ok=0
+  preflight_report+=" [fresh pacman db preflight quiet json rc=$pf_db_fresh_js_rc err=$(<"$preflight_dir/js_db_fresh.err") out=$pf_db_fresh_js]"
+fi
+
+set +e
+pf_db_both_js="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" PACMAN_DB_DIR="$pf_db_both" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_db_both.err")"
+pf_db_both_js_rc=$?
+set -e
+if [[ $pf_db_both_js_rc -ne 0 || -s "$preflight_dir/js_db_both.err" ]] ||
+  ! JSON_OUT="$pf_db_both_js" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["mode"] == "preflight"
+assert d["ready"] is True
+assert d["status"] == "warn"
+assert d["blockers"] == 0
+assert d["warnings"] == 2
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["Pacman lock"]["status"] == "warn"
+assert checks["Pacman sync database"]["status"] == "warn"
+assert "sudo pacman -Syu" in checks["Pacman lock"]["detail"]
+assert "sudo pacman -Syu" in checks["Pacman sync database"]["detail"]
+PY
+then
+  preflight_ok=0
+  preflight_report+=" [both locked and stale pacman db preflight json rc=$pf_db_both_js_rc err=$(<"$preflight_dir/js_db_both.err") out=$pf_db_both_js]"
 fi
 
 if [[ $preflight_ok -eq 1 ]]; then
@@ -20838,9 +21052,11 @@ assert any("cannot read " in n and "pub_pamd/login" in n for n in d["autologin"]
 fi
 
 onb_case="$TMP_DIR/preflight_list_onboarding"
-mkdir -p "$onb_case/bin" "$onb_case/home/.local/state/lightxdm" "$onb_case/dm" \
+onb_pacman_db="$onb_case/pacman_db"
+mkdir -p "$onb_case/bin" "$onb_case/home/.local/state/lightxdm" "$onb_case/dm" "$onb_pacman_db/sync" \
   "$onb_case/sess/usr/share/wayland-sessions" "$onb_case/sess/usr/share/xsessions" "$onb_case/sess/usr/bin"
-for onb_tool in cut dirname grep readlink; do
+touch "$onb_pacman_db/sync/core.db"
+for onb_tool in cut dirname grep readlink stat date find; do
   onb_path="$(command -v "$onb_tool")"
   ln -s "$onb_path" "$onb_case/bin/$onb_tool"
 done
@@ -20930,13 +21146,13 @@ onb_report=""
 set +e
 onb_custom_out="$(env -i HOME="$onb_case/home" USER=testuser PATH="$onb_case/bin" \
   ONB_SHELL=/usr/bin/zsh ONB_PKGS="" SESSION_ROOT="$onb_case/sess" \
-  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" PACMAN_DB_DIR="$onb_pacman_db" \
   "$onb_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 onb_custom_rc=$?
 onb_custom_json_err="$onb_case/custom_json.err"
 onb_custom_json="$(env -i HOME="$onb_case/home" USER=testuser PATH="$onb_case/bin" \
   ONB_SHELL=/usr/bin/zsh ONB_PKGS="" SESSION_ROOT="$onb_case/sess" \
-  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" PACMAN_DB_DIR="$onb_pacman_db" \
   "$onb_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$onb_custom_json_err")"
 onb_custom_json_rc=$?
 set -e
@@ -20956,7 +21172,7 @@ fi
 set +e
 onb_way_out="$(env -i HOME="$onb_case/home" USER=testuser PATH="$onb_case/bin" \
   ONB_SHELL=/usr/bin/fish ONB_PKGS="" SESSION_ROOT="$onb_case/sess" XSESSIONS_DIR="$onb_case/no_xsess" \
-  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" PACMAN_DB_DIR="$onb_pacman_db" \
   "$onb_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 onb_way_rc=$?
 set -e
@@ -20995,12 +21211,12 @@ printf 'de=gnome\nno_packages=0\n' >"$onb_case/home/.local/state/lightxdm/instal
 set +e
 onb_gnome_out="$(env -i HOME="$onb_case/home" USER=testuser PATH="$onb_case/bin" \
   ONB_SHELL=/bin/bash ONB_PKGS=gnome-shell SESSION_ROOT="$onb_case/sess" \
-  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" PACMAN_DB_DIR="$onb_pacman_db" \
   "$onb_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 onb_gnome_rc=$?
 onb_gnome_json="$(env -i HOME="$onb_case/home" USER=testuser PATH="$onb_case/bin" \
   ONB_SHELL=/bin/bash ONB_PKGS=gnome-shell SESSION_ROOT="$onb_case/sess" \
-  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" PACMAN_DB_DIR="$onb_pacman_db" \
   "$onb_bash" "$REPO_ROOT/install.sh" --preflight --json 2>&1)"
 onb_gnome_json_rc=$?
 set -e
@@ -21062,23 +21278,23 @@ printf '# regular zsh profile without hook\n' >"$onb_case/reg_home/.zprofile"
 set +e
 onb_sym_out="$(env -i HOME="$onb_case/sym_home" USER=testuser PATH="$onb_case/bin" \
   ONB_SHELL=/usr/bin/zsh ONB_PKGS="xfce4-session" SESSION_ROOT="$onb_case/sess" \
-  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" PACMAN_DB_DIR="$onb_pacman_db" \
   "$onb_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 onb_sym_rc=$?
 onb_sym_json_err="$onb_case/sym_json.err"
 onb_sym_json="$(env -i HOME="$onb_case/sym_home" USER=testuser PATH="$onb_case/bin" \
   ONB_SHELL=/usr/bin/zsh ONB_PKGS="xfce4-session" SESSION_ROOT="$onb_case/sess" \
-  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" PACMAN_DB_DIR="$onb_pacman_db" \
   "$onb_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$onb_sym_json_err")"
 onb_sym_json_rc=$?
 onb_inc_out="$(env -i HOME="$onb_case/inc_home" USER=testuser PATH="$onb_case/bin" \
   ONB_SHELL=/usr/bin/zsh ONB_PKGS="xfce4-session" SESSION_ROOT="$onb_case/sess" \
-  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" PACMAN_DB_DIR="$onb_pacman_db" \
   "$onb_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 onb_inc_rc=$?
 onb_reg_out="$(env -i HOME="$onb_case/reg_home" USER=testuser PATH="$onb_case/bin" \
   ONB_SHELL=/usr/bin/zsh ONB_PKGS="xfce4-session" SESSION_ROOT="$onb_case/sess" \
-  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" \
+  DISPLAY_MANAGER_LINK="$onb_case/dm/display-manager.service" PACMAN_DB_DIR="$onb_pacman_db" \
   "$onb_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
 onb_reg_rc=$?
 set -e
