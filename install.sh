@@ -4137,6 +4137,12 @@ run_preflight() {
       diag_record_check "$json_mode" "getty@tty1.service" "ok" "${getty_state:-unknown}"
     fi
 
+    if [[ -n "$current_user" ]] && command -v homectl >/dev/null 2>&1 && homectl inspect "$current_user" >/dev/null 2>&1; then
+      printf -v diag_msg "account '%s' is managed by systemd-homed; its home may not unlock with passwordless autologin" "$current_user"
+      diag_record_check "$json_mode" "systemd-homed" "warn" "$diag_msg"
+      warnings=$((warnings + 1))
+    fi
+
     mapfile -t enabled_dms < <(detect_enabled_dms)
     if [[ ${#enabled_dms[@]} -gt 0 ]]; then
       printf -v diag_msg '%s enabled (install will disable cleanly; uninstall restores)' "${enabled_dms[*]}"

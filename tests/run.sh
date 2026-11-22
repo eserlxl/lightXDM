@@ -6765,6 +6765,47 @@ EOF
       fail "enable-autologin.sh getty $getty_state (status=$status, output=$output)"
     fi
   done
+
+  homectl_bin="$TMP_DIR/homectl_stub_bin"
+  mkdir -p "$homectl_bin"
+  cat >"$homectl_bin/homectl" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${HOMECTL_FAIL:-0}" -eq 1 ]]; then
+  exit 1
+fi
+if [[ "$*" == *"inspect"* ]]; then
+  echo "User testuser (1000)"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$homectl_bin/homectl"
+
+  homed_dir="$TMP_DIR/getty_homed_account"
+  mkdir -p "$homed_dir"
+  : >"$homed_dir/log"
+  set +e
+  output="$(env PATH="$homectl_bin:$masked_bin:$PATH" GETTY_STATE="enabled" GETTY_LOG="$homed_dir/log" OVERRIDE_DIR="$homed_dir/getty.d" SYSTEMD_RUN_DIR="$homed_dir/run" LOGIN_FILE="$homed_dir/login" "${masked_runner[@]}" "$REPO_ROOT/enable-autologin.sh" testuser 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && "$output" == *"systemd-homed"* && "$output" == *"may not unlock with passwordless autologin"* && -f "$homed_dir/getty.d/lightxdm-autologin.conf" && "$output" == *"Autologin enabled for user testuser"* ]]; then
+    pass "enable-autologin.sh warns for homed account and writes drop-in"
+  else
+    fail "enable-autologin.sh homed account (status=$status, output=$output)"
+  fi
+
+  unhomed_dir="$TMP_DIR/getty_unhomed_account"
+  mkdir -p "$unhomed_dir"
+  : >"$unhomed_dir/log"
+  set +e
+  output="$(env PATH="$homectl_bin:$masked_bin:$PATH" HOMECTL_FAIL=1 GETTY_STATE="enabled" GETTY_LOG="$unhomed_dir/log" OVERRIDE_DIR="$unhomed_dir/getty.d" SYSTEMD_RUN_DIR="$unhomed_dir/run" LOGIN_FILE="$unhomed_dir/login" "${masked_runner[@]}" "$REPO_ROOT/enable-autologin.sh" testuser 2>&1)"
+  status=$?
+  set -e
+  if [[ $status -eq 0 && "$output" != *"systemd-homed"* && -f "$unhomed_dir/getty.d/lightxdm-autologin.conf" && "$output" == *"Autologin enabled for user testuser"* ]]; then
+    pass "enable-autologin.sh does not warn for non-homed account (homectl fails) and writes drop-in"
+  else
+    fail "enable-autologin.sh non-homed account (status=$status, output=$output)"
+  fi
 fi
 
 # Case 66: reload failures are tolerated only when systemd is not running
@@ -16208,6 +16249,76 @@ if [[ $pf_zsh_malformed_rc -ne 0 || "$pf_zsh_malformed" != *"Login shell: WARN"*
   "$pf_zsh_sym" != *"cannot be auto-configured (symlink)"* ]]; then
   preflight_ok=0
   preflight_report+=" [zsh malformed/symlink rc=$pf_zsh_malformed_rc/$pf_zsh_sym_rc out=$pf_zsh_malformed | $pf_zsh_sym]"
+fi
+
+preflight_homed_bin="$preflight_dir/homed_bin"
+mkdir -p "$preflight_homed_bin"
+for b in cut dirname grep readlink id getent sudo pacman systemctl; do
+  ln -sf "$preflight_bin/$b" "$preflight_homed_bin/$b"
+done
+cat >"$preflight_homed_bin/homectl" <<'EOF'
+#!/bin/sh
+if [ "${PREFLIGHT_HOMECTL_FAIL:-0}" = "1" ]; then
+  exit 1
+fi
+if [ "$1" = "inspect" ]; then
+  echo "User testuser (1000)"
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$preflight_homed_bin/homectl"
+
+set +e
+pf_homed="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_homed_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_homed_rc=$?
+set -e
+if [[ $pf_homed_rc -ne 0 || "$pf_homed" != *"systemd-homed: WARN"* ||
+  "$pf_homed" != *"managed by systemd-homed"* || "$pf_homed" != *"may not unlock with passwordless autologin"* ||
+  "$pf_homed" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [homed preflight rc=$pf_homed_rc out=$pf_homed]"
+fi
+
+set +e
+pf_unhomed="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_homed_bin" \
+  PREFLIGHT_HOMECTL_FAIL=1 PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight 2>&1)"
+pf_unhomed_rc=$?
+set -e
+if [[ $pf_unhomed_rc -ne 0 || "$pf_unhomed" == *"systemd-homed"* ||
+  "$pf_unhomed" != *"Preflight: PASS"* ]]; then
+  preflight_ok=0
+  preflight_report+=" [unhomed homectl fail preflight rc=$pf_unhomed_rc out=$pf_unhomed]"
+fi
+
+set +e
+pf_homed_js="$(env -i HOME="$preflight_home" USER=testuser PATH="$preflight_homed_bin" \
+  PREFLIGHT_SHELL=/bin/bash PREFLIGHT_PKG=xfce4-session PREFLIGHT_DM= \
+  DISPLAY_MANAGER_LINK="$preflight_dm_dir/display-manager.service" \
+  "$preflight_bash" "$REPO_ROOT/install.sh" --preflight --json 2>"$preflight_dir/js_homed.err")"
+pf_homed_js_rc=$?
+set -e
+if [[ $pf_homed_js_rc -ne 0 || -s "$preflight_dir/js_homed.err" ]] ||
+  ! JSON_OUT="$pf_homed_js" PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+import json, os
+d = json.loads(os.environ["JSON_OUT"])
+assert d["mode"] == "preflight"
+assert d["ready"] is True
+assert d["status"] == "warn"
+assert d["blockers"] == 0
+assert d["warnings"] == 1
+checks = {c["name"]: c for c in d["checks"]}
+assert checks["systemd-homed"]["status"] == "warn"
+assert "managed by systemd-homed" in checks["systemd-homed"]["detail"]
+PY
+then
+  preflight_ok=0
+  preflight_report+=" [homed preflight json rc=$pf_homed_js_rc err=$(<"$preflight_dir/js_homed.err") out=$pf_homed_js]"
 fi
 
 if [[ $preflight_ok -eq 1 ]]; then

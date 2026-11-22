@@ -406,6 +406,10 @@ main() {
     exit 1
   fi
 
+  if command -v homectl >/dev/null 2>&1 && homectl inspect "$target_user" >/dev/null 2>&1; then
+    echo "Warning: account '$target_user' is managed by systemd-homed; its home may not unlock with passwordless autologin." >&2
+  fi
+
   validate_override_paths 1 || exit 1
   # --status reads the drop-in without sudo, so never inherit a stricter root umask.
   umask 022

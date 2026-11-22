@@ -15,6 +15,7 @@ GNOME also needs the installer's [session-type PAM block](installation.md#gnome-
 - **Default mode (password login on TTY1):** You type your password on TTY1, your desktop starts automatically, and PAM unlocks your keyring (KWallet on Plasma, GNOME Keyring on the other supported desktops; a custom session uses GNOME Keyring unless you install it with `--keyring kwallet`, see [installation.md](installation.md)) using that password.
 - **Autologin mode (`agetty --autologin`):** Login happens without a password, so the PAM keyring module cannot unlock your keyring automatically. The keyring stays locked and asks for its password in the desktop unless its password is empty (`enable-autologin.sh` prints a warning when PAM keyring unlock is configured).
 - **Choosing autologin without keyring unlock:** on a new install, `bash install.sh --no-keyring --autologin` skips the keyring setup and enables autologin in the same run. On an existing default install, `bash install.sh --login-mode autologin` automates switching to passwordless TTY1 autologin without keyring PAM lines (and `bash install.sh --login-mode password` switches back to password login with PAM keyring unlock, both supporting `--dry-run`), or manually run `sudo bash uninstall.sh --keyring-only` (keeping GNOME's session-type block and config) followed by `sudo bash enable-autologin.sh YOURUSER`.
+- **systemd-homed accounts:** An account whose home directory is managed by `systemd-homed` (using LUKS or fscrypt storage) requires a password at login to unlock the home directory. Passwordless TTY1 autologin boots to a failed login because `pam_systemd_home` cannot activate an encrypted home without a password; keep password login on TTY1 for homed accounts so the password unlocks both the home directory and keyring. `enable-autologin.sh` and `install.sh --preflight` warn when the target account is managed by systemd-homed.
 
 ## zsh and fish users
 The installer writes `~/.bash_profile` by default. If your login shell is zsh or fish, either manage the fenced block automatically:
@@ -162,7 +163,7 @@ You can use the provided `enable-autologin.sh` script to automate this setup (ch
 ```sh
 sudo bash enable-autologin.sh YOURUSER
 ```
-This will create the override for you. If `getty@tty1.service` is masked or disabled, the script changes nothing and asks you to run `systemctl unmask getty@tty1.service` or `systemctl enable getty@tty1.service`. To remove autologin, run:
+This will create the override for you. If `getty@tty1.service` is masked or disabled, the script changes nothing and asks you to run `systemctl unmask getty@tty1.service` or `systemctl enable getty@tty1.service`. If the target account is managed by `systemd-homed`, the script prints a warning to stderr that its home directory may not unlock without a password (autologin is still configured; it does not refuse). To remove autologin, run:
 ```sh
 sudo bash enable-autologin.sh --disable
 ```
