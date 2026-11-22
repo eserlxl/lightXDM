@@ -8036,7 +8036,7 @@ Options:
                     (literal arguments or plain double-quoted words only; no field codes or backslash escapes)
   --install-session <path> validate a custom X11/Wayland .desktop entry, create ~/.config/lightxdm/ template if missing,
                     and run the custom install (--no-packages implied; infers Wayland for wayland-sessions or --wayland;
-                    optional --de <custom-id>, --wayland, --dry-run, --non-interactive, --keyring, --no-keyring, --autologin, --setup-shell, --setup-gpg, --gpg-ssh)
+                    optional --de <custom-id>, --wayland, --uwsm, --dry-run, --non-interactive, --keyring, --no-keyring, --autologin, --setup-shell, --setup-gpg, --gpg-ssh)
                     --install-session and --from-session also take a session name without a slash (sway or sway.desktop),
                     looked up in the directories --list-sessions scans; a name that is both X11 and Wayland is refused
   --wayland         with --init-template --de <custom-id>, create a minimal Wayland template (default command: exec <id>); also accepted with --install-session <path>
@@ -8073,7 +8073,7 @@ Options:
                     ~/.gnupg/gpg-agent.conf ($GNUPGHOME/gpg-agent.conf when inside $HOME) and reload gpg-agent
                     (standalone with optional --gpg-ssh and --dry-run, or combined with install)
   --gpg-ssh         with --setup-gpg <gnome|kwallet|auto>, also write enable-ssh-support in the managed block
-  --preflight       check user/sudo, pacman/systemctl, getty@tty1.service, display managers, login shell,
+  --preflight       check user/sudo, pacman/systemctl, getty@tty1.service, display managers, login shell, systemd-homed account,
                     and installed desktops without sudo or changes, then suggest the next command (use alone, or with --json)
   --guided          interactive first-run onboarding wizard: runs --preflight first, helps pick a detected or custom
                     .desktop session or built-in desktop, keyring/autologin mode, and zsh/fish shell hook, prints the
