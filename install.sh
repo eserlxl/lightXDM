@@ -763,6 +763,55 @@ resolve_session_scan_dirs() {
   fi
 }
 
+# Resolve a --install-session/--from-session argument ($1, option name in $2) into RESOLVED_SESSION_ENTRY.
+# A bare session name (no slash, with or without .desktop) is searched in the resolve_session_scan_dirs
+# directories in their order; the first match per session type wins, and a name found as both an X11
+# and a Wayland session is refused. Arguments with a slash, and a slash-less *.desktop file that exists
+# in the current directory, stay literal paths as before.
+resolve_session_name_arg() {
+  local arg="$1" option="${2:-session}" stem idx dir candidate first_x11="" first_wayland="" searched=""
+  local matches=()
+  RESOLVED_SESSION_ENTRY="$arg"
+  [[ "$arg" == */* ]] && return 0
+  if [[ "$arg" == *.desktop && ( -e "$arg" || -L "$arg" ) ]]; then
+    return 0
+  fi
+  stem="${arg%.desktop}"
+  if [[ -z "$stem" || "$stem" == . || "$stem" == .. ]]; then
+    log "Invalid session name for $option: $arg"
+    return 1
+  fi
+
+  local _SESSION_XSESSIONS_DIR="" _SESSION_WAYLAND_DIR="" _SESSION_USER_XSESSIONS_DIR="" _SESSION_USER_WAYLAND_DIR=""
+  local _SESSION_SCAN_TYPES=() _SESSION_SCAN_SCOPES=() _SESSION_SCAN_DIRS=()
+  resolve_session_scan_dirs
+  for ((idx = 0; idx < ${#_SESSION_SCAN_DIRS[@]}; idx++)); do
+    dir="${_SESSION_SCAN_DIRS[$idx]}"
+    searched+="${searched:+, }$dir"
+    candidate="${dir%/}/$stem.desktop"
+    [[ -e "$candidate" || -L "$candidate" ]] || continue
+    matches+=("$candidate")
+    if [[ "${_SESSION_SCAN_TYPES[$idx]}" == wayland ]]; then
+      [[ -n "$first_wayland" ]] || first_wayland="$candidate"
+    else
+      [[ -n "$first_x11" ]] || first_x11="$candidate"
+    fi
+  done
+
+  if [[ -n "$first_x11" && -n "$first_wayland" ]]; then
+    log "Session name $arg for $option matches both an X11 and a Wayland session; pass one of these paths instead:"
+    for candidate in "${matches[@]}"; do
+      log "  $candidate"
+    done
+    return 1
+  fi
+  if [[ -z "$first_x11" && -z "$first_wayland" ]]; then
+    log "No session entry named $stem.desktop for $option; searched: ${searched:-(no session directories)}. Pass a .desktop path, or run --list-sessions."
+    return 1
+  fi
+  RESOLVED_SESSION_ENTRY="${first_x11:-$first_wayland}"
+}
+
 # Check TryExec and Exec readiness for a parsed SESSION_ENTRY_* entry into _SESSION_MISSING_{CMD,REASON}.
 desktop_session_missing_reason() {
   _SESSION_MISSING_CMD=""
@@ -7886,6 +7935,8 @@ Options:
   --install-session <path> validate a custom X11/Wayland .desktop entry, create ~/.config/lightxdm/ template if missing,
                     and run the custom install (--no-packages implied; infers Wayland for wayland-sessions or --wayland;
                     optional --de <custom-id>, --wayland, --dry-run, --non-interactive, --keyring, --no-keyring, --autologin, --setup-shell, --setup-gpg, --gpg-ssh)
+                    --install-session and --from-session also take a session name without a slash (sway or sway.desktop),
+                    looked up in the directories --list-sessions scans; a name that is both X11 and Wayland is refused
   --wayland         with --init-template --de <custom-id>, create a minimal Wayland template (default command: exec <id>); also accepted with --install-session <path>
   --no-packages     skip package installation
   --keyring <gnome|kwallet> choose the PAM keyring backend for a custom id (requires --no-packages;
@@ -8477,6 +8528,11 @@ EOF
       log "Do not run --init-template as root or with sudo; run it as the user who will log in."
       exit 1
     fi
+    if [[ -n "$from_session" ]]; then
+      local RESOLVED_SESSION_ENTRY=""
+      resolve_session_name_arg "$from_session" --from-session || exit 1
+      from_session="$RESOLVED_SESSION_ENTRY"
+    fi
     init_xinitrc_template "$de" "$wayland" "$from_session"
     exit $?
   fi
@@ -8491,6 +8547,9 @@ EOF
       log "--keyring cannot be combined with --no-keyring."
       exit 1
     fi
+    local RESOLVED_SESSION_ENTRY=""
+    resolve_session_name_arg "$install_session" --install-session || exit 1
+    install_session="$RESOLVED_SESSION_ENTRY"
     local INSTALL_SESSION_DE="" INSTALL_SESSION_WAYLAND=0 INSTALL_SESSION_DEST="" INSTALL_SESSION_TEMPLATE_EXISTS=0
     prepare_install_session "$install_session" "$de" "$de_specified" "$wayland" || exit 1
     de="$INSTALL_SESSION_DE"

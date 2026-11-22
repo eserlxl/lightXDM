@@ -18685,6 +18685,94 @@ if [[ $is_rc -ne 0 || -s "$isess_sudo_log" || -e "$isess_home/.config" ]]; then
   is_report+=" wl-helper-flag-stop rc=$is_rc out=[$is_out];"
 fi
 
+# 4. Session names without a slash resolve through the --list-sessions directories.
+# Run from $isess_dir (no *.desktop there) so a stray file in the caller's cwd cannot count as a literal path.
+reset_isess_fixture
+is_rc=0
+is_out="$(cd "$isess_dir" && run_isess_cmd --install-session sway --keyring kwallet --dry-run 2>&1)" || is_rc=$?
+if [[ $is_rc -ne 0 || -e "$isess_home/.config" || -s "$isess_sudo_log" ||
+  "$is_out" != *"Session entry: $isess_wl/sway.desktop (de=sway, mode=wayland, template=create $isess_home/.config/lightxdm/.wayland-session-sway)"* ]]; then
+  is_ok=0
+  is_report+=" name-unique-wl rc=$is_rc out=[$is_out];"
+fi
+is_rc=0
+is_out="$(cd "$isess_dir" && run_isess_cmd --install-session openbox.desktop --dry-run 2>&1)" || is_rc=$?
+if [[ $is_rc -ne 0 || -e "$isess_home/.config" || -s "$isess_sudo_log" ||
+  "$is_out" != *"Session entry: $isess_xsess/openbox.desktop (de=openbox, mode=x11, template=create $isess_home/.config/lightxdm/.xinitrc-openbox)"* ]]; then
+  is_ok=0
+  is_report+=" name-unique-x11 rc=$is_rc out=[$is_out];"
+fi
+is_rc=0
+is_out="$(cd "$isess_dir" && USER_WAYLAND_SESSIONS_DIR="$isess_custom" run_isess_cmd --install-session waybox --dry-run 2>&1)" || is_rc=$?
+if [[ $is_rc -ne 0 || -e "$isess_home/.config" || -s "$isess_sudo_log" ||
+  "$is_out" != *"Session entry: $isess_custom/waybox.desktop (de=waybox, mode=wayland, "* ]]; then
+  is_ok=0
+  is_report+=" name-user-wl rc=$is_rc out=[$is_out];"
+fi
+is_rc=0
+is_out="$(cd "$isess_dir" && run_isess_cmd --init-template --de x --from-session sway 2>&1)" || is_rc=$?
+if [[ $is_rc -ne 0 || ! -f "$isess_home/.config/lightxdm/.xinitrc-x" || -s "$isess_sudo_log" ]] ||
+  ! grep -Fxq 'exec sway --unsupported-gpu' "$isess_home/.config/lightxdm/.xinitrc-x" ||
+  ! grep -Fxq 'export XDG_CURRENT_DESKTOP=sway' "$isess_home/.config/lightxdm/.xinitrc-x"; then
+  is_ok=0
+  is_report+=" name-from-session rc=$is_rc out=[$is_out];"
+fi
+# A slash-less *.desktop file in the current directory stays a literal path.
+reset_isess_fixture
+is_rc=0
+is_out="$(cd "$isess_custom" && run_isess_cmd --install-session waybox.desktop --wayland --dry-run 2>&1)" || is_rc=$?
+if [[ $is_rc -ne 0 || -e "$isess_home/.config" || -s "$isess_sudo_log" ||
+  "$is_out" != *"Session entry: waybox.desktop (de=waybox, mode=wayland, "* ]]; then
+  is_ok=0
+  is_report+=" name-cwd-literal rc=$is_rc out=[$is_out];"
+fi
+
+# Ambiguous (X11 and Wayland) and unknown names are refused before any change, listing paths.
+cat >"$isess_xsess/dual.desktop" <<'EOF'
+[Desktop Entry]
+Name=Dual X11
+Exec=openbox
+Type=Application
+EOF
+cat >"$isess_wl/dual.desktop" <<'EOF'
+[Desktop Entry]
+Name=Dual Wayland
+Exec=sway
+Type=Application
+EOF
+reset_isess_fixture
+for is_name_args in \
+  "--install-session dual" \
+  "--install-session dual.desktop --dry-run" \
+  "--init-template --de dualx --from-session dual"; do
+  is_rc=0
+  read -r -a is_name_argv <<<"$is_name_args"
+  is_out="$(cd "$isess_dir" && run_isess_cmd "${is_name_argv[@]}" 2>&1)" || is_rc=$?
+  if [[ $is_rc -ne 1 || "$is_out" != *"matches both an X11 and a Wayland session"* ||
+    "$is_out" != *"$isess_xsess/dual.desktop"* || "$is_out" != *"$isess_wl/dual.desktop"* ]]; then
+    is_ok=0
+    is_report+=" name-ambiguous($is_name_args) rc=$is_rc out=[$is_out];"
+  fi
+done
+for is_name_args in \
+  "--install-session no-such-session" \
+  "--install-session no-such-session.desktop --dry-run" \
+  "--init-template --de nosuch --from-session no-such-session"; do
+  is_rc=0
+  read -r -a is_name_argv <<<"$is_name_args"
+  is_out="$(cd "$isess_dir" && run_isess_cmd "${is_name_argv[@]}" 2>&1)" || is_rc=$?
+  if [[ $is_rc -ne 1 || "$is_out" != *"No session entry named no-such-session.desktop"* ||
+    "$is_out" != *"$isess_xsess"* || "$is_out" != *"$isess_wl"* ]]; then
+    is_ok=0
+    is_report+=" name-unknown($is_name_args) rc=$is_rc out=[$is_out];"
+  fi
+done
+if [[ -s "$isess_sudo_log" || -e "$isess_home/.config" ]]; then
+  is_ok=0
+  is_report+=" name-refusal-touched-sudo-or-home;"
+fi
+rm -f "$isess_xsess/dual.desktop" "$isess_wl/dual.desktop"
+
 if [[ $is_ok -eq 1 ]]; then
   pass "install.sh --install-session provisions custom X11/Wayland sessions idempotently with pre-sudo validation"
 else
