@@ -19063,6 +19063,134 @@ else
   fail "install.sh --install-session:$is_report"
 fi
 
+# --- install.sh --uwsm: custom Wayland templates start the compositor through uwsm ---
+uw_ok=1
+uw_report=""
+uw_tmpl="$isess_home/.config/lightxdm/.wayland-session-sway"
+uw_exec_line='exec uwsm start -- sway --unsupported-gpu'
+rm -f "$isess_bin/uwsm"
+# Without uwsm on PATH: --init-template warns but writes; --install-session refuses before any change.
+if [[ -e /usr/bin/uwsm || -e /bin/uwsm ]]; then
+  skip "install.sh --uwsm without uwsm on PATH (uwsm is installed on this host)"
+else
+  reset_isess_fixture
+  uw_rc=0
+  uw_out="$(cd "$isess_dir" && run_isess_cmd --init-template --wayland --de sway --from-session sway --uwsm 2>&1)" || uw_rc=$?
+  if [[ $uw_rc -ne 0 || -s "$isess_sudo_log" || "$uw_out" != *"Warning: uwsm is not on PATH"* ]] ||
+    ! grep -Fxq "$uw_exec_line" "$uw_tmpl"; then
+    uw_ok=0
+    uw_report+=" init-no-uwsm rc=$uw_rc out=[$uw_out];"
+  fi
+  reset_isess_fixture
+  uw_rc=0
+  uw_out="$(cd "$isess_dir" && run_isess_cmd --install-session sway --uwsm --dry-run 2>&1)" || uw_rc=$?
+  if [[ $uw_rc -ne 1 || -s "$isess_sudo_log" || -e "$isess_home/.config" || "$uw_out" != *"Missing command: uwsm"* ]]; then
+    uw_ok=0
+    uw_report+=" install-no-uwsm rc=$uw_rc out=[$uw_out];"
+  fi
+fi
+
+printf '#!/usr/bin/env bash\nexit 0\n' >"$isess_bin/uwsm"
+chmod +x "$isess_bin/uwsm"
+
+# --init-template --wayland --from-session --uwsm wraps the imported command and keeps the rest of the template.
+reset_isess_fixture
+uw_rc=0
+uw_out="$(cd "$isess_dir" && run_isess_cmd --init-template --wayland --de sway --from-session sway --uwsm 2>&1)" || uw_rc=$?
+uw_syntax_rc=0
+bash -n "$uw_tmpl" 2>/dev/null || uw_syntax_rc=$?
+if [[ $uw_rc -ne 0 || $uw_syntax_rc -ne 0 || -s "$isess_sudo_log" || "$uw_out" == *"Warning: uwsm"* ||
+  "$(stat -c '%a' "$uw_tmpl" 2>/dev/null)" != 755 ]] ||
+  ! grep -Fxq "$uw_exec_line" "$uw_tmpl" ||
+  [[ "$(grep -c '^exec ' "$uw_tmpl")" != 1 ]] ||
+  ! grep -Fxq 'export DESKTOP_SESSION=sway' "$uw_tmpl" ||
+  ! grep -Fxq 'export XDG_CURRENT_DESKTOP=sway' "$uw_tmpl" ||
+  ! grep -Fxq 'export XDG_SESSION_TYPE=wayland' "$uw_tmpl"; then
+  uw_ok=0
+  uw_report+=" init rc=$uw_rc syntax=$uw_syntax_rc out=[$uw_out];"
+fi
+# The install preflight checks uwsm and the wrapped command of such a template.
+uw_rc=0
+uw_out="$(HOME="$isess_home" PATH="$isess_bin:/usr/bin:/bin" bash -c 'source "$1/install.sh"; check_session_commands "$2"' bash "$REPO_ROOT" "$uw_tmpl" 2>&1)" || uw_rc=$?
+if [[ $uw_rc -ne 0 ]]; then
+  uw_ok=0
+  uw_report+=" preflight-ok rc=$uw_rc out=[$uw_out];"
+fi
+mkdir -p "$isess_home/.config/lightxdm"
+printf '%s\n' 'exec uwsm start -- definitely-missing-compositor' >"$isess_home/.config/lightxdm/.wayland-session-uwmissing"
+uw_rc=0
+uw_out="$(HOME="$isess_home" PATH="$isess_bin:/usr/bin:/bin" bash -c 'source "$1/install.sh"; check_session_commands "$2"' bash "$REPO_ROOT" "$isess_home/.config/lightxdm/.wayland-session-uwmissing" 2>&1)" || uw_rc=$?
+if [[ $uw_rc -ne 1 || "$uw_out" != *"Missing command: definitely-missing-compositor"* ]]; then
+  uw_ok=0
+  uw_report+=" preflight-wrapped-missing rc=$uw_rc out=[$uw_out];"
+fi
+
+# --install-session --uwsm previews, then installs, the wrapped session command.
+reset_isess_fixture
+uw_rc=0
+uw_out="$(cd "$isess_dir" && run_isess_cmd --install-session sway --uwsm --dry-run 2>&1)" || uw_rc=$?
+if [[ $uw_rc -ne 0 || -s "$isess_sudo_log" || -e "$isess_home/.config" ||
+  "$uw_out" != *"mode=wayland, template=create $uw_tmpl"* ]]; then
+  uw_ok=0
+  uw_report+=" install-dry rc=$uw_rc out=[$uw_out];"
+fi
+uw_rc=0
+uw_out="$(cd "$isess_dir" && run_isess_cmd --install-session sway --uwsm 2>&1)" || uw_rc=$?
+if [[ $uw_rc -ne 0 || ! -x "$isess_home/.wayland-session" ]] ||
+  ! grep -Fxq "$uw_exec_line" "$uw_tmpl" ||
+  ! grep -Fxq "$uw_exec_line" "$isess_home/.wayland-session"; then
+  uw_ok=0
+  uw_report+=" install-live rc=$uw_rc out=[$uw_out];"
+fi
+# An existing template is never reshaped: --uwsm refuses it instead of being silently ignored.
+uw_before="$({ sha256sum <"$uw_tmpl"; } 2>/dev/null || true)"
+: >"$isess_sudo_log"
+uw_rc=0
+uw_out="$(cd "$isess_dir" && run_isess_cmd --install-session sway --uwsm 2>&1)" || uw_rc=$?
+if [[ $uw_rc -ne 1 || -s "$isess_sudo_log" || "$(sha256sum <"$uw_tmpl")" != "$uw_before" ||
+  "$uw_out" != *"--uwsm only shapes a new template"* ]]; then
+  uw_ok=0
+  uw_report+=" install-existing rc=$uw_rc out=[$uw_out];"
+fi
+
+# X11 sessions, built-in ids and other modes refuse --uwsm before any change.
+reset_isess_fixture
+for uw_bad in \
+  "--uwsm --no-packages --de sway|--uwsm requires --init-template --wayland" \
+  "--init-template --de sway --uwsm|--uwsm with --init-template requires --wayland" \
+  "--init-template --de sway --from-session openbox --uwsm|--uwsm with --init-template requires --wayland" \
+  "--init-template --wayland --de i3 --uwsm|only for custom ids" \
+  "--init-template --wayland --de plasma --uwsm|only for custom ids" \
+  "--install-session openbox --uwsm|--uwsm is only for Wayland sessions" \
+  "--install-session sway --de i3 --uwsm|only for custom ids" \
+  "--install-session sway --uwsm --pam-only|--pam-only" \
+  "--uwsm --status|--status cannot be combined" \
+  "--uwsm --list-sessions|--list-sessions cannot be combined" \
+  "--uwsm --doctor|--doctor cannot be combined" \
+  "--uwsm --update|--update reuses the saved choices"; do
+  uw_args="${uw_bad%%|*}"
+  uw_expect="${uw_bad#*|}"
+  read -r -a uw_argv <<<"$uw_args"
+  uw_rc=0
+  uw_out="$(cd "$isess_dir" && run_isess_cmd "${uw_argv[@]}" 2>&1)" || uw_rc=$?
+  if [[ $uw_rc -ne 1 || "$uw_out" != *"$uw_expect"* ]]; then
+    uw_ok=0
+    uw_report+=" bad($uw_args) rc=$uw_rc out=[$uw_out];"
+  fi
+done
+if [[ -s "$isess_sudo_log" || -e "$isess_home/.config" ]]; then
+  uw_ok=0
+  uw_report+=" bad-touched-sudo-or-home;"
+fi
+rm -f "$isess_bin/uwsm"
+reset_isess_fixture
+
+if [[ $uw_ok -eq 1 ]]; then
+  pass "install.sh --uwsm wraps custom Wayland templates in uwsm start and refuses X11, built-in and conflicting combinations"
+else
+  fail "install.sh --uwsm:$uw_report"
+fi
+
 # Read-only ~/.config/lightxdm makes template creation fail non-zero without logging "Created"
 if [[ $EUID -eq 0 ]]; then
   skip "install.sh --install-session and --init-template fail on unwritable template dir without logging Created (running as root)"

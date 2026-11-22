@@ -1092,7 +1092,7 @@ check_user_template_dirs() {
 # built-in template, or a custom X11 (from i3) or minimal Wayland template.
 init_xinitrc_template() {
   local id="$1" wayland="${2:-0}" dest="$HOME/.config/lightxdm/.xinitrc-$1"
-  local from_session="${3:-}" dest_override="${4:-}" quiet="${5:-0}"
+  local from_session="${3:-}" dest_override="${4:-}" quiet="${5:-0}" uwsm="${6:-0}"
   local exec_line="exec $1" current_desktop="$1"
   local SESSION_ENTRY_NAME="" SESSION_ENTRY_EXEC_LINE="" SESSION_ENTRY_EXEC_CMD=""
   local SESSION_ENTRY_DESKTOP="" SESSION_ENTRY_TRY_EXEC=""
@@ -1125,6 +1125,9 @@ init_xinitrc_template() {
         ;;
     esac
     dest="$HOME/.config/lightxdm/.wayland-session-$id"
+  elif [[ $uwsm -eq 1 ]]; then
+    log "--uwsm is only for custom Wayland sessions; add --wayland or use a wayland-sessions entry."
+    return 1
   fi
   if [[ -n "$dest_override" ]]; then
     dest="$dest_override"
@@ -1177,6 +1180,13 @@ init_xinitrc_template() {
       if [[ $wayland -eq 1 ]]; then
         local quoted_desktop
         printf -v quoted_desktop '%q' "$current_desktop"
+        if [[ $uwsm -eq 1 ]]; then
+          # uwsm runs the compositor as a systemd user unit, so graphical-session.target services follow it.
+          exec_line="exec uwsm start -- ${exec_line#exec }"
+          if ! session_command_exists uwsm; then
+            log "Warning: uwsm is not on PATH; install it (package uwsm) before logging in to $id."
+          fi
+        fi
         cat >"$dest" <<EOF || { rm -f -- "$dest"; return 1; }
 #!/bin/bash
 # Wayland session for lightXDM: start $id
@@ -1237,7 +1247,7 @@ session_entry_is_wayland() {
 }
 
 prepare_install_session() {
-  local entry="$1" requested_de="$2" de_specified="$3" explicit_wayland="${4:-0}"
+  local entry="$1" requested_de="$2" de_specified="$3" explicit_wayland="${4:-0}" uwsm="${5:-0}"
   local target_de="$requested_de" is_wl=0 dest sibling resolved_entry_check=0
   local SESSION_ENTRY_NAME="" SESSION_ENTRY_EXEC_LINE="" SESSION_ENTRY_EXEC_CMD=""
   local SESSION_ENTRY_DESKTOP="" SESSION_ENTRY_TRY_EXEC=""
@@ -1280,6 +1290,10 @@ prepare_install_session() {
     dest="$HOME/.config/lightxdm/.xinitrc-$target_de"
     sibling="$HOME/.config/lightxdm/.wayland-session-$target_de"
   fi
+  if [[ $uwsm -eq 1 && $is_wl -eq 0 ]]; then
+    log "--uwsm is only for Wayland sessions; $entry is an X11 session entry (add --wayland if it starts a Wayland compositor)."
+    return 1
+  fi
 
   check_user_template_dirs || return 1
   if [[ -e "$sibling" || -L "$sibling" ]]; then
@@ -1291,6 +1305,10 @@ prepare_install_session() {
     return 1
   fi
   if [[ -f "$dest" ]]; then
+    if [[ $uwsm -eq 1 ]]; then
+      log "--uwsm only shapes a new template, and $dest already exists; edit its exec line to exec uwsm start -- <command>, or remove it to start over."
+      return 1
+    fi
     if [[ ! -r "$dest" ]]; then
       log "Cannot read existing session template: $dest"
       return 1
@@ -1314,6 +1332,11 @@ prepare_install_session() {
           return 1
         fi
       done
+      # The install refuses a template whose uwsm is missing, so refuse before writing anything.
+      if [[ $uwsm -eq 1 ]] && ! session_command_exists uwsm; then
+        log "Missing command: uwsm. Install uwsm and re-run, or drop --uwsm."
+        return 1
+      fi
     elif ! command -v startx >/dev/null 2>&1; then
       log "Missing command: startx (normally provided by xorg-xinit). Install xorg-xinit and re-run."
       return 1
@@ -1370,6 +1393,14 @@ check_session_commands() {
         "exec "*) session_line="${line#exec }" ;;
       esac
     done < "$template"
+    # A template from --uwsm wraps the session command: check uwsm, then the wrapped command.
+    if [[ "$session_line" == "uwsm start -- "* ]]; then
+      if ! PATH="$HOME/.local/bin:$PATH" command -v uwsm >/dev/null 2>&1; then
+        log "Missing command: uwsm. Install uwsm (or remove the uwsm start wrapper from $template), then re-run."
+        return 1
+      fi
+      session_line="${session_line#uwsm start -- }"
+    fi
     local tokens=() token check_path
     # Escapes written by printf %q for imported paths must join words as the shell does when running the template.
     # shellcheck disable=SC2162
@@ -7931,6 +7962,7 @@ main() {
   local fix_mode=0
   local init_template=0
   local wayland=0
+  local uwsm=0
   local from_session=""
   local install_session=""
   local install_session_wayland=0
@@ -7939,7 +7971,7 @@ main() {
   local pam_only=0
   local login_mode=""
   local dotfile_updates=""
-  local usage="Usage: bash $0 [-h|--help] [--guided [--dry-run]] [--status [--json]] [--list-sessions [--json]] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--setup-gpg <gnome|kwallet|auto|remove> [--gpg-ssh] [--dry-run]] [--preflight [--json]] [--doctor [--json]] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--fix [--dry-run] [--non-interactive] [--de <id>]] [--login-mode <password|autologin> [--dry-run] [--non-interactive] [--de <id>] [--keyring <gnome|kwallet>]] [--dotfile-updates <diff|accept|dismiss|interactive> [--dry-run]] [--install-session <path> [--de <custom-id>] [--wayland]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet|auto> [--json]] [--no-keyring] [--autologin] [--update] [--pam-only]"
+  local usage="Usage: bash $0 [-h|--help] [--guided [--dry-run]] [--status [--json]] [--list-sessions [--json]] [--shell-snippet <zsh|fish>] [--setup-shell <zsh|fish|auto> [--dry-run]] [--setup-gpg <gnome|kwallet|auto|remove> [--gpg-ssh] [--dry-run]] [--preflight [--json]] [--doctor [--json]] [--recover [--dry-run] [--de <id>] [--setup-shell <zsh|fish|auto>]] [--fix [--dry-run] [--non-interactive] [--de <id>]] [--login-mode <password|autologin> [--dry-run] [--non-interactive] [--de <id>] [--keyring <gnome|kwallet>]] [--dotfile-updates <diff|accept|dismiss|interactive> [--dry-run]] [--install-session <path> [--de <custom-id>] [--wayland] [--uwsm]] [--de <id>] [--list-packages] [--dry-run] [--non-interactive] [--init-template [--wayland [--uwsm]] [--from-session <path>]] [--no-packages] [--keyring <gnome|kwallet>] [--check-keyring <gnome|kwallet|auto> [--json]] [--no-keyring] [--autologin] [--update] [--pam-only]"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -7972,6 +8004,8 @@ Options:
                     --install-session and --from-session also take a session name without a slash (sway or sway.desktop),
                     looked up in the directories --list-sessions scans; a name that is both X11 and Wayland is refused
   --wayland         with --init-template --de <custom-id>, create a minimal Wayland template (default command: exec <id>); also accepted with --install-session <path>
+  --uwsm            with --init-template --wayland --de <custom-id> or --install-session <path> for a Wayland entry, start the
+                    compositor through uwsm (exec uwsm start -- <command>) so graphical-session.target user services follow it
   --no-packages     skip package installation
   --keyring <gnome|kwallet> choose the PAM keyring backend for a custom id (requires --no-packages;
                     cannot combine with --no-keyring or --init-template)
@@ -8210,6 +8244,10 @@ EOF
         wayland=1
         shift
         ;;
+      --uwsm)
+        uwsm=1
+        shift
+        ;;
       --json)
         json_output=1
         shift
@@ -8266,7 +8304,7 @@ EOF
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || -n "$setup_gpg" || $gpg_ssh -eq 1 ||
       -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || -n "$dotfile_updates" || $dry_run -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
-      $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 ||
+      $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 || $uwsm -eq 1 ||
       -n "$from_session" || $pam_only -eq 1 ]]; then
       log "--status cannot be combined with any other option."
       echo "$usage" >&2
@@ -8286,7 +8324,7 @@ EOF
       $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
       $update -eq 1 || $status_only -eq 1 || $init_template -eq 1 ||
-      $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
+      $wayland -eq 1 || $uwsm -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
       log "--list-sessions cannot be combined with any other option (except --json)."
       echo "$usage" >&2
       exit 1
@@ -8314,7 +8352,7 @@ EOF
       -n "$install_session" || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || -n "$dotfile_updates" || $dry_run -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $status_only -eq 1 || $init_template -eq 1 ||
-      $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
+      $wayland -eq 1 || $uwsm -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
       log "--preflight cannot be combined with any other option (except --json)."
       echo "$usage" >&2
       exit 1
@@ -8333,7 +8371,7 @@ EOF
       -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || -n "$dotfile_updates" || $dry_run -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $status_only -eq 1 || $init_template -eq 1 ||
-      $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
+      $wayland -eq 1 || $uwsm -eq 1 || -n "$from_session" || $pam_only -eq 1 ]]; then
       log "--doctor cannot be combined with any other option (except --json)."
       echo "$usage" >&2
       exit 1
@@ -8351,7 +8389,7 @@ EOF
     if [[ $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_gpg" || $gpg_ssh -eq 1 || -n "$install_session" || $preflight_only -eq 1 ||
       $guided -eq 1 || $doctor_only -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || -n "$dotfile_updates" || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 ||
       -n "$keyring" || -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 ||
-      $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 || -n "$from_session" ||
+      $update -eq 1 || $init_template -eq 1 || $wayland -eq 1 || $uwsm -eq 1 || -n "$from_session" ||
       $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
       log "--recover takes only optional --dry-run, --de <id>, and --setup-shell <zsh|fish|auto>."
       echo "$usage" >&2
@@ -8376,7 +8414,7 @@ EOF
       -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || -n "$login_mode" || -n "$dotfile_updates" ||
       $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 ||
-      $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
+      $wayland -eq 1 || $uwsm -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
       log "--fix takes only optional --dry-run, --non-interactive, and --de <id>."
       echo "$usage" >&2
       exit 1
@@ -8399,7 +8437,7 @@ EOF
     if [[ $de_specified -eq 1 || $list_only -eq 1 || $list_sessions -eq 1 || -n "$shell_snippet" || -n "$setup_shell" || -n "$setup_gpg" || $gpg_ssh -eq 1 || -n "$install_session" ||
       $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$login_mode" || -n "$dotfile_updates" || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" ||
       -n "$check_keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $init_template -eq 1 ||
-      $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 ||
+      $wayland -eq 1 || $uwsm -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 ||
       $json_output -eq 1 ]]; then
       log "--update reuses the saved choices and takes only --dry-run and --non-interactive; to change a choice, run $(script_cmd install.sh) with its options."
       exit 1
@@ -8471,7 +8509,7 @@ EOF
       -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 || -n "$dotfile_updates" ||
       $no_packages -eq 1 || $no_keyring -eq 1 || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 ||
-      $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
+      $wayland -eq 1 || $uwsm -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
       log "--login-mode takes only optional --dry-run, --non-interactive, and (with password) --de <id> / --keyring <gnome|kwallet>."
       echo "$usage" >&2
       exit 1
@@ -8496,7 +8534,7 @@ EOF
       -n "$install_session" || $preflight_only -eq 1 || $guided -eq 1 || $doctor_only -eq 1 || $recover -eq 1 || $fix_mode -eq 1 ||
       $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || -n "$check_keyring" ||
       $no_polkit_rule -eq 1 || $autologin -eq 1 || $update -eq 1 || $init_template -eq 1 ||
-      $wayland -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
+      $wayland -eq 1 || $uwsm -eq 1 || -n "$from_session" || $pam_only -eq 1 || $status_only -eq 1 || $json_output -eq 1 ]]; then
       log "--dotfile-updates takes only optional --dry-run."
       echo "$usage" >&2
       exit 1
@@ -8526,6 +8564,23 @@ EOF
     exit 1
   fi
 
+  if [[ $uwsm -eq 1 ]]; then
+    if [[ $init_template -eq 0 && -z "$install_session" ]]; then
+      log "--uwsm requires --init-template --wayland --de <custom-id> or --install-session <path>."
+      echo "$usage" >&2
+      exit 1
+    fi
+    if [[ $init_template -eq 1 && $wayland -eq 0 ]]; then
+      log "--uwsm with --init-template requires --wayland: uwsm starts Wayland compositors, not X11 sessions."
+      echo "$usage" >&2
+      exit 1
+    fi
+    if [[ $init_template -eq 1 ]] && is_builtin_de_id "$de"; then
+      log "--uwsm is only for custom ids; $de has a built-in template."
+      exit 1
+    fi
+  fi
+
   if [[ $autologin -eq 1 && $no_keyring -eq 0 ]]; then
     log "--autologin requires --no-keyring: autologin passes no password, so PAM cannot unlock the keyring."
     echo "$usage" >&2
@@ -8549,7 +8604,7 @@ EOF
 
   if [[ $init_template -eq 1 ]]; then
     if [[ $list_only -eq 1 || $dry_run -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || -n "$setup_shell" || -n "$setup_gpg" || $gpg_ssh -eq 1 || -n "$install_session" ]]; then
-      log "--init-template takes only --de <id> and optional --wayland and --from-session <path> for custom ids; it creates the template and exits without installing."
+      log "--init-template takes only --de <id> and optional --wayland, --uwsm and --from-session <path> for custom ids; it creates the template and exits without installing."
       echo "$usage" >&2
       exit 1
     fi
@@ -8568,7 +8623,7 @@ EOF
       resolve_session_name_arg "$from_session" --from-session || exit 1
       from_session="$RESOLVED_SESSION_ENTRY"
     fi
-    init_xinitrc_template "$de" "$wayland" "$from_session"
+    init_xinitrc_template "$de" "$wayland" "$from_session" "" 0 "$uwsm"
     exit $?
   fi
 
@@ -8586,7 +8641,7 @@ EOF
     resolve_session_name_arg "$install_session" --install-session || exit 1
     install_session="$RESOLVED_SESSION_ENTRY"
     local INSTALL_SESSION_DE="" INSTALL_SESSION_WAYLAND=0 INSTALL_SESSION_DEST="" INSTALL_SESSION_TEMPLATE_EXISTS=0
-    prepare_install_session "$install_session" "$de" "$de_specified" "$wayland" || exit 1
+    prepare_install_session "$install_session" "$de" "$de_specified" "$wayland" "$uwsm" || exit 1
     de="$INSTALL_SESSION_DE"
     de_specified=1
     no_packages=1
@@ -8638,7 +8693,7 @@ EOF
   fi
 
   if [[ -n "$setup_gpg" && $de_specified -eq 0 ]]; then
-    if [[ $list_only -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $wayland -eq 1 || -n "$from_session" ]]; then
+    if [[ $list_only -eq 1 || $non_interactive -eq 1 || $no_packages -eq 1 || $no_keyring -eq 1 || -n "$keyring" || $no_polkit_rule -eq 1 || $autologin -eq 1 || $wayland -eq 1 || $uwsm -eq 1 || -n "$from_session" ]]; then
       log "Standalone --setup-gpg takes only optional --gpg-ssh and --dry-run (or combine with --de <id> / --install-session)."
       echo "$usage" >&2
       exit 1
@@ -8744,7 +8799,7 @@ EOF
         preview_tmpl_dir="$(mktemp -d)" || return 1
         SESSION_PREVIEW_TEMPLATE="$preview_tmpl_dir/$preview_tmpl_name"
         SESSION_PREVIEW_DEST="$install_session_dest (would create from $install_session)"
-        if ! init_xinitrc_template "$de" "$install_session_wayland" "$install_session" "$SESSION_PREVIEW_TEMPLATE" 1; then
+        if ! init_xinitrc_template "$de" "$install_session_wayland" "$install_session" "$SESSION_PREVIEW_TEMPLATE" 1 "$uwsm"; then
           SESSION_PREVIEW_TEMPLATE=""
           SESSION_PREVIEW_DEST=""
           rm -rf -- "$preview_tmpl_dir"
@@ -8793,7 +8848,7 @@ EOF
   if [[ -n "$install_session" ]]; then
     check_tty1_getty || exit 1
     if [[ $install_session_template_exists -eq 0 ]]; then
-      init_xinitrc_template "$de" "$install_session_wayland" "$install_session" || exit 1
+      init_xinitrc_template "$de" "$install_session_wayland" "$install_session" "" 0 "$uwsm" || exit 1
     else
       log "Using existing session template $install_session_dest (preserving customizations)."
     fi
