@@ -263,6 +263,26 @@ list_packages() {
   printf '%s\n' "${base_pkgs[@]}" "${pkgs[@]}"
 }
 
+# Return 0 if the newest sync database in PACMAN_DB_DIR is older than 7 days
+pacman_sync_db_stale() {
+  local pacman_db_dir="${1:-${PACMAN_DB_DIR:-/var/lib/pacman}}"
+  local -a sync_dbs=()
+  local db_f newest_mtime=0 db_mtime=0 now=0
+  for db_f in "$pacman_db_dir/sync/"*.db; do
+    [[ -f "$db_f" ]] && sync_dbs+=("$db_f")
+  done
+  [[ ${#sync_dbs[@]} -gt 0 ]] || return 1
+  for db_f in "${sync_dbs[@]}"; do
+    db_mtime="$(stat -c %Y "$db_f" 2>/dev/null || echo 0)"
+    (( db_mtime > newest_mtime )) && newest_mtime="$db_mtime"
+  done
+  now="$(date +%s 2>/dev/null || echo 0)"
+  if (( now > 0 && newest_mtime > 0 && now - newest_mtime > 604800 )); then
+    return 0
+  fi
+  return 1
+}
+
 # Install required packages
 install_packages() {
   local de="${1:-}" pkg_output pkgs=()
@@ -274,7 +294,13 @@ install_packages() {
   fi
 
   log "Installing required packages for $de..."
-  sudo pacman -S --needed --noconfirm "${pkgs[@]}" || return
+  sudo pacman -S --needed --noconfirm "${pkgs[@]}" || {
+    local pacman_status=$?
+    if pacman_sync_db_stale; then
+      log "sync database is older than 7 days — run sudo pacman -Syu, then re-run"
+    fi
+    return "$pacman_status"
+  }
   RECORDED_PACKAGES=("${pkgs[@]}")
 }
 
@@ -317,7 +343,13 @@ update_packages() {
   fi
   if [[ ${#added[@]} -gt 0 ]]; then
     log "Installing the packages this lightXDM version adds for $de: ${added[*]}"
-    sudo pacman -S --needed --noconfirm "${added[@]}" || return
+    sudo pacman -S --needed --noconfirm "${added[@]}" || {
+      local pacman_status=$?
+      if pacman_sync_db_stale; then
+        log "sync database is older than 7 days — run sudo pacman -Syu, then re-run"
+      fi
+      return "$pacman_status"
+    }
   else
     log "No new packages for $de."
   fi
@@ -4300,18 +4332,10 @@ run_preflight() {
       printf -v diag_msg "sync database missing in %s/sync — run: sudo pacman -Syu" "$pacman_db_dir"
       diag_record_check "$json_mode" "Pacman sync database" "warn" "$diag_msg"
       warnings=$((warnings + 1))
-    else
-      local newest_mtime=0 db_mtime=0 now=0
-      for db_f in "${sync_dbs[@]}"; do
-        db_mtime="$(stat -c %Y "$db_f" 2>/dev/null || echo 0)"
-        (( db_mtime > newest_mtime )) && newest_mtime="$db_mtime"
-      done
-      now="$(date +%s 2>/dev/null || echo 0)"
-      if (( now > 0 && newest_mtime > 0 && now - newest_mtime > 604800 )); then
-        printf -v diag_msg "sync database in %s/sync is older than 7 days — run: sudo pacman -Syu" "$pacman_db_dir"
-        diag_record_check "$json_mode" "Pacman sync database" "warn" "$diag_msg"
-        warnings=$((warnings + 1))
-      fi
+    elif pacman_sync_db_stale "$pacman_db_dir"; then
+      printf -v diag_msg "sync database in %s/sync is older than 7 days — run: sudo pacman -Syu" "$pacman_db_dir"
+      diag_record_check "$json_mode" "Pacman sync database" "warn" "$diag_msg"
+      warnings=$((warnings + 1))
     fi
   fi
 

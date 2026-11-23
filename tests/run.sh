@@ -11594,6 +11594,36 @@ if [[ -z "$pkg_report" ]]; then
 else
   fail "install.sh --update packages:$pkg_report"
 fi
+
+# install_packages on pacman failure logs the -Syu hint when the sync database is stale, and omits it when fresh
+pkg_fail_stale_db="$TMP_DIR/pacman_db_stale_hint"
+mkdir -p "$pkg_fail_stale_db/sync"
+touch -d "8 days ago" "$pkg_fail_stale_db/sync/core.db"
+
+set +e
+# shellcheck disable=SC2016
+pkg_fail_stale_out="$(env HOME="$TMP_DIR/home" PATH="$STUB_BIN:$PATH" STUB_PACMAN_EXIT=1 PACMAN_DB_DIR="$pkg_fail_stale_db" \
+  bash -c 'source "$1/install.sh" && install_packages xfce' _ "$REPO_ROOT" 2>&1)"
+pkg_fail_stale_status=$?
+set -e
+if [[ $pkg_fail_stale_status -ne 0 && "$pkg_fail_stale_out" == *"sync database is older than 7 days — run sudo pacman -Syu, then re-run"* ]]; then
+  pass "install_packages logs stale sync database hint when pacman fails on stale database"
+else
+  fail "install_packages stale sync database hint (status=$pkg_fail_stale_status, output=$pkg_fail_stale_out)"
+fi
+
+set +e
+# shellcheck disable=SC2016
+pkg_fail_fresh_out="$(env HOME="$TMP_DIR/home" PATH="$STUB_BIN:$PATH" STUB_PACMAN_EXIT=1 PACMAN_DB_DIR="$PACMAN_DB_DIR" \
+  bash -c 'source "$1/install.sh" && install_packages xfce' _ "$REPO_ROOT" 2>&1)"
+pkg_fail_fresh_status=$?
+set -e
+if [[ $pkg_fail_fresh_status -ne 0 && "$pkg_fail_fresh_out" != *"sync database is older than 7 days — run sudo pacman -Syu, then re-run"* ]]; then
+  pass "install_packages omits stale sync database hint when pacman fails on fresh database"
+else
+  fail "install_packages fresh sync database hint (status=$pkg_fail_fresh_status, output=$pkg_fail_fresh_out)"
+fi
+
 # --pam-only sets up only lightXDM's lines in the login file (and GNOME's session-type file): no
 # packages, dotfiles, display managers or saved choices change, and its preview shows only that.
 po_dir="$TMP_DIR/pam_only"
