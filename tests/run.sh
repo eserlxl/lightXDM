@@ -21809,6 +21809,9 @@ cat >"$guided_case/bin/pacman" <<'EOF'
 if [[ "${1:-}" == "-Qq" && -n "${GUIDED_PKGS:-}" && " ${GUIDED_PKGS} " == *" ${2:-} "* ]]; then
   exit 0
 fi
+if [[ "${1:-}" == "-S" && -n "${GUIDED_LOG:-}" ]]; then
+  printf 'pacman:%s\n' "$1" >>"$GUIDED_LOG"
+fi
 exit 1
 EOF
 cat >"$guided_case/bin/systemctl" <<'EOF'
@@ -21933,7 +21936,13 @@ authenticate_sudo() { printf 'sudo:%s\n' "${2:-}" >>"$GUIDED_LOG"; }
 check_template_syntax() { :; }
 check_tty1_getty() { :; }
 check_template_not_self() { :; }
-install_packages() { printf 'pkg:%s\n' "$1" >>"$GUIDED_LOG"; }
+if [[ "${GUIDED_REAL_PKG:-0}" == "1" ]]; then
+  sudo() { "$@"; }
+  disable_display_managers() { printf 'dm\n' >>"$GUIDED_LOG"; }
+else
+  install_packages() { printf 'pkg:%s\n' "$1" >>"$GUIDED_LOG"; }
+  disable_display_managers() { :; }
+fi
 check_session_commands() { :; }
 copy_dotfiles() { printf 'copy:%s\n' "$1" >>"$GUIDED_LOG"; }
 apply_shell_hook() {
@@ -21945,7 +21954,6 @@ apply_shell_hook() {
 }
 configure_pam() { printf 'pam:%s\n' "$1" >>"$GUIDED_LOG"; }
 configure_gnome_session_type() { :; }
-disable_display_managers() { :; }
 save_install_choices() { printf 'save:%s\n' "$1" >>"$GUIDED_LOG"; }
 main --guided
 EOF
@@ -21955,6 +21963,15 @@ guided_live_out="$(printf '4\n1\ny\ny\n' | env HOME="$guided_case/home" USER=tes
   GUIDED_LOG="$guided_live_log" \
   bash "$guided_case/run_live.sh" "$REPO_ROOT" 2>&1)"
 guided_live_rc=$?
+guided_pkg_fail_log="$guided_case/live_pkg_fail.log"
+: >"$guided_pkg_fail_log"
+mkdir -p "$guided_case/pkg_fail_home" "$guided_case/empty_db"
+guided_pkg_fail_out="$(printf '4\n1\ny\ny\n' | env HOME="$guided_case/pkg_fail_home" USER=testuser PATH="$guided_case/bin:$PATH" \
+  GUIDED_SHELL=/usr/bin/fish GUIDED_PKGS="" SESSION_ROOT="$guided_case/empty_sess" \
+  DISPLAY_MANAGER_LINK="$guided_case/dm/display-manager.service" \
+  PACMAN_DB_DIR="$guided_case/empty_db" GUIDED_REAL_PKG=1 GUIDED_LOG="$guided_pkg_fail_log" \
+  bash "$guided_case/run_live.sh" "$REPO_ROOT" 2>&1)"
+guided_pkg_fail_rc=$?
 set -e
 guided_live_steps="$(cat "$guided_live_log" 2>/dev/null || true)"
 if [[ $guided_live_rc -ne 0 || "$guided_live_out" != *"Running:"*"--de xfce --setup-shell fish"* ||
@@ -21962,6 +21979,15 @@ if [[ $guided_live_rc -ne 0 || "$guided_live_out" != *"Running:"*"--de xfce --se
   "$guided_live_steps" != *$'sudo:testuser\npkg:xfce\ncopy:xfce\nhook:fish:0\npam:xfce\nsave:xfce'* ]]; then
   guided_ok=0
   guided_report+=" [live confirm rc=$guided_live_rc steps=$guided_live_steps out=$guided_live_out]"
+fi
+guided_pkg_fail_steps="$(cat "$guided_pkg_fail_log" 2>/dev/null || true)"
+if [[ $guided_pkg_fail_rc -eq 0 ||
+  "$guided_pkg_fail_out" != *"Installing required packages for xfce..."* ||
+  "$guided_pkg_fail_out" != *"Install stopped during install_packages; already done: none"* ||
+  "$guided_pkg_fail_out" == *"lightXDM install complete!"* ||
+  "${guided_pkg_fail_steps##*sudo:testuser}" != $'\npacman:-S' ]]; then
+  guided_ok=0
+  guided_report+=" [live pacman fail rc=$guided_pkg_fail_rc steps=$guided_pkg_fail_steps out=$guided_pkg_fail_out]"
 fi
 
 mkdir -p "$guided_case/edge_ovf" "$guided_case/edge_sym" "$guided_case/edge_inc" "$guided_case/edge_ro"

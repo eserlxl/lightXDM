@@ -8832,9 +8832,8 @@ EOF
       echo "$usage" >&2
       exit 1
     fi
-    local guided_status=0
-    run_guided_wizard "$dry_run" || guided_status=$?
-    return "$guided_status"
+    run_guided_wizard "$dry_run"
+    return
   fi
 
   if [[ -n "$login_mode" ]]; then
